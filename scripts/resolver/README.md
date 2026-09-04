@@ -131,36 +131,30 @@ identically (`bar.foobar.testing`).
 
 ### Querying by labelhash
 
-A client that asks whether a name is free is usually about to register it.
-Whoever runs the resolver sees that question and could register the name first.
-To avoid that, send the keccak hash of the label instead of the label itself,
-written in ENS's `[<64 hex>]` form. The answer is the same:
+A client asking whether a name is free is usually about to register it, and
+whoever runs the resolver could register it first. To avoid that, send the
+keccak hash of the label in ENS's `[<64 hex>]` form instead of the label:
 
 ```sh
 # instead of /resolve/acme.testing
 curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
 ```
 
-This works because namehash is `keccak(parent || keccak(label))`. Passing
-`keccak(label)` gives the same node, so the resolver reads the same record. It
-learns which name you meant only if it guesses the label and hashes it.
+namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
+returns the same record. The resolver learns the name only by guessing the label
+and hashing it.
 
-Brackets keep the two forms from colliding. `[` and `]` are not valid in a
-normalised ENS name, and the dApp normalises before it registers, so no name
-registered through it can look like this. Nothing on chain checks the character
-set, but a `[<64 hex>]` label is 66 bytes and the registrar's `maxLabelLength`
-is 63, so it cannot be registered directly either. ENS uses this same encoding
-for a label whose preimage it does not know. A plain `0x…` label would not work
-here, because that is an ordinary name anyone can register.
+Brackets cannot collide with a real name: they are invalid in a normalised ENS
+name, and a `[<64 hex>]` label is 66 bytes against the registrar's
+`maxLabelLength` of 63. A plain `0x…` label is not treated as a hash, since that
+is an ordinary, registrable name.
 
-Only 2LDs can be queried by hash. A 2LD is what a registration buys, so it is
-the only name worth hiding. Subnames are left out because nobody can race you
-for one: the owner of the 2LD creates them. In a subname the resolver hashes a
-`[<64 hex>]` label as written instead of decoding it, so such a query points at
-a node nobody can own.
+Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
+created by the 2LD's owner. A bracket label in a subname is hashed as written,
+so it points at a node nobody can own.
 
-This hides your interest in a name, and nothing more. The registration itself
-is public, and the controller's commit-reveal protects that step.
+This hides interest in a name and nothing else: the registration itself is
+public, and commit-reveal covers that step.
 
 ### Status codes
 
