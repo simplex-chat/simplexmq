@@ -129,35 +129,38 @@ text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
 
-### Asking without naming the name
+### Querying by labelhash
 
-A client checking whether a name is free is usually about to register it, so
-the question itself is worth front-running. Substitute the label's keccak hash,
-written in ENS's `[<64 hex>]` form, and the answer is identical:
+A client that asks whether a name is free is usually about to register it.
+Whoever runs the resolver sees that question and could register the name first.
+To avoid that, send the keccak hash of the label instead of the label itself,
+written in ENS's `[<64 hex>]` form. The answer is the same:
 
 ```sh
 # instead of /resolve/acme.testing
 curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
 ```
 
-namehash is defined as `keccak(parent || keccak(label))`, so supplying
-`keccak(label)` reaches the same node: the resolver reads exactly the record it
-would have read, and learns which name you meant only if it already guessed it.
+This works because namehash is `keccak(parent || keccak(label))`. Passing
+`keccak(label)` gives the same node, so the resolver reads the same record. It
+learns which name you meant only if it guesses the label and hashes it.
 
-The brackets are what keep the two forms apart — `[` and `]` cannot occur in a
-normalised name, so no registrable label can take this shape, and it is the
-same encoding ENS itself uses for a label whose preimage is unknown. A bare
-`0x…` label would not do: that is an ordinary, registrable name.
+Brackets keep the two forms from colliding. `[` and `]` are not valid in a
+normalised ENS name, and the dApp normalises before it registers, so no name
+registered through it can look like this. Nothing on chain checks the character
+set, but a `[<64 hex>]` label is 66 bytes and the registrar's `maxLabelLength`
+is 63, so it cannot be registered directly either. ENS uses this same encoding
+for a label whose preimage it does not know. A plain `0x…` label would not work
+here, because that is an ordinary name anyone can register.
 
-Only 2LDs may be queried by hash: that is the name a registration is bought
-for, so the only one worth hiding. Subnames of any depth are excluded — a
-subname is created by the 2LD's owner, nobody can race you for one, so there is
-nothing to front-run. A label in `[<64 hex>]` form there is hashed literally,
-not decoded; as brackets cannot occur in a real registration, such a query
-names a node nobody can own.
+Only 2LDs can be queried by hash. A 2LD is what a registration buys, so it is
+the only name worth hiding. Subnames are left out because nobody can race you
+for one: the owner of the 2LD creates them. In a subname the resolver hashes a
+`[<64 hex>]` label as written instead of decoding it, so such a query points at
+a node nobody can own.
 
-Registration itself stays public: this hides the *interest*, and the
-commit-reveal in the controller is what protects the registration.
+This hides your interest in a name, and nothing more. The registration itself
+is public, and the controller's commit-reveal protects that step.
 
 ### Status codes
 
