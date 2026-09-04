@@ -29,6 +29,7 @@ Usage:
   ./snrc-resolve.py                    # serve on :8000
 
   curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq .
+  curl -s 'http://127.0.0.1:8000/resolve/[<64-hex labelhash>].testing' | jq .
   curl -s http://127.0.0.1:8000/health
 
 Environment:
@@ -121,6 +122,35 @@ def namehash(name: str) -> bytes:
         for label in reversed(name.split(".")):
             node = keccak(node + keccak(label.encode()))
     return node
+
+
+# ENS's encoding for a label whose preimage is unknown. Brackets are outside
+# the normalised character set, so it cannot collide with a registrable name.
+ENCODED_LABELHASH_LEN = 66  # "[" + 64 hex + "]"
+
+
+def is_encoded_labelhash(label: str) -> bool:
+    return (
+        len(label) == ENCODED_LABELHASH_LEN
+        and label.startswith("[")
+        and label.endswith("]")
+        and all(c in "0123456789abcdef" for c in label[1:-1])
+    )
+
+
+def node_of(name: str) -> bytes:
+    """namehash, accepting an encoded labelhash in place of a 2LD's label.
+
+    keccak(parent || keccak(label)) reaches the same node without the label,
+    so a caller can check a 2LD without disclosing which one they are about to
+    register. Subnames are excluded - only the 2LD's owner creates them, so
+    there is nothing to front-run - and a bracket label there is hashed as
+    written.
+    """
+    labels = name.split(".")
+    if len(labels) == 2 and is_encoded_labelhash(labels[0]):
+        return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
+    return namehash(name)
 
 
 def selector(signature: str) -> str:
@@ -401,7 +431,7 @@ def resolve(name: str):
             "configured_tlds": configured,
         }
 
-    node = namehash(name)
+    node = node_of(name)
     node_hex = node.hex()
 
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)

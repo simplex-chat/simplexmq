@@ -129,6 +129,33 @@ text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
 
+### Querying by labelhash
+
+A client asking whether a name is free is usually about to register it, and
+whoever runs the resolver could register it first. To avoid that, send the
+keccak hash of the label in ENS's `[<64 hex>]` form instead of the label:
+
+```sh
+# instead of /resolve/acme.testing
+curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
+```
+
+namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
+returns the same record. The resolver learns the name only by guessing the label
+and hashing it.
+
+Brackets cannot collide with a real name: they are invalid in a normalised ENS
+name, and a `[<64 hex>]` label is 66 bytes against the registrar's
+`maxLabelLength` of 63. A plain `0x…` label is not treated as a hash, since that
+is an ordinary, registrable name.
+
+Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
+created by the 2LD's owner. A bracket label in a subname is hashed as written,
+so it points at a node nobody can own.
+
+This hides interest in a name and nothing else: the registration itself is
+public, and commit-reveal covers that step.
+
 ### Status codes
 
 | Status | Meaning |
