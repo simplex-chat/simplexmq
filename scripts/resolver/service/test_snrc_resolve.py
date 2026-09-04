@@ -86,13 +86,13 @@ class SplitLinksTests(unittest.TestCase):
 class EncodedLabelhashTests(unittest.TestCase):
     """Querying by labelhash instead of by label.
 
-    A client asking whether a name is free is usually about to register it, so
-    the question itself is worth front-running by whoever runs the resolver.
-    namehash is keccak(parent || keccak(label)), so supplying keccak(label)
-    yields the same node and the same answer, having never sent the label.
+    A client that asks whether a name is free is usually about to register it,
+    and whoever runs the resolver could register it first. namehash is
+    keccak(parent || keccak(label)), so supplying keccak(label) gives the same
+    node and the same answer without sending the label.
 
-    The encoding is ENS's own `[<64 hex>]`, which cannot collide with a real
-    name: brackets are outside the normalised character set."""
+    The encoding is ENS's own `[<64 hex>]`. It cannot collide with a real name,
+    because brackets are not valid in a normalised ENS name."""
 
     # keccak-256("alice") = 9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501
     # - written out in full wherever a test needs a real labelhash.
@@ -165,8 +165,8 @@ class EncodedLabelhashTests(unittest.TestCase):
         )
 
     def test_a_0x_prefixed_label_is_taken_literally(self):
-        """`0x<64 hex>` is a registrable name, not a hash - the brackets are
-        what make the hashed form unambiguous."""
+        """`0x<64 hex>` is a registrable name, not a hash. Only the bracket
+        form is read as a labelhash."""
         name = "0x9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501.testing"
         self.assertEqual(snrc.node_of(name), snrc.namehash(name))
         self.assertNotEqual(snrc.node_of(name), snrc.node_of("alice.testing"))
@@ -176,8 +176,8 @@ class EncodedLabelhashTests(unittest.TestCase):
         self.assertEqual(snrc.node_of(name), snrc.namehash(name))
 
     def test_status_by_hash_matches_status_by_name(self):
-        """The registrar keys registration data on the labelhash too, so a
-        hashed query answers "is it free?" - not only "what does it say?" -
+        """The registrar keys registration data on the labelhash too. A hashed
+        query therefore answers "is it free?" as well as "what does it say?",
         without the label."""
         future = int(time.time()) + 86400
         seen = []

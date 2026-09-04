@@ -157,14 +157,16 @@ def namehash(name: str) -> bytes:
     return node
 
 
-# ENS writes a label whose preimage it does not know as `[<64 hex>]`, and that
-# is the form reused here for a label the caller deliberately withholds. The
-# brackets are what keep the two forms apart: `[` and `]` are outside the
-# normalised character set, so no registrable name can take this shape, and the
-# ecosystem already reads it back as a hash (ensjs `isEncodedLabelhash`; the
-# subgraph refuses any real label containing a bracket). A bare `0x…` label
-# would not be safe this way - that is an ordinary, registrable name, kept from
-# clashing only by a registrar length cap that its owner can raise.
+# ENS writes a label whose preimage it does not know as `[<64 hex>]`, and this
+# resolver reuses that form for a label the caller withholds on purpose.
+# Brackets keep the two forms from colliding: `[` and `]` are not valid in a
+# normalised ENS name, and the dApp normalises before it registers. Nothing on
+# chain checks the character set, but a bracketed labelhash is 66 bytes and the
+# registrar's maxLabelLength is 63, so it cannot be registered directly either.
+# The ecosystem already reads this form back as a hash (ensjs
+# `isEncodedLabelhash`; the subgraph rejects any real label containing a
+# bracket). A plain `0x…` label would not work: that is an ordinary name anyone
+# can register.
 ENCODED_LABELHASH_LEN = 66  # "[" + 64 hex + "]"
 
 
@@ -180,17 +182,16 @@ def is_encoded_labelhash(label: str) -> bool:
 def node_of(name: str) -> bytes:
     """namehash, accepting an encoded labelhash in place of a 2LD's label.
 
-    A client checking whether a name is free is usually about to register it,
-    so the question itself is worth front-running. namehash is defined as
-    keccak(parent || keccak(label)), so a caller who supplies keccak(label)
-    reaches the same node having never sent the label.
+    A client that asks whether a name is free is usually about to register it,
+    and whoever runs the resolver could register it first. namehash is
+    keccak(parent || keccak(label)), so passing keccak(label) reaches the same
+    node without sending the label.
 
-    Only 2LDs may be queried this way: that is the name a registration is
-    bought for, so the only one worth hiding. Subnames of any depth are
-    excluded - a subname is created by the 2LD's owner, nobody can race a
-    caller for one, so there is nothing to front-run. A label in `[<64 hex>]`
-    form there is hashed literally, not decoded; as brackets cannot occur in a
-    real registration, such a query names a node nobody can own.
+    Only 2LDs can be queried this way. A 2LD is what a registration buys, so it
+    is the only name worth hiding. Subnames are left out because nobody can
+    race a caller for one: the owner of the 2LD creates them. In a subname a
+    `[<64 hex>]` label is hashed as written instead of decoded, so such a query
+    points at a node nobody can own.
     """
     labels = name.split(".")
     if len(labels) == 2 and is_encoded_labelhash(labels[0]):
@@ -272,10 +273,10 @@ def name_status(name: str):
         # No registrar configured for this TLD: say so rather than guess.
         return {"status": "unknown", "expires": None, "graceEnds": None}
 
-    # The registration facts (nameExpires, reservedNames) are keyed on
-    # uint256(keccak(label)), so a 2LD queried by its encoded labelhash gets
-    # the same answer without the label. The bracket form decodes only there -
-    # the same rule node_of applies to the node itself.
+    # The registrar keys the registration facts (nameExpires, reservedNames) on
+    # uint256(keccak(label)), so a 2LD queried by its encoded labelhash gets the
+    # same answer without the label. Decode the bracket form for a 2LD only,
+    # which is the rule node_of applies to the node.
     label = labels[-2]
     if len(labels) == 2 and is_encoded_labelhash(label):
         token = int(label[1:-1], 16)
