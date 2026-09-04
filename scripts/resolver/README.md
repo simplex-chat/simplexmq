@@ -170,21 +170,19 @@ needs, because a subname is only as good as the name it sits under.
 
 ### Querying by labelhash
 
-A client that asks whether a name is free is usually about to register it.
-Whoever runs the resolver sees that question and could register the name first.
-To avoid that, send the keccak hash of the label instead of the label itself,
-written in ENS's `[<64 hex>]` form. The answer is the same:
+A client asking whether a name is free is usually about to register it, and
+whoever runs the resolver could register it first. To avoid that, send the
+keccak hash of the label in ENS's `[<64 hex>]` form instead of the label:
 
 ```sh
 # instead of /resolve/acme.testing
 curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
 ```
 
-This works because namehash is `keccak(parent || keccak(label))`. Passing
-`keccak(label)` gives the same node, so the resolver reads the same record. The
-registrar keys `nameExpires` and `reservedNames` on the labelhash as well, so
-the status fields do not need the label either. The resolver learns which name
-you meant only if it guesses the label and hashes it.
+namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
+returns the same record. The registrar keys `nameExpires` and `reservedNames` on
+the labelhash too, so the status fields do not need the label either. The
+resolver learns the name only by guessing the label and hashing it.
 
 Read the answer from `status`. A name is free only when the body says
 `unregistered`, which comes with a 404. Every other status means somebody holds
@@ -192,33 +190,27 @@ the name or held it recently. Watch out for `noResolver`: it is also a 404, but
 the name is taken.
 
 The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
-SHA3-256, which is a different function. They return 64 valid-looking hex
-characters that point at the wrong node.
+SHA3-256, a different function that returns 64 valid-looking hex characters
+pointing at the wrong node.
 
 The resolver lowercases the query before matching, so uppercase hex works too.
-HTTP clients that refuse raw brackets in a path can percent-encode them as
-`%5B` and `%5D`. Both forms reach the same name.
+Clients that refuse raw brackets in a path can percent-encode them as `%5B` and
+`%5D`.
 
-Brackets keep the two forms from colliding. `[` and `]` are not valid in a
-normalised ENS name, and the dApp normalises before it registers, so no name
-registered through it can look like this. Nothing on chain checks the character
-set, but a `[<64 hex>]` label is 66 bytes and the registrar's `maxLabelLength`
-is 63, so it cannot be registered directly either. ENS uses this same encoding
-for a label whose preimage it does not know. A plain `0x…` label would not work
-here, because that is an ordinary name anyone can register.
+Brackets cannot collide with a real name: they are invalid in a normalised ENS
+name, and a `[<64 hex>]` label is 66 bytes against the registrar's
+`maxLabelLength` of 63. A plain `0x…` label is not treated as a hash, since that
+is an ordinary, registrable name.
 
-Only 2LDs can be queried by hash. A 2LD is what a registration buys, so it is
-the only name worth hiding. Subnames are left out because nobody can race you
-for one: the owner of the 2LD creates them. In a subname the resolver hashes a
-`[<64 hex>]` label as written instead of decoding it, so such a query points at
-a node nobody can own. ENS tooling accepts the bracketed form at any depth;
-this resolver does not, on purpose.
+Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
+created by the 2LD's owner. A bracket label in a subname is hashed as written,
+so it points at a node nobody can own. ENS tooling accepts the bracketed form at
+any depth; this resolver does not, on purpose.
 
-This hides your interest in a name, and nothing more. The registration itself
-is public, and the controller's commit-reveal protects that step. The hash is
-also easy to guess for a short or well-known label, since an operator can hash
-candidate labels and compare. And once you register, the reveal publishes the
-labelhash, so an operator who logged your query can match it to the name.
+This hides interest in a name and nothing else: the registration itself is
+public, and commit-reveal covers that step. A short or well-known label is easy
+to guess by hashing candidates, and the reveal publishes the labelhash, so an
+operator who logged the query can match it to the name afterwards.
 
 ### Errors
 

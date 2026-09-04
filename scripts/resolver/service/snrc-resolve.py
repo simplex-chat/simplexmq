@@ -157,16 +157,8 @@ def namehash(name: str) -> bytes:
     return node
 
 
-# ENS writes a label whose preimage it does not know as `[<64 hex>]`, and this
-# resolver reuses that form for a label the caller withholds on purpose.
-# Brackets keep the two forms from colliding: `[` and `]` are not valid in a
-# normalised ENS name, and the dApp normalises before it registers. Nothing on
-# chain checks the character set, but a bracketed labelhash is 66 bytes and the
-# registrar's maxLabelLength is 63, so it cannot be registered directly either.
-# The ecosystem already reads this form back as a hash (ensjs
-# `isEncodedLabelhash`; the subgraph rejects any real label containing a
-# bracket). A plain `0x…` label would not work: that is an ordinary name anyone
-# can register.
+# ENS's encoding for a label whose preimage is unknown. Brackets are outside
+# the normalised character set, so it cannot collide with a registrable name.
 ENCODED_LABELHASH_LEN = 66  # "[" + 64 hex + "]"
 
 
@@ -182,16 +174,11 @@ def is_encoded_labelhash(label: str) -> bool:
 def node_of(name: str) -> bytes:
     """namehash, accepting an encoded labelhash in place of a 2LD's label.
 
-    A client that asks whether a name is free is usually about to register it,
-    and whoever runs the resolver could register it first. namehash is
-    keccak(parent || keccak(label)), so passing keccak(label) reaches the same
-    node without sending the label.
-
-    Only 2LDs can be queried this way. A 2LD is what a registration buys, so it
-    is the only name worth hiding. Subnames are left out because nobody can
-    race a caller for one: the owner of the 2LD creates them. In a subname a
-    `[<64 hex>]` label is hashed as written instead of decoded, so such a query
-    points at a node nobody can own.
+    keccak(parent || keccak(label)) reaches the same node without the label,
+    so a caller can check a 2LD without disclosing which one they are about to
+    register. Subnames are excluded - only the 2LD's owner creates them, so
+    there is nothing to front-run - and a bracket label there is hashed as
+    written.
     """
     labels = name.split(".")
     if len(labels) == 2 and is_encoded_labelhash(labels[0]):
