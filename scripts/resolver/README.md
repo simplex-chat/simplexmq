@@ -220,6 +220,27 @@ also easy to guess for a short or well-known label, since an operator can hash
 candidate labels and compare. And once you register, the reveal publishes the
 labelhash, so an operator who logged your query can match it to the name.
 
+### Errors
+
+Every non-2xx body carries two fields: `error` is a fixed code to branch on,
+and `message` is a sentence for a human. Match on `error`, never on `message`,
+which is free to change.
+
+```jsonc
+{"name": "nope.testing", "error": "unregistered",
+ "message": "this name has never been registered",
+ "status": "unregistered", "expires": null, "graceEnds": null}
+```
+
+The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
+`reserved`, `grace`, `expired`, `noResolver`, `noSuchRoute` and
+`upstreamError`. When the registration is what went wrong, `error` and `status`
+hold the same value, so one field is enough to read.
+
+`upstreamError` says only which exception type the RPC call raised. The text
+goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
+and urlopen puts the URL it failed on into the message.
+
 ### Status codes
 
 | Status | Meaning |

@@ -581,6 +581,21 @@ def split_links(value: str) -> list:
     return [item.strip() for item in value.split(LINK_SEPARATOR) if item.strip()]
 
 
+def upstream_error(subject: dict, e: Exception) -> dict:
+    """A 502 body that names the failure without quoting the exception.
+
+    urlopen puts the URL it failed on into its message, and SNRC_RPC may carry
+    a provider key, so the text goes to the log and only a type goes to the
+    caller.
+    """
+    print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
+    return {
+        **subject,
+        "error": "upstreamError",
+        "message": f"upstream RPC failed ({type(e).__name__})",
+    }
+
+
 def resolve(name: str):
     tld = name.rsplit(".", 1)[-1]
     registry = REGISTRIES.get(tld)
@@ -588,8 +603,9 @@ def resolve(name: str):
         configured = [k for k, v in REGISTRIES.items() if v]
         return 400, {
             "name": name,
-            "error": f"TLD '{tld}' is not configured on this resolver",
-            "configured_tlds": configured,
+            "error": "tldNotConfigured",
+            "message": f"TLD '{tld}' is not configured on this resolver",
+            "configuredTlds": configured,
         }
 
     node = node_of(name)
@@ -606,7 +622,8 @@ def resolve(name: str):
             "status": reg["status"],
             "expires": reg["expires"],
             "graceEnds": reg["graceEnds"],
-            "error": (
+            "error": reg["status"],
+            "message": (
                 "this name is reserved and cannot be registered"
                 if reg["status"] == "reserved"
                 else "this name has never been registered"
@@ -623,7 +640,8 @@ def resolve(name: str):
             "status": reg["status"],
             "expires": reg["expires"],
             "graceEnds": reg["graceEnds"],
-            "error": (
+            "error": reg["status"],
+            "message": (
                 "this registration expired and can be renewed by its owner"
                 if reg["status"] == "grace"
                 else "this registration expired and is open to anyone"
@@ -638,7 +656,8 @@ def resolve(name: str):
             "status": "noResolver",
             "expires": reg["expires"],
             "graceEnds": reg["graceEnds"],
-            "error": "no resolver set for this name",
+            "error": "noResolver",
+            "message": "no resolver set for this name",
         }
 
     owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
@@ -701,21 +720,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(
                     400,
                     {
-                        "error": "expected fully-qualified name, e.g. /resolve/alice.testing",
-                        "got": name,
+                        "name": name,
+                        "error": "notFullyQualified",
+                        "message": "expected a fully-qualified name, e.g. alice.testing",
                     },
                 )
                 return
             try:
                 status, body = resolve(name)
             except Exception as e:  # surface upstream errors as 502
-                status, body = 502, {"name": name, "error": f"{type(e).__name__}: {e}"}
+                status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
             return
 
         self._respond(
             404,
-            {"error": "not found", "routes": ["/health", "/resolve/<name>"]},
+            {
+                "error": "noSuchRoute",
+                "message": "not found",
+                "routes": ["/health", "/resolve/<name>"],
+            },
         )
 
     def _respond(self, status: int, body: dict):

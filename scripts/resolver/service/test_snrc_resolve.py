@@ -4,7 +4,9 @@
 Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
 """
 
+import contextlib
 import importlib.util
+import io
 import os
 import time
 import unittest
@@ -448,7 +450,7 @@ class ReservedReasonTests(unittest.TestCase):
     def test_the_message_does_not_claim_a_trademark(self):
         snrc.eth_call = self._chain(0, True)
         _, body = snrc.resolve("acme.testing")
-        self.assertNotIn("trademark", body["error"])
+        self.assertNotIn("trademark", body["message"])
 
     def test_an_unregistered_name_has_no_reason(self):
         snrc.eth_call = self._chain(0, False)
@@ -470,6 +472,99 @@ class ReservedReasonTests(unittest.TestCase):
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         _, body = snrc.resolve(hashed + ".testing")
         self.assertEqual(body["reason"], "reserved for a brand or public interest")
+
+
+class ErrorCodeTests(unittest.TestCase):
+    """`error` is a fixed code a client can branch on, and `message` is the
+    sentence for a human. Matching on the sentence would break the moment the
+    wording changes, which is why the two are separate fields."""
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+
+    def setUp(self):
+        self._saved = (
+            snrc.REGISTRIES,
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+            snrc.chain_now,
+        )
+        snrc.REGISTRIES = {"testing": self.REGISTRY, "simplex": ""}
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": ""}
+        snrc.chain_now = lambda: int(time.time())
+
+    def tearDown(self):
+        (
+            snrc.REGISTRIES,
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+            snrc.chain_now,
+        ) = self._saved
+
+    def _chain(self, expires, resolver=None):
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(90 * 86400)
+            if data.startswith(snrc.selector("resolver(bytes32)")):
+                return "0x" + "00" * 12 + (resolver or "00" * 20)
+            return "0x" + snrc.encode_uint(expires)
+
+        return eth_call
+
+    def test_an_unconfigured_tld_names_the_ones_that_are(self):
+        status, body = snrc.resolve("alice.nosuchtld")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "tldNotConfigured")
+        self.assertEqual(body["configuredTlds"], ["testing"])
+        self.assertIn("nosuchtld", body["message"])
+
+    def test_a_registration_problem_reports_the_status_as_the_code(self):
+        """For these the status is the error, so a client needs to read only
+        one field."""
+        for expires, code in (
+            (0, "unregistered"),
+            (int(time.time()) - 3600, "grace"),
+            (int(time.time()) - 91 * 86400, "expired"),
+        ):
+            with self.subTest(code=code):
+                snrc.eth_call = self._chain(expires)
+                _, body = snrc.resolve("alice.testing")
+                self.assertEqual(body["error"], code)
+                self.assertEqual(body["status"], code)
+
+    def test_a_registered_name_pointing_nowhere_is_noResolver(self):
+        snrc.eth_call = self._chain(int(time.time()) + 86400)
+        status, body = snrc.resolve("alice.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "noResolver")
+        self.assertEqual(body["status"], "noResolver")
+
+    def test_every_error_body_carries_both_fields(self):
+        snrc.eth_call = self._chain(0)
+        for name in ("alice.nosuchtld", "alice.testing"):
+            with self.subTest(name=name):
+                _, body = snrc.resolve(name)
+                self.assertIsInstance(body["error"], str)
+                self.assertIsInstance(body["message"], str)
+                self.assertNotEqual(body["error"], body["message"])
+
+    def test_an_upstream_failure_does_not_echo_the_exception(self):
+        """urlopen puts the failing URL in its message and SNRC_RPC can carry
+        a provider key, so only the exception type reaches the caller."""
+        with contextlib.redirect_stderr(io.StringIO()) as log:
+            body = snrc.upstream_error(
+                {"name": "alice.testing"},
+                RuntimeError("http://user:secret@rpc.example/kEy8 refused"),
+            )
+        # the operator still gets the detail, in the log
+        self.assertIn("secret", log.getvalue())
+        self.assertEqual(body["error"], "upstreamError")
+        self.assertIn("RuntimeError", body["message"])
+        self.assertNotIn("secret", body["message"])
+        self.assertNotIn("kEy8", body["message"])
 
 
 if __name__ == "__main__":

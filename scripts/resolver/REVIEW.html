@@ -1,0 +1,304 @@
+<title>Fifteen Calls a Name</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;450;600&display=swap">
+
+<style>
+:root {
+  --paper: #f1f2f5; --card: #ffffff; --rule: #d9dce3; --rule-soft: #e7e9ee;
+  --ink: #1b1d24; --ink-2: #464b57; --ink-3: #6d7381;
+  --accent: #0a5fd6; --accent-bg: #e6eefc;
+  --crit: #b32b23; --crit-bg: #fbe9e7;
+  --high: #9a5c05; --high-bg: #fbf0dd;
+  --med: #4a3fb0; --med-bg: #ecebfa;
+  --ok: #196b40; --ok-bg: #e4f2ea;
+  --code-bg: #f4f5f8;
+  --shadow: 0 1px 2px rgba(27,29,36,.06), 0 8px 24px -18px rgba(27,29,36,.4);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #14161c; --card: #1c1f27; --rule: #333844; --rule-soft: #272b35;
+    --ink: #eceef3; --ink-2: #b7bcc8; --ink-3: #878e9e;
+    --accent: #6ba5ff; --accent-bg: #16233a;
+    --crit: #ff8b80; --crit-bg: #33191a;
+    --high: #e3ab4d; --high-bg: #332616;
+    --med: #a79cf5; --med-bg: #221f3a;
+    --ok: #6bcf98; --ok-bg: #162a20;
+    --code-bg: #171a21;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #14161c; --card: #1c1f27; --rule: #333844; --rule-soft: #272b35;
+  --ink: #eceef3; --ink-2: #b7bcc8; --ink-3: #878e9e;
+  --accent: #6ba5ff; --accent-bg: #16233a;
+  --crit: #ff8b80; --crit-bg: #33191a;
+  --high: #e3ab4d; --high-bg: #332616;
+  --med: #a79cf5; --med-bg: #221f3a;
+  --ok: #6bcf98; --ok-bg: #162a20;
+  --code-bg: #171a21;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.9);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px; line-height: 1.62; -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1000px; margin: 0 auto; padding: 0 28px 96px; }
+.mast { border-bottom: 1px solid var(--rule); margin-bottom: 44px; padding: 56px 0 26px; }
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); margin: 0 0 18px;
+}
+h1 {
+  font-family: Newsreader, Georgia, serif;
+  font-size: clamp(38px, 6.4vw, 62px); font-weight: 500; line-height: 1.04;
+  letter-spacing: -.015em; margin: 0 0 20px; text-wrap: balance;
+}
+.standfirst {
+  font-family: Newsreader, Georgia, serif; font-size: 20px; line-height: 1.52;
+  color: var(--ink-2); max-width: 62ch; margin: 0 0 14px;
+}
+.runline {
+  display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 24px;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px; color: var(--ink-3);
+}
+.runline b { color: var(--ink-2); font-weight: 500; }
+section { margin-top: 58px; }
+h2 {
+  font-family: Newsreader, Georgia, serif; font-size: 30px; font-weight: 500;
+  letter-spacing: -.01em; margin: 0 0 8px; text-wrap: balance;
+}
+.lede { color: var(--ink-2); max-width: 70ch; margin: 0 0 26px; }
+.f {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 24px 26px; margin-bottom: 20px; box-shadow: var(--shadow);
+}
+.f.critical { border-left: 4px solid var(--crit); }
+.f.high { border-left: 4px solid var(--high); }
+.f.medium { border-left: 4px solid var(--med); }
+.f-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+.f-num { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink-3); }
+.pill {
+  display: inline-block; white-space: nowrap;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; font-weight: 500;
+}
+.p-crit { color: var(--crit); background: var(--crit-bg); }
+.p-high { color: var(--high); background: var(--high-bg); }
+.p-med { color: var(--med); background: var(--med-bg); }
+.p-mine { color: var(--card); background: var(--accent); }
+h3 {
+  font-family: Newsreader, Georgia, serif; font-size: 23px; font-weight: 500;
+  line-height: 1.24; margin: 8px 0 12px; text-wrap: balance;
+}
+.f p { margin: 0 0 12px; color: var(--ink-2); max-width: 74ch; }
+.f p:last-of-type { margin-bottom: 0; }
+.f strong { color: var(--ink); font-weight: 600; }
+pre {
+  background: var(--code-bg); border: 1px solid var(--rule-soft); border-radius: 8px;
+  padding: 13px 15px; overflow-x: auto; margin: 14px 0;
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.6; color: var(--ink);
+}
+code {
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 13px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px;
+}
+.fix { background: var(--accent-bg); border-radius: 8px; padding: 13px 16px; margin-top: 14px; }
+.fix b {
+  color: var(--accent); font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  display: block; margin-bottom: 6px;
+}
+.fix p { margin: 0; color: var(--ink); }
+.refs {
+  margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule-soft);
+  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px; color: var(--ink-3);
+}
+footer {
+  margin-top: 70px; padding-top: 22px; border-top: 1px solid var(--rule);
+  font-size: 13.5px; color: var(--ink-3); max-width: 78ch;
+}
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">SNRC resolver · adversarial + developer experience</p>
+  <h1>Fifteen Calls a Name</h1>
+  <p class="standfirst">Two reviews of the resolver as a whole, not only of the endpoint added in this branch: one assuming the caller is hostile, one assuming they are a developer trying to use it and getting no help.</p>
+  <p class="standfirst">The severe findings are all in the service that already shipped. The embarrassing ones are mine, in code written this session — including a field that claims to be a <code>bytes32</code> and is not.</p>
+  <div class="runline">
+    <span><b>1 critical</b></span>
+    <span><b>3 high</b></span>
+    <span><b>2 medium</b></span>
+    <span><b>7 DX</b></span>
+    <span><b>3 of them mine</b></span>
+  </div>
+</header>
+
+<section>
+  <h2>Adversarial</h2>
+  <p class="lede">Assume the caller is hostile and the resolver is reachable. Every finding here is in code that predates this branch except where marked.</p>
+
+  <article class="f critical">
+    <div class="f-head"><span class="f-num">A1</span><span class="pill p-crit">Critical</span></div>
+    <h3><code>/health</code> hands out the upstream RPC URL to anyone who asks</h3>
+    <p>The health endpoint answers, unauthenticated:</p>
+    <pre>{"ok": true, "rpc": "http://reth:8545", "registries": {...}}</pre>
+    <p>Against the documented local reth that is harmless. Against any hosted provider it is a credential: Alchemy, Infura, QuickNode and Ankr all put the API key <em>in the URL path</em>. A resolver pointed at one of those publishes its owner's node key to every caller, and node keys are metered — the finder does not need to break anything, only to spend the budget.</p>
+    <p>The same value leaks a second way. Both 502 handlers return <code>f"{type(e).__name__}: {e}"</code>, and <code>urlopen</code>'s exception text carries the URL it failed on. So an attacker who cannot reach <code>/health</code> gets the same string by asking for a name while the node is unreachable — which they can arrange by asking for enough of them.</p>
+    <div class="fix"><b>Fix</b><p>Report reachability, not configuration: <code>{"ok": true, "rpc": "reachable", "chainId": 1}</code>. If the endpoint must be identifiable, publish the host without the path. Then stop putting exception text in response bodies — log it, return a correlation id. The URL is the one string in this process that must never be echoed.</p></div>
+    <div class="refs">snrc-resolve.py · Handler.do_GET /health · resolve/owned-by 502 handlers</div>
+  </article>
+
+  <article class="f high">
+    <div class="f-head"><span class="f-num">A2</span><span class="pill p-high">High</span></div>
+    <h3>The client can authenticate; the server cannot check</h3>
+    <p><code>HttpResolver.hs</code> implements <code>RpcAuth</code> with bearer and basic modes, redacts the secret from <code>Show</code> so it cannot land in logs, and attaches <code>Authorization</code> to every request. The Python resolver never reads that header. There is no auth check anywhere in the service.</p>
+    <p>An operator who configures a token has done real work — chosen a secret, wired it through config, kept it out of logs — and has protected nothing. That is worse than having no auth feature: an absent one prompts a firewall rule, a decorative one prompts confidence.</p>
+    <div class="fix"><b>Fix</b><p>Verify the header when a secret is configured, with a constant-time compare, and refuse to start when a resolver binds beyond loopback without one. Until then the Haskell side's <code>RpcAuth</code> should say in its haddock that no known resolver validates it.</p></div>
+    <div class="refs">HttpResolver.hs · RpcAuth, authHeader · snrc-resolve.py · Handler (no auth path)</div>
+  </article>
+
+  <article class="f high">
+    <div class="f-head"><span class="f-num">A3</span><span class="pill p-high">High</span><span class="pill p-mine">Partly mine</span></div>
+    <h3>One request buys up to 770 upstream calls</h3>
+    <p>Nothing is cached and nothing is rate limited, so the amplification is the whole story:</p>
+    <pre>/resolve/&lt;name&gt;    15 RPC calls   nameExpires, GRACE_PERIOD, resolver,
+                                  owner, 7 text records, 4 coin addresses
+/owned-by/&lt;addr&gt;  770 RPC calls   GRACE_PERIOD + balanceOf
+                                  + 3 per token x MAX_OWNED (256)</pre>
+    <p><code>/owned-by</code> is mine, and it is the worse of the two by a factor of fifty. <code>MAX_OWNED</code> bounds a single response; it does nothing about the rate, and the expensive request is the cheap one to send. Against a metered provider this is someone else's invoice. Against self-hosted reth it is a queue nobody else gets through.</p>
+    <p>The address in <code>/owned-by</code> need not even hold anything — the cost is paid before the balance is known to be zero.</p>
+    <div class="fix"><b>Fix</b><p>Cache resolved records for a short TTL, which is safe because the underlying data changes at block cadence, not per request. Then rate-limit per client. If the resolver is meant to be public, <code>/owned-by</code> wants a lower default bound than 256, since the tail of that range is rare and the cost is linear in it.</p></div>
+    <div class="refs">snrc-resolve.py · resolve, owned_by, TEXT_KEYS, MAX_OWNED</div>
+  </article>
+
+  <article class="f high">
+    <div class="f-head"><span class="f-num">A4</span><span class="pill p-high">High</span></div>
+    <h3>The path documented for casual use is the one that listens to the world</h3>
+    <p><code>SNRC_BIND</code> defaults to <code>0.0.0.0</code>. The compose file publishes <code>127.0.0.1:8000:8000</code>, so the Docker path is safe — and the README offers a second path for anyone who wants a quick look:</p>
+    <pre>uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth</pre>
+    <p>That inherits the default and listens on every interface, with no auth (A2) and an endpoint that publishes the node URL (A1). The safe path is the one behind a container; the casual path is the exposed one. That is the wrong way round — defaults should be safe and deployments should opt into exposure.</p>
+    <div class="fix"><b>Fix</b><p>Default <code>SNRC_BIND</code> to <code>127.0.0.1</code> and set <code>0.0.0.0</code> explicitly in <code>docker-compose.yml</code>, where publishing is already deliberate and already scoped to loopback on the host.</p></div>
+    <div class="refs">snrc-resolve.py · BIND · docker-compose.yml · README "runnable standalone"</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">A5</span><span class="pill p-med">Medium</span></div>
+    <h3>The resolver protects its caller and not itself</h3>
+    <p><code>HttpResolver.hs</code> is careful about exactly this: <code>brReadSome maxResponseBytes</code>, <code>redirectCount = 0</code>, an explicit timeout, with a comment explaining that adversarial endpoints must not be able to exhaust memory. The resolver then calls its own upstream with <code>urlopen(req, timeout=15).read()</code> — a timeout, and no size cap at all.</p>
+    <p>An RPC endpoint that is compromised, misconfigured or simply pointed at the wrong host can return a body large enough to end the process. The threat model was written down one layer up and not applied one layer down.</p>
+    <div class="fix"><b>Fix</b><p>Read with a cap and fail closed past it, mirroring the bound the Haskell client already uses. Consider following redirects zero times there too, for the same reason it is spelled out in <code>HttpResolver.hs</code>.</p></div>
+    <div class="refs">snrc-resolve.py · rpc() · HttpResolver.hs · httpGet</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">A6</span><span class="pill p-med">Medium</span></div>
+    <h3><code>http.server</code> is documented as not for production, and this is production</h3>
+    <p>CPython's own docs say <code>http.server</code> "is not recommended for production. It only implements basic security checks." There are no request size limits, no header count limits and no slow-read protection. It is fronted by nothing — the compose file exposes the port directly.</p>
+    <p>This is a reasonable choice for a script and an unreasonable one for a service an smp-server depends on for name resolution. Worth a decision rather than an accident: either it stays a dev tool and the deployment path puts a real server in front, or it becomes a service and gets one.</p>
+    <div class="fix"><b>Fix</b><p>Put it behind something that terminates connections properly, or move to a WSGI/ASGI server. Either way the README should say which posture is intended, because right now docker-compose implies production and the implementation implies development.</p></div>
+    <div class="refs">snrc-resolve.py · ThreadingHTTPServer · docker-compose.yml</div>
+  </article>
+</section>
+
+<section>
+  <h2>Developer experience</h2>
+  <p class="lede">Assume a developer writing a client against this, with only the README and the responses. Three of these are defects in the branch under review.</p>
+
+  <article class="f high">
+    <div class="f-head"><span class="f-num">D1</span><span class="pill p-high">High</span><span class="pill p-mine">Mine</span></div>
+    <h3><code>labelhash</code> is not a hash, it is a Python integer literal</h3>
+    <p>I emit it with <code>hex(token)</code>, which produces the shortest representation:</p>
+    <pre>"labelhash": "0xb"          what it returns
+"labelhash": "0x0000…000b"  what a bytes32 labelhash is</pre>
+    <p>Every other party in this system — the contract, a block explorer, any client comparing against chain state — represents a labelhash as 32 bytes. The value returned cannot be pasted into a contract call, cannot be compared textually with an on-chain topic, and will silently mismatch rather than fail loudly. It also makes the list's own sort order wrong, since it sorts as a string.</p>
+    <div class="fix"><b>Fix</b><p><code>"0x" + format(token, "064x")</code>. One line, and it should carry a test, because the wrong version looks right for the common case where the leading bytes happen to be non-zero.</p></div>
+    <div class="refs">snrc-resolve.py · owned_by · this branch</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">D2</span><span class="pill p-med">Medium</span></div>
+    <h3>Three error shapes, so a client needs three error handlers</h3>
+    <p>An unhappy response is one of:</p>
+    <pre>{"name": …, "error": …, "configured_tlds": [...]}   TLD not configured
+{"error": …, "got": …}                              not fully qualified
+{"address": …, "error": …}                          bad address
+{"name": …, "status": …, "error": …, …}             lapsed / unregistered</pre>
+    <p>The key naming the subject changes, <code>status</code> is present on some and not others, and <code>configured_tlds</code> appears in two of them and not the third. A client cannot write one function that turns a failure into a message.</p>
+    <div class="fix"><b>Fix</b><p>One envelope on every non-2xx: a stable <code>error</code> code a client can branch on, a human <code>message</code>, and the subject under a fixed key. The current strings are messages pretending to be codes.</p></div>
+    <div class="refs">snrc-resolve.py · resolve, owned_by, Handler.do_GET</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">D3</span><span class="pill p-med">Medium</span><span class="pill p-mine">Partly mine</span></div>
+    <h3>Two casing conventions in one document</h3>
+    <p><code>simplexContact</code>, <code>simplexChannel</code>, <code>checkedTlds</code>, <code>graceEnds</code> are camelCase — the file says why, so aeson can derive field names without a rewriting layer. <code>configured_tlds</code> is snake_case, in the same response body.</p>
+    <p>I added <code>checkedTlds</code> directly alongside the existing <code>configured_tlds</code> without noticing they disagree, which is how a convention with one exception becomes a convention with two.</p>
+    <div class="fix"><b>Fix</b><p>Rename <code>configured_tlds</code> to <code>configuredTlds</code>. It appears only in error bodies, so the blast radius is small — and it will only get harder once anything depends on it.</p></div>
+    <div class="refs">snrc-resolve.py · resolve, owned_by</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">D4</span><span class="pill p-med">Medium</span><span class="pill p-mine">Mine</span></div>
+    <h3><code>/health</code> cannot tell an operator whether the new endpoint will work</h3>
+    <p>Health reports <code>registries</code> and not <code>REGISTRARS</code>. Since <code>/owned-by</code> and every expiry field depend entirely on the registrar being configured, an operator who has set only the registry gets a healthy resolver, a working <code>/resolve</code>, <code>"status": "unknown"</code> on every name, and a 400 from <code>/owned-by</code> — with nothing in the health check hinting why.</p>
+    <p>I added the configuration and the dependency on it, and left the diagnostic reporting the older half.</p>
+    <div class="fix"><b>Fix</b><p>Report both maps in <code>/health</code>, subject to A1 — the addresses are public on chain, so unlike the RPC URL they are safe to publish.</p></div>
+    <div class="refs">snrc-resolve.py · Handler /health · REGISTRARS · this branch</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">D5</span><span class="pill p-med">Medium</span></div>
+    <h3>Nothing anywhere says which resolver you are talking to</h3>
+    <p>The response payload just grew three fields. A client written last month and one written today receive different documents from the same URL, and neither can ask which it is. There is no version in the path, no version in <code>/health</code>, and no capability list.</p>
+    <p>This matters more now than it did: <code>status</code> and <code>expires</code> are load-bearing for a renewal reminder, and a client cannot tell whether their absence means "not supported here" or "not knowable for this name".</p>
+    <div class="fix"><b>Fix</b><p>A version in <code>/health</code> is enough, and cheapest now. The distinction the client actually needs — unsupported versus unknowable — is otherwise impossible to make from a <code>null</code>.</p></div>
+    <div class="refs">snrc-resolve.py · Handler /health · README response shape</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">D6</span><span class="pill p-med">Medium</span><span class="pill p-mine">Mine</span></div>
+    <h3>Truncation is a dead end, not a page</h3>
+    <p><code>/owned-by</code> stops at <code>SNRC_MAX_OWNED</code> and sets <code>truncated: true</code>. There is no offset, no cursor and no ordering guarantee a caller could resume from, so an address holding more than 256 names in a TLD has no way to see the rest — the flag is honest about the problem and offers no way out of it.</p>
+    <p><code>truncated</code> is also a single boolean over a merged multi-TLD result, so it does not say which registrar ran out.</p>
+    <div class="fix"><b>Fix</b><p>Take <code>?offset=</code> and echo it back; enumeration is index-based on the registrar, so this is nearly free. Failing that, say in the response which TLD truncated, so the caller can at least narrow the query.</p></div>
+    <div class="refs">snrc-resolve.py · owned_by · MAX_OWNED · this branch</div>
+  </article>
+
+  <article class="f medium">
+    <div class="f-head"><span class="f-num">D7</span><span class="pill p-med">Medium</span></div>
+    <h3>The schema is a Haskell type in another repository</h3>
+    <p><code>Names/Record.hs</code> says "the Haskell type IS the schema", which serves the one consumer written in Haskell and nobody else. A TypeScript or Python client has the README and a curl example. There is no OpenAPI document, no JSON Schema, and no fixture file to test against.</p>
+    <p>The claim is also now slightly untrue: the resolver returns <code>status</code>, <code>expires</code> and <code>graceEnds</code>, and the record type has none of them — safely, since aeson ignores unknown fields, but the two have diverged and only a comment asserts they have not.</p>
+    <div class="fix"><b>Fix</b><p>Publish the response shape as a schema next to the script and generate the examples in the README from it, so drift shows up as a failing test rather than as a stale sentence.</p></div>
+    <div class="refs">Names/Record.hs · scripts/resolver/README.md</div>
+  </article>
+</section>
+
+<section>
+  <h2>What held</h2>
+  <p class="lede">Specific things I tried to break and could not.</p>
+  <div class="f">
+    <p><strong>Path handling.</strong> Names arrive percent-encoded from the Haskell client and are <code>unquote</code>d into path segments, but they only ever reach <code>keccak</code> — there is no filesystem, no database and no shell in the path, so a crafted name is a hash of a crafted name and nothing more.</p>
+    <p><strong>ABI decoding.</strong> <code>decode_bytes</code> checks its length before slicing and returns empty rather than throwing on a short return, so a contract answering with garbage produces an empty field rather than a crash.</p>
+    <p><strong>The <code>available()</code> trap.</strong> The obvious way to compute registration status is to call <code>available(id)</code>. It is true for a name nobody ever registered, since <code>0 + GRACE_PERIOD &lt; now</code>, so it silently conflates "never taken" with "released". The implementation uses <code>nameExpires</code> and applies the rule on top, and the test suite pins it.</p>
+    <p><strong>Address validation.</strong> <code>/owned-by</code> rejects a malformed address before any RPC call, so the validation cannot be used as an oracle or as a way to spend upstream budget.</p>
+  </div>
+</section>
+
+<footer>
+  Reviewed <code>scripts/resolver/</code> at <code>ab/snrc-resolver-owned-by</code>, together with <code>Server/Names/HttpResolver.hs</code> as its only in-tree consumer, and <code>BaseRegistrarImplementation.sol</code> for the contract behaviour the resolver mirrors. Call counts are from reading the code, not measured against a node. Findings marked <em>mine</em> are defects in this branch rather than in the service as it stands on master.
+</footer>
+
+</div>
