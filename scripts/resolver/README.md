@@ -19,15 +19,15 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 
 ## 1. Configure
 
-Edit `.env` — the defaults work as-is; override only if needed:
+Edit `.env`. The defaults work as they are; change them only if you need to:
 
 ```sh
 NETWORK=mainnet                                               # default
 TRUSTED_NODE_URL=https://mainnet-checkpoint-sync.attestant.io # default
 ```
 
-Everything else (NAT) has a working default baked into `docker-compose.yml`;
-uncomment the hints in `.env` only to override.
+Everything else (NAT) already has a working default in `docker-compose.yml`.
+Uncomment the hints in `.env` only if you need to change one.
 
 ## 2. Run
 
@@ -37,7 +37,7 @@ docker compose up -d
 docker compose logs -f reth resolver
 ```
 
-`depends_on` handles ordering automatically (start node → start resolver).
+Compose starts the node before the resolver; `depends_on` takes care of that.
 
 ## 3. Wait for the node to sync
 
@@ -45,12 +45,13 @@ docker compose logs -f reth resolver
 docker compose logs --tail=20 reth
 ```
 
-This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`.
+This is the slow step: about a day on mainnet. Until reth has synced, the
+resolver returns `502`.
 
 ## Verify
 
-Run these once the stack is up (the node-dependent ones pass after sync):
+Run the three checks below once the stack is up. The ones that need chain data
+pass only after the node has synced.
 
 **1. reth is reachable and reporting a block:**
 ```sh
@@ -71,7 +72,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
-**Wire your smp-server:** in its `[NAMES]` section set
+**Point your smp-server at it:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
 
 ## Ports (all loopback unless noted)
@@ -86,9 +87,10 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 
 ## Caveats
 
-- **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
-  `docker compose pull`; re-run the verify checks after pulling.
-- All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
+- **All images track `:latest`** (reth, nimbus). Each `docker compose pull`
+  brings upstream fixes, so re-run the checks above afterwards.
+- All ports bind to loopback. Expose only what you put behind a TLS reverse
+  proxy.
 
 ## Teardown
 
@@ -103,8 +105,9 @@ docker compose down -v    # also wipe volumes → full re-sync
 
 ## Resolver API reference
 
-The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
-standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
+You can also run the resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) on its
+own for local development, without Docker, using
+[`uv`](https://docs.astral.sh/uv/):
 
 ```sh
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
@@ -119,15 +122,48 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
   "simplexContact": ["https://smp16.simplex.im/a#…", "https://smp11…"],  // primary first, fallbacks after
   "simplexChannel": [],
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
-  "owner": "0xd83b…", "resolver": "0x80fa…"
+  "owner": "0xd83b…", "resolver": "0x80fa…",
+  "status": "registered",      // registered | grace | expired | unregistered | reserved | noResolver | unknown
+  "expires": 1780000000,       // Unix seconds; when the registration ends
+  "graceEnds": 1787776000      // expires + GRACE_PERIOD; last moment the owner can renew
 }
 ```
 
-`simplexContact`/`simplexChannel` are arrays (a name can advertise multiple SMP
-servers; clients try them in order). On-chain they're a single comma-separated
-text record; the resolver splits/trims/drops-empties. Address encodings are
-canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
-identically (`bar.foobar.testing`).
+`simplexContact` and `simplexChannel` are arrays, because a name can advertise
+several SMP servers; clients try them in order. On chain each one is a single
+text record with the entries joined by `;`. The resolver splits that record,
+trims each entry and drops the empty ones. Addresses come back in each chain's
+usual format (EIP-55, bech32, SS58, Monero base58). Subnames work the same way
+(`bar.foobar.testing`).
+
+### Registration status and expiry
+
+A response carries `status`, `expires` and `graceEnds` whenever the resolver
+read them, a successful resolve included, so a client that has just resolved a
+name already knows when it expires. Both timestamps are Unix seconds, and
+`null` when they could not be read.
+
+| `status` | Meaning |
+|---|---|
+| `registered` | live; `expires` is when that ends |
+| `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
+| `expired` | lapsed and past grace — anyone may register it now |
+| `unregistered` | never registered, and free to take |
+| `reserved` | not registered, and held back — registration will be refused; the body carries a `reason` |
+| `noResolver` | registered, but points nowhere |
+| `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+
+`grace` and `expired` are told apart by the registrar's own `available(id)`
+rule, `expires + GRACE_PERIOD < now`. `GRACE_PERIOD` is read from the contract
+rather than assumed, and `now` is the latest block's timestamp rather than the
+host clock, which the registrar compares against too, so a machine with a wrong
+clock cannot misreport a registration. That rule alone is not enough: it also
+holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
+expiry is what separates *never registered* from *registered and since
+released*.
+
+A subname reports the status of the 2LD above it, which is only as good as the
+name it sits under.
 
 ### Querying by labelhash
 
@@ -141,8 +177,22 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 ```
 
 namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
-returns the same record. The resolver learns the name only by guessing the label
-and hashing it.
+returns the same record. The registrar keys `nameExpires` and `reservedNames` on
+the labelhash too, so the status fields do not need the label either. The
+resolver learns the name only by guessing the label and hashing it.
+
+Read the answer from `status`. A name is free only when the body says
+`unregistered`, which comes with a 404. Every other status means somebody holds
+the name or held it recently. Watch out for `noResolver`: it is also a 404, but
+the name is taken.
+
+The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
+SHA3-256, a different function that returns 64 valid-looking hex characters
+pointing at the wrong node.
+
+The resolver lowercases the query before matching, so uppercase hex works too.
+Clients that refuse raw brackets in a path can percent-encode them as `%5B` and
+`%5D`.
 
 Brackets cannot collide with a real name: they are invalid in a normalised ENS
 name, and a `[<64 hex>]` label is 66 bytes against the registrar's
@@ -151,23 +201,67 @@ is an ordinary, registrable name.
 
 Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
 created by the 2LD's owner. A bracket label in a subname is hashed as written,
-so it points at a node nobody can own.
+so it points at a node nobody can own. ENS tooling accepts the bracketed form at
+any depth; this resolver does not, on purpose.
 
 This hides interest in a name and nothing else: the registration itself is
-public, and commit-reveal covers that step.
+public, and commit-reveal covers that step. A short or well-known label is easy
+to guess by hashing candidates, and the reveal publishes the labelhash, so an
+operator who logged the query can match it to the name afterwards.
+
+### Errors
+
+Every non-2xx body carries two fields: `error` is a fixed code to branch on,
+and `message` is a sentence for a human. Match on `error`, never on `message`,
+which is free to change.
+
+```jsonc
+{"name": "nope.testing", "error": "unregistered",
+ "message": "this name has never been registered",
+ "status": "unregistered", "expires": null, "graceEnds": null}
+```
+
+The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
+`reserved`, `grace`, `expired`, `noResolver`, `noSuchRoute` and
+`upstreamError`. When the registration is what went wrong, `error` and `status`
+hold the same value, so one field is enough to read.
+
+`upstreamError` says only which exception type the RPC call raised. The text
+goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
+and urlopen puts the URL it failed on into the message.
 
 ### Status codes
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved |
+| 200 | resolved (`status` is `registered`, or `unknown` when no registrar is configured) |
 | 400 | TLD not configured, or not a fully-qualified name |
-| 404 | name has no resolver set on the registry |
+| 404 | `unregistered`, `reserved` or `noResolver` — the `status` field says which |
+| 410 | registration lapsed — `status` says whether the owner can still renew (`grace`) or anyone may take it (`expired`) |
 | 502 | upstream RPC error / reth not synced |
 
-### Configuring registries
+### Configuring addresses
 
-Defaults to mainnet `.testing` (`0x03f438…`); `.simplex` is unset until
-deployed. Override per TLD via env on the `resolver` service in
-`docker-compose.yml` (`SNRC_REGISTRY_TESTING` / `SNRC_REGISTRY_SIMPLEX`), or as
-env vars for the standalone script.
+The resolver reads three contracts, each configured per TLD.
+
+The **registry** answers who owns a node, and `/resolve` reads the records from
+it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
+is where every expiry field comes from. With no registrar for a TLD, `/resolve`
+still works and reports `"status": "unknown"`. The **controller** holds
+`reservedNames`, which is where the `reserved` status comes from. With no
+controller, a reserved name reads as `unregistered`.
+
+All three default to the mainnet `.testing` deployment. `.simplex` is unset
+until it is deployed.
+
+The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
+lives in the proxy, so the implementation address answers nothing. The two
+deployment files use different names for that proxy:
+`deployments.mainnet.testing.json` records it under the ENS role name
+`ETHRegistrarController`, and `verification.mainnet.testing.json` calls it
+`SimplexControllerProxy`. Both are the same address, and it is the one used
+here.
+
+To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
+`SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
+as env vars when you run the script directly.

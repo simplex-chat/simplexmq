@@ -39,6 +39,10 @@ Environment:
                           0x58fc46996d975c57883564648bda5206d1a0102b)
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
                          (default: empty — TLD not yet deployed)
+  SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
+                         (default: mainnet for .testing, empty for .simplex)
+  SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; `reserved` status
+                         (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
 
@@ -84,6 +88,23 @@ REGISTRIES = {
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
 }
+
+REGISTRARS = {
+    "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
+    or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
+    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", ""),  # not deployed yet
+}
+
+CONTROLLERS = {
+    "testing": os.environ.get("SNRC_CONTROLLER_TESTING", "")
+    # Proxy address, not SimplexControllerImpl: storage is held by the proxy.
+    # Recorded in deployments.json as ETHRegistrarController.
+    or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
+    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
+}
+
+# `reservedNames` stores the fact only, never a reason.
+RESERVED_REASON = "reserved for a brand or public interest"
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
 COIN_ETH = 60
@@ -139,18 +160,79 @@ def is_encoded_labelhash(label: str) -> bool:
 
 
 def node_of(name: str) -> bytes:
-    """namehash, accepting an encoded labelhash in place of a 2LD's label.
-
-    keccak(parent || keccak(label)) reaches the same node without the label,
-    so a caller can check a 2LD without disclosing which one they are about to
-    register. Subnames are excluded - only the 2LD's owner creates them, so
-    there is nothing to front-run - and a bracket label there is hashed as
-    written.
-    """
+    """namehash, accepting an encoded labelhash in place of a 2LD's label. In a
+    subname a bracket label is hashed as written, not decoded."""
     labels = name.split(".")
     if len(labels) == 2 and is_encoded_labelhash(labels[0]):
         return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
     return namehash(name)
+
+
+# ---------- Registration status ----------
+
+
+def chain_now() -> int:
+    """Expiry is compared against the block timestamp, never the host clock."""
+    block = rpc("eth_getBlockByNumber", ["latest", False])
+    return decode_uint(block["timestamp"])
+
+
+def grace_period(registrar: str) -> int:
+    """A deployment can configure a different window, so it is read on chain."""
+    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
+
+
+def expiry_status(expires: int, grace: int, now: int) -> str:
+    """The registrar's `available(id)` is not enough on its own: it is also
+    true for a name nobody registered, since 0 + GRACE_PERIOD < now."""
+    if expires == 0:
+        return "unregistered"
+    if expires > now:
+        return "registered"
+    if expires + grace >= now:
+        return "grace"
+    return "expired"
+
+
+def is_reserved(tld: str, token: int) -> bool:
+    controller = CONTROLLERS.get(tld)
+    if not controller:
+        return False
+    raw = eth_call(controller, selector("reservedNames(bytes32)") + encode_uint(token))
+    return decode_uint(raw) != 0
+
+
+def name_status(name: str):
+    labels = name.split(".")
+    tld = labels[-1]
+    registrar = REGISTRARS.get(tld)
+    if not registrar or len(labels) < 2:
+        return {"status": "unknown", "expires": None, "graceEnds": None}
+
+    # nameExpires and reservedNames are keyed on uint256(keccak(label)).
+    # Decoded for a 2LD only, the same rule node_of applies to the node.
+    label = labels[-2]
+    if len(labels) == 2 and is_encoded_labelhash(label):
+        token = int(label[1:-1], 16)
+    else:
+        token = int.from_bytes(keccak(label.encode()), "big")
+    expires = decode_uint(
+        eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
+    )
+    if expires == 0:
+        status, grace = "unregistered", 0
+    else:
+        grace = grace_period(registrar)
+        status = expiry_status(expires, grace, chain_now())
+
+    if status in ("unregistered", "expired") and is_reserved(tld, token):
+        status = "reserved"
+
+    return {
+        "status": status,
+        "expires": expires or None,
+        "graceEnds": (expires + grace) if expires else None,
+    }
 
 
 def selector(signature: str) -> str:
@@ -171,6 +253,15 @@ def decode_bytes(hex_data: str) -> bytes:
         return b""
     length = int.from_bytes(raw[32:64], "big")
     return raw[64:64 + length]
+
+
+def decode_uint(hex_data: str) -> int:
+    raw = hex_data[2:] if hex_data.startswith("0x") else hex_data
+    return int(raw[-64:], 16) if raw else 0
+
+
+def encode_uint(value: int) -> str:
+    return value.to_bytes(32, "big").hex()
 
 
 def encode_text_call(node: bytes, key: str) -> str:
@@ -420,6 +511,17 @@ def split_links(value: str) -> list:
     return [item.strip() for item in value.split(LINK_SEPARATOR) if item.strip()]
 
 
+def upstream_error(subject: dict, e: Exception) -> dict:
+    """urlopen puts the failing URL into its message and SNRC_RPC can carry a
+    provider key, so the text goes to the log and only the type to the caller."""
+    print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
+    return {
+        **subject,
+        "error": "upstreamError",
+        "message": f"upstream RPC failed ({type(e).__name__})",
+    }
+
+
 def resolve(name: str):
     tld = name.rsplit(".", 1)[-1]
     registry = REGISTRIES.get(tld)
@@ -427,17 +529,57 @@ def resolve(name: str):
         configured = [k for k, v in REGISTRIES.items() if v]
         return 400, {
             "name": name,
-            "error": f"TLD '{tld}' is not configured on this resolver",
-            "configured_tlds": configured,
+            "error": "tldNotConfigured",
+            "message": f"TLD '{tld}' is not configured on this resolver",
+            "configuredTlds": configured,
         }
 
     node = node_of(name)
     node_hex = node.hex()
 
+    # Before the resolver lookup, so a lapsed name is not reported as noResolver.
+    reg = name_status(name)
+    if reg["status"] in ("unregistered", "reserved"):
+        body = {
+            "name": name,
+            "status": reg["status"],
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": reg["status"],
+            "message": (
+                "this name is reserved and cannot be registered"
+                if reg["status"] == "reserved"
+                else "this name has never been registered"
+            ),
+        }
+        if reg["status"] == "reserved":
+            body["reason"] = RESERVED_REASON
+        return 404, body
+    if reg["status"] in ("grace", "expired"):
+        return 410, {
+            "name": name,
+            "status": reg["status"],
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": reg["status"],
+            "message": (
+                "this registration expired and can be renewed by its owner"
+                if reg["status"] == "grace"
+                else "this registration expired and is open to anyone"
+            ),
+        }
+
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
-        return 404, {"name": name, "error": "no resolver set for this name"}
+        return 404, {
+            "name": name,
+            "status": "noResolver",
+            "expires": reg["expires"],
+            "graceEnds": reg["graceEnds"],
+            "error": "noResolver",
+            "message": "no resolver set for this name",
+        }
 
     owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
     owner = decode_address(owner_raw)
@@ -473,6 +615,9 @@ def resolve(name: str):
         "dot": addr_multicoin(resolver_addr, node, COIN_DOT),
         "owner": owner,
         "resolver": resolver_addr,
+        "status": reg["status"],
+        "expires": reg["expires"],
+        "graceEnds": reg["graceEnds"],
     }
 
 
@@ -496,21 +641,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(
                     400,
                     {
-                        "error": "expected fully-qualified name, e.g. /resolve/alice.testing",
-                        "got": name,
+                        "name": name,
+                        "error": "notFullyQualified",
+                        "message": "expected a fully-qualified name, e.g. alice.testing",
                     },
                 )
                 return
             try:
                 status, body = resolve(name)
             except Exception as e:  # surface upstream errors as 502
-                status, body = 502, {"name": name, "error": f"{type(e).__name__}: {e}"}
+                status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
             return
 
         self._respond(
             404,
-            {"error": "not found", "routes": ["/health", "/resolve/<name>"]},
+            {
+                "error": "noSuchRoute",
+                "message": "not found",
+                "routes": ["/health", "/resolve/<name>"],
+            },
         )
 
     def _respond(self, status: int, body: dict):

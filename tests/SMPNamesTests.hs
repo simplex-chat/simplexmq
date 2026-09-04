@@ -13,7 +13,7 @@ import Data.IORef (readIORef)
 import Data.List (sort)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import Network.HTTP.Types (status200, status400, status404, status500, status502)
+import Network.HTTP.Types (status200, status400, status404, status410, status500, status502)
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
@@ -153,6 +153,11 @@ resolverSpec = do
 
   it "returns NOT_FOUND on 400 (unknown TLD)" $
     withResolverServer (resolveResp status400 "{}") $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
+
+  it "returns NOT_FOUND on 410 (registration lapsed)" $
+    withResolverServer (resolveResp status410 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
       resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
 

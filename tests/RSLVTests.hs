@@ -19,7 +19,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (getCurrentTime)
-import Network.HTTP.Types (Status, status200, status404, status502)
+import Network.HTTP.Types (Status, status200, status404, status410, status502)
 import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
 import qualified NamesResolverServer as NRS
 import SMPClient
@@ -74,6 +74,7 @@ rslvTests :: Spec
 rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
     it "resolver replies 404 -> NAME NOT_FOUND (reached, not CMD PROHIBITED)" testRslvBackendNotFound
+    it "resolver replies 410 -> NAME NOT_FOUND (a lapsed name, not a resolver failure)" testRslvBackendGone
     it "resolver replies 502 -> NAME (RESOLVER ..)" testRslvBackendHttpErr
     it "no names config -> NAME NO_RESOLVER" testRslvDisabled
     it "refuses to send RSLV on a session below namesSMPVersion" testRslvVersion
@@ -89,6 +90,13 @@ testRslvBackendNotFound =
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "rs01"
+      resp `shouldBe` Right (ERR (NAME NOT_FOUND))
+
+testRslvBackendGone :: IO ()
+testRslvBackendGone =
+  withResolverServer (status410, "{}") $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendRslv h "rs08" (domain "lapsed.simplex")
       resp `shouldBe` Right (ERR (NAME NOT_FOUND))
 
 testRslvBackendHttpErr :: IO ()
