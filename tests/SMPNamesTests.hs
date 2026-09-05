@@ -28,7 +28,7 @@ import Simplex.Messaging.Server.Names
     resolveName,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
-import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..))
+import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), fullDomainName, hashedDomain)
 import Test.Hspec
 
 testNameRecord :: NameRecord
@@ -132,6 +132,29 @@ availabilitySpec = do
     answers status410 "{\"error\":\"grace\"}" (NATaken Nothing)
   it "an auction without its price is reported as taken" $
     answers status410 "{\"error\":\"auction\",\"auctionEnds\":1798191621}" (NATaken Nothing)
+  it "a registered name whose records point nowhere is still taken" $
+    answers status404 "{\"error\":\"noResolver\",\"expires\":1811232000}" (NATaken (Just 1811232000))
+  -- a price is a 256-bit integer in decimal; the wire length-prefixes it with one
+  -- byte, so a longer or non-numeric string is dropped rather than re-encoded
+  it "a premium too long to encode is not quoted" $
+    answers status410 (jsonBody ("{\"error\":\"auction\",\"premium\":\"" <> replicate 300 '9' <> "\",\"auctionEnds\":1798191621}")) (NATaken Nothing)
+  it "a premium that is not a decimal integer is not quoted" $
+    answers status410 "{\"error\":\"auction\",\"premium\":\"1e26\",\"auctionEnds\":1798191621}" (NATaken Nothing)
+  -- a resolver that could not answer must not be reported as an answer: saying
+  -- TAKEN would assert a registration nobody read, and NOT_FOUND would read as
+  -- "no such name, therefore free"
+  it "an upstream RPC failure is a resolver error, not a taken name" $
+    refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "upstreamError")
+  it "a TLD this resolver has no registry for is a resolver error" $
+    refuses status400 "{\"error\":\"tldNotConfigured\"}" (RESOLVER "tldNotConfigured")
+  it "a TLD with no registrar, so status could not be read, is a resolver error" $
+    refuses status200 "{\"status\":\"unknown\",\"expires\":null}" (RESOLVER "unknown")
+  it "a body that is not the resolver's JSON is never NOT_FOUND" $
+    refuses status404 "<html>gateway</html>" (RESOLVER "HTTP 404")
+  it "a body past the configured cap is a resolver error" $
+    withResolverServer (resolveResp status200 (jsonBody ("{\"status\":\"registered\",\"pad\":\"" <> replicate 400 'x' <> "\"}"))) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 200}
+      nameAvailability env navlDomain `shouldReturn` Left (RESOLVER "response too large")
   it "every answer survives the wire" $
     mapM_
       (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
@@ -148,10 +171,13 @@ availabilitySpec = do
         NAReserved NRPremium
       ]
   where
-    answers st body expected =
+    jsonBody = LB.fromStrict . B.pack
+    answers st body expected = asks_ st body (Right expected)
+    refuses st body err = asks_ st body (Left err)
+    asks_ st body expected =
       withResolverServer (resolveResp st body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)
-        nameAvailability env navlDomain `shouldReturn` Right expected
+        nameAvailability env navlDomain `shouldReturn` expected
     navlDomain = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 parseNameSpec :: Spec
@@ -169,6 +195,27 @@ parseNameSpec = do
   it "keeps the brackets, which are what the resolver reads as a hash" $
     (strEncode <$> parseN ("[" <> T.replicate 64 "b" <> "].simplex"))
       `shouldBe` Right (encodeUtf8 ("[" <> T.replicate 64 "b" <> "].simplex"))
+  -- only the second-level label is a registry key, so only it may be hashed;
+  -- a subname label is needed as text to reach the record
+  it "accepts a hashed second-level label under a subname" $
+    parseN ("x.[" <> T.replicate 64 "b" <> "].simplex") `shouldSatisfy` isRight
+  it "refuses a hashed subname label" $
+    parseN ("[" <> T.replicate 64 "b" <> "].alice.simplex") `shouldSatisfy` isLeft
+  it "refuses a labelhash under a web TLD, which has no registry" $
+    parseN ("[" <> T.replicate 64 "b" <> "].com") `shouldSatisfy` isLeft
+  -- the hash the client sends must be the one the resolver keys on: this is
+  -- keccak-256("alice"), the same constant the resolver's own tests use
+  it "hashes the second-level label to the registry key" $
+    (fullDomainName . hashedDomain <$> parseN "alice.simplex")
+      `shouldBe` Right "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
+  it "leaves subname labels as text" $
+    (fullDomainName . hashedDomain <$> parseN "x.alice.simplex")
+      `shouldBe` Right "x.[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
+  it "leaves a web name alone, as it has no registry to key into" $
+    (fullDomainName . hashedDomain <$> parseN "example.com") `shouldBe` Right "example.com"
+  it "does not hash a name that is already a hash" $
+    (fullDomainName . hashedDomain . hashedDomain <$> parseN "alice.simplex")
+      `shouldBe` Right "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
   it "accepts a valid simplex-TLD name" $
     case parseN "privacy.simplex" of
       Right d -> do

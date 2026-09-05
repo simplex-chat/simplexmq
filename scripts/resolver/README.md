@@ -187,7 +187,18 @@ base price itself.
 The oracle is found through the controller's `prices()`, so no extra
 configuration is needed. Its window is read from the chain rather than assumed,
 because the owner can retune it; a window of zero days switches the auction off,
-and every lapsed name then reports `expired` directly.
+and every lapsed name then reports `expired` directly. The curve
+(`startPremium`, `totalDays`, `endValue`) is cached for `AUCTION_PARAMS_TTL`
+seconds, 5 minutes by default, since it changes only when the owner calls
+`setPremium`; the decaying premium itself is read from the oracle on every
+query. A retune is therefore visible within the TTL, not immediately.
+
+**Known gap.** When the auction cannot be read at all — no controller
+configured, or the oracle unreachable — the name reports `expired`, which routers
+map to "available at the ordinary price". A name still inside its auction would
+then be quoted at list price while the registrar charges the premium. Configure
+`SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is set, and upgrade this
+service before the routers that query it.
 
 Upgrade the resolver before the router that queries it. A resolver without this
 status reports a name in its auction as plain `expired`, which reads as "free at
@@ -230,6 +241,13 @@ namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
 returns the same record. The registrar keys `nameExpires` and `reservedNames` on
 the labelhash too, so the status fields do not need the label either. The
 resolver learns the name only by guessing the label and hashing it.
+
+Only the second-level label is a registry key, so only it is decoded — but it is
+decoded wherever it sits, so `sub.[<hash>].testing` reaches the node
+`sub.name.testing` does. Subname labels are needed as text to walk down to the
+record and are never hashed; a bracket label to the left of the 2LD is an
+ordinary label and is hashed as written. SMP routers from v22 send every 2LD
+this way, so in normal operation a registrable name never reaches this service.
 
 Read the answer from `status`. A name is free when the body says
 `unregistered` (a 404), and also when it says `expired` or `auction` (a 410) —

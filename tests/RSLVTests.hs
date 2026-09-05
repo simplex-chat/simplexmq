@@ -15,6 +15,7 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import Data.IORef (IORef, readIORef)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
@@ -59,6 +60,11 @@ withResolverServer (st, body) runTest =
   NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
     withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort (const runTest)
 
+withResolverServerReqs :: (Status, LB.ByteString) -> (IORef [[Text]] -> IO a) -> IO a
+withResolverServerReqs (st, body) runTest =
+  NRS.withResolverServer (NRS.resolveResp st body) $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort (const (runTest reqs))
+
 withProxyAndResolver :: (Status, LB.ByteString) -> IO a -> IO a
 withProxyAndResolver (st, body) runTest =
   NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
@@ -99,6 +105,10 @@ rslvTests = do
     it "no names config -> NAME NO_RESOLVER" testNavlDisabled
     it "refuses to send NAVL on a session below nameAvailSMPVersion" testNavlVersion
     it "PFWD-wrapped NAVL reaches the resolver via the proxy" testNavlForwarded
+  describe "hashed lookups" $ do
+    it "RSLV sends the second-level label as its hash, never the name" testRslvSendsTheHash
+    it "NAVL sends the second-level label as its hash, never the name" testNavlSendsTheHash
+    it "a subname keeps its own labels as text, hashing only the 2LD" testSubnameKeepsItsLabels
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
@@ -214,7 +224,9 @@ testNavlVersion =
     g <- C.newRandom
     ts <- getCurrentTime
     let srv = SMPServer testHost testPort testKeyHash
-        oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion rcvServiceSMPVersion}
+        -- the version immediately below the gate: a range ending lower would
+        -- also pass for a gate at 20 or 21 and prove nothing about v22
+        oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion serverInfoSMPVersion}
     pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
     pc <- either (fail . show) pure pcE
     r <- runExceptT (directNameAvailability pc NRMInteractive (domain "alice.simplex"))
@@ -241,6 +253,52 @@ testNavlForwarded =
 -- a name one day past its grace period, priced by the .testing auction curve
 auctionBody :: LB.ByteString
 auctionBody = "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
+
+-- keccak-256("alice"), the key the registry is keyed on
+aliceHash :: Text
+aliceHash = "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
+
+-- | A client on a current session must never put a registrable name on the
+-- wire: the router answers about the hash and learns only that.
+resolvePaths :: IORef [[Text]] -> IO [[Text]]
+resolvePaths reqs = filter isResolve <$> readIORef reqs
+  where
+    isResolve = \case ("resolve" : _) -> True; _ -> False
+
+currentClient :: IO SMPClient
+currentClient = do
+  g <- C.newRandom
+  ts <- getCurrentTime
+  let srv = SMPServer testHost testPort testKeyHash
+  pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+  either (fail . show) pure pcE
+
+testRslvSendsTheHash :: IO ()
+testRslvSendsTheHash =
+  withResolverServerReqs (status200, J.encode echoed) $ \reqs -> do
+    pc <- currentClient
+    nr <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
+    resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
+    -- the record names what the caller asked for, not what went on the wire
+    SMP.nrName nr `shouldBe` "alice.simplex"
+  where
+    -- the resolver echoes the name it was asked about, which is the hash
+    echoed = testNameRecord {SMP.nrName = aliceHash <> ".simplex"}
+
+testNavlSendsTheHash :: IO ()
+testNavlSendsTheHash =
+  withResolverServerReqs (status404, "{\"error\":\"unregistered\"}") $ \reqs -> do
+    pc <- currentClient
+    a <- runExceptT' (directNameAvailability pc NRMInteractive (domain "alice.simplex"))
+    a `shouldBe` NAVailable
+    resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
+
+testSubnameKeepsItsLabels :: IO ()
+testSubnameKeepsItsLabels =
+  withResolverServerReqs (status404, "{\"error\":\"unregistered\"}") $ \reqs -> do
+    pc <- currentClient
+    _ <- runExceptT' (directNameAvailability pc NRMInteractive (domain "x.alice.simplex"))
+    resolvePaths reqs `shouldReturn` [["resolve", "x." <> aliceHash <> ".simplex"]]
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure

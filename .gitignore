@@ -12,4 +12,3 @@ cabal.project.local~
 *.tix
 .coverage
 
-__pycache__/

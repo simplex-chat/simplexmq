@@ -18,7 +18,7 @@ where
 
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (first)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -88,23 +88,38 @@ nameAvailability env d = do
 
 fetchAvail :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailability)
 fetchAvail NamesEnv {resolverEnv} d =
-  bimap mapResolverError mapAvailability <$> availabilityHttp resolverEnv (fullDomainName d)
+  either (Left . mapAvailError) mapAvailability <$> availabilityHttp resolverEnv (fullDomainName d)
+
+-- | NAVL answers whether a name can be registered, so a resolver failure must
+-- never look like an answer about the name: NOT_FOUND, which 'mapResolverError'
+-- returns for 404/410/400, would read as "no such name, therefore free".
+mapAvailError :: ResolverError -> NameErrorType
+mapAvailError = \case
+  HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
+  e -> mapResolverError e
 
 -- | The resolver's own vocabulary. A lapsed registration past its grace period
 -- is available again; one still in grace belongs to its previous owner; one in
--- the auction that follows grace is registrable, but not at the usual price. A
--- status whose payload is missing is reported as taken - refusing a name the
--- user could have had is a smaller harm than quoting the wrong price for it.
-mapAvailability :: NameStatusResp -> NameAvailability
+-- the auction that follows grace is registrable, but not at the usual price.
+-- Only the statuses that describe the name are answers - anything else means the
+-- resolver could not answer, and saying "taken" to that would assert a
+-- registration that was never read.
+mapAvailability :: NameStatusResp -> Either NameErrorType NameAvailability
 mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds, nsPremium, nsReasonCode} = case nsStatus of
-  "unregistered" -> NAVailable
-  "expired" -> NAVailable
-  "grace" -> maybe taken NAInGrace nsGraceEnds
-  "auction" -> fromMaybe taken (NAAuction <$> nsPremium <*> nsAuctionEnds)
-  "reserved" -> NAReserved (maybe NRUnspecified mapReason nsReasonCode)
-  _ -> taken
+  "unregistered" -> Right NAVailable
+  "expired" -> Right NAVailable
+  "grace" -> Right $ maybe lapsed NAInGrace nsGraceEnds
+  "auction" -> Right $ fromMaybe lapsed (NAAuction <$> nsPremium <*> nsAuctionEnds)
+  "reserved" -> Right $ NAReserved (maybe NRUnspecified mapReason nsReasonCode)
+  "registered" -> Right $ NATaken nsExpires
+  -- registered, but its records point nowhere
+  "noResolver" -> Right $ NATaken nsExpires
+  s -> Left (RESOLVER s)
   where
-    taken = NATaken nsExpires
+    -- A lapsed name missing the deadline or price that its status carries:
+    -- withholding it is safer than quoting the ordinary price, but its expiry is
+    -- in the past, so it is not "registered until" anything.
+    lapsed = NATaken Nothing
 
 -- | The controller's reservation reasons, as the resolver spells them.
 mapReason :: Text -> NameReservedReason

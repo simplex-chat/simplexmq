@@ -172,6 +172,7 @@ smpBlockSize = 16384
 -- 19 - service subscriptions to messages (10/20/2025)
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
+-- 22 - name availability (NAVL command, NAVAIL response)
 
 data SMPVersion
 

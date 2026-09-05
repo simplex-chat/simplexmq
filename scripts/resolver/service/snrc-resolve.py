@@ -66,6 +66,7 @@ Unrecognised payloads fall back to `0x`-prefixed raw hex.
 import hashlib
 import json
 import os
+import time
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
@@ -170,12 +171,17 @@ def is_encoded_labelhash(label: str) -> bool:
 
 
 def node_of(name: str) -> bytes:
-    """namehash, accepting an encoded labelhash in place of a 2LD's label. In a
-    subname a bracket label is hashed as written, not decoded."""
+    """namehash, accepting the 2LD's label as an encoded labelhash at any depth,
+    so `[hash].tld` and `sub.[hash].tld` both reach the node the name itself
+    would. Only that label is a registry key: a bracket label anywhere else is
+    hashed as written, which is what the routers also enforce."""
     labels = name.split(".")
-    if len(labels) == 2 and is_encoded_labelhash(labels[0]):
-        return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
-    return namehash(name)
+    if len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
+        return namehash(name)
+    node = keccak(namehash(labels[-1]) + bytes.fromhex(labels[-2][1:-1]))
+    for label in reversed(labels[:-2]):
+        node = keccak(node + keccak(label.encode()))
+    return node
 
 
 # ---------- Registration status ----------
@@ -213,23 +219,47 @@ def reservation_reason(tld: str, token: int) -> int:
     return decode_uint(raw)
 
 
+# The oracle address and its curve change only when the owner retunes the
+# auction, so they are read at most once per AUCTION_PARAMS_TTL seconds instead
+# of on every lapsed-name query. The premium itself is never cached: it decays
+# continuously and is read from the oracle each time.
+AUCTION_PARAMS_TTL = 300
+_auction_params: dict = {}
+
+
+def auction_params(tld: str):
+    """(oracle, startPremium, totalDays, endValue) for the TLD's controller, or
+    (ZERO_ADDR, 0, 0, 0) when no controller or no oracle is configured."""
+    cached = _auction_params.get(tld)
+    if cached and time.time() - cached[0] < AUCTION_PARAMS_TTL:
+        return cached[1]
+    params = (ZERO_ADDR, 0, 0, 0)
+    controller = CONTROLLERS.get(tld)
+    if controller:
+        oracle = decode_address(eth_call(controller, selector("prices()")))
+        if oracle != ZERO_ADDR:
+            params = (
+                oracle,
+                decode_uint(eth_call(oracle, selector("startPremium()"))),
+                decode_uint(eth_call(oracle, selector("totalDays()"))),
+                decode_uint(eth_call(oracle, selector("endValue()"))),
+            )
+    _auction_params[tld] = (time.time(), params)
+    return params
+
+
 def auction(tld: str, grace_ends: int, now: int):
     """Past its grace period a name is registrable again, but at a premium that
     decays to zero over the price oracle's auction window. Returns when the
     premium reaches zero and what it is now, in attoUSD, or (None, None) once
     prices are back to normal - which includes an auction switched off by
     setting totalDays to 0."""
-    controller = CONTROLLERS.get(tld)
-    if not controller:
-        return None, None
-    oracle = decode_address(eth_call(controller, selector("prices()")))
+    oracle, start, total_days, floor = auction_params(tld)
     if oracle == ZERO_ADDR:
         return None, None
-    ends = grace_ends + decode_uint(eth_call(oracle, selector("totalDays()"))) * 86400
+    ends = grace_ends + total_days * 86400
     if now >= ends:
         return None, None
-    start = decode_uint(eth_call(oracle, selector("startPremium()")))
-    floor = decode_uint(eth_call(oracle, selector("endValue()")))
     # decayedPremium is `pure`, so the premium quoted here is the oracle's own
     # arithmetic rather than a reimplementation of its decay curve.
     decayed = decode_uint(
@@ -261,7 +291,7 @@ def name_status(name: str):
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
     # Decoded for a 2LD only, the same rule node_of applies to the node.
     label = labels[-2]
-    if len(labels) == 2 and is_encoded_labelhash(label):
+    if is_encoded_labelhash(label):
         token = int(label[1:-1], 16)
     else:
         token = int.from_bytes(keccak(label.encode()), "big")

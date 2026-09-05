@@ -1496,10 +1496,13 @@ client
     -- Runs on a forked thread so RSLV does not block other commands;
     -- concurrency is limited by serverResolverConcurrency in forkCmd.
     nameAvailMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
-    nameAvailMsg nenv d =
-      liftIO (nameAvailability nenv d) <&> \case
-        Right a -> NAVAIL a
-        Left e -> ERR $ NAME e
+    nameAvailMsg nenv d = do
+      st <- asks (rslvStats . serverStats)
+      (selector, msg) <-
+        liftIO (nameAvailability nenv d) <&> \case
+          Right a -> (rslvSucc, NAVAIL a)
+          Left e -> (rslvResolverErrs, ERR $ NAME e)
+      incStat (selector st) $> msg
     resolveNameMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
     resolveNameMsg nenv d = do
       st <- asks (rslvStats . serverStats)

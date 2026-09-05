@@ -97,6 +97,7 @@ class EncodedLabelhashTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
+        snrc._auction_params.clear()
 
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
@@ -135,7 +136,9 @@ class EncodedLabelhashTests(unittest.TestCase):
     def test_a_plain_name_is_unaffected(self):
         self.assertEqual(snrc.node_of("alice.testing"), snrc.namehash("alice.testing"))
 
-    def test_an_encoded_subname_is_not_the_name_it_would_decode_to(self):
+    def test_a_bracket_subname_label_stays_literal(self):
+        """Only the 2LD is a registry key, so a bracket label to the left of it
+        is a name in its own right and is hashed as written."""
         self.assertNotEqual(
             snrc.node_of(
                 "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
@@ -143,13 +146,25 @@ class EncodedLabelhashTests(unittest.TestCase):
             ),
             snrc.namehash("alice.alice.testing"),
         )
-        self.assertNotEqual(
+
+    def test_a_hashed_2ld_under_a_subname_reaches_the_same_node(self):
+        """Clients hash the 2LD and leave subname labels as text, so
+        `sub.[hash].tld` must reach the node `sub.name.tld` does."""
+        self.assertEqual(
             snrc.node_of(
-                "alice."
+                "sub."
                 "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
                 ".testing"
             ),
-            snrc.namehash("alice.alice.testing"),
+            snrc.namehash("sub.alice.testing"),
+        )
+        self.assertEqual(
+            snrc.node_of(
+                "a.b."
+                "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
+                ".testing"
+            ),
+            snrc.namehash("a.b.alice.testing"),
         )
 
     def test_a_0x_prefixed_label_is_taken_literally(self):
@@ -221,6 +236,7 @@ class NameStatusTests(unittest.TestCase):
         # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
+        snrc._auction_params.clear()
 
     def tearDown(self):
         (
@@ -297,6 +313,20 @@ class NameStatusTests(unittest.TestCase):
         # the token asked about is keccak("alice"), not keccak("x")
         self.assertTrue(seen[0].endswith(snrc.keccak(b"alice").hex()))
 
+    def test_a_hashed_2ld_is_queried_by_its_hash_at_any_depth(self):
+        """Clients hash the 2LD and leave subname labels as text, so the token
+        must come from the hash, not from hashing the bracket text again."""
+        seen = []
+
+        def eth_call(to, data):
+            seen.append(data)
+            return "0x" + snrc.encode_uint(0)
+
+        snrc.eth_call = eth_call
+        hashed = "[" + snrc.keccak(b"alice").hex() + "]"
+        snrc.name_status("x." + hashed + ".testing")
+        self.assertTrue(seen[0].endswith(snrc.keccak(b"alice").hex()))
+
     def test_unconfigured_tld_is_unknown_rather_than_unregistered(self):
         snrc.REGISTRARS = {"testing": ""}
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
@@ -333,6 +363,7 @@ class ReservedTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         snrc.chain_now = lambda: int(time.time())
+        snrc._auction_params.clear()
 
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
@@ -400,6 +431,7 @@ class ReservedReasonTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         snrc.chain_now = lambda: int(time.time())
+        snrc._auction_params.clear()
 
     def tearDown(self):
         (
@@ -421,6 +453,47 @@ class ReservedReasonTests(unittest.TestCase):
             return "0x" + snrc.encode_uint(expires)
 
         return eth_call
+
+    def _reserved_as(self, code):
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("reservedNames(bytes32)")):
+                return "0x" + snrc.encode_uint(code)
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(90 * 86400)
+            if data.startswith(snrc.selector("prices()")):
+                return "0x" + snrc.encode_uint(0)
+            return "0x" + snrc.encode_uint(0)
+
+        return eth_call
+
+    def test_every_enum_value_has_a_code_and_a_sentence(self):
+        for code, (name, sentence) in snrc.RESERVED_REASONS.items():
+            snrc.eth_call = self._reserved_as(code)
+            reg = snrc.name_status("acme.testing")
+            self.assertEqual(reg["status"], "reserved", name)
+            self.assertEqual(reg["reasonCode"], name)
+            self.assertEqual(reg["reason"], sentence)
+
+    def test_a_trademark_reservation_says_so(self):
+        snrc.eth_call = self._reserved_as(2)
+        _, body = snrc.resolve("acme.testing")
+        self.assertEqual(body["reasonCode"], "trademark")
+
+    def test_a_controller_storing_a_bool_reads_as_unspecified(self):
+        """Before the enum, `reservedNames` was a bool; its `true` decodes as 1,
+        which is the value this table already describes as unspecified."""
+        snrc.eth_call = self._reserved_as(1)
+        reg = snrc.name_status("acme.testing")
+        self.assertEqual(reg["reasonCode"], "unspecified")
+        self.assertEqual(reg["reason"], "reserved for a brand or public interest")
+
+    def test_an_enum_value_this_resolver_predates_is_not_dropped(self):
+        """A controller upgraded with a new Reason still reports the name as
+        reserved; only the wording falls back."""
+        snrc.eth_call = self._reserved_as(99)
+        reg = snrc.name_status("acme.testing")
+        self.assertEqual(reg["status"], "reserved")
+        self.assertEqual(reg["reasonCode"], "unspecified")
 
     def test_a_reserved_name_carries_the_reason(self):
         snrc.eth_call = self._chain(0, True)
@@ -484,6 +557,7 @@ class AuctionTests(unittest.TestCase):
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
+        snrc._auction_params.clear()
 
     def tearDown(self):
         (
@@ -576,10 +650,17 @@ class AuctionTests(unittest.TestCase):
         self.assertEqual(snrc.name_status("acme.testing")["status"], "grace")
         self.assertEqual(self.oracle_calls, [])
 
-    def test_a_live_name_never_reaches_the_oracle(self):
-        snrc.eth_call = self._chain(self.now + 3600)
-        self.assertEqual(snrc.name_status("acme.testing")["status"], "registered")
-        self.assertEqual(self.oracle_calls, [])
+    def test_the_oracle_curve_is_read_once_not_per_query(self):
+        """The curve changes only when the owner retunes the auction, so only the
+        decaying premium is re-read; the rest would be four RPC calls per query."""
+        snrc.eth_call = self._chain(self._lapsed(1))
+        snrc.name_status("acme.testing")
+        seen_first = len(self.oracle_calls)
+        snrc.name_status("acme.testing")
+        self.assertEqual(
+            self.oracle_calls[seen_first:],
+            [snrc.selector("decayedPremium(uint256,uint256)")],
+        )
 
     def test_a_reserved_lapsed_name_stays_reserved_rather_than_auctioned(self):
         snrc.eth_call = self._chain(self._lapsed(0), reserved=2)
@@ -616,77 +697,6 @@ class AuctionTests(unittest.TestCase):
         self.assertIsNotNone(body["premium"])
 
 
-class ReasonCodeTests(unittest.TestCase):
-    """The reason a name is held back is the controller's `Reason` enum, so the
-    app can word it in the user's language instead of showing a server string."""
-
-    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
-    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
-    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
-
-    def setUp(self):
-        self._saved = (
-            snrc.REGISTRIES,
-            snrc.REGISTRARS,
-            snrc.CONTROLLERS,
-            snrc.eth_call,
-            snrc.chain_now,
-        )
-        snrc.REGISTRIES = {"testing": self.REGISTRY}
-        snrc.REGISTRARS = {"testing": self.REGISTRAR}
-        snrc.CONTROLLERS = {"testing": self.CONTROLLER}
-        snrc.chain_now = lambda: int(time.time())
-
-    def tearDown(self):
-        (
-            snrc.REGISTRIES,
-            snrc.REGISTRARS,
-            snrc.CONTROLLERS,
-            snrc.eth_call,
-            snrc.chain_now,
-        ) = self._saved
-
-    def _reserved_as(self, code):
-        def eth_call(to, data):
-            if data.startswith(snrc.selector("reservedNames(bytes32)")):
-                return "0x" + snrc.encode_uint(code)
-            if data.startswith(snrc.selector("GRACE_PERIOD()")):
-                return "0x" + snrc.encode_uint(90 * 86400)
-            if data.startswith(snrc.selector("prices()")):
-                return "0x" + snrc.encode_uint(0)
-            return "0x" + snrc.encode_uint(0)
-
-        return eth_call
-
-    def test_every_enum_value_has_a_code_and_a_sentence(self):
-        for code, (name, sentence) in snrc.RESERVED_REASONS.items():
-            snrc.eth_call = self._reserved_as(code)
-            reg = snrc.name_status("acme.testing")
-            self.assertEqual(reg["status"], "reserved", name)
-            self.assertEqual(reg["reasonCode"], name)
-            self.assertEqual(reg["reason"], sentence)
-
-    def test_a_trademark_reservation_says_so(self):
-        snrc.eth_call = self._reserved_as(2)
-        _, body = snrc.resolve("acme.testing")
-        self.assertEqual(body["reasonCode"], "trademark")
-
-    def test_a_controller_storing_a_bool_reads_as_unspecified(self):
-        """Before the enum, `reservedNames` was a bool; its `true` decodes as 1,
-        which is the value this table already describes as unspecified."""
-        snrc.eth_call = self._reserved_as(1)
-        reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["reasonCode"], "unspecified")
-        self.assertEqual(reg["reason"], "reserved for a brand or public interest")
-
-    def test_an_enum_value_this_resolver_predates_is_not_dropped(self):
-        """A controller upgraded with a new Reason still reports the name as
-        reserved; only the wording falls back."""
-        snrc.eth_call = self._reserved_as(99)
-        reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["status"], "reserved")
-        self.assertEqual(reg["reasonCode"], "unspecified")
-
 
 class ErrorCodeTests(unittest.TestCase):
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
@@ -704,6 +714,7 @@ class ErrorCodeTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
+        snrc._auction_params.clear()
 
     def tearDown(self):
         (

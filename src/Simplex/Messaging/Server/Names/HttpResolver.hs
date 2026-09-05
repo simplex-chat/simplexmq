@@ -40,9 +40,11 @@ import qualified Data.Aeson.KeyMap as JKM
 import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
+import Data.Char (isDigit)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Int (Int64)
+import qualified Data.Text as T
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
@@ -141,7 +143,7 @@ resolveHttp env name =
 -- 200 and "error" otherwise, alongside the deadline or price that status
 -- carries.
 availabilityHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameStatusResp)
-availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro} name = do
+availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} name = do
   req0 <- parseRequest (baseUrl <> "/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
   let req =
         req0
@@ -152,21 +154,33 @@ availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro} name = do
   result <- E.try $ withResponse req manager $ \res -> do
     let status = HT.statusCode (responseStatus res)
         field = if status < 400 then "status" else "error"
-    bs <- brReadSome (responseBody res) statusBodyBytes
-    pure $ case J.decode bs of
-      Just (J.Object o)
-        | Just (J.String t) <- JKM.lookup field o ->
-            Right
-              NameStatusResp
-                { nsStatus = t,
-                  nsExpires = jsonField o "expires",
-                  nsGraceEnds = jsonField o "graceEnds",
-                  nsAuctionEnds = jsonField o "auctionEnds",
-                  nsPremium = jsonField o "premium",
-                  nsReasonCode = jsonField o "reasonCode"
-                }
-      _ -> Left (HttpStatusErr status)
+    bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
+    pure $
+      if BL.length bs > fromIntegral maxResponseBytes
+        then Left BodyTooLarge
+        else case J.decode bs of
+          Just (J.Object o)
+            | Just (J.String t) <- JKM.lookup field o ->
+                Right
+                  NameStatusResp
+                    { nsStatus = t,
+                      nsExpires = jsonField o "expires",
+                      nsGraceEnds = jsonField o "graceEnds",
+                      nsAuctionEnds = jsonField o "auctionEnds",
+                      nsPremium = jsonField o "premium" >>= decimalPrice,
+                      nsReasonCode = jsonField o "reasonCode"
+                    }
+          _ -> Left (HttpStatusErr status)
   pure (either (Left . HttpFailure) id result)
+
+-- | A price is a 256-bit integer written in decimal, so at most 78 digits. The
+-- wire format prefixes it with a single length byte, which would wrap silently
+-- on a longer string and leave the whole response unparseable, so anything else
+-- is dropped rather than re-encoded.
+decimalPrice :: Text -> Maybe Text
+decimalPrice t
+  | not (T.null t) && T.length t <= 78 && T.all isDigit t = Just t
+  | otherwise = Nothing
 
 -- | A field the resolver omits, or sends as null, for the statuses that do not
 -- carry it.
@@ -174,10 +188,6 @@ jsonField :: J.FromJSON a => J.Object -> Key -> Maybe a
 jsonField o k = case J.fromJSON <$> JKM.lookup k o of
   Just (J.Success v) -> Just v
   _ -> Nothing
-
--- | Enough of a body to reach the status field; the rest is not read.
-statusBodyBytes :: Int
-statusBodyBytes = 4096
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.
