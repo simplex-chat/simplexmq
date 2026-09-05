@@ -97,7 +97,7 @@ hashedDomain d@SimplexDomain {nameTLD, domain}
   | nameTLD == TLDWeb || isLabelHash domain = d
   | otherwise = d {domain = "[" <> labelHash <> "]"}
   where
-    labelHash = decodeLatin1 $ BAE.convertToBase BAE.Base16 (hash (encodeUtf8 domain) :: Digest Keccak_256)
+    labelHash = decodeLatin1 $ BAE.convertToBase BAE.Base16 (hash (encodeUtf8 (T.toLower domain)) :: Digest Keccak_256)
 
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString

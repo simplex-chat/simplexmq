@@ -465,11 +465,11 @@ prometheusMetrics sm rtm ts =
        in "# Names\n\
           \# -----\n\
           \\n\
-          \# HELP simplex_smp_names_reqs Total RSLV requests forwarded to this server.\n\
+          \# HELP simplex_smp_names_reqs Total RSLV and NAVL requests forwarded to this server.\n\
           \# TYPE simplex_smp_names_reqs counter\n\
           \simplex_smp_names_reqs " <> mshow _rslvReqs <> "\n# rslvReqs\n\
           \\n\
-          \# HELP simplex_smp_names_success NameRecord successfully resolved and returned.\n\
+          \# HELP simplex_smp_names_success NameRecord resolved, or availability answered.\n\
           \# TYPE simplex_smp_names_success counter\n\
           \simplex_smp_names_success " <> mshow _rslvSucc <> "\n# rslvSucc\n\
           \\n\
@@ -481,7 +481,7 @@ prometheusMetrics sm rtm ts =
           \# TYPE simplex_smp_names_resolver_errs counter\n\
           \simplex_smp_names_resolver_errs " <> mshow _rslvResolverErrs <> "\n# rslvResolverErrs\n\
           \\n\
-          \# HELP simplex_smp_names_disabled RSLV requests rejected because no resolver is configured (names role off).\n\
+          \# HELP simplex_smp_names_disabled RSLV and NAVL requests rejected because no resolver is configured (names role off).\n\
           \# TYPE simplex_smp_names_disabled counter\n\
           \simplex_smp_names_disabled " <> mshow _rslvDisabled <> "\n# rslvDisabled\n\
           \\n"

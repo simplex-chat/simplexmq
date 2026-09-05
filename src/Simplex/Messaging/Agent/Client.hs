@@ -69,7 +69,7 @@ module Simplex.Messaging.Agent.Client
     secureGetQueueLink,
     getQueueLink,
     resolveName,
-    nameAvailability,
+    getNameAvailability,
     getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
@@ -2004,8 +2004,8 @@ resolveName c nm userId server domain =
 
 -- | Ask whether a name can be registered, by the same proxy-preferred path as
 -- `resolveName`.
-nameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameAvailability
-nameAvailability c nm userId server domain =
+getNameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameAvailability
+getNameAvailability c nm userId server domain =
   snd <$> sendOrProxySMPCommand c nm userId server "" "NAVL" NoEntity availViaProxy availDirectly
   where
     availViaProxy smp proxySess = proxyNameAvailability smp nm proxySess domain

@@ -110,7 +110,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, nameAvailability, resolveName)
+import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, getNameAvailability, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1499,7 +1499,7 @@ client
     nameAvailMsg nenv d = do
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-
-        liftIO (nameAvailability nenv d) <&> \case
+        liftIO (getNameAvailability nenv d) <&> \case
           Right a -> (rslvSucc, NAVAIL a)
           Left e -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg

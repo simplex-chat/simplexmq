@@ -66,8 +66,8 @@ Unrecognised payloads fall back to `0x`-prefixed raw hex.
 import hashlib
 import json
 import os
-import time
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -289,7 +289,8 @@ def name_status(name: str):
         }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
-    # Decoded for a 2LD only, the same rule node_of applies to the node.
+    # Only the 2LD's label is a registry key, wherever in the name it sits, so it
+    # is the only one decoded - the same rule node_of applies to the node.
     label = labels[-2]
     if is_encoded_labelhash(label):
         token = int(label[1:-1], 16)

@@ -22,7 +22,7 @@ import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
-    nameAvailability,
+    getNameAvailability,
     newNamesEnv,
     pingEndpoint,
     resolveName,
@@ -149,12 +149,14 @@ availabilitySpec = do
     refuses status400 "{\"error\":\"tldNotConfigured\"}" (RESOLVER "tldNotConfigured")
   it "a TLD with no registrar, so status could not be read, is a resolver error" $
     refuses status200 "{\"status\":\"unknown\",\"expires\":null}" (RESOLVER "unknown")
+  it "a status longer than the error carries is bounded, not passed through" $
+    refuses status502 (jsonBody ("{\"error\":\"" <> replicate 400 'e' <> "\"}")) (RESOLVER (T.replicate 32 "e"))
   it "a body that is not the resolver's JSON is never NOT_FOUND" $
     refuses status404 "<html>gateway</html>" (RESOLVER "HTTP 404")
   it "a body past the configured cap is a resolver error" $
     withResolverServer (resolveResp status200 (jsonBody ("{\"status\":\"registered\",\"pad\":\"" <> replicate 400 'x' <> "\"}"))) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 200}
-      nameAvailability env navlDomain `shouldReturn` Left (RESOLVER "response too large")
+      getNameAvailability env navlDomain `shouldReturn` Left (RESOLVER "response too large")
   it "every answer survives the wire" $
     mapM_
       (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
@@ -177,7 +179,7 @@ availabilitySpec = do
     asks_ st body expected =
       withResolverServer (resolveResp st body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)
-        nameAvailability env navlDomain `shouldReturn` expected
+        getNameAvailability env navlDomain `shouldReturn` expected
     navlDomain = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 parseNameSpec :: Spec

@@ -11,7 +11,7 @@ module Simplex.Messaging.Server.Names
     newNamesEnv,
     closeNamesEnv,
     pingEndpoint,
-    nameAvailability,
+    getNameAvailability,
     resolveName,
   )
 where
@@ -75,8 +75,8 @@ resolveName env d = do
 
 -- | Whether a name can be registered. Same timeout and failure handling as
 -- 'resolveName', which is the other question this server asks the resolver.
-nameAvailability :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailability)
-nameAvailability env d = do
+getNameAvailability :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailability)
+getNameAvailability env d = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetchAvail env d))
   case r of
     Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
@@ -114,7 +114,9 @@ mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds,
   "registered" -> Right $ NATaken nsExpires
   -- registered, but its records point nowhere
   "noResolver" -> Right $ NATaken nsExpires
-  s -> Left (RESOLVER s)
+  -- the resolver's own word for what it could not do, bounded because it is
+  -- its text, not ours, and it travels to the client inside ERR
+  s -> Left (RESOLVER (T.take 32 s))
   where
     -- A lapsed name missing the deadline or price that its status carries:
     -- withholding it is safer than quoting the ordinary price, but its expiry is

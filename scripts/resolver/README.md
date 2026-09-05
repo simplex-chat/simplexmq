@@ -200,10 +200,13 @@ then be quoted at list price while the registrar charges the premium. Configure
 `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is set, and upgrade this
 service before the routers that query it.
 
-Upgrade the resolver before the router that queries it. A resolver without this
-status reports a name in its auction as plain `expired`, which reads as "free at
-the ordinary price" — the price the registrar actually charges is still the
-premium one, so the quote is wrong until the resolver is current.
+**Upgrade this service before the routers that query it.** Routers from v22 hash
+the 2LD of every query, and two things only this version does are needed to
+answer them: decoding a bracket label that sits under a subname
+(`sub.[<hash>].tld`, which an older resolver hashes as literal text and so
+answers about a node nobody asked about), and reporting `auction` at all — an
+older resolver calls a name in its auction plain `expired`, which reads as "free
+at the ordinary price" while the registrar charges the premium.
 
 ### Why a name is reserved
 
