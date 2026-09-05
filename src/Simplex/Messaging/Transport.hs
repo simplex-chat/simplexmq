@@ -53,6 +53,7 @@ module Simplex.Messaging.Transport
     rcvServiceSMPVersion,
     namesSMPVersion,
     serverInfoSMPVersion,
+    nameAvailSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -175,6 +176,7 @@ smpBlockSize = 16384
 -- 19 - service subscriptions to messages (10/20/2025)
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
+-- 22 - name availability (NAVL command, NAVAIL response)
 
 data SMPVersion
 
@@ -211,6 +213,11 @@ namesSMPVersion = VersionSMP 20
 serverInfoSMPVersion :: VersionSMP
 serverInfoSMPVersion = VersionSMP 21
 
+-- | NAVL: whether a name can be registered. A server below this does not know
+-- the command, so a client must not send it.
+nameAvailSMPVersion :: VersionSMP
+nameAvailSMPVersion = VersionSMP 22
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
 
@@ -218,20 +225,20 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 21
+currentClientSMPRelayVersion = VersionSMP 22
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 21
+currentServerSMPRelayVersion = VersionSMP 22
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (20)
--- for this release because proxied name resolution is gated on namesSMPVersion
--- (20), so the one-version anti-fingerprinting buffer does not apply yet; it
--- reappears once the current version advances past 20.
+-- when clients upgrade at different times. Pinned to the current version (22)
+-- for this release because proxied name availability is gated on
+-- nameAvailSMPVersion (22), so the one-version anti-fingerprinting buffer does
+-- not apply yet; it reappears once the current version advances past 22.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 20
+proxiedSMPRelayVersion = VersionSMP 22
 
 -- minimal supported protocol version is 14
 supportedClientSMPRelayVRange :: VersionRangeSMP

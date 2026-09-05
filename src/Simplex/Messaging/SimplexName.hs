@@ -10,14 +10,18 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
+    hashedDomain,
     shortNameInfoStr,
   )
 where
 
 import Control.Applicative (optional, (<|>))
+import Crypto.Hash (Digest, hash)
+import Crypto.Hash.Algorithms (Keccak_256)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.Attoparsec.Text as AT
+import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isDigit)
@@ -70,6 +74,31 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
+-- | A second-level label given as its own keccak256 hash, so a router never
+-- learns the name it is asked about. ENS's encoding for a label whose preimage
+-- is unknown: the brackets are outside the name character set, so the form
+-- cannot collide with a registrable name, and the resolver reads the hash as the
+-- registry key instead of hashing the label again. 66 characters, so it is
+-- exempt from the DNS label limit: it is a key into the registry, not a label.
+labelHashP :: AT.Parser Text
+labelHashP = do
+  hex <- AT.char '[' *> AT.takeWhile1 (\c -> isDigit c || c >= 'a' && c <= 'f') <* AT.char ']'
+  if T.length hex == 64 then pure ("[" <> hex <> "]") else fail "labelhash: expected 64 hex digits"
+
+isLabelHash :: Text -> Bool
+isLabelHash t = T.length t == 66 && T.head t == '[' && T.last t == ']'
+
+-- | The name with its second-level label replaced by that label's keccak256
+-- hash, which is what the registry is keyed on - so a router can answer about
+-- the name without being told it. Subname labels are left as text, as reaching
+-- the record needs them, and a web TLD has no registry to key into.
+hashedDomain :: SimplexDomain -> SimplexDomain
+hashedDomain d@SimplexDomain {nameTLD, domain}
+  | nameTLD == TLDWeb || isLabelHash domain = d
+  | otherwise = d {domain = "[" <> labelHash <> "]"}
+  where
+    labelHash = decodeLatin1 $ BAE.convertToBase BAE.Base16 (hash (encodeUtf8 (T.toLower domain)) :: Digest Keccak_256)
+
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString
 boundedNonSpace = do
@@ -93,15 +122,21 @@ instance StrEncoding SimplexDomain where
   strEncode = encodeUtf8 . fullDomainName
   strP = parseDomain . safeDecodeUtf8 <$?> boundedNonSpace
     where
-      parseDomain s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
+      parseDomain s = AT.parseOnly ((labelHashP <|> nameLabelP) `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
       mkDomain labels = case reverse lowered of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
-        "simplex" : name : sub -> Right (SimplexDomain TLDSimplex name sub)
-        "testing" : name : sub -> Right (SimplexDomain TLDTesting name sub)
-        _ -> Right (SimplexDomain TLDWeb (T.intercalate "." lowered) [])
+        "simplex" : name : sub -> registryDomain TLDSimplex name sub
+        "testing" : name : sub -> registryDomain TLDTesting name sub
+        _
+          | any isLabelHash lowered -> Left "labelhash requires a registry TLD"
+          | otherwise -> Right (SimplexDomain TLDWeb (T.intercalate "." lowered) [])
         where
           lowered = map T.toLower labels
+      -- Only the second-level label is a registry key, so only it may be hashed.
+      registryDomain tld name sub
+        | any isLabelHash sub = Left "only the second-level label may be a labelhash"
+        | otherwise = Right (SimplexDomain tld name sub)
 
 instance Encoding SimplexDomain where
   smpEncode = strEncode

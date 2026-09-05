@@ -11,6 +11,7 @@ module Simplex.Messaging.Server.Names
     newNamesEnv,
     closeNamesEnv,
     pingEndpoint,
+    getNameAvailability,
     resolveName,
   )
 where
@@ -19,12 +20,15 @@ import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.Bifunctor (first)
 import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as T
-import Simplex.Messaging.Protocol (NameErrorType (..), NameRecord)
+import Simplex.Messaging.Protocol (NameAvailability (..), NameErrorType (..), NameRecord, NameReservedReason (..))
 import Simplex.Messaging.Server.Names.HttpResolver
-  ( ResolverEnv,
+  ( NameStatusResp (..),
+    ResolverEnv,
     ResolverError (..),
     RpcAuth (..),
+    availabilityHttp,
     closeResolverEnv,
     healthHttp,
     newResolverEnv,
@@ -68,6 +72,66 @@ resolveName env d = do
       | otherwise -> do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
           pure (Left (RESOLVER "resolver error"))
+
+-- | Whether a name can be registered. Same timeout and failure handling as
+-- 'resolveName', which is the other question this server asks the resolver.
+getNameAvailability :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailability)
+getNameAvailability env d = do
+  r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetchAvail env d))
+  case r of
+    Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
+    Left e
+      | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
+      | otherwise -> do
+          logError $ "[NAMES] resolver availability raised " <> T.pack (E.displayException e)
+          pure (Left (RESOLVER "resolver error"))
+
+fetchAvail :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailability)
+fetchAvail NamesEnv {resolverEnv} d =
+  either (Left . mapAvailError) mapAvailability <$> availabilityHttp resolverEnv (fullDomainName d)
+
+-- | NAVL answers whether a name can be registered, so a resolver failure must
+-- never look like an answer about the name: NOT_FOUND, which 'mapResolverError'
+-- returns for 404/410/400, would read as "no such name, therefore free".
+mapAvailError :: ResolverError -> NameErrorType
+mapAvailError = \case
+  HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
+  e -> mapResolverError e
+
+-- | The resolver's own vocabulary. A lapsed registration past its grace period
+-- is available again; one still in grace belongs to its previous owner; one in
+-- the auction that follows grace is registrable, but not at the usual price.
+-- Only the statuses that describe the name are answers - anything else means the
+-- resolver could not answer, and saying "taken" to that would assert a
+-- registration that was never read.
+mapAvailability :: NameStatusResp -> Either NameErrorType NameAvailability
+mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds, nsPremium, nsReasonCode} = case nsStatus of
+  "unregistered" -> Right NAVailable
+  "expired" -> Right NAVailable
+  "grace" -> Right $ maybe lapsed NAInGrace nsGraceEnds
+  "auction" -> Right $ fromMaybe lapsed (NAAuction <$> nsPremium <*> nsAuctionEnds)
+  "reserved" -> Right $ NAReserved (maybe NRUnspecified mapReason nsReasonCode)
+  "registered" -> Right $ NATaken nsExpires
+  -- registered, but its records point nowhere
+  "noResolver" -> Right $ NATaken nsExpires
+  -- the resolver's own word for what it could not do, bounded because it is
+  -- its text, not ours, and it travels to the client inside ERR
+  s -> Left (RESOLVER (T.take 32 s))
+  where
+    -- A lapsed name missing the deadline or price that its status carries:
+    -- withholding it is safer than quoting the ordinary price, but its expiry is
+    -- in the past, so it is not "registered until" anything.
+    lapsed = NATaken Nothing
+
+-- | The controller's reservation reasons, as the resolver spells them.
+mapReason :: Text -> NameReservedReason
+mapReason = \case
+  "trademark" -> NRTrademark
+  "publicInterest" -> NRPublicInterest
+  "offensive" -> NROffensive
+  "internal" -> NRInternal
+  "premium" -> NRPremium
+  _ -> NRUnspecified
 
 fetch :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameRecord)
 fetch NamesEnv {resolverEnv} d =

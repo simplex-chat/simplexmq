@@ -75,6 +75,8 @@ module Simplex.Messaging.Client
     proxySMPMessage,
     proxyResolveName,
     directResolveName,
+    proxyNameAvailability,
+    directNameAvailability,
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
@@ -166,7 +168,7 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.SimplexName (SimplexDomain)
+import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName, hashedDomain)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -1057,8 +1059,8 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
 proxyResolveName c nm proxiedRelay name
   | prVersion proxiedRelay >= namesSMPVersion =
-      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV name) >>= \case
-        Right (RNAME nr) -> pure $ Right nr
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (queryDomain (prVersion proxiedRelay) name)) >>= \case
+        Right (RNAME nr) -> pure $ Right (namedFor name nr)
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
@@ -1070,9 +1072,44 @@ proxyResolveName c nm proxiedRelay name
 -- encoder, so an old server never receives RSLV.
 directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRecord
 directResolveName c nm name
-  | thVersion (thParams c) >= namesSMPVersion =
-      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV name)) >>= \case
-        RNAME nr -> pure nr
+  | v >= namesSMPVersion =
+      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (queryDomain v name))) >>= \case
+        RNAME nr -> pure (namedFor name nr)
+        r -> throwE $ unexpectedResponse r
+  | otherwise = throwE $ PCETransportError TEVersion
+  where
+    v = thVersion (thParams c)
+
+-- | How a name travels to the router. From `nameAvailSMPVersion` the
+-- second-level label is replaced by its hash, so the router answers about the
+-- name without being told it; an older router can only parse the name itself.
+queryDomain :: VersionSMP -> SimplexDomain -> SimplexDomain
+queryDomain v d = if v >= nameAvailSMPVersion then hashedDomain d else d
+
+-- | The record names whatever was asked for, which for a hashed query is the
+-- hash, so the name the caller used is put back.
+namedFor :: SimplexDomain -> NameRecord -> NameRecord
+namedFor d nr = nr {nrName = fullDomainName d}
+
+-- | Ask whether a name can be registered, over PFWD. Availability is a second
+-- question about the same name rather than a variant of resolution, so it has
+-- its own command and its own version gate.
+proxyNameAvailability :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameAvailability)
+proxyNameAvailability c nm proxiedRelay name
+  | prVersion proxiedRelay >= nameAvailSMPVersion =
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (NAVL (hashedDomain name)) >>= \case
+        Right (NAVAIL a) -> pure $ Right a
+        Right r -> throwE $ unexpectedResponse r
+        Left e -> pure $ Left e
+  | otherwise = throwE $ PCETransportError TEVersion
+
+-- | Direct (non-PFWD) availability query, exposing the client IP to the
+-- resolver exactly as `directResolveName` does.
+directNameAvailability :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameAvailability
+directNameAvailability c nm name
+  | thVersion (thParams c) >= nameAvailSMPVersion =
+      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (NAVL (hashedDomain name))) >>= \case
+        NAVAIL a -> pure a
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
 

@@ -41,7 +41,8 @@ Environment:
                          (default: empty — TLD not yet deployed)
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
                          (default: mainnet for .testing, empty for .simplex)
-  SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; `reserved` status
+  SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; `reserved` status,
+                         and through its `prices()` oracle the post-grace auction
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
@@ -66,6 +67,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -103,8 +105,17 @@ CONTROLLERS = {
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
-# `reservedNames` stores the fact only, never a reason.
-RESERVED_REASON = "reserved for a brand or public interest"
+# `reservedNames` maps a name to SimplexController.Reason; 0 (None) means the
+# name is not reserved. A controller predating the enum stores a bool, whose
+# `true` decodes as 1 - the same "unspecified" this table already describes.
+RESERVED_REASONS = {
+    1: ("unspecified", "reserved for a brand or public interest"),
+    2: ("trademark", "reserved to protect a trademark"),
+    3: ("publicInterest", "reserved in the public interest"),
+    4: ("offensive", "reserved as an offensive name"),
+    5: ("internal", "reserved for SimpleX"),
+    6: ("premium", "reserved as a premium name"),
+}
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
 COIN_ETH = 60
@@ -160,12 +171,17 @@ def is_encoded_labelhash(label: str) -> bool:
 
 
 def node_of(name: str) -> bytes:
-    """namehash, accepting an encoded labelhash in place of a 2LD's label. In a
-    subname a bracket label is hashed as written, not decoded."""
+    """namehash, accepting the 2LD's label as an encoded labelhash at any depth,
+    so `[hash].tld` and `sub.[hash].tld` both reach the node the name itself
+    would. Only that label is a registry key: a bracket label anywhere else is
+    hashed as written, which is what the routers also enforce."""
     labels = name.split(".")
-    if len(labels) == 2 and is_encoded_labelhash(labels[0]):
-        return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
-    return namehash(name)
+    if len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
+        return namehash(name)
+    node = keccak(namehash(labels[-1]) + bytes.fromhex(labels[-2][1:-1]))
+    for label in reversed(labels[:-2]):
+        node = keccak(node + keccak(label.encode()))
+    return node
 
 
 # ---------- Registration status ----------
@@ -194,12 +210,67 @@ def expiry_status(expires: int, grace: int, now: int) -> str:
     return "expired"
 
 
-def is_reserved(tld: str, token: int) -> bool:
+def reservation_reason(tld: str, token: int) -> int:
+    """The SimplexController.Reason held for the name, 0 when not reserved."""
     controller = CONTROLLERS.get(tld)
     if not controller:
-        return False
+        return 0
     raw = eth_call(controller, selector("reservedNames(bytes32)") + encode_uint(token))
-    return decode_uint(raw) != 0
+    return decode_uint(raw)
+
+
+# The oracle address and its curve change only when the owner retunes the
+# auction, so they are read at most once per AUCTION_PARAMS_TTL seconds instead
+# of on every lapsed-name query. The premium itself is never cached: it decays
+# continuously and is read from the oracle each time.
+AUCTION_PARAMS_TTL = 300
+_auction_params: dict = {}
+
+
+def auction_params(tld: str):
+    """(oracle, startPremium, totalDays, endValue) for the TLD's controller, or
+    (ZERO_ADDR, 0, 0, 0) when no controller or no oracle is configured."""
+    cached = _auction_params.get(tld)
+    if cached and time.time() - cached[0] < AUCTION_PARAMS_TTL:
+        return cached[1]
+    params = (ZERO_ADDR, 0, 0, 0)
+    controller = CONTROLLERS.get(tld)
+    if controller:
+        oracle = decode_address(eth_call(controller, selector("prices()")))
+        if oracle != ZERO_ADDR:
+            params = (
+                oracle,
+                decode_uint(eth_call(oracle, selector("startPremium()"))),
+                decode_uint(eth_call(oracle, selector("totalDays()"))),
+                decode_uint(eth_call(oracle, selector("endValue()"))),
+            )
+    _auction_params[tld] = (time.time(), params)
+    return params
+
+
+def auction(tld: str, grace_ends: int, now: int):
+    """Past its grace period a name is registrable again, but at a premium that
+    decays to zero over the price oracle's auction window. Returns when the
+    premium reaches zero and what it is now, in attoUSD, or (None, None) once
+    prices are back to normal - which includes an auction switched off by
+    setting totalDays to 0."""
+    oracle, start, total_days, floor = auction_params(tld)
+    if oracle == ZERO_ADDR:
+        return None, None
+    ends = grace_ends + total_days * 86400
+    if now >= ends:
+        return None, None
+    # decayedPremium is `pure`, so the premium quoted here is the oracle's own
+    # arithmetic rather than a reimplementation of its decay curve.
+    decayed = decode_uint(
+        eth_call(
+            oracle,
+            selector("decayedPremium(uint256,uint256)")
+            + encode_uint(start)
+            + encode_uint(now - grace_ends),
+        )
+    )
+    return ends, max(decayed - floor, 0)
 
 
 def name_status(name: str):
@@ -207,12 +278,21 @@ def name_status(name: str):
     tld = labels[-1]
     registrar = REGISTRARS.get(tld)
     if not registrar or len(labels) < 2:
-        return {"status": "unknown", "expires": None, "graceEnds": None}
+        return {
+            "status": "unknown",
+            "expires": None,
+            "graceEnds": None,
+            "auctionEnds": None,
+            "premium": None,
+            "reasonCode": None,
+            "reason": None,
+        }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
-    # Decoded for a 2LD only, the same rule node_of applies to the node.
+    # Only the 2LD's label is a registry key, wherever in the name it sits, so it
+    # is the only one decoded - the same rule node_of applies to the node.
     label = labels[-2]
-    if len(labels) == 2 and is_encoded_labelhash(label):
+    if is_encoded_labelhash(label):
         token = int(label[1:-1], 16)
     else:
         token = int.from_bytes(keccak(label.encode()), "big")
@@ -220,18 +300,30 @@ def name_status(name: str):
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
     )
     if expires == 0:
-        status, grace = "unregistered", 0
+        status, grace, now = "unregistered", 0, 0
     else:
         grace = grace_period(registrar)
-        status = expiry_status(expires, grace, chain_now())
+        now = chain_now()
+        status = expiry_status(expires, grace, now)
 
-    if status in ("unregistered", "expired") and is_reserved(tld, token):
-        status = "reserved"
+    auction_ends = premium = reason = None
+    if status in ("unregistered", "expired"):
+        code = reservation_reason(tld, token)
+        if code:
+            status, reason = "reserved", RESERVED_REASONS.get(code, RESERVED_REASONS[1])
+        elif status == "expired":
+            auction_ends, premium = auction(tld, expires + grace, now)
+            if auction_ends:
+                status = "auction"
 
     return {
         "status": status,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
+        "auctionEnds": auction_ends,
+        "premium": None if premium is None else str(premium),
+        "reasonCode": reason[0] if reason else None,
+        "reason": reason[1] if reason else None,
     }
 
 
@@ -553,10 +645,11 @@ def resolve(name: str):
             ),
         }
         if reg["status"] == "reserved":
-            body["reason"] = RESERVED_REASON
+            body["reasonCode"] = reg["reasonCode"]
+            body["reason"] = reg["reason"]
         return 404, body
-    if reg["status"] in ("grace", "expired"):
-        return 410, {
+    if reg["status"] in ("grace", "expired", "auction"):
+        body = {
             "name": name,
             "status": reg["status"],
             "expires": reg["expires"],
@@ -568,6 +661,14 @@ def resolve(name: str):
                 else "this registration expired and is open to anyone"
             ),
         }
+        if reg["status"] == "auction":
+            body["auctionEnds"] = reg["auctionEnds"]
+            body["premium"] = reg["premium"]
+            body["message"] = (
+                "this registration expired and is open to anyone, at a premium "
+                "that decays to zero"
+            )
+        return 410, body
 
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
