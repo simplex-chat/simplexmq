@@ -1056,14 +1056,22 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 -- through `proxySMPCommand` and pattern-matches the expected RNAME response.
 -- Version-gated on the destination relay (mirrors `connectSMPProxiedRelay`):
 -- the client never sends RSLV to a relay that predates names support.
+-- | How a name goes on the wire. From v22 the second-level label is sent as its
+-- hash; older routers can only parse the name. A hashed query's record names the
+-- hash, so callers put back the name they asked for.
+queryDomain :: VersionSMP -> SimplexDomain -> SimplexDomain
+queryDomain v d = if v >= nameAvailSMPVersion then hashedDomain d else d
+
 proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
 proxyResolveName c nm proxiedRelay name
-  | prVersion proxiedRelay >= namesSMPVersion =
-      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (queryDomain (prVersion proxiedRelay) name)) >>= \case
-        Right (RNAME nr) -> pure $ Right (namedFor name nr)
+  | v >= namesSMPVersion =
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (queryDomain v name)) >>= \case
+        Right (RNAME nr) -> pure $ Right nr {nrName = fullDomainName name}
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
+  where
+    v = prVersion proxiedRelay
 
 -- | Direct (non-PFWD) name resolution. Exposes the client IP to the resolver;
 -- callers that want anonymity should use `proxyResolveName` via the standard
@@ -1074,26 +1082,13 @@ directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT
 directResolveName c nm name
   | v >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (queryDomain v name))) >>= \case
-        RNAME nr -> pure (namedFor name nr)
+        RNAME nr -> pure nr {nrName = fullDomainName name}
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where
     v = thVersion (thParams c)
 
--- | How a name travels to the router. From `nameAvailSMPVersion` the
--- second-level label is replaced by its hash, so the router answers about the
--- name without being told it; an older router can only parse the name itself.
-queryDomain :: VersionSMP -> SimplexDomain -> SimplexDomain
-queryDomain v d = if v >= nameAvailSMPVersion then hashedDomain d else d
-
--- | The record names whatever was asked for, which for a hashed query is the
--- hash, so the name the caller used is put back.
-namedFor :: SimplexDomain -> NameRecord -> NameRecord
-namedFor d nr = nr {nrName = fullDomainName d}
-
--- | Ask whether a name can be registered, over PFWD. Availability is a second
--- question about the same name rather than a variant of resolution, so it has
--- its own command and its own version gate.
+-- | Ask whether a name can be registered, over PFWD.
 proxyNameAvailability :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameAvailability)
 proxyNameAvailability c nm proxiedRelay name
   | prVersion proxiedRelay >= nameAvailSMPVersion =
@@ -1103,8 +1098,8 @@ proxyNameAvailability c nm proxiedRelay name
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
 
--- | Direct (non-PFWD) availability query, exposing the client IP to the
--- resolver exactly as `directResolveName` does.
+-- | Direct (non-PFWD) availability query. Exposes the client IP, as
+-- `directResolveName` does.
 directNameAvailability :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameAvailability
 directNameAvailability c nm name
   | thVersion (thParams c) >= nameAvailSMPVersion =

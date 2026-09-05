@@ -224,8 +224,8 @@ testNavlVersion =
     g <- C.newRandom
     ts <- getCurrentTime
     let srv = SMPServer testHost testPort testKeyHash
-        -- the version immediately below the gate: a range ending lower would
-        -- also pass for a gate at 20 or 21 and prove nothing about v22
+        -- the version just below the gate: a lower ceiling would also pass for
+        -- a gate at 20 or 21 and prove nothing about v22
         oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion serverInfoSMPVersion}
     pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
     pc <- either (fail . show) pure pcE
@@ -254,12 +254,11 @@ testNavlForwarded =
 auctionBody :: LB.ByteString
 auctionBody = "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
 
--- keccak-256("alice"), the key the registry is keyed on
+-- keccak-256("alice"), the registry key
 aliceHash :: Text
 aliceHash = "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
 
--- | A client on a current session must never put a registrable name on the
--- wire: the router answers about the hash and learns only that.
+-- | A current client must never put a registrable name on the wire.
 resolvePaths :: IORef [[Text]] -> IO [[Text]]
 resolvePaths reqs = filter isResolve <$> readIORef reqs
   where
@@ -279,10 +278,10 @@ testRslvSendsTheHash =
     pc <- currentClient
     nr <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
     resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
-    -- the record names what the caller asked for, not what went on the wire
+    -- the record names what the caller asked for
     SMP.nrName nr `shouldBe` "alice.simplex"
   where
-    -- the resolver echoes the name it was asked about, which is the hash
+    -- the resolver echoes what it was asked about, which is the hash
     echoed = testNameRecord {SMP.nrName = aliceHash <> ".simplex"}
 
 testNavlSendsTheHash :: IO ()

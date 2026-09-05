@@ -137,8 +137,8 @@ class EncodedLabelhashTests(unittest.TestCase):
         self.assertEqual(snrc.node_of("alice.testing"), snrc.namehash("alice.testing"))
 
     def test_a_bracket_subname_label_stays_literal(self):
-        """Only the 2LD is a registry key, so a bracket label to the left of it
-        is a name in its own right and is hashed as written."""
+        """Only the 2LD is a key, so a bracket label left of it is hashed as
+        written."""
         self.assertNotEqual(
             snrc.node_of(
                 "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
@@ -148,8 +148,7 @@ class EncodedLabelhashTests(unittest.TestCase):
         )
 
     def test_a_hashed_2ld_under_a_subname_reaches_the_same_node(self):
-        """Clients hash the 2LD and leave subname labels as text, so
-        `sub.[hash].tld` must reach the node `sub.name.tld` does."""
+        """`sub.[hash].tld` must reach the node `sub.name.tld` does."""
         self.assertEqual(
             snrc.node_of(
                 "sub."
@@ -213,7 +212,7 @@ class NameStatusTests(unittest.TestCase):
         return eth_call
 
     def _keys(self, status, expires, grace_ends):
-        """Every branch answers with the same keys; only some carry a value."""
+        """Every branch answers with the same keys; only some carry values."""
         return {
             "status": status,
             "expires": expires,
@@ -314,8 +313,7 @@ class NameStatusTests(unittest.TestCase):
         self.assertTrue(seen[0].endswith(snrc.keccak(b"alice").hex()))
 
     def test_a_hashed_2ld_is_queried_by_its_hash_at_any_depth(self):
-        """Clients hash the 2LD and leave subname labels as text, so the token
-        must come from the hash, not from hashing the bracket text again."""
+        """The token must come from the hash, not from hashing the brackets."""
         seen = []
 
         def eth_call(to, data):
@@ -480,16 +478,14 @@ class ReservedReasonTests(unittest.TestCase):
         self.assertEqual(body["reasonCode"], "trademark")
 
     def test_a_controller_storing_a_bool_reads_as_unspecified(self):
-        """Before the enum, `reservedNames` was a bool; its `true` decodes as 1,
-        which is the value this table already describes as unspecified."""
+        """Before the enum `reservedNames` was a bool; its `true` decodes as 1."""
         snrc.eth_call = self._reserved_as(1)
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["reasonCode"], "unspecified")
         self.assertEqual(reg["reason"], "reserved for a brand or public interest")
 
     def test_an_enum_value_this_resolver_predates_is_not_dropped(self):
-        """A controller upgraded with a new Reason still reports the name as
-        reserved; only the wording falls back."""
+        """A new Reason still reads as reserved; only the wording falls back."""
         snrc.eth_call = self._reserved_as(99)
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["status"], "reserved")
@@ -530,9 +526,8 @@ class ReservedReasonTests(unittest.TestCase):
 
 
 class AuctionTests(unittest.TestCase):
-    """Once grace ends the registrar will sell the name to anyone, but the price
-    oracle adds a premium that halves each day until it reaches zero. Reporting
-    such a name as plainly available would quote the normal price for it."""
+    """Past grace anyone may register the name, but at a premium that halves
+    each day. Reporting it as plainly available would quote the normal price."""
 
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
@@ -569,9 +564,8 @@ class AuctionTests(unittest.TestCase):
         ) = self._saved
 
     def _chain(self, expires, total_days=TOTAL_DAYS, oracle=None, reserved=0):
-        """Answers as SimplexController and SimplexPriceOracle do, including the
-        oracle's own `decayedPremium` shift, so the arithmetic under test is the
-        resolver's and not a second copy of the decay curve."""
+        """Answers as the controller and oracle do, including the oracle's own
+        `decayedPremium` shift, so the decay curve is not copied here."""
         oracle = self.ORACLE if oracle is None else oracle
         self.oracle_calls = []
 
@@ -603,8 +597,7 @@ class AuctionTests(unittest.TestCase):
 
     def _lapsed(self, days_into_auction):
         """An expiry whose grace ended `days_into_auction` days ago. The extra
-        second clears the boundary, which the registrar counts as still in
-        grace."""
+        second clears the boundary, which counts as still in grace."""
         return self.now - self.GRACE - 1 - days_into_auction * 86400
 
     def test_a_name_just_past_grace_is_in_auction_not_merely_expired(self):
@@ -651,8 +644,8 @@ class AuctionTests(unittest.TestCase):
         self.assertEqual(self.oracle_calls, [])
 
     def test_the_oracle_curve_is_read_once_not_per_query(self):
-        """The curve changes only when the owner retunes the auction, so only the
-        decaying premium is re-read; the rest would be four RPC calls per query."""
+        """The curve changes only on a retune, so only the decaying premium is
+        re-read; the rest would be four RPC calls per query."""
         snrc.eth_call = self._chain(self._lapsed(1))
         snrc.name_status("acme.testing")
         seen_first = len(self.oracle_calls)

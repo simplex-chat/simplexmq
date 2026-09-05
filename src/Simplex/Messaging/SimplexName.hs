@@ -74,12 +74,9 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
--- | A second-level label given as its own keccak256 hash, so a router never
--- learns the name it is asked about. ENS's encoding for a label whose preimage
--- is unknown: the brackets are outside the name character set, so the form
--- cannot collide with a registrable name, and the resolver reads the hash as the
--- registry key instead of hashing the label again. 66 characters, so it is
--- exempt from the DNS label limit: it is a key into the registry, not a label.
+-- | A second-level label sent as its keccak256 hash, so a router never learns
+-- the name. ENS's bracket form: brackets are outside the name character set, so
+-- it cannot collide with a real name. 66 chars, so exempt from the label limit.
 labelHashP :: AT.Parser Text
 labelHashP = do
   hex <- AT.char '[' *> AT.takeWhile1 (\c -> isDigit c || c >= 'a' && c <= 'f') <* AT.char ']'
@@ -88,16 +85,15 @@ labelHashP = do
 isLabelHash :: Text -> Bool
 isLabelHash t = T.length t == 66 && T.head t == '[' && T.last t == ']'
 
--- | The name with its second-level label replaced by that label's keccak256
--- hash, which is what the registry is keyed on - so a router can answer about
--- the name without being told it. Subname labels are left as text, as reaching
--- the record needs them, and a web TLD has no registry to key into.
+-- | Replace the second-level label with its keccak256 hash, the registry key.
+-- Subname labels stay text; a web TLD has no registry.
 hashedDomain :: SimplexDomain -> SimplexDomain
 hashedDomain d@SimplexDomain {nameTLD, domain}
   | nameTLD == TLDWeb || isLabelHash domain = d
   | otherwise = d {domain = "[" <> labelHash <> "]"}
   where
-    labelHash = decodeLatin1 $ BAE.convertToBase BAE.Base16 (hash (encodeUtf8 (T.toLower domain)) :: Digest Keccak_256)
+    keccak = hash (encodeUtf8 (T.toLower domain)) :: Digest Keccak_256
+    labelHash = decodeLatin1 (BAE.convertToBase BAE.Base16 keccak)
 
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString

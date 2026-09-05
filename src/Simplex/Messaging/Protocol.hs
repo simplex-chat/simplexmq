@@ -606,8 +606,7 @@ data Command (p :: Party) where
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Resolve SimpleX name.
   RSLV :: SimplexDomain -> Command Resolver
-  -- Whether a SimpleX name can be registered. Asked of a labelhash when the
-  -- client does not want to say which name it is about.
+  -- Whether a SimpleX name can be registered.
   NAVL :: SimplexDomain -> Command Resolver
 
 deriving instance Show (Command p)
@@ -1601,9 +1600,8 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | Whether a name can be registered, and when it cannot, what stands in the
--- way. A lapsed registration past its grace period is available again, which is
--- the distinction a caller cannot draw from resolution alone.
+-- | Whether a name can be registered, and if not, why. Resolution alone cannot
+-- tell a lapsed name from a live one.
 data NameAvailability
   = NAVailable
   | -- | registered to someone until this time, absent when the router could not
@@ -1611,8 +1609,8 @@ data NameAvailability
     NATaken {naExpires :: Maybe Int64}
   | -- | lapsed, and renewable by its previous owner until this time
     NAInGrace {naGraceEnds :: Int64}
-  | -- | registrable by anyone, but at a premium, in attoUSD, that decays to
-    -- nothing by this time - quoting the usual price would understate it
+  | -- | registrable by anyone, but at a premium in attoUSD that decays to
+    -- nothing by this time
     NAAuction {naPremium :: Text, naAuctionEnds :: Int64}
   | NAReserved {naReason :: NameReservedReason}
   deriving (Eq, Show)
@@ -1633,10 +1631,8 @@ instance Encoding NameAvailability where
       "RESERVED" -> NAReserved <$> _smpP
       _ -> fail "bad NameAvailability"
 
--- | Why a name is held back, so the app can word it in the user's language
--- instead of showing a sentence chosen by the server. Mirrors the reservation
--- reasons the registry controller stores; "not reserved" has no constructor
--- here, as it is not an answer this type is used to give.
+-- | Why a name is held back, as a code so the app can word it in the user's
+-- language. Mirrors the reasons the registry controller stores.
 data NameReservedReason
   = NRUnspecified
   | NRTrademark

@@ -105,9 +105,8 @@ CONTROLLERS = {
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
-# `reservedNames` maps a name to SimplexController.Reason; 0 (None) means the
-# name is not reserved. A controller predating the enum stores a bool, whose
-# `true` decodes as 1 - the same "unspecified" this table already describes.
+# `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
+# controller from before the enum stores a bool, whose `true` decodes as 1.
 RESERVED_REASONS = {
     1: ("unspecified", "reserved for a brand or public interest"),
     2: ("trademark", "reserved to protect a trademark"),
@@ -171,10 +170,9 @@ def is_encoded_labelhash(label: str) -> bool:
 
 
 def node_of(name: str) -> bytes:
-    """namehash, accepting the 2LD's label as an encoded labelhash at any depth,
-    so `[hash].tld` and `sub.[hash].tld` both reach the node the name itself
-    would. Only that label is a registry key: a bracket label anywhere else is
-    hashed as written, which is what the routers also enforce."""
+    """namehash, decoding the 2LD's label as a labelhash wherever it sits, so
+    `[hash].tld` and `sub.[hash].tld` reach the nodes their names do. A bracket
+    label anywhere else is hashed as written."""
     labels = name.split(".")
     if len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
         return namehash(name)
@@ -219,10 +217,8 @@ def reservation_reason(tld: str, token: int) -> int:
     return decode_uint(raw)
 
 
-# The oracle address and its curve change only when the owner retunes the
-# auction, so they are read at most once per AUCTION_PARAMS_TTL seconds instead
-# of on every lapsed-name query. The premium itself is never cached: it decays
-# continuously and is read from the oracle each time.
+# The oracle and its curve change only on a retune, so they are read once per
+# TTL rather than per query. The premium itself decays, so it is never cached.
 AUCTION_PARAMS_TTL = 300
 _auction_params: dict = {}
 
@@ -249,19 +245,18 @@ def auction_params(tld: str):
 
 
 def auction(tld: str, grace_ends: int, now: int):
-    """Past its grace period a name is registrable again, but at a premium that
-    decays to zero over the price oracle's auction window. Returns when the
-    premium reaches zero and what it is now, in attoUSD, or (None, None) once
-    prices are back to normal - which includes an auction switched off by
-    setting totalDays to 0."""
+    """Past grace a name is registrable again, but at a premium decaying to zero
+    over the oracle's window. Returns when the premium reaches zero and what it
+    is now, in attoUSD, or (None, None) once prices are normal - which includes
+    an auction switched off with totalDays 0."""
     oracle, start, total_days, floor = auction_params(tld)
     if oracle == ZERO_ADDR:
         return None, None
     ends = grace_ends + total_days * 86400
     if now >= ends:
         return None, None
-    # decayedPremium is `pure`, so the premium quoted here is the oracle's own
-    # arithmetic rather than a reimplementation of its decay curve.
+    # decayedPremium is `pure`, so this is the oracle's own arithmetic rather
+    # than a second copy of its decay curve.
     decayed = decode_uint(
         eth_call(
             oracle,
@@ -289,8 +284,8 @@ def name_status(name: str):
         }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
-    # Only the 2LD's label is a registry key, wherever in the name it sits, so it
-    # is the only one decoded - the same rule node_of applies to the node.
+    # Only the 2LD's label is a registry key, wherever it sits - the same rule
+    # node_of applies to the node.
     label = labels[-2]
     if is_encoded_labelhash(label):
         token = int(label[1:-1], 16)

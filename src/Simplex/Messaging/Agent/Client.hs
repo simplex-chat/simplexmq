@@ -2002,8 +2002,7 @@ resolveName c nm userId server domain =
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
 
--- | Ask whether a name can be registered, by the same proxy-preferred path as
--- `resolveName`.
+-- | Ask whether a name can be registered. Same path as `resolveName`.
 getNameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameAvailability
 getNameAvailability c nm userId server domain =
   snd <$> sendOrProxySMPCommand c nm userId server "" "NAVL" NoEntity availViaProxy availDirectly

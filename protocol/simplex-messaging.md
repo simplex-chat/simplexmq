@@ -1469,31 +1469,24 @@ rslv = %s"RSLV" SP domain   ; domain = canonical name as non-space bytes, consum
 explicit (e.g. `privacy.simplex`, `test.testing`, `example.com`), bounded to
 253 bytes.
 
-**Hashed labels.** The second-level label MAY instead be given as `[` followed
-by 64 lowercase hex characters and `]` — the keccak-256 hash of that label — so
-a router can answer about a name without being told it. This is ENS's encoding
-for a label whose preimage is unknown; the brackets are outside the name
-character set, so the form cannot collide with a registrable name, and the
-backing resolver uses the hash as the registry key rather than hashing the label
-again. A hashed label is 66 characters and is therefore exempt from the 63-byte
-DNS label limit: it is a key into the registry, not a DNS label.
+**Hashed labels.** The second-level label MAY be given as `[` + 64 lowercase hex
++ `]`, the keccak-256 hash of that label, so a router can answer without being
+told the name. This is ENS's encoding for an unknown preimage; brackets are
+outside the name character set, so it cannot collide with a real name. A hashed
+label is 66 characters and is exempt from the 63-byte label limit — it is a
+registry key, not a DNS label. A bare `0x` hex string is an ordinary label, and
+would be hashed again, keying a different name.
 
-**Only the second-level label.** It is the only label the registry is keyed on;
-subname labels are needed as text to reach the record, so they are never hashed.
-`[<hash>].simplex` and `sub.[<hash>].simplex` both reach the node their plain
-names would, and a bracket label in any other position is an ordinary label,
-hashed as written. Routers MUST reject a name whose hashed label is not the
-second-level one, so that client and resolver cannot disagree about which node
-was asked about. A bare `0x` hex string is likewise NOT a hashed label — it is an
-ordinary label, and would be hashed again, keying a different name.
+Only the second-level label may be hashed; subname labels are needed as text to
+reach the record. `[<hash>].simplex` and `sub.[<hash>].simplex` reach the nodes
+their plain names do; a bracket label anywhere else is an ordinary label. Routers
+MUST reject a name whose hashed label is not the second-level one.
 
-**Clients send the hash.** From v22 a client MUST hash the second-level label of
-every `RSLV` and `NAVL` it sends, so a registrable name never reaches a router in
-the clear. Routers below v22 cannot parse the form, so a client on an older
-session sends the name itself. The record returned for a hashed query names the
-hash, because that is what was asked; the client restores the name it used.
-A router answering a hashed query cannot know the name's length, and so cannot
-know its price or whether it meets a minimum-length policy.
+From v22 a client MUST hash the second-level label of every `RSLV` and `NAVL`.
+Older routers cannot parse the form, so a client on an older session sends the
+name. A hashed query's record names the hash; the client restores the name it
+used. A router answering a hashed query does not know the name's length, so it
+cannot know its price or whether it meets a minimum-length policy.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1572,12 +1565,10 @@ arrays are bounded by this overall budget rather than a fixed per-field count.
 
 #### Name availability command
 
-`RSLV` answers with a record or `NOT_FOUND`, which conflates situations a client
-offering a name to register must tell apart: a name nobody has registered, a
-lapsed registration its previous owner may still renew, a name the registry
-holds back, and a name registrable right now but not at the ordinary price.
-`NAVL` asks that question directly, and takes the same `domain` payload as
-`RSLV`, hashed labels included:
+`RSLV` answers `NOT_FOUND` for several different cases: never registered, lapsed
+but still renewable, held back, and registrable but not at the ordinary price. A
+client offering a name to register needs them apart. `NAVL` asks directly, and
+takes the same `domain` as `RSLV`, hashed labels included:
 
 ```abnf
 navl = %s"NAVL" SP domain
@@ -1609,42 +1600,30 @@ reason       = %s"UNSPECIFIED" / %s"TRADEMARK" / %s"PUBLIC_INTEREST"
 | `AUCTION` | registrable by anyone, at `premium` above the ordinary price, decaying to nothing by `auction-ends` | offer it only with the premium shown |
 | `RESERVED` | held back by the registry for `reason` | do not offer it; explain `reason` |
 
-`premium` is a decimal string rather than a wire integer because registry prices
-are 256-bit values that fit no fixed-width integer. It is the surcharge alone,
-not the total: a router answering a hashed query cannot know the label's length
-and so cannot know its ordinary price. The client, which knows the name it
-hashed, adds the base price itself.
+`premium` is a decimal string because prices are 256-bit integers. It is the
+surcharge only: a router answering a hashed query does not know the label's
+length, so it cannot know the base price. The client adds that.
 
-All three times are absolute rather than remaining durations, so a client can
-render a countdown without re-querying. A client whose clock is wrong renders a wrong
-countdown; it MUST NOT treat either deadline as authorisation to register, which
-only the registry grants.
+Times are absolute, not durations, so a client can count down without
+re-querying. A deadline is not permission to register; only the registry grants
+that.
 
-A router that cannot obtain the payload for `GRACE` or `AUCTION` MUST answer
-`TAKEN` with no `expires`, rather than `AVAILABLE`. Quoting the ordinary price
-for a name that carries a premium is the one materially harmful answer here, and
-withholding a name the user could have had is the smaller error.
+A router that cannot read the payload for `GRACE` or `AUCTION` MUST answer
+`TAKEN` with no `expires`, never `AVAILABLE`. Quoting the ordinary price for a
+name that carries a premium is the harmful answer.
 
-A router that cannot read the name's status at all MUST answer `ERR NAME
-RESOLVER <detail>` and MUST NOT answer `TAKEN`, which would assert a
-registration nobody read, or `NOT_FOUND`, which a client may read as "no such
-name, therefore free". This covers an unreachable chain, a TLD the backing
-resolver has no registry for, and any status the router does not recognise.
+A router that cannot read the status at all MUST answer `ERR NAME RESOLVER
+<detail>`. Not `TAKEN`, which asserts a registration it never read, and not
+`NOT_FOUND`, which reads as "free". This covers an unreachable chain, an
+unconfigured TLD, and any status the router does not recognise. A client MUST
+treat an unknown `reason` as `UNSPECIFIED`, not as "not reserved".
 
-`RESERVED` carries a reason code rather than a sentence so the client can word
-it in the user's language. A client MUST treat a reason it does not recognise as
-`UNSPECIFIED` rather than as "not reserved".
-
-`NAVL` fails the way `RSLV` does — `ERR NAME NO_RESOLVER` when the router has no
-resolver, `ERR NAME RESOLVER <detail>` on a transient backing failure. It is
-gated on SMP v22 and MUST NOT be sent to a router that negotiated a lower
-version. Like `RSLV` it is unauthenticated and accepted directly or inside a
-`PFWD` block, and clients SHOULD prefer the forwarded path: a hashed label keeps
-the name from the router, but only the proxy keeps the client's IP from it. A
-client whose proxy cannot carry `NAVL` — every proxy below v22, since the proxy
-caps the relay version at `proxiedSMPRelayVersion` — falls back to a direct send
-if its network configuration allows one, so during rollout the names router sees
-the client's IP alongside the hash, and never the name.
+`NAVL` fails as `RSLV` does: `ERR NAME NO_RESOLVER`, or `ERR NAME RESOLVER
+<detail>`. It is gated on v22 and MUST NOT be sent to a lower version. Like
+`RSLV` it is unauthenticated and works directly or in a `PFWD` block; clients
+SHOULD use the proxy, because the hash hides the name but only the proxy hides
+the IP. Proxies below v22 cannot carry `NAVL`, so during rollout a client that
+allows direct fallback reaches the router itself — with the hash, never the name.
 
 ## Transport connection with the SMP router
 

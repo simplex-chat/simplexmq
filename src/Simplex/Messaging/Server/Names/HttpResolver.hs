@@ -36,6 +36,7 @@ where
 import qualified Control.Exception as E
 import qualified Data.Aeson as J
 import Data.Aeson.Key (Key)
+import qualified Data.Aeson.Types as JT
 import qualified Data.Aeson.KeyMap as JKM
 import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
@@ -82,8 +83,8 @@ data ResolverEnv = ResolverEnv
     maxResponseBytes :: Int
   }
 
--- | What the resolver says about a name's registrability. Only some statuses
--- carry the fields below the status, so each is read as optional.
+-- | What the resolver says about a name. Only some statuses carry the fields
+-- below the status.
 data NameStatusResp = NameStatusResp
   { nsStatus :: Text,
     nsExpires :: Maybe Int64,
@@ -137,11 +138,9 @@ resolveHttp env name =
     <$> httpGet env ("/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
 
 -- | GET <baseUrl>/resolve/<name>, reading what the resolver says about the name
--- rather than only whether it answered. The status code alone cannot separate a
--- name nobody has taken from one held back, nor a lapsed name still renewable by
--- its owner from one anyone may take - that is in the body, under "status" on a
--- 200 and "error" otherwise, alongside the deadline or price that status
--- carries.
+-- rather than only whether it answered. The status code cannot tell an
+-- unregistered name from a reserved or lapsed one; that is in the body, under
+-- "status" on a 200 and "error" otherwise.
 availabilityHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameStatusResp)
 availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} name = do
   req0 <- parseRequest (baseUrl <> "/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
@@ -159,35 +158,30 @@ availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxRespon
       if BL.length bs > fromIntegral maxResponseBytes
         then Left BodyTooLarge
         else case J.decode bs of
-          Just (J.Object o)
-            | Just (J.String t) <- JKM.lookup field o ->
-                Right
-                  NameStatusResp
-                    { nsStatus = t,
-                      nsExpires = jsonField o "expires",
-                      nsGraceEnds = jsonField o "graceEnds",
-                      nsAuctionEnds = jsonField o "auctionEnds",
-                      nsPremium = jsonField o "premium" >>= decimalPrice,
-                      nsReasonCode = jsonField o "reasonCode"
-                    }
+          Just (J.Object o) | Just (J.String t) <- JKM.lookup field o -> Right (statusResp t o)
           _ -> Left (HttpStatusErr status)
   pure (either (Left . HttpFailure) id result)
+  where
+    statusResp t o =
+      NameStatusResp
+        { nsStatus = t,
+          nsExpires = jsonField o "expires",
+          nsGraceEnds = jsonField o "graceEnds",
+          nsAuctionEnds = jsonField o "auctionEnds",
+          nsPremium = jsonField o "premium" >>= decimalPrice,
+          nsReasonCode = jsonField o "reasonCode"
+        }
 
--- | A price is a 256-bit integer written in decimal, so at most 78 digits. The
--- wire format prefixes it with a single length byte, which would wrap silently
--- on a longer string and leave the whole response unparseable, so anything else
--- is dropped rather than re-encoded.
+-- | A price is at most 78 decimal digits. The wire format length-prefixes it
+-- with one byte, which would wrap on anything longer, so drop it instead.
 decimalPrice :: Text -> Maybe Text
 decimalPrice t
   | not (T.null t) && T.length t <= 78 && T.all isDigit t = Just t
   | otherwise = Nothing
 
--- | A field the resolver omits, or sends as null, for the statuses that do not
--- carry it.
+-- | A field the resolver omits or nulls for statuses that do not carry it.
 jsonField :: J.FromJSON a => J.Object -> Key -> Maybe a
-jsonField o k = case J.fromJSON <$> JKM.lookup k o of
-  Just (J.Success v) -> Just v
-  _ -> Nothing
+jsonField o k = JT.parseMaybe J.parseJSON =<< JKM.lookup k o
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.

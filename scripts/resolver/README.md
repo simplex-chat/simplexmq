@@ -172,48 +172,33 @@ name it sits under.
 
 ### The post-grace auction
 
-When grace ends the registrar will sell the name to anyone, but the price
-oracle adds a premium that halves each day until it reaches zero. A name in
-that window reports `auction` rather than `expired`, with `premium` (a decimal
-string of attoUSD, because the value is a 256-bit integer that no JSON number
-can hold) and `auctionEnds`.
+When grace ends anyone may register the name, but the price oracle adds a
+premium that halves each day until it reaches zero. A name in that window
+reports `auction` instead of `expired`, with `premium` (attoUSD as a decimal
+string, since no JSON number holds a 256-bit integer) and `auctionEnds`.
 
-The premium depends only on when the registration lapsed, never on the label,
-so it is answerable for a labelhash query too. The base price is not: it depends
-on the label's length, which a hashed query does not carry. `premium` is
-therefore the surcharge alone, and a client that knows its own name adds the
-base price itself.
+The premium depends only on when the registration lapsed, not on the label, so a
+labelhash query gets it too. The base price does depend on the label's length,
+which a hashed query does not carry, so `premium` is the surcharge alone and the
+client adds the base price.
 
-The oracle is found through the controller's `prices()`, so no extra
-configuration is needed. Its window is read from the chain rather than assumed,
-because the owner can retune it; a window of zero days switches the auction off,
-and every lapsed name then reports `expired` directly. The curve
-(`startPremium`, `totalDays`, `endValue`) is cached for `AUCTION_PARAMS_TTL`
-seconds, 5 minutes by default, since it changes only when the owner calls
-`setPremium`; the decaying premium itself is read from the oracle on every
-query. A retune is therefore visible within the TTL, not immediately.
+The oracle comes from the controller's `prices()`, so no extra configuration is
+needed. Its window is read from the chain; zero days switches the auction off.
+The curve is cached for `AUCTION_PARAMS_TTL` (5 minutes), so a `setPremium`
+retune shows up within that; the decaying premium is read on every query.
 
-**Known gap.** When the auction cannot be read at all — no controller
-configured, or the oracle unreachable — the name reports `expired`, which routers
-map to "available at the ordinary price". A name still inside its auction would
-then be quoted at list price while the registrar charges the premium. Configure
-`SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is set, and upgrade this
-service before the routers that query it.
-
-**Upgrade this service before the routers that query it.** Routers from v22 hash
-the 2LD of every query, and two things only this version does are needed to
-answer them: decoding a bracket label that sits under a subname
-(`sub.[<hash>].tld`, which an older resolver hashes as literal text and so
-answers about a node nobody asked about), and reporting `auction` at all — an
-older resolver calls a name in its auction plain `expired`, which reads as "free
-at the ordinary price" while the registrar charges the premium.
+**Upgrade this service before the routers that query it.** An older resolver
+reports a name in its auction as plain `expired`, which routers read as
+"available at the ordinary price" while the registrar charges the premium. It
+also fails to decode a bracket label under a subname (`sub.[<hash>].tld`), which
+routers from v22 send. The same wrong quote happens when the auction cannot be
+read at all, so set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.
 
 ### Why a name is reserved
 
-`reserved` carries both `reasonCode`, the controller's own reservation reason,
-and `reason`, an English sentence for a human reading the REST API. Clients
-should branch on `reasonCode` and word it themselves, so the wording follows the
-user's language rather than the server's.
+`reserved` carries `reasonCode`, the controller's reason, and `reason`, an
+English sentence for a human reading this API. Clients should branch on
+`reasonCode` and word it themselves, in the user's language.
 
 | `reasonCode` | Meaning |
 |---|---|
@@ -224,10 +209,9 @@ user's language rather than the server's.
 | `internal` | reserved for SimpleX |
 | `premium` | reserved as a premium name |
 
-A controller deployed before reservation reasons existed stores a plain boolean,
-whose `true` reads back as `unspecified`, so nothing needs migrating. A code
-this resolver does not know also reads as `unspecified` — the name stays
-reserved either way.
+A controller from before reasons existed stores a boolean; its `true` reads as
+`unspecified`, so nothing needs migrating. An unknown code also reads as
+`unspecified` — the name stays reserved either way.
 
 ### Querying by labelhash
 
@@ -245,18 +229,15 @@ returns the same record. The registrar keys `nameExpires` and `reservedNames` on
 the labelhash too, so the status fields do not need the label either. The
 resolver learns the name only by guessing the label and hashing it.
 
-Only the second-level label is a registry key, so only it is decoded — but it is
-decoded wherever it sits, so `sub.[<hash>].testing` reaches the node
-`sub.name.testing` does. Subname labels are needed as text to walk down to the
-record and are never hashed; a bracket label to the left of the 2LD is an
-ordinary label and is hashed as written. SMP routers from v22 send every 2LD
-this way, so in normal operation a registrable name never reaches this service.
+Only the second-level label is a registry key, and it is decoded wherever it
+sits: `sub.[<hash>].testing` reaches the node `sub.name.testing` does. Subname
+labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
+from v22 send every 2LD this way, so a registrable name normally never reaches
+this service.
 
-Read the answer from `status`. A name is free when the body says
-`unregistered` (a 404), and also when it says `expired` or `auction` (a 410) —
-though `auction` costs a premium on top. Every other status means somebody holds
-the name or the registry holds it back. Watch out for `noResolver`: it is also a
-404, but the name is taken.
+Read the answer from `status`. A name is free on `unregistered` (404), and on
+`expired` or `auction` (410) — `auction` costs a premium on top. Every other
+status means somebody holds the name. Watch `noResolver`: also a 404, but taken.
 
 The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
 SHA3-256, a different function that returns 64 valid-looking hex characters

@@ -73,8 +73,7 @@ resolveName env d = do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
           pure (Left (RESOLVER "resolver error"))
 
--- | Whether a name can be registered. Same timeout and failure handling as
--- 'resolveName', which is the other question this server asks the resolver.
+-- | Whether a name can be registered. Same timeout handling as 'resolveName'.
 getNameAvailability :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailability)
 getNameAvailability env d = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetchAvail env d))
@@ -90,37 +89,32 @@ fetchAvail :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameAvailabi
 fetchAvail NamesEnv {resolverEnv} d =
   either (Left . mapAvailError) mapAvailability <$> availabilityHttp resolverEnv (fullDomainName d)
 
--- | NAVL answers whether a name can be registered, so a resolver failure must
--- never look like an answer about the name: NOT_FOUND, which 'mapResolverError'
--- returns for 404/410/400, would read as "no such name, therefore free".
+-- | NAVL must not fail as NOT_FOUND: a client reads that as "no such name, so
+-- it is free". 'mapResolverError' returns it for 404/410/400.
 mapAvailError :: ResolverError -> NameErrorType
 mapAvailError = \case
   HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
   e -> mapResolverError e
 
--- | The resolver's own vocabulary. A lapsed registration past its grace period
--- is available again; one still in grace belongs to its previous owner; one in
--- the auction that follows grace is registrable, but not at the usual price.
--- Only the statuses that describe the name are answers - anything else means the
--- resolver could not answer, and saying "taken" to that would assert a
--- registration that was never read.
+-- | The resolver's vocabulary. Only the statuses that describe the name are
+-- answers; anything else means it could not answer, and "taken" would assert a
+-- registration nobody read.
 mapAvailability :: NameStatusResp -> Either NameErrorType NameAvailability
-mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds, nsPremium, nsReasonCode} = case nsStatus of
-  "unregistered" -> Right NAVailable
-  "expired" -> Right NAVailable
-  "grace" -> Right $ maybe lapsed NAInGrace nsGraceEnds
-  "auction" -> Right $ fromMaybe lapsed (NAAuction <$> nsPremium <*> nsAuctionEnds)
-  "reserved" -> Right $ NAReserved (maybe NRUnspecified mapReason nsReasonCode)
-  "registered" -> Right $ NATaken nsExpires
-  -- registered, but its records point nowhere
-  "noResolver" -> Right $ NATaken nsExpires
-  -- the resolver's own word for what it could not do, bounded because it is
-  -- its text, not ours, and it travels to the client inside ERR
-  s -> Left (RESOLVER (T.take 32 s))
+mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds, nsPremium, nsReasonCode} =
+  case nsStatus of
+    "unregistered" -> Right NAVailable
+    "expired" -> Right NAVailable
+    "grace" -> Right $ maybe lapsed NAInGrace nsGraceEnds
+    "auction" -> Right $ fromMaybe lapsed (NAAuction <$> nsPremium <*> nsAuctionEnds)
+    "reserved" -> Right $ NAReserved (maybe NRUnspecified mapReason nsReasonCode)
+    "registered" -> Right $ NATaken nsExpires
+    -- registered, but its records point nowhere
+    "noResolver" -> Right $ NATaken nsExpires
+    -- the resolver's own words, bounded: they reach the client inside ERR
+    s -> Left (RESOLVER (T.take 32 s))
   where
-    -- A lapsed name missing the deadline or price that its status carries:
-    -- withholding it is safer than quoting the ordinary price, but its expiry is
-    -- in the past, so it is not "registered until" anything.
+    -- lapsed, but missing the deadline or price its status carries. Withhold it
+    -- rather than quote the ordinary price; its expiry is already past.
     lapsed = NATaken Nothing
 
 -- | The controller's reservation reasons, as the resolver spells them.

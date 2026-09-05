@@ -209,8 +209,7 @@ namesSMPVersion = VersionSMP 20
 serverInfoSMPVersion :: VersionSMP
 serverInfoSMPVersion = VersionSMP 21
 
--- | NAVL: whether a name can be registered. A server below this does not know
--- the command, so a client must not send it.
+-- | NAVL. A server below this does not know the command.
 nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
