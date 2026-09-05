@@ -16,12 +16,13 @@ import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Types (status200, status400, status404, status410, status500, status502)
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
-import Simplex.Messaging.Encoding.String (strDecode)
-import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NameRecord (..))
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
+import Simplex.Messaging.Protocol (NameAvailability (..), ErrorType (..), NameErrorType (..), NameRecord (..), NameReservedReason (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
+    nameAvailability,
     newNamesEnv,
     pingEndpoint,
     resolveName,
@@ -53,6 +54,7 @@ smpNamesTests = do
   describe "ErrorType NAME wire encoding" errorWireSpec
   describe "Name parsing (SimplexDomain)" parseNameSpec
   describe "HTTP resolver" resolverSpec
+  describe "name availability" availabilitySpec
   describe "Resolver health probe" healthSpec
   describe "resolver_endpoint validation" validateUrlSpec
 
@@ -101,8 +103,72 @@ errorWireSpec =
     -- RESOLVER detail may contain spaces - must survive the round-trip
     smpDecode (smpEncode (NAME (RESOLVER "HTTP 502"))) `shouldBe` Right (NAME (RESOLVER "HTTP 502"))
 
+availabilitySpec :: Spec
+availabilitySpec = do
+  it "a name nobody has taken is available" $
+    answers status404 "{\"error\":\"unregistered\"}" NAVailable
+  it "a lapsed name past the auction is available at the usual price" $
+    answers status410 "{\"error\":\"expired\"}" NAVailable
+  it "a lapsed name still in grace says when its owner loses it" $
+    answers status410 "{\"error\":\"grace\",\"graceEnds\":1796377221}" (NAInGrace 1796377221)
+  it "a name in the auction after grace carries its premium and deadline" $
+    answers
+      status410
+      "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
+      (NAAuction "99999952316384526016153087" 1798191621)
+  it "a reserved name says why it is held back" $
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NAReserved NRTrademark)
+  it "a reserved name with no reason recorded is still reserved" $
+    answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnspecified)
+  it "a reason this server does not know does not lose the reservation" $
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NAReserved NRUnspecified)
+  it "a live registration is taken, and says until when" $
+    answers status200 "{\"status\":\"registered\",\"expires\":1811232000}" (NATaken (Just 1811232000))
+  it "a registration whose expiry could not be read is still taken" $
+    answers status200 "{\"status\":\"registered\",\"expires\":null}" (NATaken Nothing)
+  -- quoting the usual price for a name that costs a premium is the one wrong
+  -- answer here, so an answer missing its payload withholds the name instead
+  it "grace without its deadline is reported as taken" $
+    answers status410 "{\"error\":\"grace\"}" (NATaken Nothing)
+  it "an auction without its price is reported as taken" $
+    answers status410 "{\"error\":\"auction\",\"auctionEnds\":1798191621}" (NATaken Nothing)
+  it "every answer survives the wire" $
+    mapM_
+      (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
+      [ NAVailable,
+        NATaken (Just 1811232000),
+        NATaken Nothing,
+        NAInGrace 1796377221,
+        NAAuction "99999952316384526016153087" 1798191621,
+        NAReserved NRUnspecified,
+        NAReserved NRTrademark,
+        NAReserved NRPublicInterest,
+        NAReserved NROffensive,
+        NAReserved NRInternal,
+        NAReserved NRPremium
+      ]
+  where
+    answers st body expected =
+      withResolverServer (resolveResp st body) $ \port _ -> do
+        env <- newNamesEnv (testNamesConfig port)
+        nameAvailability env navlDomain `shouldReturn` Right expected
+    navlDomain = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+
 parseNameSpec :: Spec
 parseNameSpec = do
+  -- asking by hash is how a client learns whether a name is taken without
+  -- saying which name it is asking about
+  it "accepts a labelhash label" $
+    parseN ("[" <> T.replicate 64 "b" <> "].simplex") `shouldSatisfy` isRight
+  it "refuses a hash of the wrong width" $
+    parseN ("[" <> T.replicate 63 "b" <> "].simplex") `shouldSatisfy` isLeft
+  -- the resolver keys the registry on the bracketed form only; a bare hex string
+  -- would be hashed again as if it were a name, answering about a different key
+  it "refuses a bare hex string in place of a labelhash" $
+    parseN ("0x" <> T.replicate 64 "b" <> ".simplex") `shouldSatisfy` isLeft
+  it "keeps the brackets, which are what the resolver reads as a hash" $
+    (strEncode <$> parseN ("[" <> T.replicate 64 "b" <> "].simplex"))
+      `shouldBe` Right (encodeUtf8 ("[" <> T.replicate 64 "b" <> "].simplex"))
   it "accepts a valid simplex-TLD name" $
     case parseN "privacy.simplex" of
       Right d -> do

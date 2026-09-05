@@ -67,6 +67,7 @@ module Simplex.Messaging.Agent
     deleteConnShortLink,
     getConnShortLink,
     resolveSimplexName,
+    simplexNameAvailability,
     getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -226,6 +227,7 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
+    NameAvailability,
     NameRecord,
     NtfServer,
     ProtoServerWithAuth (..),
@@ -462,6 +464,10 @@ getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameRecord
 resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
+
+simplexNameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameAvailability
+simplexNameAvailability c nm userId domain = withAgentEnv c $ simplexNameAvailability' c nm userId domain
+{-# INLINE simplexNameAvailability #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
@@ -1272,6 +1278,11 @@ resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDom
 resolveSimplexName' c nm userId domain = do
   resolverSrv <- getNextNameServer c userId
   resolveName c nm userId resolverSrv domain
+
+simplexNameAvailability' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameAvailability
+simplexNameAvailability' c nm userId domain = do
+  resolverSrv <- getNextNameServer c userId
+  nameAvailability c nm userId resolverSrv domain
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

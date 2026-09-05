@@ -33,7 +33,9 @@ import Simplex.Messaging.Protocol
     Command (..),
     CorrId (..),
     ErrorType (..),
+    NameAvailability (..),
     NameErrorType (..),
+    NameReservedReason (..),
     SParty (..),
     Transmission,
     TransmissionForAuth (..),
@@ -70,6 +72,13 @@ sendRslv h@THandle {params} corrId d = do
   r :| _ <- tGetClient h
   pure r
 
+sendNavl :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexDomain -> IO (Transmission (Either ErrorType BrokerMsg))
+sendNavl h@THandle {params} corrId d = do
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (NAVL d))
+  [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
+  r :| _ <- tGetClient h
+  pure r
+
 rslvTests :: Spec
 rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
@@ -83,6 +92,13 @@ rslvTests = do
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
+  describe "NAVL (availability)" $ do
+    it "a name nobody has taken comes back AVAILABLE" testNavlAvailable
+    it "a lapsed name in its auction comes back with the premium and deadline" testNavlAuction
+    it "a reserved name comes back with the reason it is held back" testNavlReserved
+    it "no names config -> NAME NO_RESOLVER" testNavlDisabled
+    it "refuses to send NAVL on a session below nameAvailSMPVersion" testNavlVersion
+    it "PFWD-wrapped NAVL reaches the resolver via the proxy" testNavlForwarded
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
@@ -162,6 +178,69 @@ testRslvSuccess =
       case resp of
         Right (RNAME nr) -> nr `shouldBe` testNameRecord
         _ -> expectationFailure $ "expected Right (RNAME ..), got: " <> show resp
+
+testNavlAvailable :: IO ()
+testNavlAvailable =
+  withResolverServer (status404, "{\"error\":\"unregistered\"}") $
+    testSMPClient @TLS $ \h -> do
+      (corrId, _entId, resp) <- sendNavl h "na01" (domain "ghost.simplex")
+      corrId `shouldBe` CorrId "na01"
+      resp `shouldBe` Right (NAVAIL NAVailable)
+
+testNavlAuction :: IO ()
+testNavlAuction =
+  withResolverServer (status410, auctionBody) $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendNavl h "na02" (domain "lapsed.simplex")
+      resp `shouldBe` Right (NAVAIL (NAAuction "99999952316384526016153087" 1798191621))
+
+testNavlReserved :: IO ()
+testNavlReserved =
+  withResolverServer (status404, "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}") $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendNavl h "na03" (domain "acme.simplex")
+      resp `shouldBe` Right (NAVAIL (NAReserved NRTrademark))
+
+testNavlDisabled :: IO ()
+testNavlDisabled =
+  withSmpServerConfigOn (transport @TLS) memCfg testPort $ const $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendNavl h "na04" (domain "alice.simplex")
+      resp `shouldBe` Right (ERR (NAME NO_RESOLVER))
+
+testNavlVersion :: IO ()
+testNavlVersion =
+  withResolverServer (status404, "{\"error\":\"unregistered\"}") $ do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let srv = SMPServer testHost testPort testKeyHash
+        oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion rcvServiceSMPVersion}
+    pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
+    pc <- either (fail . show) pure pcE
+    r <- runExceptT (directNameAvailability pc NRMInteractive (domain "alice.simplex"))
+    case r of
+      Left (PCETransportError TEVersion) -> pure ()
+      _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
+
+testNavlForwarded :: IO ()
+testNavlForwarded =
+  withProxyAndResolver (status410, auctionBody) $ do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let proxyServ = SMPServer testHost testPort testKeyHash
+        relayServ = SMPServer testHost2 testPort2 testKeyHash
+        cfg' = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
+    pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
+    pc <- either (fail . show) pure pcE
+    sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
+    r <- runExceptT (proxyNameAvailability pc NRMInteractive sess (domain "lapsed.simplex"))
+    case r of
+      Right (Right a) -> a `shouldBe` NAAuction "99999952316384526016153087" 1798191621
+      _ -> expectationFailure $ "expected Right (Right NAAuction ..), got: " <> show r
+
+-- a name one day past its grace period, priced by the .testing auction curve
+auctionBody :: LB.ByteString
+auctionBody = "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure

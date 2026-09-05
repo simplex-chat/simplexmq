@@ -110,7 +110,7 @@ import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, resolveName)
+import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, nameAvailability, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1277,6 +1277,7 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, comma
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
     vc SResolver (RSLV _) = VRVerified Nothing
+    vc SResolver (NAVL _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True
@@ -1494,6 +1495,11 @@ client
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
     -- concurrency is limited by serverResolverConcurrency in forkCmd.
+    nameAvailMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
+    nameAvailMsg nenv d =
+      liftIO (nameAvailability nenv d) <&> \case
+        Right a -> NAVAIL a
+        Left e -> ERR $ NAME e
     resolveNameMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
     resolveNameMsg nenv d = do
       st <- asks (rslvStats . serverStats)
@@ -1520,6 +1526,9 @@ client
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
         Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg nenv d)
+      Cmd SResolver (NAVL d) -> rslvNamesEnv >>= \case
+        Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (nameAvailMsg nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2152,6 +2161,11 @@ client
                 Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
                   msg <- resolveNameMsg nenv d
                   either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+              Cmd SResolver (NAVL d) -> lift $ rslvNamesEnv >>= \case
+                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
+                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
+                  msg <- nameAvailMsg nenv d
+                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
               _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
@@ -2172,6 +2186,7 @@ client
                     Cmd SSenderLink (LKEY _) -> True
                     Cmd SSenderLink LGET -> True
                     Cmd SResolver (RSLV _) -> True
+                    Cmd SResolver (NAVL _) -> True
                     _ -> False
                   verified = \case
                     VRVerified q -> Right (q, t'')

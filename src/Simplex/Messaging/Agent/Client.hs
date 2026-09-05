@@ -69,6 +69,7 @@ module Simplex.Messaging.Agent.Client
     secureGetQueueLink,
     getQueueLink,
     resolveName,
+    nameAvailability,
     getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
@@ -269,6 +270,7 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
+    NameAvailability,
     NameRecord,
     NtfServer,
     NtfServerWithAuth,
@@ -1999,6 +2001,15 @@ resolveName c nm userId server domain =
   where
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
+
+-- | Ask whether a name can be registered, by the same proxy-preferred path as
+-- `resolveName`.
+nameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameAvailability
+nameAvailability c nm userId server domain =
+  snd <$> sendOrProxySMPCommand c nm userId server "" "NAVL" NoEntity availViaProxy availDirectly
+  where
+    availViaProxy smp proxySess = proxyNameAvailability smp nm proxySess domain
+    availDirectly smp = directNameAvailability smp nm domain
 
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means

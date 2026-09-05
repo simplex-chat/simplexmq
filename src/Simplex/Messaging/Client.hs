@@ -75,6 +75,8 @@ module Simplex.Messaging.Client
     proxySMPMessage,
     proxyResolveName,
     directResolveName,
+    proxyNameAvailability,
+    directNameAvailability,
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
@@ -1073,6 +1075,28 @@ directResolveName c nm name
   | thVersion (thParams c) >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV name)) >>= \case
         RNAME nr -> pure nr
+        r -> throwE $ unexpectedResponse r
+  | otherwise = throwE $ PCETransportError TEVersion
+
+-- | Ask whether a name can be registered, over PFWD. Availability is a second
+-- question about the same name rather than a variant of resolution, so it has
+-- its own command and its own version gate.
+proxyNameAvailability :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameAvailability)
+proxyNameAvailability c nm proxiedRelay name
+  | prVersion proxiedRelay >= nameAvailSMPVersion =
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (NAVL name) >>= \case
+        Right (NAVAIL a) -> pure $ Right a
+        Right r -> throwE $ unexpectedResponse r
+        Left e -> pure $ Left e
+  | otherwise = throwE $ PCETransportError TEVersion
+
+-- | Direct (non-PFWD) availability query, exposing the client IP to the
+-- resolver exactly as `directResolveName` does.
+directNameAvailability :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameAvailability
+directNameAvailability c nm name
+  | thVersion (thParams c) >= nameAvailSMPVersion =
+      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (NAVL name)) >>= \case
+        NAVAIL a -> pure a
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
 

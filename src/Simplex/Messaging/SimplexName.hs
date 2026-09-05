@@ -57,12 +57,22 @@ instance StrEncoding SimplexNameType where
   strP = A.char '#' $> NTPublicGroup <|> A.char '@' $> NTContact
 
 nameLabelP :: AT.Parser Text
-nameLabelP = do
+nameLabelP = labelhashP <|> do
   label <- T.intercalate "-" <$> AT.takeWhile1 (\c -> isNameLetter c || isDigit c) `AT.sepBy1` AT.char '-'
   -- DNS label limit: each dot-separated component is at most 63 bytes (labels
   -- are ASCII, so character count == byte count)
   if T.length label > 63 then fail "name label exceeds 63 bytes" else pure label
   where
+    -- A label given as its own keccak256 hash, so a client can ask whether a
+    -- name is taken without saying which name. ENS's encoding for a label whose
+    -- preimage is unknown: the brackets are outside the name character set, so
+    -- the form cannot collide with a registrable name, and the resolver reads
+    -- the hash as the registry key instead of hashing the label again. 66
+    -- characters, so it is exempt from the DNS limit above: it is a key into the
+    -- registry, not a DNS label.
+    labelhashP = do
+      hex <- AT.char '[' *> AT.takeWhile1 (\c -> isDigit c || c >= 'a' && c <= 'f') <* AT.char ']'
+      if T.length hex == 64 then pure ("[" <> hex <> "]") else fail "labelhash: expected 64 hex digits"
     -- ASCII letters only. SNRC contracts hash byte sequences via keccak; ENS
     -- uses UTS-46 + Punycode for IDN, which we do not implement. Admitting
     -- Cyrillic / Greek / etc. via Data.Char.isAlpha would (a) make namehash
