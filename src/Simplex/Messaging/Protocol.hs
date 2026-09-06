@@ -1600,19 +1600,17 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | Whether a name can be registered, and if not, why. Resolution alone cannot
--- tell a lapsed name from a live one.
 data NameAvailability
-  = NAVailable
-  | -- | registered to someone until this time, absent when the router could not
-    -- read the registration
+  = -- | registrable at the ordinary price
+    NAVailable
+  | -- | registered, until this time when the router could read it
     NATaken {naExpires :: Maybe Int64}
-  | -- | lapsed, and renewable by its previous owner until this time
+  | -- | lapsed, renewable by its previous owner until this time
     NAInGrace {naGraceEnds :: Int64}
-  | -- | registrable by anyone, but at a premium in attoUSD that decays to
-    -- nothing by this time
+  | -- | registrable by anyone, at this premium in attoUSD until this time
     NAAuction {naPremium :: Text, naAuctionEnds :: Int64}
-  | NAReserved {naReason :: NameReservedReason}
+  | -- | held back by the registry
+    NAReserved {naReason :: NameReservedReason}
   deriving (Eq, Show)
 
 instance Encoding NameAvailability where
@@ -1631,8 +1629,6 @@ instance Encoding NameAvailability where
       "RESERVED" -> NAReserved <$> _smpP
       _ -> fail "bad NameAvailability"
 
--- | Why a name is held back, as a code so the app can word it in the user's
--- language. Mirrors the reasons the registry controller stores.
 data NameReservedReason
   = NRUnspecified
   | NRTrademark
@@ -1640,8 +1636,7 @@ data NameReservedReason
   | NROffensive
   | NRInternal
   | NRPremium
-  | -- | a reason this version cannot name, so the name stays reserved rather
-    -- than the answer being lost
+  | -- | a reason this version cannot name
     NRUnknown
   deriving (Eq, Show)
 

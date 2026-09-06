@@ -99,16 +99,16 @@ rslvTests = do
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
   describe "NAVL (availability)" $ do
-    it "a name nobody has taken comes back AVAILABLE" testNavlAvailable
-    it "a lapsed name in its auction comes back with the premium and deadline" testNavlAuction
-    it "a reserved name comes back with the reason it is held back" testNavlReserved
+    it "unregistered comes back AVAILABLE" testNavlAvailable
+    it "auction comes back with premium" testNavlAuction
+    it "reserved comes back with the reason" testNavlReserved
     it "no names config -> NAME NO_RESOLVER" testNavlDisabled
-    it "refuses to send NAVL on a session below nameAvailSMPVersion" testNavlVersion
-    it "PFWD-wrapped NAVL reaches the resolver via the proxy" testNavlForwarded
+    it "refuses NAVL below v22" testNavlVersion
+    it "PFWD-wrapped NAVL reaches the resolver" testNavlForwarded
   describe "hashed lookups" $ do
-    it "RSLV sends the second-level label as its hash, never the name" testRslvSendsTheHash
-    it "NAVL sends the second-level label as its hash, never the name" testNavlSendsTheHash
-    it "a subname keeps its own labels as text, hashing only the 2LD" testSubnameKeepsItsLabels
+    it "RSLV sends the 2LD as its hash" testRslvSendsTheHash
+    it "NAVL sends the 2LD as its hash" testNavlSendsTheHash
+    it "subname labels stay text" testSubnameKeepsItsLabels
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =

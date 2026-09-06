@@ -105,62 +105,62 @@ errorWireSpec =
 
 availabilitySpec :: Spec
 availabilitySpec = do
-  it "a name nobody has taken is available" $
+  it "unregistered name is available" $
     answers status404 "{\"error\":\"unregistered\"}" NAVailable
-  it "a lapsed name past the auction is available at the usual price" $
+  it "expired name is available" $
     answers status410 "{\"error\":\"expired\"}" NAVailable
-  it "a lapsed name still in grace says when its owner loses it" $
+  it "name in grace carries graceEnds" $
     answers status410 "{\"error\":\"grace\",\"graceEnds\":1796377221}" (NAInGrace 1796377221)
-  it "a name in the auction after grace carries its premium and deadline" $
+  it "auction carries premium and auctionEnds" $
     answers
       status410
       "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
       (NAAuction "99999952316384526016153087" 1798191621)
-  it "a reserved name says why it is held back" $
+  it "reserved name carries the reason" $
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NAReserved NRTrademark)
   -- an older resolver sends no reasonCode; that is not the chain saying "none"
-  it "a reserved name with no reasonCode at all is still reserved" $
+  it "no reasonCode still reads as reserved" $
     answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnknown)
   -- a later version may name reasons this one cannot; the reservation must
   -- survive that, or a client would offer a name it cannot register
   it "a reason from a later version still reads as reserved" $
     smpDecode "RESERVED SOMETHING_NEW" `shouldBe` Right (NAReserved NRUnknown)
   -- the resolver names this one explicitly; it is not the same as not knowing
-  it "a reservation the chain recorded no reason for says so" $
+  it "unspecified reason reads as unspecified" $
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"unspecified\"}" (NAReserved NRUnspecified)
-  it "an unknown reason still reads as reserved" $
+  it "unknown reason still reads as reserved" $
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NAReserved NRUnknown)
-  it "a live registration is taken, and says until when" $
+  it "registered name is taken, with expiry" $
     answers status200 "{\"status\":\"registered\",\"expires\":1811232000}" (NATaken (Just 1811232000))
-  it "a registration whose expiry could not be read is still taken" $
+  it "registered without expiry is taken" $
     answers status200 "{\"status\":\"registered\",\"expires\":null}" (NATaken Nothing)
   -- an answer missing its payload withholds the name: quoting the usual price
   -- for one that costs a premium is the wrong answer
-  it "grace without its deadline is reported as taken" $
+  it "grace without graceEnds is taken" $
     answers status410 "{\"error\":\"grace\"}" (NATaken Nothing)
-  it "an auction without its price is reported as taken" $
+  it "auction without premium is taken" $
     answers status410 "{\"error\":\"auction\",\"auctionEnds\":1798191621}" (NATaken Nothing)
-  it "a registered name whose records point nowhere is still taken" $
+  it "noResolver is taken" $
     answers status404 "{\"error\":\"noResolver\",\"expires\":1811232000}" (NATaken (Just 1811232000))
   -- the wire length-prefixes the price with one byte, so a longer or
   -- non-numeric string is dropped rather than re-encoded
-  it "a premium too long to encode is not quoted" $
+  it "over-long premium is dropped" $
     answers status410 (jsonBody ("{\"error\":\"auction\",\"premium\":\"" <> replicate 300 '9' <> "\",\"auctionEnds\":1798191621}")) (NATaken Nothing)
-  it "a premium that is not a decimal integer is not quoted" $
+  it "non-decimal premium is dropped" $
     answers status410 "{\"error\":\"auction\",\"premium\":\"1e26\",\"auctionEnds\":1798191621}" (NATaken Nothing)
   -- a resolver that could not answer must not look like an answer: TAKEN would
   -- assert a registration nobody read, NOT_FOUND would read as "free"
-  it "an upstream RPC failure is a resolver error, not a taken name" $
+  it "upstream failure is a resolver error" $
     refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "upstreamError")
-  it "a TLD this resolver has no registry for is a resolver error" $
+  it "unconfigured TLD is a resolver error" $
     refuses status400 "{\"error\":\"tldNotConfigured\"}" (RESOLVER "tldNotConfigured")
-  it "a TLD with no registrar is a resolver error" $
+  it "unreadable status is a resolver error" $
     refuses status200 "{\"status\":\"unknown\",\"expires\":null}" (RESOLVER "unknown")
-  it "a long status is truncated, not passed through" $
+  it "long status is truncated" $
     refuses status502 (jsonBody ("{\"error\":\"" <> replicate 400 'e' <> "\"}")) (RESOLVER (T.replicate 32 "e"))
-  it "a body that is not the resolver's JSON is never NOT_FOUND" $
+  it "non-JSON body is never NOT_FOUND" $
     refuses status404 "<html>gateway</html>" (RESOLVER "HTTP 404")
-  it "a body past the configured cap is a resolver error" $
+  it "over-cap body is a resolver error" $
     withResolverServer (resolveResp status200 (jsonBody ("{\"status\":\"registered\",\"pad\":\"" <> replicate 400 'x' <> "\"}"))) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 200}
       getNameAvailability env navlDomain `shouldReturn` Left (RESOLVER "response too large")
@@ -198,28 +198,28 @@ parseNameSpec = do
   it "refuses a hash of the wrong width" $
     parseN ("[" <> T.replicate 63 "b" <> "].simplex") `shouldSatisfy` isLeft
   -- only the bracketed form is a key; a bare hex string would be hashed again
-  it "refuses a bare hex string in place of a labelhash" $
+  it "refuses a bare hex string" $
     parseN ("0x" <> T.replicate 64 "b" <> ".simplex") `shouldSatisfy` isLeft
-  it "keeps the brackets, which are what the resolver reads as a hash" $
+  it "keeps the brackets" $
     (strEncode <$> parseN ("[" <> T.replicate 64 "b" <> "].simplex"))
       `shouldBe` Right (encodeUtf8 ("[" <> T.replicate 64 "b" <> "].simplex"))
   -- only the 2LD is a registry key; subname labels are needed as text
-  it "accepts a hashed second-level label under a subname" $
+  it "accepts a hashed 2LD under a subname" $
     parseN ("x.[" <> T.replicate 64 "b" <> "].simplex") `shouldSatisfy` isRight
   it "refuses a hashed subname label" $
     parseN ("[" <> T.replicate 64 "b" <> "].alice.simplex") `shouldSatisfy` isLeft
-  it "refuses a labelhash under a web TLD, which has no registry" $
+  it "refuses a labelhash under a web TLD" $
     parseN ("[" <> T.replicate 64 "b" <> "].com") `shouldSatisfy` isLeft
   -- keccak-256("alice"), the same constant the resolver's own tests use
-  it "hashes the second-level label to the registry key" $
+  it "hashes the 2LD to the registry key" $
     (fullDomainName . hashedDomain <$> parseN "alice.simplex")
       `shouldBe` Right "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
   it "leaves subname labels as text" $
     (fullDomainName . hashedDomain <$> parseN "x.alice.simplex")
       `shouldBe` Right "x.[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
-  it "leaves a web name alone, it has no registry" $
+  it "leaves a web name alone" $
     (fullDomainName . hashedDomain <$> parseN "example.com") `shouldBe` Right "example.com"
-  it "does not hash a name that is already a hash" $
+  it "does not hash a hash" $
     (fullDomainName . hashedDomain . hashedDomain <$> parseN "alice.simplex")
       `shouldBe` Right "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
   it "accepts a valid simplex-TLD name" $

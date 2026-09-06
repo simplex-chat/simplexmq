@@ -87,9 +87,9 @@ resolveNameTests = do
   describe "success path" $
     it "returns NameRecord" testDirectSuccess
   describe "name availability" $ do
-    it "answers through the agent's own server selection" testAvailSuccess
-    it "answers NAME NO_RESOLVER when the chosen server has none" testAvailNoResolver
-    it "fails agent-side with NO_NAME_SERVERS when no server has the names role" testAvailNoNameServers
+    it "answers via agent server selection" testAvailSuccess
+    it "NAME NO_RESOLVER without a resolver" testAvailNoResolver
+    it "NO_NAME_SERVERS without a names server" testAvailNoNameServers
 
 testAvailSuccess :: HasCallStack => IO ()
 testAvailSuccess =
