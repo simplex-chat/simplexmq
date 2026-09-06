@@ -118,8 +118,9 @@ availabilitySpec = do
       (NAAuction "99999952316384526016153087" 1798191621)
   it "a reserved name says why it is held back" $
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NAReserved NRTrademark)
+  -- an older resolver sends no reasonCode; that is not the chain saying "none"
   it "a reserved name with no reasonCode at all is still reserved" $
-    answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnspecified)
+    answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnknown)
   -- a later version may name reasons this one cannot; the reservation must
   -- survive that, or a client would offer a name it cannot register
   it "a reason from a later version still reads as reserved" $

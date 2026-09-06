@@ -106,7 +106,7 @@ mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds,
     "expired" -> Right NAVailable
     "grace" -> Right $ maybe lapsed NAInGrace nsGraceEnds
     "auction" -> Right $ fromMaybe lapsed (NAAuction <$> nsPremium <*> nsAuctionEnds)
-    "reserved" -> Right $ NAReserved (maybe NRUnspecified mapReason nsReasonCode)
+    "reserved" -> Right $ NAReserved (maybe NRUnknown mapReason nsReasonCode)
     "registered" -> Right $ NATaken nsExpires
     -- registered, but its records point nowhere
     "noResolver" -> Right $ NATaken nsExpires
