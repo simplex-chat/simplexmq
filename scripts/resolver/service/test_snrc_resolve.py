@@ -485,11 +485,12 @@ class ReservedReasonTests(unittest.TestCase):
         self.assertEqual(reg["reason"], "reserved for a brand or public interest")
 
     def test_an_enum_value_this_resolver_predates_is_not_dropped(self):
-        """A new Reason still reads as reserved; only the wording falls back."""
+        """A new Reason still reads as reserved, and says it is unknown rather
+        than claiming the chain recorded none."""
         snrc.eth_call = self._reserved_as(99)
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["status"], "reserved")
-        self.assertEqual(reg["reasonCode"], "unspecified")
+        self.assertEqual(reg["reasonCode"], "unknown")
 
     def test_a_reserved_name_carries_the_reason(self):
         snrc.eth_call = self._chain(0, True)
@@ -601,17 +602,13 @@ class AuctionTests(unittest.TestCase):
         return self.now - self.GRACE - 1 - days_into_auction * 86400
 
     def test_a_name_just_past_grace_is_in_auction_not_merely_expired(self):
-        snrc.eth_call = self._chain(self._lapsed(0))
+        expires = self._lapsed(0)
+        snrc.eth_call = self._chain(expires)
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["status"], "auction")
         self.assertEqual(
             reg["premium"], str(self.START_PREMIUM - (self.START_PREMIUM >> self.TOTAL_DAYS))
         )
-
-    def test_the_auction_ends_a_full_window_after_grace(self):
-        expires = self._lapsed(0)
-        snrc.eth_call = self._chain(expires)
-        reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["graceEnds"], expires + self.GRACE)
         self.assertEqual(
             reg["auctionEnds"], expires + self.GRACE + self.TOTAL_DAYS * 86400

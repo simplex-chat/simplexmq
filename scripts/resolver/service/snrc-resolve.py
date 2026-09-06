@@ -115,6 +115,8 @@ RESERVED_REASONS = {
     5: ("internal", "reserved for SimpleX"),
     6: ("premium", "reserved as a premium name"),
 }
+# a Reason added to the contract after this resolver: still reserved, unworded
+UNKNOWN_REASON = ("unknown", "reserved")
 
 # SLIP-44 coin types (https://github.com/satoshilabs/slips/blob/master/slip-0044.md)
 COIN_ETH = 60
@@ -305,7 +307,7 @@ def name_status(name: str):
     if status in ("unregistered", "expired"):
         code = reservation_reason(tld, token)
         if code:
-            status, reason = "reserved", RESERVED_REASONS.get(code, RESERVED_REASONS[1])
+            status, reason = "reserved", RESERVED_REASONS.get(code, UNKNOWN_REASON)
         elif status == "expired":
             auction_ends, premium = auction(tld, expires + grace, now)
             if auction_ends:

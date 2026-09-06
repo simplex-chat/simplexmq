@@ -1486,7 +1486,7 @@ From v22 a client MUST hash the second-level label of every `RSLV` and `NAVL`.
 Older routers cannot parse the form, so a client on an older session sends the
 name. A hashed query's record names the hash; the client restores the name it
 used. A router answering a hashed query does not know the name's length, so it
-cannot know its price or whether it meets a minimum-length policy.
+cannot check a minimum-length policy either.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1601,8 +1601,8 @@ reason       = %s"UNSPECIFIED" / %s"TRADEMARK" / %s"PUBLIC_INTEREST"
 | `RESERVED` | held back by the registry for `reason` | do not offer it; explain `reason` |
 
 `premium` is a decimal string because prices are 256-bit integers. It is the
-surcharge only: a router answering a hashed query does not know the label's
-length, so it cannot know the base price. The client adds that.
+surcharge only: the base price depends on the label's length, which a hashed
+query does not carry. The client adds that.
 
 Times are absolute, not durations, so a client can count down without
 re-querying. A deadline is not permission to register; only the registry grants

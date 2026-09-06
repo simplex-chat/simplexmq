@@ -118,12 +118,15 @@ availabilitySpec = do
       (NAAuction "99999952316384526016153087" 1798191621)
   it "a reserved name says why it is held back" $
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NAReserved NRTrademark)
-  it "a reserved name with no reason recorded is still reserved" $
+  it "a reserved name with no reasonCode at all is still reserved" $
     answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnspecified)
   -- a later version may name reasons this one cannot; the reservation must
   -- survive that, or a client would offer a name it cannot register
   it "a reason from a later version still reads as reserved" $
     smpDecode "RESERVED SOMETHING_NEW" `shouldBe` Right (NAReserved NRUnknown)
+  -- the resolver names this one explicitly; it is not the same as not knowing
+  it "a reservation the chain recorded no reason for says so" $
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"unspecified\"}" (NAReserved NRUnspecified)
   it "an unknown reason still reads as reserved" $
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NAReserved NRUnknown)
   it "a live registration is taken, and says until when" $

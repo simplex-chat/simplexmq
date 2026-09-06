@@ -120,6 +120,7 @@ mapAvailability NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds,
 -- | The controller's reservation reasons, as the resolver spells them.
 mapReason :: Text -> NameReservedReason
 mapReason = \case
+  "unspecified" -> NRUnspecified
   "trademark" -> NRTrademark
   "publicInterest" -> NRPublicInterest
   "offensive" -> NROffensive

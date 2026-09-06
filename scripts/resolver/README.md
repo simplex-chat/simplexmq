@@ -177,10 +177,9 @@ premium that halves each day until it reaches zero. A name in that window
 reports `auction` instead of `expired`, with `premium` (attoUSD as a decimal
 string, since no JSON number holds a 256-bit integer) and `auctionEnds`.
 
-The premium depends only on when the registration lapsed, not on the label, so a
-labelhash query gets it too. The base price does depend on the label's length,
-which a hashed query does not carry, so `premium` is the surcharge alone and the
-client adds the base price.
+`premium` is the surcharge alone: it depends only on when the registration
+lapsed, so a labelhash query gets it, but the base price depends on the label's
+length, which a hash does not carry. The client adds that.
 
 The oracle comes from the controller's `prices()`, so no extra configuration is
 needed. Its window is read from the chain; zero days switches the auction off.
@@ -208,10 +207,10 @@ English sentence for a human reading this API. Clients should branch on
 | `offensive` | reserved as an offensive name |
 | `internal` | reserved for SimpleX |
 | `premium` | reserved as a premium name |
+| `unknown` | a reason added to the contract after this resolver; still reserved |
 
 A controller from before reasons existed stores a boolean; its `true` reads as
-`unspecified`, so nothing needs migrating. An unknown code also reads as
-`unspecified` — the name stays reserved either way.
+`unspecified`, so nothing needs migrating.
 
 ### Querying by labelhash
 
