@@ -120,8 +120,12 @@ availabilitySpec = do
     answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NAReserved NRTrademark)
   it "a reserved name with no reason recorded is still reserved" $
     answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnspecified)
+  -- a later version may name reasons this one cannot; the reservation must
+  -- survive that, or a client would offer a name it cannot register
+  it "a reason from a later version still reads as reserved" $
+    smpDecode "RESERVED SOMETHING_NEW" `shouldBe` Right (NAReserved NRUnknown)
   it "an unknown reason still reads as reserved" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NAReserved NRUnspecified)
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NAReserved NRUnknown)
   it "a live registration is taken, and says until when" $
     answers status200 "{\"status\":\"registered\",\"expires\":1811232000}" (NATaken (Just 1811232000))
   it "a registration whose expiry could not be read is still taken" $
@@ -169,7 +173,8 @@ availabilitySpec = do
         NAReserved NRPublicInterest,
         NAReserved NROffensive,
         NAReserved NRInternal,
-        NAReserved NRPremium
+        NAReserved NRPremium,
+        NAReserved NRUnknown
       ]
   where
     jsonBody = LB.fromStrict . B.pack

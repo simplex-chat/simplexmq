@@ -1589,7 +1589,7 @@ grace-ends   = 8*8 OCTET ; Int64, network byte order (big-endian), seconds since
 auction-ends = 8*8 OCTET ; as grace-ends, and follows premium with no separator
 premium      = shortString ; ASCII decimal integer, in attoUSD (1e-18 USD)
 reason       = %s"UNSPECIFIED" / %s"TRADEMARK" / %s"PUBLIC_INTEREST"
-             / %s"OFFENSIVE" / %s"INTERNAL" / %s"PREMIUM"
+             / %s"OFFENSIVE" / %s"INTERNAL" / %s"PREMIUM" / %s"UNKNOWN"
 ```
 
 | Answer | Condition | Client action |
@@ -1616,7 +1616,11 @@ A router that cannot read the status at all MUST answer `ERR NAME RESOLVER
 <detail>`. Not `TAKEN`, which asserts a registration it never read, and not
 `NOT_FOUND`, which reads as "free". This covers an unreachable chain, an
 unconfigured TLD, and any status the router does not recognise. A client MUST
-treat an unknown `reason` as `UNSPECIFIED`, not as "not reserved".
+read a `reason` it does not know as `UNKNOWN` and still treat the name as
+reserved: a later version may reserve names for reasons this one cannot name,
+and losing the reservation over that would offer a name that cannot be
+registered. A router sends `UNKNOWN` for a reason its own resolver did not
+name.
 
 `NAVL` fails as `RSLV` does: `ERR NAME NO_RESOLVER`, or `ERR NAME RESOLVER
 <detail>`. It is gated on v22 and MUST NOT be sent to a lower version. Like

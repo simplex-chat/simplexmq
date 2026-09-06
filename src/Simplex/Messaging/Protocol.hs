@@ -1640,6 +1640,9 @@ data NameReservedReason
   | NROffensive
   | NRInternal
   | NRPremium
+  | -- | a reason this version cannot name, so the name stays reserved rather
+    -- than the answer being lost
+    NRUnknown
   deriving (Eq, Show)
 
 instance Encoding NameReservedReason where
@@ -1650,6 +1653,7 @@ instance Encoding NameReservedReason where
     NROffensive -> "OFFENSIVE"
     NRInternal -> "INTERNAL"
     NRPremium -> "PREMIUM"
+    NRUnknown -> "UNKNOWN"
   smpP =
     A.takeTill (== ' ') >>= \case
       "UNSPECIFIED" -> pure NRUnspecified
@@ -1658,7 +1662,9 @@ instance Encoding NameReservedReason where
       "OFFENSIVE" -> pure NROffensive
       "INTERNAL" -> pure NRInternal
       "PREMIUM" -> pure NRPremium
-      _ -> fail "bad NameReservedReason"
+      -- a later version may reserve names for reasons this one has no word for;
+      -- losing "reserved" over that would be worse than losing the wording
+      _ -> pure NRUnknown
 
 -- | Name resolution error
 data NameErrorType
@@ -2489,3 +2495,6 @@ $(J.deriveJSON defaultJSON ''BlockingInfo)
 
 -- run deriveJSON in one TH splice to allow mutual instance
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
+
+-- clients report the reason to the user, so it has to reach their API as JSON
+$(J.deriveJSON (enumJSON $ dropPrefix "NR") ''NameReservedReason)

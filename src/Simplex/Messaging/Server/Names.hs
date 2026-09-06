@@ -125,7 +125,8 @@ mapReason = \case
   "offensive" -> NROffensive
   "internal" -> NRInternal
   "premium" -> NRPremium
-  _ -> NRUnspecified
+  -- a code this router has no word for: still reserved, just unworded
+  _ -> NRUnknown
 
 fetch :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameRecord)
 fetch NamesEnv {resolverEnv} d =
