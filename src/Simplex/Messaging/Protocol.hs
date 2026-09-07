@@ -1592,9 +1592,6 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | What the router knows about a name. Resolving a name and asking whether it
--- can be registered are the same question to the registry, and a client that
--- offers a taken name to register wants to show what took it.
 data NameResponse
   = -- | resolves, and the registration runs until this time
     NRNameRecord {nameRecord :: NameRecord, expires :: Maybe Int64}
