@@ -1689,7 +1689,7 @@ instance Encoding NameReservedReason where
       "PREMIUM" -> pure NRPremium
       -- a later version may reserve names for reasons this one has no word for;
       -- losing "reserved" over that would be worse than losing the wording
-      _ -> pure NRUnknown
+      t -> pure $ NRUnknown t
 
 -- | Name resolution error
 data NameErrorType
