@@ -1681,7 +1681,7 @@ instance Encoding NameReservedReason where
     NROffensive -> "OFFENSIVE"
     NRInternal -> "INTERNAL"
     NRPremium -> "PREMIUM"
-    NRUnknown -> "UNKNOWN"
+    NRUnknown t -> t
   smpP =
     A.takeTill (== ' ') >>= \case
       "UNSPECIFIED" -> pure NRUnspecified
