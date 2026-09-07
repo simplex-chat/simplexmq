@@ -80,12 +80,11 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
-    NameResult,
     NameRegistration (..),
     NamePricing (..),
-    MicroUSD (..),
+    USDCents (..),
     NameReservedReason (..),
-    reservedReason,
+    parseReservedReason,
     NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
@@ -276,6 +275,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
+import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
@@ -746,7 +746,7 @@ data BrokerMsg where
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   -- What the router knows about a SimpleX name.
-  RNAME :: Maybe NameReservedReason -> Maybe NameRegistration -> Maybe NameRecord -> BrokerMsg
+  RNAME :: NameRegistration -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -1595,132 +1595,140 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | USD in millionths, converted by the resolver from the registry's attoUSD.
--- Int64 reaches ~9.2 trillion USD, and the smallest value in play - the last
--- step of a decaying premium - is a millionth of a dollar.
-newtype MicroUSD = MicroUSD Int64
+-- | US cents. Rounded up wherever the registry's unit does not divide evenly,
+-- so a quote is never below what is charged; the exact figure is settled on
+-- chain at registration.
+newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
   deriving newtype (Encoding, ToJSON, FromJSON)
 
--- | The three facts RSLV answers with, any of which the router may not have.
--- A plain tuple: nothing downstream needs a type of its own for it.
-type NameResult = (Maybe NameReservedReason, Maybe NameRegistration, Maybe NameRecord)
-
--- | What the registrar says about a name: held by someone, or registrable.
+-- | What the registry holds for a name. A TLD with no registrar or no price
+-- oracle configured is not a case here - it is ERR NAME RESOLVER, because a
+-- name that cannot be dated or priced is not one this router can report on.
 data NameRegistration
-  = -- | unix seconds; graceUntil > expires, and until it only the owner renews.
-    NRRegistered {expires :: Int64, graceUntil :: Int64}
-  | -- | Not held by anyone. Pricing is absent when the TLD has no controller or
-    -- price oracle configured, and when the name is reserved: a held-back name
-    -- is not for sale at the registry's price, only by arrangement with SimpleX.
-    -- An auction is not a separate state: it is this, with a premium that has
-    -- not decayed to zero yet.
-    NRUnregistered {pricing :: Maybe NamePricing}
+  = -- | Held by someone. A registered name always resolves: where its owner set
+    -- no records the record is still present, every field unset and nrResolver
+    -- the zero address, so "taken until <date>" stays answerable.
+    NRRegistered
+      { -- | unix seconds the registration runs out. Absent only from a v20/v21
+        -- router, whose answer carried the record and nothing else.
+        expires :: Maybe SystemSeconds,
+        -- | unix seconds, > expires: until here only the owner may renew
+        graceUntil :: Maybe SystemSeconds,
+        -- | held back as well, which is why it will not free up at expiry
+        reservedReason_ :: Maybe NameReservedReason,
+        nameRecord :: NameRecord
+      }
+  | -- | Held by nobody, and registrable now.
+    NRAvailable
+      { pricing :: NamePricing,
+        -- | while set, the name also costs a surcharge above `pricing` that
+        -- decays to nothing at this time. The surcharge itself is deliberately
+        -- not carried: it changes continuously, so it cannot be an in-app
+        -- purchase price. A client counts down to the ordinary price instead.
+        auctionUntil :: Maybe SystemSeconds
+      }
+  | -- | Held back by the registry and not registered. No price: what it costs,
+    -- and whether it can be had at all, is a conversation with SimpleX. This is
+    -- also why a reserved name never frees up on its own.
+    NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
 instance Encoding NameRegistration where
   smpEncode = \case
-    NRRegistered {expires, graceUntil} -> "REGISTERED " <> smpEncode (expires, graceUntil)
-    NRUnregistered {pricing} -> "UNREGISTERED " <> smpEncode pricing
+    NRRegistered {expires, graceUntil, reservedReason_, nameRecord} ->
+      "REGISTERED " <> smpEncode (expires, graceUntil, reservedReason_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
+    NRAvailable {pricing, auctionUntil} -> "AVAILABLE " <> smpEncode (auctionUntil, pricing)
+    NRReserved {reservedReason} -> "RESERVED " <> smpEncode reservedReason
   smpP =
     A.takeTill (== ' ') >>= \case
-      "REGISTERED" -> NRRegistered <$> _smpP <*> smpP
-      "UNREGISTERED" -> NRUnregistered <$> _smpP
+      "REGISTERED" -> do
+        (expires, graceUntil, reservedReason_) <- _smpP
+        nameRecord <- J.eitherDecodeStrict . unTail <$?> _smpP
+        pure NRRegistered {expires, graceUntil, reservedReason_, nameRecord}
+      "AVAILABLE" -> do
+        auctionUntil <- _smpP
+        pricing <- smpP
+        pure NRAvailable {pricing, auctionUntil}
+      "RESERVED" -> NRReserved <$> _smpP
       _ -> fail "bad NameRegistration"
 
--- | Enough to price the name locally, as often as the UI likes, without naming
--- it. All amounts MicroUSD, all times unix seconds:
+-- | Enough to price the name locally. The client knows the label, so it knows
+-- both which tier applies and whether the label is long enough - neither of
+-- which the router can see behind a hash.
 --
---   price len duration t
---     = rentPrices !! min (len - 1) (length rentPrices - 1) * duration `div` year
---     + max 0 (decayed startPremium (t - premiumFrom) - endPremium)
---   decayed s elapsed = s * 0.5 ** (elapsed / 86400)
+--   price len duration = rentPrices !! min (len - 1) (length rentPrices - 1)
+--                          * duration `div` 31536000
 --
--- The surcharge is charged once whatever the duration - only the rent scales.
--- decayed is computed in Double and rounded: it lands within 0.01 MicroUSD of
--- the chain across the whole curve. Rounding startPremium and endPremium
--- separately means the premium may not reach exactly zero, so the client floors
--- at 0, as the chain does. The minimum registration is 28 days, a contract
--- constant rather than a per-deployment value, so it is not sent.
+-- The registry's minimum registration is 28 days, a contract constant rather
+-- than a per-deployment value, so it is specified rather than sent.
 data NamePricing = NamePricing
-  { -- | MicroUSD per year by label length: first entry a one-letter label, last
-    -- covering every longer one. Rounded up, so a quote is never below the
-    -- charge; the exact figure is settled on chain at registration.
-    rentPrices :: [MicroUSD],
-    -- | characters: the registry refuses shorter, and a hash cannot be measured.
-    minLabelLength :: Int,
-    -- | unix seconds the surcharge began. Nothing when there is none.
-    premiumFrom :: Maybe Int64,
-    startPremium :: MicroUSD, -- before decay
-    endPremium :: MicroUSD -- floor subtracted from the decayed value
+  { -- | US cents per year by label length: first entry a one-letter label, last
+    -- covering every longer one.
+    rentPrices :: [USDCents],
+    -- | characters: the registry refuses shorter, so the client must check it.
+    minLabelLength :: Int
   }
   deriving (Eq, Show)
 
 instance Encoding NamePricing where
-  smpEncode NamePricing {rentPrices, minLabelLength, premiumFrom, startPremium, endPremium} =
-    smpEncodeList rentPrices <> smpEncode (w16 minLabelLength, premiumFrom, startPremium, endPremium)
-    where
-      w16 = fromIntegral :: Int -> Word16
+  smpEncode NamePricing {rentPrices, minLabelLength} =
+    smpEncodeList rentPrices <> smpEncode (fromIntegral minLabelLength :: Word16)
   smpP = do
     rentPrices <- smpListP
-    (minLen, premiumFrom, startPremium, endPremium) <- smpP
-    pure NamePricing {rentPrices, minLabelLength = fromIntegral (minLen :: Word16), premiumFrom, startPremium, endPremium}
+    minLen <- smpP
+    pure NamePricing {rentPrices, minLabelLength = fromIntegral (minLen :: Word16)}
 
 -- | Why the registry holds a name back. A reason this version has no word for
 -- keeps its own word rather than losing the reservation.
 data NameReservedReason
-  = RRUnspecified
-  | RRTrademark
-  | RRPublicInterest
-  | RROffensive
-  | RRInternal
-  | RRPremium
-  | RRUnknown Text
+  = -- | held for SimpleX. On chain this is 1, which is also what the boolean
+    -- reservedNames of the first .testing deployment set.
+    NRRInternal
+  | NRRTrademark
+  | NRRCommunity
+  | -- | a reason added to the registry after this version: still reserved, and
+    -- carrying its own word so a later version can name it
+    NRRUnknown Text
   deriving (Eq, Show)
 
 instance Encoding NameReservedReason where
   smpEncode = \case
-    RRUnspecified -> "UNSPECIFIED"
-    RRTrademark -> "TRADEMARK"
-    RRPublicInterest -> "PUBLIC_INTEREST"
-    RROffensive -> "OFFENSIVE"
-    RRInternal -> "INTERNAL"
-    RRPremium -> "PREMIUM"
-    RRUnknown t -> encodeUtf8 t
+    NRRInternal -> "INTERNAL"
+    NRRTrademark -> "TRADEMARK"
+    NRRCommunity -> "COMMUNITY"
+    NRRUnknown t -> encodeUtf8 t
   smpP =
     A.takeTill (== ' ') >>= \case
-      "UNSPECIFIED" -> pure RRUnspecified
-      "TRADEMARK" -> pure RRTrademark
-      "PUBLIC_INTEREST" -> pure RRPublicInterest
-      "OFFENSIVE" -> pure RROffensive
-      "INTERNAL" -> pure RRInternal
-      "PREMIUM" -> pure RRPremium
-      t -> pure $ RRUnknown (safeDecodeUtf8 t)
+      "INTERNAL" -> pure NRRInternal
+      "TRADEMARK" -> pure NRRTrademark
+      "COMMUNITY" -> pure NRRCommunity
+      t -> pure $ NRRUnknown (safeDecodeUtf8 t)
 
 -- | The vocabulary the backing resolver and the JSON API share, which is not
 -- the wire vocabulary above.
 instance TextEncoding NameReservedReason where
   textEncode = \case
-    RRUnspecified -> "unspecified"
-    RRTrademark -> "trademark"
-    RRPublicInterest -> "publicInterest"
-    RROffensive -> "offensive"
-    RRInternal -> "internal"
-    RRPremium -> "premium"
-    RRUnknown t -> t
+    NRRInternal -> "internal"
+    NRRTrademark -> "trademark"
+    NRRCommunity -> "community"
+    NRRUnknown t -> t
   textDecode = \case
-    "unspecified" -> Just RRUnspecified
-    "trademark" -> Just RRTrademark
-    "publicInterest" -> Just RRPublicInterest
-    "offensive" -> Just RROffensive
-    "internal" -> Just RRInternal
-    "premium" -> Just RRPremium
-    "unknown" -> Just (RRUnknown "unknown")
+    "internal" -> Just NRRInternal
+    "trademark" -> Just NRRTrademark
+    "community" -> Just NRRCommunity
+    "unknown" -> Just (NRRUnknown "unknown")
     _ -> Nothing
 
 -- | Keeps its word rather than losing the reservation.
-reservedReason :: Text -> NameReservedReason
-reservedReason t = fromMaybe (RRUnknown t) (textDecode t)
+parseReservedReason :: Text -> NameReservedReason
+parseReservedReason t = fromMaybe (NRRUnknown t) (textDecode t)
+
+-- | What a v20/v21 router's answer amounts to: it resolves, and nothing else
+-- was said about it.
+oldRegistration :: NameRecord -> NameRegistration
+oldRegistration nameRecord =
+  NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}
 
 
 -- | Name resolution error
@@ -2106,11 +2114,12 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    RNAME reserved_ reg_ rec_
-      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', reserved_, ' ', reg_, ' ', Tail $ LB.toStrict $ J.encode rec_)
-      | otherwise -> case rec_ of
-          Just rec -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode rec)
-          Nothing -> e (ERR_, ' ', NAME NOT_FOUND)
+    RNAME reg
+      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', reg)
+      -- v20/v21 knows only the record, and had NOT_FOUND for every other answer
+      | otherwise -> case reg of
+          NRRegistered {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
+          _ -> e (ERR_, ' ', NAME NOT_FOUND)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2158,8 +2167,10 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
     RNAME_
-      | v >= nameAvailSMPVersion -> RNAME <$> _smpP <*> _smpP <*> (J.eitherDecodeStrict . unTail <$?> _smpP)
-      | otherwise -> RNAME Nothing Nothing . Just <$> (J.eitherDecodeStrict . unTail <$?> _smpP)
+      | v >= nameAvailSMPVersion -> RNAME <$> _smpP
+      -- v20/v21 sent the record and nothing else; the dates it had no field for
+      -- are the only reason they are optional above
+      | otherwise -> fmap (RNAME . oldRegistration) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2560,7 +2571,7 @@ $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameError
 instance ToJSON NameReservedReason where
   toJSON =
     J.String . \case
-      RRUnknown _ -> "unknown"
+      NRRUnknown _ -> "unknown"
       r -> textEncode r
 
 instance FromJSON NameReservedReason where
