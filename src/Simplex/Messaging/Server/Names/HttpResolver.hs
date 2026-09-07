@@ -42,11 +42,9 @@ import qualified Data.Aeson.KeyMap as JKM
 import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
-import Data.Char (isDigit)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Int (Int64)
-import qualified Data.Text as T
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
@@ -90,9 +88,17 @@ data NameStatusResp = NameStatusResp
   { nsStatus :: Text,
     nsExpires :: Maybe Int64,
     nsGraceEnds :: Maybe Int64,
-    nsAuctionEnds :: Maybe Int64,
-    nsPremium :: Maybe Text,
-    nsReasonCode :: Maybe Text
+    -- | reported alongside the status: a reservation is orthogonal to it
+    nsReasonCode :: Maybe Text,
+    -- | when the post-grace surcharge began
+    nsPremiumFrom :: Maybe Int64,
+    -- | the TLD's price oracle, in MicroUSD - per year for the rents. The
+    -- resolver converts from the registry's attoUSD, so nothing 256-bit gets
+    -- this far and every value fits a JSON number exactly.
+    nsRentPrices :: Maybe [Int64],
+    nsMinLabelLength :: Maybe Int,
+    nsStartPremium :: Maybe Int64,
+    nsEndPremium :: Maybe Int64
   }
   deriving (Show)
 
@@ -167,17 +173,13 @@ resolveHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseByt
             { nsStatus = t,
               nsExpires = jsonField o "expires",
               nsGraceEnds = jsonField o "graceEnds",
-              nsAuctionEnds = jsonField o "auctionEnds",
-              nsPremium = jsonField o "premium" >>= decimalPrice,
-              nsReasonCode = jsonField o "reasonCode"
+              nsReasonCode = jsonField o "reasonCode",
+              nsPremiumFrom = jsonField o "premiumFrom",
+              nsRentPrices = jsonField o "rentPrices",
+              nsMinLabelLength = jsonField o "minLabelLength",
+              nsStartPremium = jsonField o "startPremium",
+              nsEndPremium = jsonField o "endPremium"
             }
-
--- | A price is at most 78 decimal digits. The wire format length-prefixes it
--- with one byte, which would wrap on anything longer, so drop it instead.
-decimalPrice :: Text -> Maybe Text
-decimalPrice t
-  | not (T.null t) && T.length t <= 78 && T.all isDigit t = Just t
-  | otherwise = Nothing
 
 -- | A field the resolver omits or nulls for statuses that do not carry it.
 jsonField :: J.FromJSON a => J.Object -> Key -> Maybe a

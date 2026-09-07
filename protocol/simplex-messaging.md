@@ -1512,64 +1512,109 @@ fact that this router cannot resolve, so iterating past it is safe.
 #### Name response
 
 Resolving a name and asking whether it can be registered are one question to the
-registry, and one lookup answers both: a client offering a taken name to register
-wants to show what took it. `RNAME` carries a tag saying which answer follows.
+registry, and one lookup answers both: a client offering a taken name to
+register wants to show what took it. `RNAME` carries three facts, from three
+contracts - the controller, the registrar and the resolver - and any of them may
+be absent.
 
 ```abnf
-rname        = %s"RNAME" SP answer
-answer       = %s"RECORD" SP optExpires json-bytes ; json-bytes consumes the remainder
-             / %s"TAKEN" SP optExpires
-             / %s"GRACE" SP grace-ends
-             / %s"AUCTION" SP premium auction-ends
-             / %s"RESERVED" SP reason
-             / %s"AVAILABLE"
-optExpires   = %s"0" / (%s"1" expires) ; absent when the router could not read the registration
-expires      = 8*8 OCTET ; as grace-ends
-grace-ends   = 8*8 OCTET ; Int64, network byte order (big-endian), seconds since the Unix epoch
-auction-ends = 8*8 OCTET ; as grace-ends, and follows premium with no separator
-premium      = shortString ; ASCII decimal integer, in attoUSD (1e-18 USD)
+rname        = %s"RNAME" SP reserved SP registration SP json-bytes
+reserved     = %s"0" / (%s"1" reason)          ; absent = not held back
+registration = %s"0" / (%s"1" registered-or-not) ; absent = the router cannot say
+registered-or-not = %s"REGISTERED" SP expires grace-until
+                  / %s"UNREGISTERED" SP pricing
+expires      = 8*8 OCTET ; Int64, big-endian, seconds since the Unix epoch
+grace-until  = 8*8 OCTET ; as expires, and greater than it
+pricing      = %s"0" / (%s"1" rent-prices min-label-length premium-from
+                            start-premium end-premium)
+rent-prices  = length *(8*8 OCTET) ; MicroUSD per year, by label length
+min-label-length = 2*2 OCTET       ; Word16, characters
+premium-from = %s"0" / (%s"1" 8*8 OCTET) ; unix seconds the surcharge began
+start-premium = 8*8 OCTET ; MicroUSD, Int64
+end-premium  = 8*8 OCTET ; MicroUSD, Int64
 reason       = %s"UNSPECIFIED" / %s"TRADEMARK" / %s"PUBLIC_INTEREST"
-             / %s"OFFENSIVE" / %s"INTERNAL" / %s"PREMIUM" / %s"UNKNOWN"
+             / %s"OFFENSIVE" / %s"INTERNAL" / %s"PREMIUM" / word
+word         = 1*32(%x21-7E) ; a reason this version has no word for
 ```
 
-| Answer | Condition | Client action |
-|---|---|---|
-| `RECORD` | resolves, and the registration runs until `expires` | use the record |
-| `TAKEN` | registered until `expires`, but its records point nowhere | do not offer it |
-| `GRACE` | lapsed, but renewable by its previous owner until `grace-ends` | do not offer it; it may free up then |
-| `AUCTION` | registrable by anyone, at `premium` above the ordinary price, decaying to nothing by `auction-ends` | offer it only with the premium shown |
-| `RESERVED` | held back by the registry for `reason` | do not offer it; explain `reason` |
-| `AVAILABLE` | registrable at the ordinary price | offer it |
+`json-bytes` is the record as a UTF-8 JSON object, or `null` when the name does
+not resolve. It consumes the remainder of the transmission.
 
-Below v22, `RNAME` carries the bare record with no tag and no `expires`, and
-every other answer is `ERR NAME NOT_FOUND`, as it was before this version.
+Money is MicroUSD, a millionth of a US dollar: the registry denominates in USD,
+never in ETH, and the backing resolver converts before the value reaches the
+protocol. Times are seconds since the Unix epoch. Lengths are characters.
 
-From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable" — only
-`AVAILABLE` says that. `NOT_FOUND` means the router has nothing to say about the
-name, which includes a backing resolver whose answer it could not read.
+A client reads the three facts together:
 
-`premium` is a decimal string because prices are 256-bit integers. It is the
-surcharge only: the base price depends on the label's length, which a hashed
-query does not carry. The client adds that.
+| The client sees | Meaning |
+|---|---|
+| a record | the name resolves; use it |
+| `REGISTERED` | held by someone until `expires`, renewable by its owner alone until `grace-until` |
+| `UNREGISTERED` | held by nobody; registrable unless it is also reserved |
+| `pricing` | what registering it costs, computed locally |
+| `reserved` | the registry holds it back, whether or not it is registered |
+| no registration | a pre-v22 answer, which was only ever sent for a live registration |
 
-Times are absolute, not durations, so a client can count down without
-re-querying. A deadline is not permission to register; only the registry grants
-that.
+Availability is the conjunction, not a state of its own: a name is registrable
+when it is `UNREGISTERED` and carries no reservation, which is the registry's own
+`available()`. An auction is not a state either - it is `UNREGISTERED` with a
+premium that has not yet decayed to zero.
 
-A router that cannot read the payload for `GRACE` or `AUCTION` MUST answer
-`TAKEN` with no `expires`, never `AVAILABLE`. Quoting the ordinary price for a
-name that carries a premium is the harmful answer.
+A router MUST NOT send `pricing` for a reserved name. A name the registry holds
+back is not for sale at the registry's price, and quoting one would be an offer
+the registry will not honour.
+
+The record travels while a name is registered, through its grace period, and
+stops at the moment the name becomes registrable by anyone. Keeping it that far
+lets whoever opens the name tell its owner that it is about to lapse; keeping it
+past that would show a record whose owner no longer holds the name. How long a
+client goes on opening an expiring name is its own decision.
+
+**Computing the price.** All amounts MicroUSD, all times seconds:
+
+```
+price len duration t
+  = rentPrices[min (len - 1) (length rentPrices - 1)] * duration / 31536000
+  + max 0 (decayed startPremium (t - premiumFrom) - endPremium)
+decayed s elapsed = s * 0.5 ** (elapsed / 86400)
+```
+
+The surcharge is charged once whatever the duration; only the rent scales with
+it. `decayed` halves each day and interpolates within the day, and is the same
+function for every deployment, so it is specified here rather than sent. A
+client computing it in double precision lands within 0.01 MicroUSD of the
+registry across the whole curve. Rounding may leave the surcharge just above
+zero at the end of its window, so a client floors it at zero, as the registry
+does. The minimum registration is 28 days, a contract constant rather than a
+per-deployment value, so it is not sent either.
+
+`rentPrices` is indexed by label length, its last entry covering every longer
+label. `minLabelLength` is sent because a hashed query carries no length: the
+router cannot check it, so the client must, and a price quoted for a label the
+registry will refuse is worse than no quote at all.
+
+Below v22, `RNAME` carries the bare record with no other field, and every answer
+without a record is `ERR NAME NOT_FOUND`, as it was before this version. A name
+in its grace period therefore resolves for those clients too, without the expiry
+they have no field to carry.
+
+From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable" - only
+`UNREGISTERED` with no reservation says that. `NOT_FOUND` means the router has
+nothing to say about the name, which includes a backing resolver whose answer it
+could not read.
 
 A router that reads a status it has no answer for MUST say so as `ERR NAME
-RESOLVER <detail>`. Not `TAKEN`, which asserts a registration it never read, and
-not `AVAILABLE`, which offers a name that may be held. An unreachable chain and
-an unconfigured TLD arrive this way, as statuses of their own. When the response
-carries no status the router can read at all, it answers `ERR NAME NOT_FOUND`.
+RESOLVER <detail>`. Not a registration, which asserts one it never read, and not
+`UNREGISTERED`, which offers a name that may be held. An unreachable chain and an
+unconfigured TLD arrive this way, as statuses of their own, and so does a
+registration the router could not date. When the response carries no status the
+router can read at all, it answers `ERR NAME NOT_FOUND`.
 
-A client MUST read a `reason` it does not know as `UNKNOWN` and still treat the
+A client MUST read a `reason` it does not know as unknown and still treat the
 name as reserved: a later version may reserve names for reasons this one cannot
 name, and losing the reservation over that would offer a name that cannot be
-registered. A router sends `UNKNOWN` for a reason its own resolver did not name.
+registered. The word itself travels so that a later client can use it; a router
+sends at most one bounded token, since the field ends at a space.
 
 `json-bytes` MUST be a UTF-8 JSON object with the following schema:
 
@@ -1595,10 +1640,11 @@ an empty string, not JSON `null` and not an absent key. Link fields
 empty array `[]` when unset. Coin fields (`eth`, `btc`, `xmr`, `dot`) use JSON
 `null` as the "unset" sentinel and MAY also be absent from the object entirely.
 
-The backing resolver does not resolve a name whose registration has lapsed; the
-router answers `GRACE` or `AUCTION` for those. The record carries no expiry
-field of its own — `RECORD` carries it alongside. Testnet-vs-mainnet status is
-derived from the queried TLD rather than an in-record flag.
+The record carries no expiry field of its own: the registration alongside it
+does. The backing resolver stops resolving a name once it is registrable by
+anyone, so a record and an `UNREGISTERED` registration do not travel together.
+Testnet-vs-mainnet status is derived from the queried TLD rather than an
+in-record flag.
 
 Receivers MUST tolerate extra unknown fields (forward-compatibility for future
 field additions). Adding a required field is a breaking change requiring an

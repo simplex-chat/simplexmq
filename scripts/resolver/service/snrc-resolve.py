@@ -41,8 +41,8 @@ Environment:
                          (default: empty — TLD not yet deployed)
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
                          (default: mainnet for .testing, empty for .simplex)
-  SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; `reserved` status,
-                         and through its `prices()` oracle the post-grace auction
+  SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
+                         and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
@@ -125,6 +125,10 @@ COIN_XMR = 128
 COIN_DOT = 354
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+
+# The registry prices in attoUSD (1e-18 USD); the protocol carries MicroUSD.
+ATTO_PER_MICRO = 10**12
+SECONDS_PER_YEAR = 31536000
 
 
 # ---------- RPC + ABI helpers (mirrors ens-lookup.py shape) ----------
@@ -236,49 +240,53 @@ def reservation_reason(tld: str, token: int) -> int:
     return decode_uint(raw)
 
 
-def auction_params(tld: str):
-    """(oracle, startPremium, totalDays, endValue) for the TLD's controller, or
-    (ZERO_ADDR, 0, 0, 0) when no controller or no oracle is configured."""
-    return cached(("auction", tld), lambda: read_auction_params(tld))
+def pricing_params(tld: str):
+    """What it costs to register a name under this TLD, in MicroUSD, or None
+    when no controller or price oracle is configured."""
+    return cached(("pricing", tld), lambda: read_pricing_params(tld))
 
 
-def read_auction_params(tld: str):
-    params = (ZERO_ADDR, 0, 0, 0)
+def read_pricing_params(tld: str):
     controller = CONTROLLERS.get(tld)
-    if controller:
-        oracle = decode_address(eth_call(controller, selector("prices()")))
-        if oracle != ZERO_ADDR:
-            params = (
-                oracle,
-                decode_uint(eth_call(oracle, selector("startPremium()"))),
-                decode_uint(eth_call(oracle, selector("totalDays()"))),
-                decode_uint(eth_call(oracle, selector("endValue()"))),
-            )
-    return params
-
-
-def auction(tld: str, grace_ends: int, now: int):
-    """Past grace a name is registrable again, but at a premium decaying to zero
-    over the oracle's window. Returns when the premium reaches zero and what it
-    is now, in attoUSD, or (None, None) once prices are normal - which includes
-    an auction switched off with totalDays 0."""
-    oracle, start, total_days, floor = auction_params(tld)
+    if not controller:
+        return None
+    oracle = decode_address(eth_call(controller, selector("prices()")))
     if oracle == ZERO_ADDR:
-        return None, None
-    ends = grace_ends + total_days * 86400
-    if now >= ends:
-        return None, None
-    # decayedPremium is `pure`, so this is the oracle's own arithmetic rather
-    # than a second copy of its decay curve.
-    decayed = decode_uint(
-        eth_call(
-            oracle,
-            selector("decayedPremium(uint256,uint256)")
-            + encode_uint(start)
-            + encode_uint(now - grace_ends),
-        )
-    )
-    return ends, max(decayed - floor, 0)
+        return None
+    try:
+        return read_oracle_prices(controller, oracle)
+    except RuntimeError:
+        # An oracle that does not expose its curve cannot be quoted from. The
+        # name is still registrable; the price is simply not ours to state.
+        return None
+
+
+def read_oracle_prices(controller: str, oracle: str):
+    # The oracle prices rent in attoUSD per second and the premium in attoUSD.
+    # Quotes round so they are never below what the registry charges: rents and
+    # the surcharge up, the floor that is subtracted from the surcharge down.
+    # An oracle built before the six-letter tier stops at five, and the contract
+    # itself then charges price5Letter for anything longer - which is what the
+    # last entry means here too.
+    rents = []
+    for n in range(1, 7):
+        try:
+            rate = decode_uint(eth_call(oracle, selector(f"price{n}Letter()")))
+        except RuntimeError:
+            if n <= 5:
+                raise
+            break
+        rents.append(ceil_div(rate * SECONDS_PER_YEAR, ATTO_PER_MICRO))
+    return {
+        "rentPrices": rents,
+        "minLabelLength": decode_uint(eth_call(controller, selector("minCharLength()"))),
+        "startPremium": ceil_div(decode_uint(eth_call(oracle, selector("startPremium()"))), ATTO_PER_MICRO),
+        "endPremium": decode_uint(eth_call(oracle, selector("endValue()"))) // ATTO_PER_MICRO,
+    }
+
+
+def ceil_div(a: int, b: int) -> int:
+    return -(-a // b)
 
 
 def name_status(name: str):
@@ -290,10 +298,9 @@ def name_status(name: str):
             "status": "unknown",
             "expires": None,
             "graceEnds": None,
-            "auctionEnds": None,
-            "premium": None,
             "reasonCode": None,
             "reason": None,
+            "premiumFrom": None,
         }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
@@ -314,25 +321,24 @@ def name_status(name: str):
         now = chain_now()
         status = expiry_status(expires, grace, now)
 
-    auction_ends = premium = reason = None
-    if status in ("unregistered", "expired"):
-        code = reservation_reason(tld, token)
-        if code:
-            status, reason = "reserved", RESERVED_REASONS.get(code, UNKNOWN_REASON)
-        elif status == "expired":
-            auction_ends, premium = auction(tld, expires + grace, now)
-            if auction_ends:
-                status = "auction"
+    # A reservation is orthogonal to the registration: a registered name can be
+    # held back too, and that is why it will not free up when it expires.
+    code = reservation_reason(tld, token)
+    reason = RESERVED_REASONS.get(code, UNKNOWN_REASON) if code else None
 
-    return {
+    out = {
         "status": status,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
-        "auctionEnds": auction_ends,
-        "premium": None if premium is None else str(premium),
         "reasonCode": reason[0] if reason else None,
         "reason": reason[1] if reason else None,
+        # past grace the name is registrable again, at a surcharge decaying from
+        # the moment grace ended; the client computes it from the curve's ends
+        "premiumFrom": (expires + grace) if status == "expired" and expires else None,
     }
+    if status in ("unregistered", "expired"):
+        out.update(pricing_params(tld) or {})
+    return out
 
 
 def selector(signature: str) -> str:
@@ -642,53 +648,28 @@ def resolve(name: str):
 
     # Before the resolver lookup, so a lapsed name is not reported as noResolver.
     reg = name_status(name)
-    if reg["status"] in ("unregistered", "reserved"):
+    if reg["status"] in ("unregistered", "expired"):
+        # A name in grace is not here: its record still resolves, so that whoever
+        # opens it can tell the owner it is about to lapse.
         body = {
             "name": name,
-            "status": reg["status"],
-            "expires": reg["expires"],
-            "graceEnds": reg["graceEnds"],
+            **reg,
             "error": reg["status"],
             "message": (
-                "this name is reserved and cannot be registered"
-                if reg["status"] == "reserved"
-                else "this name has never been registered"
-            ),
-        }
-        if reg["status"] == "reserved":
-            body["reasonCode"] = reg["reasonCode"]
-            body["reason"] = reg["reason"]
-        return 404, body
-    if reg["status"] in ("grace", "expired", "auction"):
-        body = {
-            "name": name,
-            "status": reg["status"],
-            "expires": reg["expires"],
-            "graceEnds": reg["graceEnds"],
-            "error": reg["status"],
-            "message": (
-                "this registration expired and can be renewed by its owner"
-                if reg["status"] == "grace"
+                "this name has never been registered"
+                if reg["status"] == "unregistered"
                 else "this registration expired and is open to anyone"
             ),
         }
-        if reg["status"] == "auction":
-            body["auctionEnds"] = reg["auctionEnds"]
-            body["premium"] = reg["premium"]
-            body["message"] = (
-                "this registration expired and is open to anyone, at a premium "
-                "that decays to zero"
-            )
-        return 410, body
+        return (404 if reg["status"] == "unregistered" else 410), body
 
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
         return 404, {
             "name": name,
+            **reg,
             "status": "noResolver",
-            "expires": reg["expires"],
-            "graceEnds": reg["graceEnds"],
             "error": "noResolver",
             "message": "no resolver set for this name",
         }
@@ -727,9 +708,7 @@ def resolve(name: str):
         "dot": addr_multicoin(resolver_addr, node, COIN_DOT),
         "owner": owner,
         "resolver": resolver_addr,
-        "status": reg["status"],
-        "expires": reg["expires"],
-        "graceEnds": reg["graceEnds"],
+        **reg,
     }
 
 

@@ -17,7 +17,7 @@ import Network.HTTP.Types (status200, status400, status404, status410, status500
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NameRecord (..), NameReservedReason (..), NameResponse (..))
+import Simplex.Messaging.Protocol (ErrorType (..), MicroUSD (..), NameErrorType (..), NamePricing (..), NameRecord (..), NameRegistration (..), NameReservedReason (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
@@ -104,53 +104,63 @@ errorWireSpec =
 
 availabilitySpec :: Spec
 availabilitySpec = do
-  -- one lookup answers both questions: what the name points to, and whether it
-  -- could be registered
-  it "a resolvable name answers with the record and its expiry" $
-    answers status200 (recordWith "\"status\":\"registered\",\"expires\":1811232000") (NRNameRecord testNameRecord (Just 1811232000))
+  -- one lookup answers all three questions: what the name points to, whether it
+  -- can be taken, and whether the registry holds it back
+  it "a resolvable name answers with the record and its registration" $
+    answers status200 (recordWith "\"status\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483") $
+      (Nothing, Just NRRegistered {expires = 1813853483, graceUntil = 1821629483}, Just testNameRecord)
+  -- an older resolver reports no status; the record is still the answer
   it "a resolver that sends no status still answers with the record" $
-    answers status200 (J.encode testNameRecord) (NRNameRecord testNameRecord Nothing)
-  it "unregistered name is available" $
-    answers status404 "{\"error\":\"unregistered\"}" NRNameAvailable
-  it "expired name is available" $
-    answers status410 "{\"error\":\"expired\"}" NRNameAvailable
-  it "name in grace carries graceEnds" $
-    answers status410 "{\"error\":\"grace\",\"graceEnds\":1796377221}" (NRNameInGrace 1796377221)
-  it "auction carries premium and auctionEnds" $
-    answers
-      status410
-      "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
-      (NRNameAuction "99999952316384526016153087" 1798191621)
-  it "reserved name carries the reason" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NRNameReserved NRTrademark)
+    answers status200 (J.encode testNameRecord) (Nothing, Nothing, Just testNameRecord)
+  -- registered, but its records point nowhere
+  it "registered without a resolver is a registration with no record" $
+    answers status404 "{\"error\":\"noResolver\",\"expires\":1813853483,\"graceEnds\":1821629483}" $
+      (Nothing, Just NRRegistered {expires = 1813853483, graceUntil = 1821629483}, Nothing)
+  -- the record travels through grace: the UI decides how long to keep opening it
+  it "a name in grace keeps its record" $
+    answers status200 (recordWith "\"status\":\"grace\",\"expires\":1785000000,\"graceEnds\":1792776000") $
+      (Nothing, Just NRRegistered {expires = 1785000000, graceUntil = 1792776000}, Just testNameRecord)
+  -- a registration the router could not date is not one it can report
+  it "registered without expiry is a resolver error" $
+    refuses status200 (recordWith "\"status\":\"registered\"") (RESOLVER "no expiry")
+  it "unregistered carries the price" $
+    answers status404 (jsonBody ("{\"error\":\"unregistered\"," <> pricingJson <> "}")) $
+      (Nothing, Just (NRUnregistered (Just testPricing)), Nothing)
+  it "past grace carries the premium start" $
+    answers status410 (jsonBody ("{\"error\":\"auction\",\"premiumFrom\":1788480000," <> pricingJson <> "}")) $
+      (Nothing, Just (NRUnregistered (Just testPricing {premiumFrom = Just 1788480000})), Nothing)
+  it "expired is unregistered" $
+    answers status410 (jsonBody ("{\"error\":\"expired\"," <> pricingJson <> "}")) $
+      (Nothing, Just (NRUnregistered (Just testPricing)), Nothing)
+  -- a TLD with no controller or price oracle: registrable, price unknown
+  it "no pricing from the resolver is no pricing on the wire" $
+    answers status404 "{\"error\":\"unregistered\"}" (Nothing, Just (NRUnregistered Nothing), Nothing)
+  -- a held-back name is not for sale at the registry's price
+  it "reserved carries the reason and no price" $
+    answers status404 (jsonBody ("{\"error\":\"unregistered\",\"reasonCode\":\"trademark\"," <> pricingJson <> "}")) $
+      (Just RRTrademark, Just (NRUnregistered Nothing), Nothing)
+  -- reservation is orthogonal: it is why the name will not free up at expiry
+  it "reserved and registered keeps both" $
+    answers status200 (recordWith "\"status\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483,\"reasonCode\":\"internal\"") $
+      (Just RRInternal, Just NRRegistered {expires = 1813853483, graceUntil = 1821629483}, Just testNameRecord)
   -- an older resolver sends no reasonCode; that is not the chain saying "none"
-  it "no reasonCode still reads as reserved" $
-    answers status404 "{\"error\":\"reserved\"}" (NRNameReserved NRUnknown)
-  -- a later version may name reasons this one cannot; the reservation must
-  -- survive that, or a client would offer a name it cannot register
-  it "a reason from a later version still reads as reserved" $
-    smpDecode "RESERVED SOMETHING_NEW" `shouldBe` Right (NRNameReserved NRUnknown)
-  -- the resolver names this one explicitly; it is not the same as not knowing
-  it "unspecified reason reads as unspecified" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"unspecified\"}" (NRNameReserved NRUnspecified)
-  it "unknown reason still reads as reserved" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NRNameReserved NRUnknown)
-  it "registered without a resolver is taken, with expiry" $
-    answers status404 "{\"error\":\"noResolver\",\"expires\":1811232000}" (NRNameTaken (Just 1811232000))
-  -- an answer missing its payload withholds the name: quoting the usual price
-  -- for one that costs a premium is the wrong answer
-  it "grace without graceEnds is taken" $
-    answers status410 "{\"error\":\"grace\"}" (NRNameTaken Nothing)
-  it "auction without premium is taken" $
-    answers status410 "{\"error\":\"auction\",\"auctionEnds\":1798191621}" (NRNameTaken Nothing)
-  -- the wire length-prefixes the price with one byte, so a longer or
-  -- non-numeric string is dropped rather than re-encoded
-  it "over-long premium is dropped" $
-    answers status410 (jsonBody ("{\"error\":\"auction\",\"premium\":\"" <> replicate 300 '9' <> "\",\"auctionEnds\":1798191621}")) (NRNameTaken Nothing)
-  it "non-decimal premium is dropped" $
-    answers status410 "{\"error\":\"auction\",\"premium\":\"1e26\",\"auctionEnds\":1798191621}" (NRNameTaken Nothing)
-  -- a resolver that could not answer must not look like an answer: TAKEN would
-  -- assert a registration nobody read, AVAILABLE would offer a name that is held
+  it "no reasonCode is not a reservation" $
+    answers status404 "{\"error\":\"unregistered\"}" (Nothing, Just (NRUnregistered Nothing), Nothing)
+  -- a later version may reserve names for reasons this one cannot name; the
+  -- reservation must survive that, or a client would offer a name it cannot get
+  it "a reason from a later version still reserves the name" $
+    answers status404 "{\"error\":\"unregistered\",\"reasonCode\":\"seasonal\"}" $
+      (Just (RRUnknown "seasonal"), Just (NRUnregistered Nothing), Nothing)
+  -- the reason re-encodes into a slot that ends at a space, so the router keeps
+  -- it to one bounded token rather than trusting the resolver's text
+  it "a reason with a space is cut at the space" $
+    answers status404 "{\"error\":\"unregistered\",\"reasonCode\":\"two words\"}" $
+      (Just (RRUnknown "two"), Just (NRUnregistered Nothing), Nothing)
+  it "an over-long reason is truncated" $
+    answers status404 (jsonBody ("{\"error\":\"unregistered\",\"reasonCode\":\"" <> replicate 100 'z' <> "\"}")) $
+      (Just (RRUnknown (T.replicate 32 "z")), Just (NRUnregistered Nothing), Nothing)
+  -- a resolver that could not answer must not look like an answer: a registration
+  -- would assert one nobody read, and unregistered would offer a name that is held
   it "upstream failure is a resolver error" $
     refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "upstreamError")
   it "unconfigured TLD is a resolver error" $
@@ -167,24 +177,29 @@ availabilitySpec = do
     withResolverServer (resolveResp status200 (jsonBody ("{\"status\":\"registered\",\"pad\":\"" <> replicate 400 'x' <> "\"}"))) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 200}
       resolveName env navlDomain `shouldReturn` Left (RESOLVER "response too large")
-  it "every answer survives the wire" $
+  it "every registration survives the wire" $
     mapM_
       (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
-      [ NRNameRecord testNameRecord (Just 1811232000),
-        NRNameRecord testNameRecord Nothing,
-        NRNameAvailable,
-        NRNameTaken (Just 1811232000),
-        NRNameTaken Nothing,
-        NRNameInGrace 1796377221,
-        NRNameAuction "99999952316384526016153087" 1798191621,
-        NRNameReserved NRUnspecified,
-        NRNameReserved NRTrademark,
-        NRNameReserved NRPublicInterest,
-        NRNameReserved NROffensive,
-        NRNameReserved NRInternal,
-        NRNameReserved NRPremium,
-        NRNameReserved NRUnknown
+      [ NRRegistered {expires = 1813853483, graceUntil = 1821629483},
+        NRUnregistered Nothing,
+        NRUnregistered (Just testPricing),
+        NRUnregistered (Just testPricing {premiumFrom = Just 1788480000})
       ]
+  it "every reason survives the wire" $
+    mapM_
+      (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
+      [ RRUnspecified,
+        RRTrademark,
+        RRPublicInterest,
+        RROffensive,
+        RRInternal,
+        RRPremium,
+        RRUnknown "seasonal"
+      ]
+  -- the JSON API keeps a closed set so clients can localise it
+  it "an unknown reason is \"unknown\" in JSON" $ do
+    J.encode (RRUnknown "seasonal") `shouldBe` "\"unknown\""
+    J.encode RRTrademark `shouldBe` "\"trademark\""
   where
     jsonBody = LB.fromStrict . B.pack
     -- the resolver returns the record and the registration status in one body
@@ -196,6 +211,23 @@ availabilitySpec = do
         env <- newNamesEnv (testNamesConfig port)
         resolveName env navlDomain `shouldReturn` expected
     navlDomain = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+
+-- | The .testing oracle: MicroUSD per year by label length, and a premium that
+-- halves daily from $100,000,000 down to a $47.68 floor.
+testPricing :: NamePricing
+testPricing =
+  NamePricing
+    { rentPrices = map MicroUSD [0, 0, 127930000, 31980000, 999300],
+      minLabelLength = 3,
+      premiumFrom = Nothing,
+      startPremium = MicroUSD 100000000000000,
+      endPremium = MicroUSD 47683716
+    }
+
+pricingJson :: String
+pricingJson =
+  "\"rentPrices\":[0,0,127930000,31980000,999300],\"minLabelLength\":3,\
+  \\"startPremium\":100000000000000,\"endPremium\":47683716"
 
 parseNameSpec :: Spec
 parseNameSpec = do
@@ -270,7 +302,7 @@ resolverSpec = do
   it "returns NameRecord on 200 OK" $
     withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Right (NRNameRecord testNameRecord Nothing)
+      resolveName env aliceDomain `shouldReturn` Right (Nothing, Nothing, Just testNameRecord)
 
   it "returns NOT_FOUND on 404" $
     withResolverServer (resolveResp status404 "{}") $ \port _ -> do

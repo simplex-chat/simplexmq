@@ -1060,16 +1060,14 @@ queryDomain :: VersionSMP -> SimplexDomain -> SimplexDomain
 queryDomain v d = if v >= nameAvailSMPVersion then hashedDomain d else d
 
 -- | A hashed query's record names the hash, so put back the name that was asked.
-askedName :: SimplexDomain -> NameResponse -> NameResponse
-askedName name = \case
-  r@NRNameRecord {nameRecord} -> r {nameRecord = nameRecord {nrName = fullDomainName name}}
-  r -> r
+askedName :: SimplexDomain -> Maybe NameRecord -> Maybe NameRecord
+askedName name = fmap $ \nr -> nr {nrName = fullDomainName name}
 
-proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameResponse)
+proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameResult)
 proxyResolveName c nm proxiedRelay name
   | v >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (queryDomain v name)) >>= \case
-        Right (RNAME r) -> pure $ Right (askedName name r)
+        Right (RNAME reserved_ reg_ rec_) -> pure $ Right (reserved_, reg_, askedName name rec_)
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
@@ -1081,11 +1079,11 @@ proxyResolveName c nm proxiedRelay name
 -- proxy fallback in the agent. RSLV requires no entity ID or authorization
 -- (see `noAuthCmd` in Protocol.hs). Version-gated on the session here, not the
 -- encoder, so an old server never receives RSLV.
-directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameResponse
+directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameResult
 directResolveName c nm name
   | v >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (queryDomain v name))) >>= \case
-        RNAME r -> pure (askedName name r)
+        RNAME reserved_ reg_ rec_ -> pure (reserved_, reg_, askedName name rec_)
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where

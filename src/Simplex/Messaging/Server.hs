@@ -1499,7 +1499,7 @@ client
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-
         liftIO (resolveName nenv d) <&> \case
-          Right r -> (rslvSucc, RNAME r)
+          Right (reserved_, reg_, rec_) -> (rslvSucc, RNAME reserved_ reg_ rec_)
           Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
           Left e -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg

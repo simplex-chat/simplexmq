@@ -80,9 +80,12 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
-    NameResponse (..),
-    NRTag (..),
+    NameResult,
+    NameRegistration (..),
+    NamePricing (..),
+    MicroUSD (..),
     NameReservedReason (..),
+    reservedReason,
     NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
@@ -251,7 +254,7 @@ import Data.Kind
 import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -743,7 +746,7 @@ data BrokerMsg where
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   -- What the router knows about a SimpleX name.
-  RNAME :: NameResponse -> BrokerMsg
+  RNAME :: Maybe NameReservedReason -> Maybe NameRegistration -> Maybe NameRecord -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -1592,104 +1595,133 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
-data NameResponse
-  = -- | resolves, and the registration runs until this time
-    NRNameRecord {nameRecord :: NameRecord, expires :: Maybe Int64}
-  | -- | registered, but its records point nowhere
-    NRNameTaken {expires :: Maybe Int64}
-  | -- | lapsed, renewable by its previous owner until this time
-    NRNameInGrace {graceEnds :: Int64}
-  | -- | registrable by anyone, at this premium in attoUSD until this time
-    NRNameAuction {premium :: Text, auctionEnds :: Int64}
-  | -- | held back by the registry
-    NRNameReserved {reason :: NameReservedReason}
-  | -- | registrable at the ordinary price
-    NRNameAvailable
+-- | USD in millionths, converted by the resolver from the registry's attoUSD.
+-- Int64 reaches ~9.2 trillion USD, and the smallest value in play - the last
+-- step of a decaying premium - is a millionth of a dollar.
+newtype MicroUSD = MicroUSD Int64
+  deriving (Eq, Ord, Show)
+  deriving newtype (Encoding, ToJSON, FromJSON)
+
+-- | The three facts RSLV answers with, any of which the router may not have.
+-- A plain tuple: nothing downstream needs a type of its own for it.
+type NameResult = (Maybe NameReservedReason, Maybe NameRegistration, Maybe NameRecord)
+
+-- | What the registrar says about a name: held by someone, or registrable.
+data NameRegistration
+  = -- | unix seconds; graceUntil > expires, and until it only the owner renews.
+    NRRegistered {expires :: Int64, graceUntil :: Int64}
+  | -- | Not held by anyone. Pricing is absent when the TLD has no controller or
+    -- price oracle configured, and when the name is reserved: a held-back name
+    -- is not for sale at the registry's price, only by arrangement with SimpleX.
+    -- An auction is not a separate state: it is this, with a premium that has
+    -- not decayed to zero yet.
+    NRUnregistered {pricing :: Maybe NamePricing}
   deriving (Eq, Show)
 
-data NRTag
-  = NRNameRecord_
-  | NRNameTaken_
-  | NRNameInGrace_
-  | NRNameAuction_
-  | NRNameReserved_
-  | NRNameAvailable_
-  deriving (Show)
-
-instance Encoding NRTag where
+instance Encoding NameRegistration where
   smpEncode = \case
-    NRNameRecord_ -> "RECORD"
-    NRNameTaken_ -> "TAKEN"
-    NRNameInGrace_ -> "GRACE"
-    NRNameAuction_ -> "AUCTION"
-    NRNameReserved_ -> "RESERVED"
-    NRNameAvailable_ -> "AVAILABLE"
-  smpP = messageTagP
-
-instance ProtocolMsgTag NRTag where
-  decodeTag = \case
-    "RECORD" -> Just NRNameRecord_
-    "TAKEN" -> Just NRNameTaken_
-    "GRACE" -> Just NRNameInGrace_
-    "AUCTION" -> Just NRNameAuction_
-    "RESERVED" -> Just NRNameReserved_
-    "AVAILABLE" -> Just NRNameAvailable_
-    _ -> Nothing
-
-instance Encoding NameResponse where
-  smpEncode = \case
-    NRNameRecord {nameRecord, expires} -> e (NRNameRecord_, ' ', expires, Tail $ LB.toStrict $ J.encode nameRecord)
-    NRNameTaken {expires} -> e (NRNameTaken_, ' ', expires)
-    NRNameInGrace {graceEnds} -> e (NRNameInGrace_, ' ', graceEnds)
-    NRNameAuction {premium, auctionEnds} -> e (NRNameAuction_, ' ', premium, auctionEnds)
-    NRNameReserved {reason} -> e (NRNameReserved_, ' ', reason)
-    NRNameAvailable -> e NRNameAvailable_
-    where
-      e :: Encoding a => a -> ByteString
-      e = smpEncode
+    NRRegistered {expires, graceUntil} -> "REGISTERED " <> smpEncode (expires, graceUntil)
+    NRUnregistered {pricing} -> "UNREGISTERED " <> smpEncode pricing
   smpP =
-    smpP >>= \case
-      NRNameRecord_ -> do
-        expires <- smpP
-        nameRecord <- J.eitherDecodeStrict . unTail <$?> smpP
-        pure NRNameRecord {nameRecord, expires}
-      NRNameTaken_ -> NRNameTaken <$> smpP
-      NRNameInGrace_ -> NRNameInGrace <$> smpP
-      NRNameAuction_ -> NRNameAuction <$> smpP <*> smpP
-      NRNameReserved_ -> NRNameReserved <$> smpP
-      NRNameAvailable_ -> pure NRNameAvailable
+    A.takeTill (== ' ') >>= \case
+      "REGISTERED" -> NRRegistered <$> _smpP <*> smpP
+      "UNREGISTERED" -> NRUnregistered <$> _smpP
+      _ -> fail "bad NameRegistration"
 
+-- | Enough to price the name locally, as often as the UI likes, without naming
+-- it. All amounts MicroUSD, all times unix seconds:
+--
+--   price len duration t
+--     = rentPrices !! min (len - 1) (length rentPrices - 1) * duration `div` year
+--     + max 0 (decayed startPremium (t - premiumFrom) - endPremium)
+--   decayed s elapsed = s * 0.5 ** (elapsed / 86400)
+--
+-- The surcharge is charged once whatever the duration - only the rent scales.
+-- decayed is computed in Double and rounded: it lands within 0.01 MicroUSD of
+-- the chain across the whole curve. Rounding startPremium and endPremium
+-- separately means the premium may not reach exactly zero, so the client floors
+-- at 0, as the chain does. The minimum registration is 28 days, a contract
+-- constant rather than a per-deployment value, so it is not sent.
+data NamePricing = NamePricing
+  { -- | MicroUSD per year by label length: first entry a one-letter label, last
+    -- covering every longer one. Rounded up, so a quote is never below the
+    -- charge; the exact figure is settled on chain at registration.
+    rentPrices :: [MicroUSD],
+    -- | characters: the registry refuses shorter, and a hash cannot be measured.
+    minLabelLength :: Int,
+    -- | unix seconds the surcharge began. Nothing when there is none.
+    premiumFrom :: Maybe Int64,
+    startPremium :: MicroUSD, -- before decay
+    endPremium :: MicroUSD -- floor subtracted from the decayed value
+  }
+  deriving (Eq, Show)
+
+instance Encoding NamePricing where
+  smpEncode NamePricing {rentPrices, minLabelLength, premiumFrom, startPremium, endPremium} =
+    smpEncodeList rentPrices <> smpEncode (w16 minLabelLength, premiumFrom, startPremium, endPremium)
+    where
+      w16 = fromIntegral :: Int -> Word16
+  smpP = do
+    rentPrices <- smpListP
+    (minLen, premiumFrom, startPremium, endPremium) <- smpP
+    pure NamePricing {rentPrices, minLabelLength = fromIntegral (minLen :: Word16), premiumFrom, startPremium, endPremium}
+
+-- | Why the registry holds a name back. A reason this version has no word for
+-- keeps its own word rather than losing the reservation.
 data NameReservedReason
-  = NRUnspecified
-  | NRTrademark
-  | NRPublicInterest
-  | NROffensive
-  | NRInternal
-  | NRPremium
-  | -- | a reason this version cannot name
-    NRUnknown
+  = RRUnspecified
+  | RRTrademark
+  | RRPublicInterest
+  | RROffensive
+  | RRInternal
+  | RRPremium
+  | RRUnknown Text
   deriving (Eq, Show)
 
 instance Encoding NameReservedReason where
   smpEncode = \case
-    NRUnspecified -> "UNSPECIFIED"
-    NRTrademark -> "TRADEMARK"
-    NRPublicInterest -> "PUBLIC_INTEREST"
-    NROffensive -> "OFFENSIVE"
-    NRInternal -> "INTERNAL"
-    NRPremium -> "PREMIUM"
-    NRUnknown t -> t
+    RRUnspecified -> "UNSPECIFIED"
+    RRTrademark -> "TRADEMARK"
+    RRPublicInterest -> "PUBLIC_INTEREST"
+    RROffensive -> "OFFENSIVE"
+    RRInternal -> "INTERNAL"
+    RRPremium -> "PREMIUM"
+    RRUnknown t -> encodeUtf8 t
   smpP =
     A.takeTill (== ' ') >>= \case
-      "UNSPECIFIED" -> pure NRUnspecified
-      "TRADEMARK" -> pure NRTrademark
-      "PUBLIC_INTEREST" -> pure NRPublicInterest
-      "OFFENSIVE" -> pure NROffensive
-      "INTERNAL" -> pure NRInternal
-      "PREMIUM" -> pure NRPremium
-      -- a later version may reserve names for reasons this one has no word for;
-      -- losing "reserved" over that would be worse than losing the wording
-      t -> pure $ NRUnknown t
+      "UNSPECIFIED" -> pure RRUnspecified
+      "TRADEMARK" -> pure RRTrademark
+      "PUBLIC_INTEREST" -> pure RRPublicInterest
+      "OFFENSIVE" -> pure RROffensive
+      "INTERNAL" -> pure RRInternal
+      "PREMIUM" -> pure RRPremium
+      t -> pure $ RRUnknown (safeDecodeUtf8 t)
+
+-- | The vocabulary the backing resolver and the JSON API share, which is not
+-- the wire vocabulary above.
+instance TextEncoding NameReservedReason where
+  textEncode = \case
+    RRUnspecified -> "unspecified"
+    RRTrademark -> "trademark"
+    RRPublicInterest -> "publicInterest"
+    RROffensive -> "offensive"
+    RRInternal -> "internal"
+    RRPremium -> "premium"
+    RRUnknown t -> t
+  textDecode = \case
+    "unspecified" -> Just RRUnspecified
+    "trademark" -> Just RRTrademark
+    "publicInterest" -> Just RRPublicInterest
+    "offensive" -> Just RROffensive
+    "internal" -> Just RRInternal
+    "premium" -> Just RRPremium
+    "unknown" -> Just (RRUnknown "unknown")
+    _ -> Nothing
+
+-- | Keeps its word rather than losing the reservation.
+reservedReason :: Text -> NameReservedReason
+reservedReason t = fromMaybe (RRUnknown t) (textDecode t)
+
 
 -- | Name resolution error
 data NameErrorType
@@ -2074,11 +2106,11 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    RNAME r
-      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', r)
-      | otherwise -> case r of
-          NRNameRecord {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
-          _ -> e (ERR_, ' ', NAME NOT_FOUND)
+    RNAME reserved_ reg_ rec_
+      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', reserved_, ' ', reg_, ' ', Tail $ LB.toStrict $ J.encode rec_)
+      | otherwise -> case rec_ of
+          Just rec -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode rec)
+          Nothing -> e (ERR_, ' ', NAME NOT_FOUND)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2126,8 +2158,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
     RNAME_
-      | v >= nameAvailSMPVersion -> RNAME <$> _smpP
-      | otherwise -> fmap (RNAME . (`NRNameRecord` Nothing)) . J.eitherDecodeStrict . unTail <$?> _smpP
+      | v >= nameAvailSMPVersion -> RNAME <$> _smpP <*> _smpP <*> (J.eitherDecodeStrict . unTail <$?> _smpP)
+      | otherwise -> RNAME Nothing Nothing . Just <$> (J.eitherDecodeStrict . unTail <$?> _smpP)
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2150,7 +2182,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
-    RNAME _ -> noEntityMsg
+    RNAME {} -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY
@@ -2522,4 +2554,14 @@ $(J.deriveJSON defaultJSON ''BlockingInfo)
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
 
 -- clients report the reason to the user, so it has to reach their API as JSON
-$(J.deriveJSON (enumJSON $ dropPrefix "NR") ''NameReservedReason)
+-- | The JSON API keeps the closed set, so clients can localise it. An
+-- unrecognised reason is "unknown" here; its word stays on the SMP wire for a
+-- version that knows it.
+instance ToJSON NameReservedReason where
+  toJSON =
+    J.String . \case
+      RRUnknown _ -> "unknown"
+      r -> textEncode r
+
+instance FromJSON NameReservedReason where
+  parseJSON = textParseJSON "NameReservedReason"

@@ -34,7 +34,9 @@ import Simplex.Messaging.Protocol
     Command (..),
     CorrId (..),
     ErrorType (..),
-    NameResponse (..),
+    MicroUSD (..),
+    NamePricing (..),
+    NameRegistration (..),
     NameErrorType (..),
     NameReservedReason (..),
     SParty (..),
@@ -146,7 +148,7 @@ testRslvVersion =
       Left (PCETransportError TEVersion) -> pure ()
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
-forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
+forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameResult))
 forwardedResolveAlice = do
   g <- C.newRandom
   ts <- getCurrentTime
@@ -169,8 +171,8 @@ testRslvForwardedSuccess :: IO ()
 testRslvForwardedSuccess =
   withProxyAndResolver (status200, J.encode testNameRecord) $
     forwardedResolveAlice >>= \r -> case r of
-      Right (Right (NRNameRecord nr _)) -> nr `shouldBe` testNameRecord
-      _ -> expectationFailure $ "expected Right (Right (NRNameRecord ..)), got: " <> show r
+      Right (Right (_, _, Just nr)) -> nr `shouldBe` testNameRecord
+      _ -> expectationFailure $ "expected Right (Right (_, _, Just record)), got: " <> show r
 
 testRslvSuccess :: IO ()
 testRslvSuccess =
@@ -179,8 +181,8 @@ testRslvSuccess =
       (corrId, _entId, resp) <- sendRslv h "rs07" (domain "alice.simplex")
       corrId `shouldBe` CorrId "rs07"
       case resp of
-        Right (RNAME (NRNameRecord nr _)) -> nr `shouldBe` testNameRecord
-        _ -> expectationFailure $ "expected Right (RNAME (NRNameRecord ..)), got: " <> show resp
+        Right (RNAME Nothing Nothing (Just nr)) -> nr `shouldBe` testNameRecord
+        _ -> expectationFailure $ "expected Right (RNAME _ _ (Just record)), got: " <> show resp
 
 testRslvAvailable :: IO ()
 testRslvAvailable =
@@ -188,21 +190,21 @@ testRslvAvailable =
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "na01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "na01"
-      resp `shouldBe` Right (RNAME NRNameAvailable)
+      resp `shouldBe` Right (RNAME Nothing (Just (NRUnregistered Nothing)) Nothing)
 
 testRslvAuction :: IO ()
 testRslvAuction =
   withResolverServer (status410, auctionBody) $
     testSMPClient @TLS $ \h -> do
       (_, _, resp) <- sendRslv h "na02" (domain "lapsed.simplex")
-      resp `shouldBe` Right (RNAME (NRNameAuction "99999952316384526016153087" 1798191621))
+      resp `shouldBe` Right (RNAME Nothing (Just (NRUnregistered (Just auctionPricing))) Nothing)
 
 testRslvReserved :: IO ()
 testRslvReserved =
-  withResolverServer (status404, "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}") $
+  withResolverServer (status404, "{\"error\":\"unregistered\",\"reasonCode\":\"trademark\"}") $
     testSMPClient @TLS $ \h -> do
       (_, _, resp) <- sendRslv h "na03" (domain "acme.simplex")
-      resp `shouldBe` Right (RNAME (NRNameReserved NRTrademark))
+      resp `shouldBe` Right (RNAME (Just RRTrademark) (Just (NRUnregistered Nothing)) Nothing)
 
 -- | A client that predates v22 must see exactly what it saw before: the record
 -- for a name that resolves, and NOT_FOUND for one that does not.
@@ -222,7 +224,7 @@ testRslvOldClientRecord =
   withResolverServer (status200, J.encode testNameRecord) $ do
     pc <- oldClient
     r <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
-    r `shouldBe` NRNameRecord testNameRecord Nothing
+    r `shouldBe` (Nothing, Nothing, Just testNameRecord)
 
 testRslvOldClientNotFound :: IO ()
 testRslvOldClientNotFound =
@@ -237,12 +239,24 @@ testRslvForwardedAuction :: IO ()
 testRslvForwardedAuction =
   withProxyAndResolver (status410, auctionBody) $
     forwardedResolveAlice >>= \r -> case r of
-      Right (Right a) -> a `shouldBe` NRNameAuction "99999952316384526016153087" 1798191621
-      _ -> expectationFailure $ "expected Right (Right (NRNameAuction ..)), got: " <> show r
+      Right (Right (Nothing, Just (NRUnregistered (Just p)), Nothing)) -> premiumFrom p `shouldBe` Just 1788480000
+      _ -> expectationFailure $ "expected Right (Right unregistered-with-premium), got: " <> show r
 
--- a name one day past its grace period, priced by the .testing auction curve
+-- a name three days past its grace period, priced by the .testing auction curve
 auctionBody :: LB.ByteString
-auctionBody = "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
+auctionBody =
+  "{\"error\":\"auction\",\"premiumFrom\":1788480000,\"rentPrices\":[0,0,127930000,31980000,999300],\
+  \\"minLabelLength\":3,\"startPremium\":100000000000000,\"endPremium\":47683716}"
+
+auctionPricing :: NamePricing
+auctionPricing =
+  NamePricing
+    { rentPrices = map MicroUSD [0, 0, 127930000, 31980000, 999300],
+      minLabelLength = 3,
+      premiumFrom = Just 1788480000,
+      startPremium = MicroUSD 100000000000000,
+      endPremium = MicroUSD 47683716
+    }
 
 -- keccak-256("alice"), the registry key
 aliceHash :: Text
@@ -270,8 +284,8 @@ testRslvSendsTheHash =
     resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
     -- the record names what the caller asked for
     case r of
-      NRNameRecord nr _ -> SMP.nrName nr `shouldBe` "alice.simplex"
-      _ -> expectationFailure $ "expected NRNameRecord, got: " <> show r
+      (_, _, Just nr) -> SMP.nrName nr `shouldBe` "alice.simplex"
+      _ -> expectationFailure $ "expected a record, got: " <> show r
   where
     -- the resolver echoes what it was asked about, which is the hash
     echoed = testNameRecord {SMP.nrName = aliceHash <> ".simplex"}
