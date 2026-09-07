@@ -2079,7 +2079,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG -> e PONG_
     RNAME r
       | v >= nameAvailSMPVersion -> e (RNAME_, ' ', r)
-      -- v20/v21 knows only the record, and had NOT_FOUND for every other answer
       | otherwise -> case r of
           NRNameRecord {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
           _ -> e (ERR_, ' ', NAME NOT_FOUND)
