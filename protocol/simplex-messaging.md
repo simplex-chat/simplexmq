@@ -108,7 +108,7 @@ This document describes SMP protocol version 22. Versions 1-5 are discontinued. 
 - v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
 - v20: public namespaces resolver (RSLV command, RNAME response) — direct or forwarded via PFWD
 - v21: server public information in handshake
-- v22: name availability (NAVL command, NAVAIL response)
+- v22: `RNAME` says whether a name can be registered, not only what it resolves to
 
 ## Introduction
 
@@ -1482,7 +1482,7 @@ reach the record. `[<hash>].simplex` and `sub.[<hash>].simplex` reach the nodes
 their plain names do; a bracket label anywhere else is an ordinary label. Routers
 MUST reject a name whose hashed label is not the second-level one.
 
-From v22 a client MUST hash the second-level label of every `RSLV` and `NAVL`.
+From v22 a client MUST hash the second-level label of every `RSLV`.
 Older routers cannot parse the form, so a client on an older session sends the
 name. A hashed query's record names the hash; the client restores the name it
 used. A router answering a hashed query does not know the name's length, so it
@@ -1493,14 +1493,14 @@ fully-qualified name (TLD required — bare labels are rejected) and forwards it
 to the configured backing resolver, which is the source of truth for which
 on-chain registry maps to each TLD.
 
-The names router responds with either an `RNAME` response carrying the resolved
-record, or an `ERR NAME` error whose subcode a client iterating across several
-configured servers can act on distinctly:
+The names router responds with either an `RNAME` response saying what it knows
+about the name, or an `ERR NAME` error whose subcode a client iterating across
+several configured servers can act on distinctly:
 
 | Response | Condition | Client action |
 |---|---|---|
-| `RNAME` | record resolved | use it |
-| `ERR NAME NOT_FOUND` | name not registered, unknown TLD, or malformed name | authoritative "no such name" — stop |
+| `RNAME` | the router read the registry | use it |
+| `ERR NAME NOT_FOUND` | unknown TLD or malformed name; below v22 also every name that does not resolve | authoritative "no such name" — stop |
 | `ERR NAME NO_RESOLVER` | this router has no resolver (names role not enabled) | skip this server, try the next |
 | `ERR NAME RESOLVER <detail>` | transient failure: backing resolver error (upstream 5xx, transport, timeout, decode) | transient — retry or surface, do not treat as "not found" |
 
@@ -1509,13 +1509,66 @@ router has answered (`NOT_FOUND` or `RESOLVER`), since that router has already
 seen the lookup key; `NO_RESOLVER` discloses nothing about the name beyond the
 fact that this router cannot resolve, so iterating past it is safe.
 
-#### Name record response
+#### Name response
 
-The `RNAME` response carries a JSON-encoded record as the payload:
+Resolving a name and asking whether it can be registered are one question to the
+registry, and one lookup answers both: a client offering a taken name to register
+wants to show what took it. `RNAME` carries a tag saying which answer follows.
 
 ```abnf
-rname = %s"RNAME" SP json-bytes   ; json-bytes consumes the remainder of the transmission
+rname        = %s"RNAME" SP answer
+answer       = %s"RECORD" SP optExpires json-bytes ; json-bytes consumes the remainder
+             / %s"TAKEN" SP optExpires
+             / %s"GRACE" SP grace-ends
+             / %s"AUCTION" SP premium auction-ends
+             / %s"RESERVED" SP reason
+             / %s"AVAILABLE"
+optExpires   = %s"0" / (%s"1" expires) ; absent when the router could not read the registration
+expires      = 8*8 OCTET ; as grace-ends
+grace-ends   = 8*8 OCTET ; Int64, network byte order (big-endian), seconds since the Unix epoch
+auction-ends = 8*8 OCTET ; as grace-ends, and follows premium with no separator
+premium      = shortString ; ASCII decimal integer, in attoUSD (1e-18 USD)
+reason       = %s"UNSPECIFIED" / %s"TRADEMARK" / %s"PUBLIC_INTEREST"
+             / %s"OFFENSIVE" / %s"INTERNAL" / %s"PREMIUM" / %s"UNKNOWN"
 ```
+
+| Answer | Condition | Client action |
+|---|---|---|
+| `RECORD` | resolves, and the registration runs until `expires` | use the record |
+| `TAKEN` | registered until `expires`, but its records point nowhere | do not offer it |
+| `GRACE` | lapsed, but renewable by its previous owner until `grace-ends` | do not offer it; it may free up then |
+| `AUCTION` | registrable by anyone, at `premium` above the ordinary price, decaying to nothing by `auction-ends` | offer it only with the premium shown |
+| `RESERVED` | held back by the registry for `reason` | do not offer it; explain `reason` |
+| `AVAILABLE` | registrable at the ordinary price | offer it |
+
+Below v22, `RNAME` carries the bare record with no tag and no `expires`, and
+every other answer is `ERR NAME NOT_FOUND`, as it was before this version.
+
+From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable" — only
+`AVAILABLE` says that. `NOT_FOUND` means the router has nothing to say about the
+name, which includes a backing resolver whose answer it could not read.
+
+`premium` is a decimal string because prices are 256-bit integers. It is the
+surcharge only: the base price depends on the label's length, which a hashed
+query does not carry. The client adds that.
+
+Times are absolute, not durations, so a client can count down without
+re-querying. A deadline is not permission to register; only the registry grants
+that.
+
+A router that cannot read the payload for `GRACE` or `AUCTION` MUST answer
+`TAKEN` with no `expires`, never `AVAILABLE`. Quoting the ordinary price for a
+name that carries a premium is the harmful answer.
+
+A router that cannot read the status at all MUST answer `ERR NAME RESOLVER
+<detail>`. Not `TAKEN`, which asserts a registration it never read, and not
+`AVAILABLE`, which offers a name that may be held. This covers an unreachable
+chain, an unconfigured TLD, and any status the router does not recognise.
+
+A client MUST read a `reason` it does not know as `UNKNOWN` and still treat the
+name as reserved: a later version may reserve names for reasons this one cannot
+name, and losing the reservation over that would offer a name that cannot be
+registered. A router sends `UNKNOWN` for a reason its own resolver did not name.
 
 `json-bytes` MUST be a UTF-8 JSON object with the following schema:
 
@@ -1541,10 +1594,10 @@ an empty string, not JSON `null` and not an absent key. Link fields
 empty array `[]` when unset. Coin fields (`eth`, `btc`, `xmr`, `dot`) use JSON
 `null` as the "unset" sentinel and MAY also be absent from the object entirely.
 
-The backing resolver filters records that are expired or otherwise unavailable
-(the names router then returns `ERR NAME NOT_FOUND` to the client), so the wire
-format carries no expiry field. Testnet-vs-mainnet status is derived from the
-queried TLD rather than an in-record flag.
+The backing resolver does not resolve a name whose registration has lapsed; the
+router answers `GRACE` or `AUCTION` for those. The record carries no expiry
+field of its own — `RECORD` carries it alongside. Testnet-vs-mainnet status is
+derived from the queried TLD rather than an in-record flag.
 
 Receivers MUST tolerate extra unknown fields (forward-compatibility for future
 field additions). Adding a required field is a breaking change requiring an
@@ -1562,72 +1615,6 @@ accept (`resolver_max_response_bytes`, ≤ 16000 bytes, the default) so the
 re-encoded `RNAME` stays within the SMP proxied transmission budget of 16224
 bytes; a response over the cap is rejected as `ERR NAME RESOLVER`. The link
 arrays are bounded by this overall budget rather than a fixed per-field count.
-
-#### Name availability command
-
-`RSLV` answers `NOT_FOUND` for several different cases: never registered, lapsed
-but still renewable, held back, and registrable but not at the ordinary price. A
-client offering a name to register needs them apart. `NAVL` asks directly, and
-takes the same `domain` as `RSLV`, hashed labels included:
-
-```abnf
-navl = %s"NAVL" SP domain
-```
-
-The names router answers `NAVAIL` with exactly one of:
-
-```abnf
-navail       = %s"NAVAIL" SP availability
-availability = %s"AVAILABLE"
-             / %s"TAKEN" SP optExpires
-             / %s"GRACE" SP grace-ends
-             / %s"AUCTION" SP premium auction-ends
-             / %s"RESERVED" SP reason
-optExpires   = %s"0" / (%s"1" expires) ; absent when the router could not read the registration
-expires      = 8*8 OCTET ; as grace-ends
-grace-ends   = 8*8 OCTET ; Int64, network byte order (big-endian), seconds since the Unix epoch
-auction-ends = 8*8 OCTET ; as grace-ends, and follows premium with no separator
-premium      = shortString ; ASCII decimal integer, in attoUSD (1e-18 USD)
-reason       = %s"UNSPECIFIED" / %s"TRADEMARK" / %s"PUBLIC_INTEREST"
-             / %s"OFFENSIVE" / %s"INTERNAL" / %s"PREMIUM" / %s"UNKNOWN"
-```
-
-| Answer | Condition | Client action |
-|---|---|---|
-| `AVAILABLE` | registrable at the ordinary price | offer it |
-| `TAKEN` | held by someone until `expires` | do not offer it |
-| `GRACE` | lapsed, but renewable by its previous owner until `grace-ends` | do not offer it; it may free up then |
-| `AUCTION` | registrable by anyone, at `premium` above the ordinary price, decaying to nothing by `auction-ends` | offer it only with the premium shown |
-| `RESERVED` | held back by the registry for `reason` | do not offer it; explain `reason` |
-
-`premium` is a decimal string because prices are 256-bit integers. It is the
-surcharge only: the base price depends on the label's length, which a hashed
-query does not carry. The client adds that.
-
-Times are absolute, not durations, so a client can count down without
-re-querying. A deadline is not permission to register; only the registry grants
-that.
-
-A router that cannot read the payload for `GRACE` or `AUCTION` MUST answer
-`TAKEN` with no `expires`, never `AVAILABLE`. Quoting the ordinary price for a
-name that carries a premium is the harmful answer.
-
-A router that cannot read the status at all MUST answer `ERR NAME RESOLVER
-<detail>`. Not `TAKEN`, which asserts a registration it never read, and not
-`NOT_FOUND`, which reads as "free". This covers an unreachable chain, an
-unconfigured TLD, and any status the router does not recognise. A client MUST
-read a `reason` it does not know as `UNKNOWN` and still treat the name as
-reserved: a later version may reserve names for reasons this one cannot name,
-and losing the reservation over that would offer a name that cannot be
-registered. A router sends `UNKNOWN` for a reason its own resolver did not
-name.
-
-`NAVL` fails as `RSLV` does: `ERR NAME NO_RESOLVER`, or `ERR NAME RESOLVER
-<detail>`. It is gated on v22 and MUST NOT be sent to a lower version. Like
-`RSLV` it is unauthenticated and works directly or in a `PFWD` block; clients
-SHOULD use the proxy, because the hash hides the name but only the proxy hides
-the IP. Proxies below v22 cannot carry `NAVL`, so during rollout a client that
-allows direct fallback reaches the router itself — with the hash, never the name.
 
 ## Transport connection with the SMP router
 

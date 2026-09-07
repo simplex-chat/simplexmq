@@ -75,8 +75,6 @@ module Simplex.Messaging.Client
     proxySMPMessage,
     proxyResolveName,
     directResolveName,
-    proxyNameAvailability,
-    directNameAvailability,
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
@@ -1057,16 +1055,21 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 -- Version-gated on the destination relay (mirrors `connectSMPProxiedRelay`):
 -- the client never sends RSLV to a relay that predates names support.
 -- | How a name goes on the wire. From v22 the second-level label is sent as its
--- hash; older routers can only parse the name. A hashed query's record names the
--- hash, so callers put back the name they asked for.
+-- hash; older routers can only parse the name.
 queryDomain :: VersionSMP -> SimplexDomain -> SimplexDomain
 queryDomain v d = if v >= nameAvailSMPVersion then hashedDomain d else d
 
-proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRecord)
+-- | A hashed query's record names the hash, so put back the name that was asked.
+askedName :: SimplexDomain -> NameResponse -> NameResponse
+askedName name = \case
+  r@NRNameRecord {nameRecord} -> r {nameRecord = nameRecord {nrName = fullDomainName name}}
+  r -> r
+
+proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameResponse)
 proxyResolveName c nm proxiedRelay name
   | v >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (queryDomain v name)) >>= \case
-        Right (RNAME nr) -> pure $ Right nr {nrName = fullDomainName name}
+        Right (RNAME r) -> pure $ Right (askedName name r)
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
@@ -1078,35 +1081,15 @@ proxyResolveName c nm proxiedRelay name
 -- proxy fallback in the agent. RSLV requires no entity ID or authorization
 -- (see `noAuthCmd` in Protocol.hs). Version-gated on the session here, not the
 -- encoder, so an old server never receives RSLV.
-directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRecord
+directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameResponse
 directResolveName c nm name
   | v >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (queryDomain v name))) >>= \case
-        RNAME nr -> pure nr {nrName = fullDomainName name}
+        RNAME r -> pure (askedName name r)
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where
     v = thVersion (thParams c)
-
--- | Ask whether a name can be registered, over PFWD.
-proxyNameAvailability :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameAvailability)
-proxyNameAvailability c nm proxiedRelay name
-  | prVersion proxiedRelay >= nameAvailSMPVersion =
-      proxySMPCommand c nm proxiedRelay Nothing NoEntity (NAVL (hashedDomain name)) >>= \case
-        Right (NAVAIL a) -> pure $ Right a
-        Right r -> throwE $ unexpectedResponse r
-        Left e -> pure $ Left e
-  | otherwise = throwE $ PCETransportError TEVersion
-
--- | Direct (non-PFWD) availability query. Exposes the client IP, as
--- `directResolveName` does.
-directNameAvailability :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameAvailability
-directNameAvailability c nm name
-  | thVersion (thParams c) >= nameAvailSMPVersion =
-      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (NAVL (hashedDomain name))) >>= \case
-        NAVAIL a -> pure a
-        r -> throwE $ unexpectedResponse r
-  | otherwise = throwE $ PCETransportError TEVersion
 
 -- | Acknowledge message delivery (server deletes the message).
 --

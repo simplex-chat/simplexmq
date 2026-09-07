@@ -69,7 +69,6 @@ module Simplex.Messaging.Agent.Client
     secureGetQueueLink,
     getQueueLink,
     resolveName,
-    getNameAvailability,
     getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
@@ -270,8 +269,7 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
-    NameAvailability,
-    NameRecord,
+    NameResponse,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -1995,20 +1993,12 @@ getQueueLink c nm userId server lnkId =
 -- resolver) and falls back to a direct send when the proxy is unavailable
 -- (faster but exposes the client IP). Mode selection is delegated to
 -- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
-resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameRecord
+resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameResponse
 resolveName c nm userId server domain =
   snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
   where
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
-
--- | Ask whether a name can be registered. Same path as `resolveName`.
-getNameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameAvailability
-getNameAvailability c nm userId server domain =
-  snd <$> sendOrProxySMPCommand c nm userId server "" "NAVL" NoEntity availViaProxy availDirectly
-  where
-    availViaProxy smp proxySess = proxyNameAvailability smp nm proxySess domain
-    availDirectly smp = directNameAvailability smp nm domain
 
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means

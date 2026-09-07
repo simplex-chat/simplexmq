@@ -23,7 +23,7 @@ import qualified NamesResolverServer as NRS
 import SMPAgentClient
 import SMPClient
 import SMPNamesTests (testNameRecord)
-import Simplex.Messaging.Agent (resolveSimplexName, getSimplexNameAvailability)
+import Simplex.Messaging.Agent (resolveSimplexName)
 import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..), ServerCfg, ServerRoles (..), presetServerCfg)
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
@@ -86,34 +86,16 @@ resolveNameTests = do
     it "surfaces as SMP host (NAME (RESOLVER ..))" testBackendError
   describe "success path" $
     it "returns NameRecord" testDirectSuccess
-  describe "name availability" $ do
-    it "answers via agent server selection" testAvailSuccess
-    it "NAME NO_RESOLVER without a resolver" testAvailNoResolver
-    it "NO_NAME_SERVERS without a names server" testAvailNoNameServers
+  describe "name availability" $
+    it "an unregistered name answers AVAILABLE" testAvailSuccess
 
 testAvailSuccess :: HasCallStack => IO ()
 testAvailSuccess =
   withDirectResolver (status404, "{\"error\":\"unregistered\"}") $ \c -> do
-    r <- runExceptT $ getSimplexNameAvailability c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
+    r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Right a -> a `shouldBe` SMP.NAVailable
-      _ -> expectationFailure $ "expected Right NAVailable, got: " <> show r
-
-testAvailNoResolver :: HasCallStack => IO ()
-testAvailNoResolver =
-  withNoResolver $ \c -> do
-    r <- runExceptT $ getSimplexNameAvailability c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
-    case r of
-      Left (SMP _ (SMP.NAME SMP.NO_RESOLVER)) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ (NAME NO_RESOLVER)), got: " <> show r
-
-testAvailNoNameServers :: HasCallStack => IO ()
-testAvailNoNameServers =
-  withNoNameServers $ \c -> do
-    r <- runExceptT $ getSimplexNameAvailability c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
-    case r of
-      Left NO_NAME_SERVERS -> pure ()
-      _ -> expectationFailure $ "expected Left NO_NAME_SERVERS, got: " <> show r
+      Right a -> a `shouldBe` SMP.NRNameAvailable
+      _ -> expectationFailure $ "expected Right NRNameAvailable, got: " <> show r
 
 testDirectNotFound :: HasCallStack => IO ()
 testDirectNotFound =
@@ -176,5 +158,5 @@ testDirectSuccess =
   withDirectResolver (status200, J.encode testNameRecord) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Right nr -> nr `shouldBe` testNameRecord
-      _ -> expectationFailure $ "expected Right NameRecord, got: " <> show r
+      Right (SMP.NRNameRecord nr _) -> nr `shouldBe` testNameRecord
+      _ -> expectationFailure $ "expected Right (NRNameRecord ..), got: " <> show r

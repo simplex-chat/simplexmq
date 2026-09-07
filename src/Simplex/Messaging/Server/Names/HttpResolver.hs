@@ -3,14 +3,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | HTTP transport for the public-namespace resolver.
 --
 -- The Python REST resolver (see scripts/resolver/snrc-resolve.py) exposes
 --
 --   GET /resolve/<name>   -> 200 with a NameRecord JSON document
---                            404 / 400 for unknown names / TLDs
---                            502 for upstream RPC failures
+--                            404 / 410 for names that do not resolve, the body
+--                            saying why (reserved, lapsed, never registered)
+--                            400 for unknown TLDs, 502 for upstream RPC failures
 --   GET /health           -> 200 when the resolver process is ready
 --
 -- Boundary properties:
@@ -27,7 +29,6 @@ module Simplex.Messaging.Server.Names.HttpResolver
     NameStatusResp (..),
     newResolverEnv,
     closeResolverEnv,
-    availabilityHttp,
     resolveHttp,
     healthHttp,
   )
@@ -128,21 +129,15 @@ authHeader = \case
     let encoded = BAE.convertToBase BAE.Base64 (encodeUtf8 u <> ":" <> encodeUtf8 p) :: ByteString
      in ("Authorization", "Basic " <> encoded)
 
--- | GET <baseUrl>/resolve/<percent-encoded name>, decoding the 200 body
--- directly into a NameRecord in one pass (no intermediate Aeson Value). The
--- name is percent-encoded (every non-unreserved byte per RFC 3986): the
--- resolver expects raw labels, so slashes/punctuation must not alter the path.
-resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRecord)
-resolveHttp env name =
-  (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
-    <$> httpGet env ("/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
-
--- | GET <baseUrl>/resolve/<name>, reading what the resolver says about the name
--- rather than only whether it answered. The status code cannot tell an
--- unregistered name from a reserved or lapsed one; that is in the body, under
--- "status" on a 200 and "error" otherwise.
-availabilityHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameStatusResp)
-availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} name = do
+-- | GET <baseUrl>/resolve/<percent-encoded name>, returning the record when the
+-- name resolves and what the resolver says about the name either way. The
+-- status code cannot tell an unregistered name from a reserved or lapsed one;
+-- that is in the body, under "status" on a 200 and "error" otherwise. Older
+-- resolvers omit it, hence the Maybe. The name is percent-encoded (every
+-- non-unreserved byte per RFC 3986): the resolver expects raw labels, so
+-- slashes/punctuation must not alter the path.
+resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError (Maybe NameRecord, Maybe NameStatusResp))
+resolveHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} name = do
   req0 <- parseRequest (baseUrl <> "/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
   let req =
         req0
@@ -152,25 +147,30 @@ availabilityHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxRespon
           }
   result <- E.try $ withResponse req manager $ \res -> do
     let status = HT.statusCode (responseStatus res)
-        field = if status < 400 then "status" else "error"
     bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
     pure $
       if BL.length bs > fromIntegral maxResponseBytes
         then Left BodyTooLarge
         else case J.decode bs of
-          Just (J.Object o) | Just (J.String t) <- JKM.lookup field o -> Right (statusResp t o)
-          _ -> Left (HttpStatusErr status)
+          Just v@(J.Object o)
+            | status < 400 -> (,statusResp o "status") . Just <$> first InvalidJson (JT.parseEither J.parseJSON v)
+            | otherwise -> maybe (Left $ HttpStatusErr status) (Right . (Nothing,) . Just) (statusResp o "error")
+          _
+            | status < 400 -> Left (InvalidJson "not a JSON object")
+            | otherwise -> Left (HttpStatusErr status)
   pure (either (Left . HttpFailure) id result)
   where
-    statusResp t o =
-      NameStatusResp
-        { nsStatus = t,
-          nsExpires = jsonField o "expires",
-          nsGraceEnds = jsonField o "graceEnds",
-          nsAuctionEnds = jsonField o "auctionEnds",
-          nsPremium = jsonField o "premium" >>= decimalPrice,
-          nsReasonCode = jsonField o "reasonCode"
-        }
+    statusResp o field = mkResp <$> jsonField o field
+      where
+        mkResp t =
+          NameStatusResp
+            { nsStatus = t,
+              nsExpires = jsonField o "expires",
+              nsGraceEnds = jsonField o "graceEnds",
+              nsAuctionEnds = jsonField o "auctionEnds",
+              nsPremium = jsonField o "premium" >>= decimalPrice,
+              nsReasonCode = jsonField o "reasonCode"
+            }
 
 -- | A price is at most 78 decimal digits. The wire format length-prefixes it
 -- with one byte, which would wrap on anything longer, so drop it instead.

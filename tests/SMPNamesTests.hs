@@ -17,12 +17,11 @@ import Network.HTTP.Types (status200, status400, status404, status410, status500
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (NameAvailability (..), ErrorType (..), NameErrorType (..), NameRecord (..), NameReservedReason (..))
+import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NameRecord (..), NameReservedReason (..), NameResponse (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
-    getNameAvailability,
     newNamesEnv,
     pingEndpoint,
     resolveName,
@@ -105,89 +104,97 @@ errorWireSpec =
 
 availabilitySpec :: Spec
 availabilitySpec = do
+  -- one lookup answers both questions: what the name points to, and whether it
+  -- could be registered
+  it "a resolvable name answers with the record and its expiry" $
+    answers status200 (recordWith "\"status\":\"registered\",\"expires\":1811232000") (NRNameRecord testNameRecord (Just 1811232000))
+  it "a resolver that sends no status still answers with the record" $
+    answers status200 (J.encode testNameRecord) (NRNameRecord testNameRecord Nothing)
   it "unregistered name is available" $
-    answers status404 "{\"error\":\"unregistered\"}" NAVailable
+    answers status404 "{\"error\":\"unregistered\"}" NRNameAvailable
   it "expired name is available" $
-    answers status410 "{\"error\":\"expired\"}" NAVailable
+    answers status410 "{\"error\":\"expired\"}" NRNameAvailable
   it "name in grace carries graceEnds" $
-    answers status410 "{\"error\":\"grace\",\"graceEnds\":1796377221}" (NAInGrace 1796377221)
+    answers status410 "{\"error\":\"grace\",\"graceEnds\":1796377221}" (NRNameInGrace 1796377221)
   it "auction carries premium and auctionEnds" $
     answers
       status410
       "{\"error\":\"auction\",\"premium\":\"99999952316384526016153087\",\"auctionEnds\":1798191621}"
-      (NAAuction "99999952316384526016153087" 1798191621)
+      (NRNameAuction "99999952316384526016153087" 1798191621)
   it "reserved name carries the reason" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NAReserved NRTrademark)
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}" (NRNameReserved NRTrademark)
   -- an older resolver sends no reasonCode; that is not the chain saying "none"
   it "no reasonCode still reads as reserved" $
-    answers status404 "{\"error\":\"reserved\"}" (NAReserved NRUnknown)
+    answers status404 "{\"error\":\"reserved\"}" (NRNameReserved NRUnknown)
   -- a later version may name reasons this one cannot; the reservation must
   -- survive that, or a client would offer a name it cannot register
   it "a reason from a later version still reads as reserved" $
-    smpDecode "RESERVED SOMETHING_NEW" `shouldBe` Right (NAReserved NRUnknown)
+    smpDecode "RESERVED SOMETHING_NEW" `shouldBe` Right (NRNameReserved NRUnknown)
   -- the resolver names this one explicitly; it is not the same as not knowing
   it "unspecified reason reads as unspecified" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"unspecified\"}" (NAReserved NRUnspecified)
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"unspecified\"}" (NRNameReserved NRUnspecified)
   it "unknown reason still reads as reserved" $
-    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NAReserved NRUnknown)
-  it "registered name is taken, with expiry" $
-    answers status200 "{\"status\":\"registered\",\"expires\":1811232000}" (NATaken (Just 1811232000))
-  it "registered without expiry is taken" $
-    answers status200 "{\"status\":\"registered\",\"expires\":null}" (NATaken Nothing)
+    answers status404 "{\"error\":\"reserved\",\"reasonCode\":\"astrology\"}" (NRNameReserved NRUnknown)
+  it "registered without a resolver is taken, with expiry" $
+    answers status404 "{\"error\":\"noResolver\",\"expires\":1811232000}" (NRNameTaken (Just 1811232000))
   -- an answer missing its payload withholds the name: quoting the usual price
   -- for one that costs a premium is the wrong answer
   it "grace without graceEnds is taken" $
-    answers status410 "{\"error\":\"grace\"}" (NATaken Nothing)
+    answers status410 "{\"error\":\"grace\"}" (NRNameTaken Nothing)
   it "auction without premium is taken" $
-    answers status410 "{\"error\":\"auction\",\"auctionEnds\":1798191621}" (NATaken Nothing)
-  it "noResolver is taken" $
-    answers status404 "{\"error\":\"noResolver\",\"expires\":1811232000}" (NATaken (Just 1811232000))
+    answers status410 "{\"error\":\"auction\",\"auctionEnds\":1798191621}" (NRNameTaken Nothing)
   -- the wire length-prefixes the price with one byte, so a longer or
   -- non-numeric string is dropped rather than re-encoded
   it "over-long premium is dropped" $
-    answers status410 (jsonBody ("{\"error\":\"auction\",\"premium\":\"" <> replicate 300 '9' <> "\",\"auctionEnds\":1798191621}")) (NATaken Nothing)
+    answers status410 (jsonBody ("{\"error\":\"auction\",\"premium\":\"" <> replicate 300 '9' <> "\",\"auctionEnds\":1798191621}")) (NRNameTaken Nothing)
   it "non-decimal premium is dropped" $
-    answers status410 "{\"error\":\"auction\",\"premium\":\"1e26\",\"auctionEnds\":1798191621}" (NATaken Nothing)
+    answers status410 "{\"error\":\"auction\",\"premium\":\"1e26\",\"auctionEnds\":1798191621}" (NRNameTaken Nothing)
   -- a resolver that could not answer must not look like an answer: TAKEN would
-  -- assert a registration nobody read, NOT_FOUND would read as "free"
+  -- assert a registration nobody read, AVAILABLE would offer a name that is held
   it "upstream failure is a resolver error" $
     refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "upstreamError")
   it "unconfigured TLD is a resolver error" $
     refuses status400 "{\"error\":\"tldNotConfigured\"}" (RESOLVER "tldNotConfigured")
   it "unreadable status is a resolver error" $
-    refuses status200 "{\"status\":\"unknown\",\"expires\":null}" (RESOLVER "unknown")
+    refuses status404 "{\"error\":\"unknown\"}" (RESOLVER "unknown")
   it "long status is truncated" $
     refuses status502 (jsonBody ("{\"error\":\"" <> replicate 400 'e' <> "\"}")) (RESOLVER (T.replicate 32 "e"))
-  it "non-JSON body is never NOT_FOUND" $
-    refuses status404 "<html>gateway</html>" (RESOLVER "HTTP 404")
+  -- a body the router cannot read is the pre-v22 answer, unchanged: NOT_FOUND
+  -- says the router has nothing to say, never that the name is registrable
+  it "unreadable 404 body stays NOT_FOUND" $
+    refuses status404 "<html>gateway</html>" NOT_FOUND
   it "over-cap body is a resolver error" $
     withResolverServer (resolveResp status200 (jsonBody ("{\"status\":\"registered\",\"pad\":\"" <> replicate 400 'x' <> "\"}"))) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 200}
-      getNameAvailability env navlDomain `shouldReturn` Left (RESOLVER "response too large")
+      resolveName env navlDomain `shouldReturn` Left (RESOLVER "response too large")
   it "every answer survives the wire" $
     mapM_
       (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
-      [ NAVailable,
-        NATaken (Just 1811232000),
-        NATaken Nothing,
-        NAInGrace 1796377221,
-        NAAuction "99999952316384526016153087" 1798191621,
-        NAReserved NRUnspecified,
-        NAReserved NRTrademark,
-        NAReserved NRPublicInterest,
-        NAReserved NROffensive,
-        NAReserved NRInternal,
-        NAReserved NRPremium,
-        NAReserved NRUnknown
+      [ NRNameRecord testNameRecord (Just 1811232000),
+        NRNameRecord testNameRecord Nothing,
+        NRNameAvailable,
+        NRNameTaken (Just 1811232000),
+        NRNameTaken Nothing,
+        NRNameInGrace 1796377221,
+        NRNameAuction "99999952316384526016153087" 1798191621,
+        NRNameReserved NRUnspecified,
+        NRNameReserved NRTrademark,
+        NRNameReserved NRPublicInterest,
+        NRNameReserved NROffensive,
+        NRNameReserved NRInternal,
+        NRNameReserved NRPremium,
+        NRNameReserved NRUnknown
       ]
   where
     jsonBody = LB.fromStrict . B.pack
+    -- the resolver returns the record and the registration status in one body
+    recordWith extra = LB.init (J.encode testNameRecord) <> "," <> extra <> "}"
     answers st body a = resolverSays st body (Right a)
     refuses st body e = resolverSays st body (Left e)
     resolverSays st body expected =
       withResolverServer (resolveResp st body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)
-        getNameAvailability env navlDomain `shouldReturn` expected
+        resolveName env navlDomain `shouldReturn` expected
     navlDomain = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 parseNameSpec :: Spec
@@ -263,7 +270,7 @@ resolverSpec = do
   it "returns NameRecord on 200 OK" $
     withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Right testNameRecord
+      resolveName env aliceDomain `shouldReturn` Right (NRNameRecord testNameRecord Nothing)
 
   it "returns NOT_FOUND on 404" $
     withResolverServer (resolveResp status404 "{}") $ \port _ -> do

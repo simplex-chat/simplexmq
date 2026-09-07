@@ -80,7 +80,8 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
-    NameAvailability (..),
+    NameResponse (..),
+    NRTag (..),
     NameReservedReason (..),
     NameErrorType (..),
     BrokerErrorType (..),
@@ -606,8 +607,6 @@ data Command (p :: Party) where
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Resolve SimpleX name.
   RSLV :: SimplexDomain -> Command Resolver
-  -- Whether a SimpleX name can be registered.
-  NAVL :: SimplexDomain -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -743,9 +742,8 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  -- Resolved SimpleX name.
-  RNAME :: NameRecord -> BrokerMsg
-  NAVAIL :: NameAvailability -> BrokerMsg
+  -- What the router knows about a SimpleX name.
+  RNAME :: NameResponse -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -957,7 +955,6 @@ data CommandTag (p :: Party) where
   NSUB_ :: CommandTag Notifier
   NSUBS_ :: CommandTag NotifierService
   RSLV_ :: CommandTag Resolver
-  NAVL_ :: CommandTag Resolver
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -985,7 +982,6 @@ data BrokerMsgTag
   | ERR_
   | PONG_
   | RNAME_
-  | NAVAIL_
   deriving (Show)
 
 class ProtocolMsgTag t where
@@ -1023,7 +1019,6 @@ instance PartyI p => Encoding (CommandTag p) where
     NSUB_ -> "NSUB"
     NSUBS_ -> "NSUBS"
     RSLV_ -> "RSLV"
-    NAVL_ -> "NAVL"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
@@ -1053,7 +1048,6 @@ instance ProtocolMsgTag CmdTag where
     "NSUB" -> Just $ CT SNotifier NSUB_
     "NSUBS" -> Just $ CT SNotifierService NSUBS_
     "RSLV" -> Just $ CT SResolver RSLV_
-    "NAVL" -> Just $ CT SResolver NAVL_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1084,7 +1078,6 @@ instance Encoding BrokerMsgTag where
     ERR_ -> "ERR"
     PONG_ -> "PONG"
     RNAME_ -> "RNAME"
-    NAVAIL_ -> "NAVAIL"
   smpP = messageTagP
 
 instance ProtocolMsgTag BrokerMsgTag where
@@ -1108,7 +1101,6 @@ instance ProtocolMsgTag BrokerMsgTag where
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
     "RNAME" -> Just RNAME_
-    "NAVAIL" -> Just NAVAIL_
     _ -> Nothing
 
 -- | SMP message body format
@@ -1600,34 +1592,75 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
-data NameAvailability
-  = -- | registrable at the ordinary price
-    NAVailable
-  | -- | registered, until this time when the router could read it
-    NATaken {naExpires :: Maybe Int64}
+-- | What the router knows about a name. Resolving a name and asking whether it
+-- can be registered are the same question to the registry, and a client that
+-- offers a taken name to register wants to show what took it.
+data NameResponse
+  = -- | resolves, and the registration runs until this time
+    NRNameRecord {nameRecord :: NameRecord, expires :: Maybe Int64}
+  | -- | registered, but its records point nowhere
+    NRNameTaken {expires :: Maybe Int64}
   | -- | lapsed, renewable by its previous owner until this time
-    NAInGrace {naGraceEnds :: Int64}
+    NRNameInGrace {graceEnds :: Int64}
   | -- | registrable by anyone, at this premium in attoUSD until this time
-    NAAuction {naPremium :: Text, naAuctionEnds :: Int64}
+    NRNameAuction {premium :: Text, auctionEnds :: Int64}
   | -- | held back by the registry
-    NAReserved {naReason :: NameReservedReason}
+    NRNameReserved {reason :: NameReservedReason}
+  | -- | registrable at the ordinary price
+    NRNameAvailable
   deriving (Eq, Show)
 
-instance Encoding NameAvailability where
+data NRTag
+  = NRNameRecord_
+  | NRNameTaken_
+  | NRNameInGrace_
+  | NRNameAuction_
+  | NRNameReserved_
+  | NRNameAvailable_
+  deriving (Show)
+
+instance Encoding NRTag where
   smpEncode = \case
-    NAVailable -> "AVAILABLE"
-    NATaken t -> "TAKEN " <> smpEncode t
-    NAInGrace t -> "GRACE " <> smpEncode t
-    NAAuction p t -> "AUCTION " <> smpEncode (p, t)
-    NAReserved r -> "RESERVED " <> smpEncode r
+    NRNameRecord_ -> "RECORD"
+    NRNameTaken_ -> "TAKEN"
+    NRNameInGrace_ -> "GRACE"
+    NRNameAuction_ -> "AUCTION"
+    NRNameReserved_ -> "RESERVED"
+    NRNameAvailable_ -> "AVAILABLE"
+  smpP = messageTagP
+
+instance ProtocolMsgTag NRTag where
+  decodeTag = \case
+    "RECORD" -> Just NRNameRecord_
+    "TAKEN" -> Just NRNameTaken_
+    "GRACE" -> Just NRNameInGrace_
+    "AUCTION" -> Just NRNameAuction_
+    "RESERVED" -> Just NRNameReserved_
+    "AVAILABLE" -> Just NRNameAvailable_
+    _ -> Nothing
+
+instance Encoding NameResponse where
+  smpEncode = \case
+    NRNameRecord {nameRecord, expires} -> e (NRNameRecord_, ' ', expires, Tail $ LB.toStrict $ J.encode nameRecord)
+    NRNameTaken {expires} -> e (NRNameTaken_, ' ', expires)
+    NRNameInGrace {graceEnds} -> e (NRNameInGrace_, ' ', graceEnds)
+    NRNameAuction {premium, auctionEnds} -> e (NRNameAuction_, ' ', premium, auctionEnds)
+    NRNameReserved {reason} -> e (NRNameReserved_, ' ', reason)
+    NRNameAvailable -> e NRNameAvailable_
+    where
+      e :: Encoding a => a -> ByteString
+      e = smpEncode
   smpP =
-    A.takeTill (== ' ') >>= \case
-      "AVAILABLE" -> pure NAVailable
-      "TAKEN" -> NATaken <$> _smpP
-      "GRACE" -> NAInGrace <$> _smpP
-      "AUCTION" -> NAAuction <$> _smpP <*> smpP
-      "RESERVED" -> NAReserved <$> _smpP
-      _ -> fail "bad NameAvailability"
+    smpP >>= \case
+      NRNameRecord_ -> do
+        expires <- smpP
+        nameRecord <- J.eitherDecodeStrict . unTail <$?> smpP
+        pure NRNameRecord {nameRecord, expires}
+      NRNameTaken_ -> NRNameTaken <$> smpP
+      NRNameInGrace_ -> NRNameInGrace <$> smpP
+      NRNameAuction_ -> NRNameAuction <$> smpP <*> smpP
+      NRNameReserved_ -> NRNameReserved <$> smpP
+      NRNameAvailable_ -> pure NRNameAvailable
 
 data NameReservedReason
   = NRUnspecified
@@ -1895,7 +1928,6 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
     RSLV d -> e (RSLV_, ' ', d)
-    NAVL d -> e (NAVL_, ' ', d)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1921,7 +1953,6 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
     RSLV _ -> noAuthCmd
-    NAVL _ -> noAuthCmd
     SUB -> serviceCmd
     NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
@@ -2004,7 +2035,6 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
     CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
-    CT SResolver NAVL_ -> Cmd SResolver . NAVL <$> _smpP <* A.takeByteString
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -2047,8 +2077,12 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    RNAME rec -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode rec)
-    NAVAIL a -> e (NAVAIL_, ' ', a)
+    RNAME r
+      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', r)
+      -- v20/v21 knows only the record, and had NOT_FOUND for every other answer
+      | otherwise -> case r of
+          NRNameRecord {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
+          _ -> e (ERR_, ' ', NAME NOT_FOUND)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2095,8 +2129,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
-    RNAME_ -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
-    NAVAIL_ -> NAVAIL <$> _smpP
+    RNAME_
+      | v >= nameAvailSMPVersion -> RNAME <$> _smpP
+      | otherwise -> fmap (RNAME . (`NRNameRecord` Nothing)) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
@@ -2120,7 +2155,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
     RNAME _ -> noEntityMsg
-    NAVAIL _ -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY

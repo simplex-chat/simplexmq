@@ -67,7 +67,6 @@ module Simplex.Messaging.Agent
     deleteConnShortLink,
     getConnShortLink,
     resolveSimplexName,
-    getSimplexNameAvailability,
     getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -227,8 +226,7 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
-    NameAvailability,
-    NameRecord,
+    NameResponse,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -461,13 +459,9 @@ getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 -- | Resolve a SimpleX name (PFWD RSLV). The agent owns server selection: it
 -- picks a names-capable server (ServerRoles.names) from the user's nameSrvs, so
 -- chat clients just pass the parsed domain.
-resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameRecord
+resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameResponse
 resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
-
-getSimplexNameAvailability :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameAvailability
-getSimplexNameAvailability c nm userId domain = withAgentEnv c $ getSimplexNameAvailability' c nm userId domain
-{-# INLINE getSimplexNameAvailability #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
@@ -1274,15 +1268,10 @@ getConnShortLink' c nm userId = \case
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
-resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameRecord
+resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
 resolveSimplexName' c nm userId domain = do
   resolverSrv <- getNextNameServer c userId
   resolveName c nm userId resolverSrv domain
-
-getSimplexNameAvailability' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameAvailability
-getSimplexNameAvailability' c nm userId domain = do
-  resolverSrv <- getNextNameServer c userId
-  getNameAvailability c nm userId resolverSrv domain
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

@@ -34,7 +34,7 @@ import Simplex.Messaging.Protocol
     Command (..),
     CorrId (..),
     ErrorType (..),
-    NameAvailability (..),
+    NameResponse (..),
     NameErrorType (..),
     NameReservedReason (..),
     SParty (..),
@@ -78,13 +78,6 @@ sendRslv h@THandle {params} corrId d = do
   r :| _ <- tGetClient h
   pure r
 
-sendNavl :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexDomain -> IO (Transmission (Either ErrorType BrokerMsg))
-sendNavl h@THandle {params} corrId d = do
-  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (NAVL d))
-  [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
-  r :| _ <- tGetClient h
-  pure r
-
 rslvTests :: Spec
 rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
@@ -98,16 +91,16 @@ rslvTests = do
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
-  describe "NAVL (availability)" $ do
-    it "unregistered comes back AVAILABLE" testNavlAvailable
-    it "auction comes back with premium" testNavlAuction
-    it "reserved comes back with the reason" testNavlReserved
-    it "no names config -> NAME NO_RESOLVER" testNavlDisabled
-    it "refuses NAVL below v22" testNavlVersion
-    it "PFWD-wrapped NAVL reaches the resolver" testNavlForwarded
+  describe "RSLV availability (RNAME response)" $ do
+    it "unregistered comes back AVAILABLE" testRslvAvailable
+    it "auction comes back with premium" testRslvAuction
+    it "reserved comes back with the reason" testRslvReserved
+    it "PFWD-wrapped auction reaches the resolver" testRslvForwardedAuction
+  describe "RSLV below v22" $ do
+    it "still resolves a name to its record" testRslvOldClientRecord
+    it "still answers NAME NOT_FOUND for a name that does not resolve" testRslvOldClientNotFound
   describe "hashed lookups" $ do
     it "RSLV sends the 2LD as its hash" testRslvSendsTheHash
-    it "NAVL sends the 2LD as its hash" testNavlSendsTheHash
     it "subname labels stay text" testSubnameKeepsItsLabels
 
 testRslvBackendNotFound :: IO ()
@@ -153,7 +146,7 @@ testRslvVersion =
       Left (PCETransportError TEVersion) -> pure ()
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
-forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameRecord))
+forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
 forwardedResolveAlice = do
   g <- C.newRandom
   ts <- getCurrentTime
@@ -176,8 +169,8 @@ testRslvForwardedSuccess :: IO ()
 testRslvForwardedSuccess =
   withProxyAndResolver (status200, J.encode testNameRecord) $
     forwardedResolveAlice >>= \r -> case r of
-      Right (Right nr) -> nr `shouldBe` testNameRecord
-      _ -> expectationFailure $ "expected Right (Right NameRecord), got: " <> show r
+      Right (Right (NRNameRecord nr _)) -> nr `shouldBe` testNameRecord
+      _ -> expectationFailure $ "expected Right (Right (NRNameRecord ..)), got: " <> show r
 
 testRslvSuccess :: IO ()
 testRslvSuccess =
@@ -186,69 +179,66 @@ testRslvSuccess =
       (corrId, _entId, resp) <- sendRslv h "rs07" (domain "alice.simplex")
       corrId `shouldBe` CorrId "rs07"
       case resp of
-        Right (RNAME nr) -> nr `shouldBe` testNameRecord
-        _ -> expectationFailure $ "expected Right (RNAME ..), got: " <> show resp
+        Right (RNAME (NRNameRecord nr _)) -> nr `shouldBe` testNameRecord
+        _ -> expectationFailure $ "expected Right (RNAME (NRNameRecord ..)), got: " <> show resp
 
-testNavlAvailable :: IO ()
-testNavlAvailable =
+testRslvAvailable :: IO ()
+testRslvAvailable =
   withResolverServer (status404, "{\"error\":\"unregistered\"}") $
     testSMPClient @TLS $ \h -> do
-      (corrId, _entId, resp) <- sendNavl h "na01" (domain "ghost.simplex")
+      (corrId, _entId, resp) <- sendRslv h "na01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "na01"
-      resp `shouldBe` Right (NAVAIL NAVailable)
+      resp `shouldBe` Right (RNAME NRNameAvailable)
 
-testNavlAuction :: IO ()
-testNavlAuction =
+testRslvAuction :: IO ()
+testRslvAuction =
   withResolverServer (status410, auctionBody) $
     testSMPClient @TLS $ \h -> do
-      (_, _, resp) <- sendNavl h "na02" (domain "lapsed.simplex")
-      resp `shouldBe` Right (NAVAIL (NAAuction "99999952316384526016153087" 1798191621))
+      (_, _, resp) <- sendRslv h "na02" (domain "lapsed.simplex")
+      resp `shouldBe` Right (RNAME (NRNameAuction "99999952316384526016153087" 1798191621))
 
-testNavlReserved :: IO ()
-testNavlReserved =
+testRslvReserved :: IO ()
+testRslvReserved =
   withResolverServer (status404, "{\"error\":\"reserved\",\"reasonCode\":\"trademark\"}") $
     testSMPClient @TLS $ \h -> do
-      (_, _, resp) <- sendNavl h "na03" (domain "acme.simplex")
-      resp `shouldBe` Right (NAVAIL (NAReserved NRTrademark))
+      (_, _, resp) <- sendRslv h "na03" (domain "acme.simplex")
+      resp `shouldBe` Right (RNAME (NRNameReserved NRTrademark))
 
-testNavlDisabled :: IO ()
-testNavlDisabled =
-  withSmpServerConfigOn (transport @TLS) memCfg testPort $ const $
-    testSMPClient @TLS $ \h -> do
-      (_, _, resp) <- sendNavl h "na04" (domain "alice.simplex")
-      resp `shouldBe` Right (ERR (NAME NO_RESOLVER))
+-- | A client that predates v22 must see exactly what it saw before: the record
+-- for a name that resolves, and NOT_FOUND for one that does not.
+oldClient :: IO SMPClient
+oldClient = do
+  g <- C.newRandom
+  ts <- getCurrentTime
+  let srv = SMPServer testHost testPort testKeyHash
+      -- the version just below the gate: a lower ceiling would also pass for a
+      -- gate at 20 or 21 and prove nothing about v22
+      oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion serverInfoSMPVersion}
+  pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
+  either (fail . show) pure pcE
 
-testNavlVersion :: IO ()
-testNavlVersion =
+testRslvOldClientRecord :: IO ()
+testRslvOldClientRecord =
+  withResolverServer (status200, J.encode testNameRecord) $ do
+    pc <- oldClient
+    r <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
+    r `shouldBe` NRNameRecord testNameRecord Nothing
+
+testRslvOldClientNotFound :: IO ()
+testRslvOldClientNotFound =
   withResolverServer (status404, "{\"error\":\"unregistered\"}") $ do
-    g <- C.newRandom
-    ts <- getCurrentTime
-    let srv = SMPServer testHost testPort testKeyHash
-        -- the version just below the gate: a lower ceiling would also pass for
-        -- a gate at 20 or 21 and prove nothing about v22
-        oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion serverInfoSMPVersion}
-    pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
-    pc <- either (fail . show) pure pcE
-    r <- runExceptT (directNameAvailability pc NRMInteractive (domain "alice.simplex"))
+    pc <- oldClient
+    r <- runExceptT (directResolveName pc NRMInteractive (domain "alice.simplex"))
     case r of
-      Left (PCETransportError TEVersion) -> pure ()
-      _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
+      Left (PCEProtocolError (SMP.NAME SMP.NOT_FOUND)) -> pure ()
+      _ -> expectationFailure $ "expected Left (PCEProtocolError (NAME NOT_FOUND)), got: " <> show r
 
-testNavlForwarded :: IO ()
-testNavlForwarded =
-  withProxyAndResolver (status410, auctionBody) $ do
-    g <- C.newRandom
-    ts <- getCurrentTime
-    let proxyServ = SMPServer testHost testPort testKeyHash
-        relayServ = SMPServer testHost2 testPort2 testKeyHash
-        cfg' = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
-    pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
-    pc <- either (fail . show) pure pcE
-    sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
-    r <- runExceptT (proxyNameAvailability pc NRMInteractive sess (domain "lapsed.simplex"))
-    case r of
-      Right (Right a) -> a `shouldBe` NAAuction "99999952316384526016153087" 1798191621
-      _ -> expectationFailure $ "expected Right (Right NAAuction ..), got: " <> show r
+testRslvForwardedAuction :: IO ()
+testRslvForwardedAuction =
+  withProxyAndResolver (status410, auctionBody) $
+    forwardedResolveAlice >>= \r -> case r of
+      Right (Right a) -> a `shouldBe` NRNameAuction "99999952316384526016153087" 1798191621
+      _ -> expectationFailure $ "expected Right (Right (NRNameAuction ..)), got: " <> show r
 
 -- a name one day past its grace period, priced by the .testing auction curve
 auctionBody :: LB.ByteString
@@ -276,27 +266,21 @@ testRslvSendsTheHash :: IO ()
 testRslvSendsTheHash =
   withResolverServerReqs (status200, J.encode echoed) $ \reqs -> do
     pc <- currentClient
-    nr <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
+    r <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
     resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
     -- the record names what the caller asked for
-    SMP.nrName nr `shouldBe` "alice.simplex"
+    case r of
+      NRNameRecord nr _ -> SMP.nrName nr `shouldBe` "alice.simplex"
+      _ -> expectationFailure $ "expected NRNameRecord, got: " <> show r
   where
     -- the resolver echoes what it was asked about, which is the hash
     echoed = testNameRecord {SMP.nrName = aliceHash <> ".simplex"}
-
-testNavlSendsTheHash :: IO ()
-testNavlSendsTheHash =
-  withResolverServerReqs (status404, "{\"error\":\"unregistered\"}") $ \reqs -> do
-    pc <- currentClient
-    a <- runExceptT' (directNameAvailability pc NRMInteractive (domain "alice.simplex"))
-    a `shouldBe` NAVailable
-    resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
 
 testSubnameKeepsItsLabels :: IO ()
 testSubnameKeepsItsLabels =
   withResolverServerReqs (status404, "{\"error\":\"unregistered\"}") $ \reqs -> do
     pc <- currentClient
-    _ <- runExceptT' (directNameAvailability pc NRMInteractive (domain "x.alice.simplex"))
+    _ <- runExceptT' (directResolveName pc NRMInteractive (domain "x.alice.simplex"))
     resolvePaths reqs `shouldReturn` [["resolve", "x." <> aliceHash <> ".simplex"]]
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
