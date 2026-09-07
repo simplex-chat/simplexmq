@@ -80,7 +80,7 @@ mapReason = \case
   "internal" -> NRInternal
   "premium" -> NRPremium
   -- a code this router has no word for: still reserved, just unworded
-  _ -> NRUnknown
+  t -> NRUnknown t
 
 fetch :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameResponse)
 fetch NamesEnv {resolverEnv} d =
