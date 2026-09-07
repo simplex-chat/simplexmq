@@ -97,7 +97,7 @@ class EncodedLabelhashTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
-        snrc._auction_params.clear()
+        snrc._constants.clear()
 
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
@@ -235,7 +235,7 @@ class NameStatusTests(unittest.TestCase):
         # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
-        snrc._auction_params.clear()
+        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -258,6 +258,28 @@ class NameStatusTests(unittest.TestCase):
         self.assertEqual(snrc.name_status("alice.testing")["status"], "registered")
         snrc.chain_now = lambda: future + 3650 * 86400
         self.assertEqual(snrc.name_status("alice.testing")["status"], "expired")
+
+    def test_a_registrar_that_is_not_a_contract_is_an_error_not_a_free_name(self):
+        """An address with no code answers eth_call with empty data. Read as
+        zero, that would make every name look free."""
+        snrc.eth_call = self._saved[2]  # the real one, so its guard runs
+        snrc.rpc = lambda method, params: "0x"
+        with self.assertRaises(RuntimeError):
+            snrc.name_status("alice.testing")
+
+    def test_the_grace_period_is_read_once_not_per_query(self):
+        seen = []
+
+        def eth_call(to, data):
+            seen.append(data[:10])
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(self.GRACE)
+            return "0x" + snrc.encode_uint(int(time.time()) - 3600)
+
+        snrc.eth_call = eth_call
+        snrc.name_status("alice.testing")
+        snrc.name_status("alice.testing")
+        self.assertEqual(seen.count(snrc.selector("GRACE_PERIOD()")), 1)
 
     def test_zero_expiry_means_never_registered(self):
         snrc.eth_call = self._expiry(0)
@@ -361,7 +383,7 @@ class ReservedTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         snrc.chain_now = lambda: int(time.time())
-        snrc._auction_params.clear()
+        snrc._constants.clear()
 
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
@@ -429,7 +451,7 @@ class ReservedReasonTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         snrc.chain_now = lambda: int(time.time())
-        snrc._auction_params.clear()
+        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -553,7 +575,7 @@ class AuctionTests(unittest.TestCase):
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
-        snrc._auction_params.clear()
+        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -704,7 +726,7 @@ class ErrorCodeTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
-        snrc._auction_params.clear()
+        snrc._constants.clear()
 
     def tearDown(self):
         (

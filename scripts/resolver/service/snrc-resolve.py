@@ -193,9 +193,26 @@ def chain_now() -> int:
     return decode_uint(block["timestamp"])
 
 
+# Deployment constants - the grace period, the oracle and its curve - change only
+# when the owner retunes a contract, so they are read once per TTL rather than on
+# every query. Per-name values and the decaying premium are never cached.
+CONSTANTS_TTL = 300
+_constants: dict = {}
+
+
+def cached(key, read):
+    """`read()` at most once per CONSTANTS_TTL for `key`."""
+    hit = _constants.get(key)
+    if hit and time.time() - hit[0] < CONSTANTS_TTL:
+        return hit[1]
+    value = read()
+    _constants[key] = (time.time(), value)
+    return value
+
+
 def grace_period(registrar: str) -> int:
     """A deployment can configure a different window, so it is read on chain."""
-    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
+    return cached(("grace", registrar), lambda: decode_uint(eth_call(registrar, selector("GRACE_PERIOD()"))))
 
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
@@ -219,18 +236,13 @@ def reservation_reason(tld: str, token: int) -> int:
     return decode_uint(raw)
 
 
-# The oracle and its curve change only on a retune, so they are read once per
-# TTL rather than per query. The premium itself decays, so it is never cached.
-AUCTION_PARAMS_TTL = 300
-_auction_params: dict = {}
-
-
 def auction_params(tld: str):
     """(oracle, startPremium, totalDays, endValue) for the TLD's controller, or
     (ZERO_ADDR, 0, 0, 0) when no controller or no oracle is configured."""
-    cached = _auction_params.get(tld)
-    if cached and time.time() - cached[0] < AUCTION_PARAMS_TTL:
-        return cached[1]
+    return cached(("auction", tld), lambda: read_auction_params(tld))
+
+
+def read_auction_params(tld: str):
     params = (ZERO_ADDR, 0, 0, 0)
     controller = CONTROLLERS.get(tld)
     if controller:
@@ -242,7 +254,6 @@ def auction_params(tld: str):
                 decode_uint(eth_call(oracle, selector("totalDays()"))),
                 decode_uint(eth_call(oracle, selector("endValue()"))),
             )
-    _auction_params[tld] = (time.time(), params)
     return params
 
 
@@ -329,7 +340,10 @@ def selector(signature: str) -> str:
 
 
 def eth_call(to: str, data: str) -> str:
-    return rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    result = rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    if result == "0x":
+        raise RuntimeError(f"empty return from {to}: no contract at that address?")
+    return result
 
 
 def decode_address(hex_data: str) -> str:

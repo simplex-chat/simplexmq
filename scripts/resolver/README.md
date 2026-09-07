@@ -183,8 +183,9 @@ length, which a hash does not carry. The client adds that.
 
 The oracle comes from the controller's `prices()`, so no extra configuration is
 needed. Its window is read from the chain; zero days switches the auction off.
-The curve is cached for `AUCTION_PARAMS_TTL` (5 minutes), so a `setPremium`
-retune shows up within that; the decaying premium is read on every query.
+Deployment constants - the grace period, the oracle and its curve - are cached
+for `CONSTANTS_TTL` (5 minutes), so a retune shows up within that. Per-name
+values and the decaying premium are read on every query.
 
 **Upgrade this service before the routers that query it.** An older resolver
 reports a name in its auction as plain `expired`, which routers read as
@@ -280,7 +281,10 @@ hold the same value, so one field is enough to read.
 
 `upstreamError` says only which exception type the RPC call raised. The text
 goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
-and urlopen puts the URL it failed on into the message.
+and urlopen puts the URL it failed on into the message. It is also the answer
+when a registrar, controller or oracle address has no contract behind it: the
+empty reply is refused rather than read as zero, which would make every name
+look free.
 
 ### Status codes
 
