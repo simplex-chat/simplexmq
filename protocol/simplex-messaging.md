@@ -1500,9 +1500,9 @@ several configured servers can act on distinctly:
 | Response | Condition | Client action |
 |---|---|---|
 | `RNAME` | the router read the registry | use it |
-| `ERR NAME NOT_FOUND` | unknown TLD or malformed name; below v22 also every name that does not resolve | authoritative "no such name" — stop |
+| `ERR NAME NOT_FOUND` | the router could not read any answer for the name; below v22 also every name that does not resolve | stop, and do not read it as registrable |
 | `ERR NAME NO_RESOLVER` | this router has no resolver (names role not enabled) | skip this server, try the next |
-| `ERR NAME RESOLVER <detail>` | transient failure: backing resolver error (upstream 5xx, transport, timeout, decode) | transient — retry or surface, do not treat as "not found" |
+| `ERR NAME RESOLVER <detail>` | the resolver answered something the router cannot act on: an unconfigured TLD, an unreachable chain, a transport failure, a timeout | surface `<detail>`; retry only if it reads as transient |
 
 A client SHOULD NOT broadcast a `name` to further servers after a name-capable
 router has answered (`NOT_FOUND` or `RESOLVER`), since that router has already
@@ -1560,10 +1560,11 @@ A router that cannot read the payload for `GRACE` or `AUCTION` MUST answer
 `TAKEN` with no `expires`, never `AVAILABLE`. Quoting the ordinary price for a
 name that carries a premium is the harmful answer.
 
-A router that cannot read the status at all MUST answer `ERR NAME RESOLVER
-<detail>`. Not `TAKEN`, which asserts a registration it never read, and not
-`AVAILABLE`, which offers a name that may be held. This covers an unreachable
-chain, an unconfigured TLD, and any status the router does not recognise.
+A router that reads a status it has no answer for MUST say so as `ERR NAME
+RESOLVER <detail>`. Not `TAKEN`, which asserts a registration it never read, and
+not `AVAILABLE`, which offers a name that may be held. An unreachable chain and
+an unconfigured TLD arrive this way, as statuses of their own. When the response
+carries no status the router can read at all, it answers `ERR NAME NOT_FOUND`.
 
 A client MUST read a `reason` it does not know as `UNKNOWN` and still treat the
 name as reserved: a later version may reserve names for reasons this one cannot

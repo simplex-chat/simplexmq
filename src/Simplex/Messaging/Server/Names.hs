@@ -113,11 +113,12 @@ mapStatus NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsAuctionEnds, nsPre
     -- rather than quote the ordinary price; its expiry is already past.
     lapsed = NRNameTaken Nothing
 
+-- | Only reached when there was no status to read: a working resolver names one
+-- on every 4xx, and a lapsed registration is GRACE or AUCTION. The 4xx codes
+-- keep NOT_FOUND, which is what a client below v22 was told for them.
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case
   HttpStatusErr 404 -> NOT_FOUND
-  -- 410 is a lapsed registration: an answer about the name, not a resolver
-  -- failure, so it must not become RESOLVER.
   HttpStatusErr 410 -> NOT_FOUND
   HttpStatusErr 400 -> NOT_FOUND
   HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
