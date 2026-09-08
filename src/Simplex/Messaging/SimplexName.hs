@@ -10,7 +10,9 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
-    hashedDomain,
+    LabelHash (..),
+    labelHash,
+    labelHashText,
     shortNameInfoStr,
   )
 where
@@ -21,6 +23,7 @@ import Crypto.Hash.Algorithms (Keccak_256)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.Attoparsec.Text as AT
+import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -77,23 +80,25 @@ nameLabelP = do
 -- | A second-level label sent as its keccak256 hash, so a router never learns
 -- the name. ENS's bracket form: brackets are outside the name character set, so
 -- it cannot collide with a real name. 66 chars, so exempt from the label limit.
-labelHashP :: AT.Parser Text
-labelHashP = do
-  hex <- AT.char '[' *> AT.takeWhile1 (\c -> isDigit c || c >= 'a' && c <= 'f') <* AT.char ']'
-  if T.length hex == 64 then pure ("[" <> hex <> "]") else fail "labelhash: expected 64 hex digits"
+-- | The registry's key for a label, and what BaseRegistrarImplementation.labelOf
+-- is keyed on. Always 32 bytes, so it is never told from a name by its shape.
+newtype LabelHash = LabelHash ByteString
+  deriving (Eq, Show)
 
-isLabelHash :: Text -> Bool
-isLabelHash t = T.length t == 66 && T.head t == '[' && T.last t == ']'
+instance Encoding LabelHash where
+  smpEncode (LabelHash h) = h
+  smpP = LabelHash <$> A.take 32
 
--- | Replace the second-level label with its keccak256 hash, the registry key.
--- Subname labels stay text; a web TLD has no registry.
-hashedDomain :: SimplexDomain -> SimplexDomain
-hashedDomain d@SimplexDomain {nameTLD, domain}
-  | nameTLD == TLDWeb || isLabelHash domain = d
-  | otherwise = d {domain = "[" <> labelHash <> "]"}
-  where
-    keccak = hash (encodeUtf8 (T.toLower domain)) :: Digest Keccak_256
-    labelHash = decodeLatin1 (BAE.convertToBase BAE.Base16 keccak)
+-- | keccak-256 of the lowercased label. Only a second-level label is a registry
+-- key: subname labels are needed as text to reach the record.
+labelHash :: Text -> LabelHash
+labelHash label = LabelHash $ BA.convert (hash (encodeUtf8 (T.toLower label)) :: Digest Keccak_256)
+
+-- | How the backing resolver is addressed for a hashed label: ENS's encoding
+-- for a label whose text is unknown. The SMP protocol never parses this form -
+-- it tags the choice instead - so the brackets live here alone.
+labelHashText :: LabelHash -> Text
+labelHashText (LabelHash h) = "[" <> decodeLatin1 (BAE.convertToBase BAE.Base16 h) <> "]"
 
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString
@@ -118,25 +123,31 @@ instance StrEncoding SimplexDomain where
   strEncode = encodeUtf8 . fullDomainName
   strP = parseDomain . safeDecodeUtf8 <$?> boundedNonSpace
     where
-      parseDomain s = AT.parseOnly ((labelHashP <|> nameLabelP) `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
+      parseDomain s = AT.parseOnly (nameLabelP `AT.sepBy1` AT.char '.' <* AT.endOfInput) s >>= mkDomain
       mkDomain labels = case reverse lowered of
         [] -> Left "empty name"
         [_] -> Left "domain requires TLD"
-        "simplex" : name : sub -> registryDomain TLDSimplex name sub
-        "testing" : name : sub -> registryDomain TLDTesting name sub
-        _
-          | any isLabelHash lowered -> Left "labelhash requires a registry TLD"
-          | otherwise -> Right (SimplexDomain TLDWeb (T.intercalate "." lowered) [])
+        "simplex" : name : sub -> Right (SimplexDomain TLDSimplex name sub)
+        "testing" : name : sub -> Right (SimplexDomain TLDTesting name sub)
+        _ -> Right (SimplexDomain TLDWeb (T.intercalate "." lowered) [])
         where
           lowered = map T.toLower labels
-      -- Only the second-level label is a registry key, so only it may be hashed.
-      registryDomain tld name sub
-        | any isLabelHash sub = Left "only the second-level label may be a labelhash"
-        | otherwise = Right (SimplexDomain tld name sub)
 
 instance Encoding SimplexDomain where
   smpEncode = strEncode
   smpP = strP
+
+instance Encoding SimplexTLD where
+  smpEncode = \case
+    TLDSimplex -> "s"
+    TLDTesting -> "t"
+    TLDWeb -> "w"
+  smpP =
+    A.anyChar >>= \case
+      's' -> pure TLDSimplex
+      't' -> pure TLDTesting
+      'w' -> pure TLDWeb
+      _ -> fail "bad SimplexTLD"
 
 fullDomainName :: SimplexDomain -> Text
 fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')

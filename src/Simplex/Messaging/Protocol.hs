@@ -80,6 +80,8 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
+    NameQuery (..),
+    NameQueryLabel (..),
     NameRegistration (..),
     NamePricing (..),
     USDCents (..),
@@ -279,7 +281,7 @@ import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SystemTime (SystemSeconds)
-import Simplex.Messaging.SimplexName (SimplexDomain)
+import Simplex.Messaging.SimplexName (LabelHash, SimplexTLD)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -612,7 +614,7 @@ data Command (p :: Party) where
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Resolve SimpleX name.
-  RSLV :: SimplexDomain -> Command Resolver
+  RSLV :: NameQuery -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -1597,6 +1599,40 @@ data ErrorType
   | -- | used internally, never returned by the server (to be removed)
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
+
+-- | What RSLV asks about. Distinct from SimplexDomain, which stays a name a
+-- person can type and a UI can show: only this may name a label by its hash.
+data NameQuery = NameQuery
+  { queryTLD :: SimplexTLD,
+    -- | only the second-level label may be hashed - subnames are needed as text
+    -- to reach the record, so they are not part of this choice
+    queryLabel :: NameQueryLabel,
+    -- | parent to child, as in SimplexDomain
+    querySub :: [Text]
+  }
+  deriving (Eq, Show)
+
+data NameQueryLabel
+  = NQName Text
+  | NQHash LabelHash
+  deriving (Eq, Show)
+
+instance Encoding NameQueryLabel where
+  smpEncode = \case
+    NQName t -> smpEncode ('N', t)
+    NQHash h -> smpEncode ('H', h)
+  smpP =
+    A.anyChar >>= \case
+      'N' -> NQName <$> smpP
+      'H' -> NQHash <$> smpP
+      _ -> fail "bad NameQueryLabel"
+
+instance Encoding NameQuery where
+  smpEncode NameQuery {queryTLD, queryLabel, querySub} =
+    smpEncode (queryTLD, queryLabel, EncList querySub)
+  smpP = do
+    (queryTLD, queryLabel, EncList querySub) <- smpP
+    pure NameQuery {queryTLD, queryLabel, querySub}
 
 -- | US cents. Rounded up wherever the registry's unit does not divide evenly,
 -- so a quote is never below what is charged; the exact figure is settled on
