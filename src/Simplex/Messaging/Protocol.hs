@@ -256,7 +256,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -1640,20 +1640,20 @@ data NameRegistration
 instance Encoding NameRegistration where
   smpEncode = \case
     NRRegistered {expires, graceUntil, reservedReason_, nameRecord} ->
-      "REGISTERED " <> smpEncode (expires, graceUntil, reservedReason_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
-    NRAvailable {pricing, auctionUntil} -> "AVAILABLE " <> smpEncode (auctionUntil, pricing)
-    NRReserved {reservedReason} -> "RESERVED " <> smpEncode reservedReason
+      smpEncode ('N', expires, graceUntil, reservedReason_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
+    NRAvailable {pricing, auctionUntil} -> smpEncode ('A', auctionUntil, pricing)
+    NRReserved {reservedReason} -> smpEncode ('R', reservedReason)
   smpP =
-    A.takeTill (== ' ') >>= \case
-      "REGISTERED" -> do
-        (expires, graceUntil, reservedReason_) <- _smpP
+    A.anyChar >>= \case
+      'N' -> do
+        (expires, graceUntil, reservedReason_) <- smpP
         nameRecord <- J.eitherDecodeStrict . unTail <$?> _smpP
         pure NRRegistered {expires, graceUntil, reservedReason_, nameRecord}
-      "AVAILABLE" -> do
-        auctionUntil <- _smpP
+      'A' -> do
+        auctionUntil <- smpP
         pricing <- smpP
         pure NRAvailable {pricing, auctionUntil}
-      "RESERVED" -> NRReserved <$> _smpP
+      'R' -> NRReserved <$> smpP
       _ -> fail "bad NameRegistration"
 
 -- | Enough to price the name locally. The client knows the label, so it knows
@@ -1678,13 +1678,12 @@ data NamePricing = NamePricing
 
 instance Encoding NamePricing where
   smpEncode NamePricing {rentPrices, basePrice, minLabelLength} =
-    smpEncodeList (map tier $ M.toList rentPrices) <> smpEncode (basePrice, w16 minLabelLength)
+    smpEncode (EncList $ map tier $ M.toList rentPrices, basePrice, w16 minLabelLength)
     where
       tier (len, price) = (w16 len, price)
       w16 = fromIntegral :: Int -> Word16
   smpP = do
-    tiers <- smpListP
-    (basePrice, minLen) <- smpP
+    (EncList tiers, basePrice, minLen) <- smpP
     pure NamePricing {rentPrices = tierMap tiers, basePrice, minLabelLength = fromIntegral (minLen :: Word16)}
     where
       tierMap :: [(Word16, USDCents)] -> Map Int USDCents
@@ -1703,37 +1702,26 @@ data NameReservedReason
     NRRUnknown Text
   deriving (Eq, Show)
 
-instance Encoding NameReservedReason where
-  smpEncode = \case
-    NRRInternal -> "INTERNAL"
-    NRRTrademark -> "TRADEMARK"
-    NRRCommunity -> "COMMUNITY"
-    NRRUnknown t -> encodeUtf8 t
-  smpP =
-    A.takeTill (== ' ') >>= \case
-      "INTERNAL" -> pure NRRInternal
-      "TRADEMARK" -> pure NRRTrademark
-      "COMMUNITY" -> pure NRRCommunity
-      t -> pure $ NRRUnknown (safeDecodeUtf8 t)
-
--- | The vocabulary the backing resolver and the JSON API share, which is not
--- the wire vocabulary above.
-instance TextEncoding NameReservedReason where
-  textEncode = \case
+-- | One vocabulary, shared by the wire, the backing resolver and the JSON API.
+instance StrEncoding NameReservedReason where
+  strEncode = \case
     NRRInternal -> "internal"
     NRRTrademark -> "trademark"
     NRRCommunity -> "community"
-    NRRUnknown t -> t
-  textDecode = \case
-    "internal" -> Just NRRInternal
-    "trademark" -> Just NRRTrademark
-    "community" -> Just NRRCommunity
-    "unknown" -> Just (NRRUnknown "unknown")
-    _ -> Nothing
+    NRRUnknown t -> encodeUtf8 t
+  strP = parseReservedReason . safeDecodeUtf8 <$> A.takeTill (== ' ')
+
+instance Encoding NameReservedReason where
+  smpEncode = strEncode
+  smpP = strP
 
 -- | Keeps its word rather than losing the reservation.
 parseReservedReason :: Text -> NameReservedReason
-parseReservedReason t = fromMaybe (NRRUnknown t) (textDecode t)
+parseReservedReason = \case
+  "internal" -> NRRInternal
+  "trademark" -> NRRTrademark
+  "community" -> NRRCommunity
+  t -> NRRUnknown t
 
 -- | What a v20/v21 router's answer amounts to: it resolves, and nothing else
 -- was said about it.
@@ -2127,7 +2115,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG -> e PONG_
     RNAME reg
       | v >= nameAvailSMPVersion -> e (RNAME_, ' ', reg)
-      -- v20/v21 knows only the record, and had NOT_FOUND for every other answer
       | otherwise -> case reg of
           NRRegistered {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
           _ -> e (ERR_, ' ', NAME NOT_FOUND)
@@ -2179,8 +2166,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG_ -> pure PONG
     RNAME_
       | v >= nameAvailSMPVersion -> RNAME <$> _smpP
-      -- v20/v21 sent the record and nothing else; the dates it had no field for
-      -- are the only reason they are optional above
       | otherwise -> fmap (RNAME . oldRegistration) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       serviceRespP resp
@@ -2575,15 +2560,9 @@ $(J.deriveJSON defaultJSON ''BlockingInfo)
 -- run deriveJSON in one TH splice to allow mutual instance
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
 
--- clients report the reason to the user, so it has to reach their API as JSON
--- | The JSON API keeps the closed set, so clients can localise it. An
--- unrecognised reason is "unknown" here; its word stays on the SMP wire for a
--- version that knows it.
 instance ToJSON NameReservedReason where
-  toJSON =
-    J.String . \case
-      NRRUnknown _ -> "unknown"
-      r -> textEncode r
+  toJSON = strToJSON
+  toEncoding = strToJEncoding
 
 instance FromJSON NameReservedReason where
-  parseJSON = textParseJSON "NameReservedReason"
+  parseJSON = strParseJSON "NameReservedReason"
