@@ -5,13 +5,18 @@ sequenceDiagram
   participant S as Server<br>that has A's send queue<br>(B's receive queue)
   participant B as Bob
 
-  A ->> R': NEW: create new queue<br>(allow SKEY)
-  A ->> S: SEND: QADD (R'): send address<br>of the new queue(s)
+  A ->> R': NEW: create new queue (SKEY allowed)
+  A ->> S: SEND: QADD (R')
   S ->> B: MSG: QADD (R')
-  B ->> R': SKEY: secure new queue
-  B ->> R': SEND: QTEST
-  R' ->> A: MSG: QTEST
-  A ->> R: DEL: delete the old queue
-  B ->> R': SEND: send messages to the new queue
-  R' ->> A: MSG: receive messages from the new queue
-  
+  B ->> R: SEND: messages (also scheduled on R')
+  R ->> A: MSG: messages
+  B ->> R': SKEY: authorize B as sender
+  B ->> R': SEND: confirmation (establishes R' secret)
+  R' ->> A: MSG: confirmation (A secures R')
+  B ->> R': SEND: held copies (deduped), then new messages
+  R' ->> A: MSG: messages
+  B ->> R: SEND: remaining tail, then QEND
+  R ->> A: MSG: QEND
+  B ->> R': SEND: QEND
+  R' ->> A: MSG: QEND
+  A ->> R: DEL: delete the current queue

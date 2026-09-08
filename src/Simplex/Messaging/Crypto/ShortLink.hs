@@ -120,6 +120,6 @@ decryptLinkData linkKey k (encFD, encMD) = do
       pure (sig, s)
     decode :: Encoding a => ByteString -> Either AgentErrorType a
     decode = msgErr . smpDecode
-    msgErr = first (const $ AGENT A_MESSAGE)
+    msgErr = first (const $ AGENT $ A_MESSAGE "parse link data")
     linkErr :: String -> Either AgentErrorType ()
     linkErr = Left . AGENT . A_LINK

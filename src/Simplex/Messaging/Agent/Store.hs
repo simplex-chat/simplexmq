@@ -207,12 +207,13 @@ rcvSMPQueueAddress :: RcvQueue -> SMPQueueAddress
 rcvSMPQueueAddress RcvQueue {server, sndId, e2ePrivKey, queueMode} =
   SMPQueueAddress server sndId (C.publicKey e2ePrivKey) queueMode
 
-canAbortRcvSwitch :: RcvQueue -> Bool
-canAbortRcvSwitch = maybe False canAbort . rcvSwchStatus
+canAbortRcvSwitch :: ConnData -> RcvQueue -> Bool
+canAbortRcvSwitch ConnData {connAgentVersion} = maybe False canAbort . rcvSwchStatus
   where
     canAbort = \case
       RSSwitchStarted -> True
-      RSSendingQADD -> True
+      -- at agent version 8 and above the peer always chooses fast rotation, so a sent QADD is committed
+      RSSendingQADD -> connAgentVersion < rpcAddressSMPAgentVersion
       -- if switch is in RSSendingQUSE, a race condition with sender deleting the original queue is possible
       RSSendingQUSE -> False
       -- if switch is in RSReceivedMessage status, aborting switch (deleting new queue)
@@ -475,8 +476,8 @@ type NoticeId = Int64
 
 -- this function should be mirrored in the clients
 ratchetSyncAllowed :: ConnData -> Bool
-ratchetSyncAllowed ConnData {ratchetSyncState, connAgentVersion} =
-  connAgentVersion >= ratchetSyncSMPAgentVersion && (ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState]))
+ratchetSyncAllowed ConnData {ratchetSyncState} =
+  ratchetSyncState `elem` ([RSAllowed, RSRequired] :: [RatchetSyncState])
 
 -- this function should be mirrored in the clients
 ratchetSyncSendProhibited :: ConnData -> Bool
@@ -538,6 +539,7 @@ data InternalCommand
   | ICDeleteConn
   | ICDeleteRcvQueue SMP.RecipientId
   | ICQSecure SMP.RecipientId SMP.SndPublicAuthKey
+  | ICQSndSecure SMP.SenderId
   | ICQDelete SMP.RecipientId
   | ICReplyDel
 
@@ -549,6 +551,7 @@ data InternalCommandTag
   | ICDeleteConn_
   | ICDeleteRcvQueue_
   | ICQSecure_
+  | ICQSndSecure_
   | ICQDelete_
   | ICReplyDel_
   deriving (Show)
@@ -562,6 +565,7 @@ instance StrEncoding InternalCommand where
     ICDeleteConn -> strEncode ICDeleteConn_
     ICDeleteRcvQueue rId -> strEncode (ICDeleteRcvQueue_, rId)
     ICQSecure rId senderKey -> strEncode (ICQSecure_, rId, senderKey)
+    ICQSndSecure sId -> strEncode (ICQSndSecure_, sId)
     ICQDelete rId -> strEncode (ICQDelete_, rId)
     ICReplyDel -> strEncode ICReplyDel_
   strP =
@@ -573,6 +577,7 @@ instance StrEncoding InternalCommand where
       ICDeleteConn_ -> pure ICDeleteConn
       ICDeleteRcvQueue_ -> ICDeleteRcvQueue <$> _strP
       ICQSecure_ -> ICQSecure <$> _strP <*> _strP
+      ICQSndSecure_ -> ICQSndSecure <$> _strP
       ICQDelete_ -> ICQDelete <$> _strP
       ICReplyDel_ -> pure ICReplyDel
 
@@ -585,6 +590,7 @@ instance StrEncoding InternalCommandTag where
     ICDeleteConn_ -> "DELETE_CONN"
     ICDeleteRcvQueue_ -> "DELETE_RCV_QUEUE"
     ICQSecure_ -> "QSECURE"
+    ICQSndSecure_ -> "QSND_SECURE"
     ICQDelete_ -> "QDELETE"
     ICReplyDel_ -> "REPLY_DEL"
   strP =
@@ -596,6 +602,7 @@ instance StrEncoding InternalCommandTag where
       "DELETE_CONN" -> pure ICDeleteConn_
       "DELETE_RCV_QUEUE" -> pure ICDeleteRcvQueue_
       "QSECURE" -> pure ICQSecure_
+      "QSND_SECURE" -> pure ICQSndSecure_
       "QDELETE" -> pure ICQDelete_
       "REPLY_DEL" -> pure ICReplyDel_
       _ -> fail "bad InternalCommandTag"
@@ -614,6 +621,7 @@ internalCmdTag = \case
   ICDeleteConn -> ICDeleteConn_
   ICDeleteRcvQueue {} -> ICDeleteRcvQueue_
   ICQSecure {} -> ICQSecure_
+  ICQSndSecure {} -> ICQSndSecure_
   ICQDelete _ -> ICQDelete_
   ICReplyDel -> ICReplyDel_
 
