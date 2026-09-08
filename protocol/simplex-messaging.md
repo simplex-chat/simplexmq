@@ -1458,16 +1458,17 @@ while still returning a `NameRecord` matching the encoding below.
 
 #### Resolve name command
 
-The `RSLV` command carries the canonical fully-qualified name directly as the
-payload (not JSON):
+From v22 the `RSLV` command carries a query; below v22 it carries the name
+directly, as it always did (not JSON):
 
 ```abnf
-rslv  = %s"RSLV" SP query
-query = tld label sub
-tld   = %s"s" / %s"t" / %s"w"   ; .simplex / .testing / a web name
-label = %s"N" shortString       ; the second-level label as text
-      / %s"H" 32*32 OCTET       ; its keccak-256
-sub   = length *shortString     ; subname labels, parent to child
+rslv   = %s"RSLV" SP (query / domain)  ; query from v22, domain below it
+query  = tld label sub
+tld    = %s"s" / %s"t" / %s"w"  ; .simplex / .testing / a web name
+label  = %s"N" shortString      ; the second-level label as text
+       / %s"H" 32*32 OCTET      ; its keccak-256
+sub    = length *shortString    ; subname labels, parent to child
+domain = 1*253 OCTET            ; the name as text
 ```
 
 `domain` is the UTF-8 canonical fully-qualified name with the TLD always
@@ -1494,11 +1495,12 @@ takes. That form appears nowhere in SMP.
 
 A hashed query still answers with the name. The registrar records the plaintext
 label when a name is registered, keyed by the hash of that label, so a router can
-look up what the hash stands for without ever being told. It is not the client's
-word for it and needs no checking: the key is the hash of the value. A name
-registered without that record answers `unknown`. What stays impossible is
-learning a name that is *not* registered — there is nothing recorded to look up,
-so a name someone is merely considering never becomes known.
+look up what the hash stands for without ever being told. The router is not
+trusted for it: a client MUST check that the record names the name it asked
+about, and reject the answer otherwise. A name registered without that record
+answers `unknown`, which fails that check. What stays impossible is learning a
+name that is *not* registered: there is nothing recorded to look up, so a name
+someone is merely considering never becomes known.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it

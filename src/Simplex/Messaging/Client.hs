@@ -166,7 +166,7 @@ import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.SimplexName (SimplexDomain)
+import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -1058,7 +1058,7 @@ proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDo
 proxyResolveName c nm proxiedRelay name
   | v >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (nameQuery v name)) >>= \case
-        Right (RNAME reg) -> pure $ Right reg
+        Right (RNAME reg) | resolvedName name reg -> pure $ Right reg
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
@@ -1068,17 +1068,25 @@ proxyResolveName c nm proxiedRelay name
 -- | Direct (non-PFWD) name resolution. Exposes the client IP to the resolver;
 -- callers that want anonymity should use `proxyResolveName` via the standard
 -- proxy fallback in the agent. RSLV requires no entity ID or authorization
--- (see `noAuthCmd` in Protocol.hs). Version-gated on the session here, not the
--- encoder, so an old server never receives RSLV.
+-- (see `noAuthCmd` in Protocol.hs). Gated on the session version, below which
+-- the server has no RSLV at all; the encoder gates the query format separately.
 directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRegistration
 directResolveName c nm name
   | v >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (nameQuery v name))) >>= \case
-        RNAME reg -> pure reg
+        RNAME reg | resolvedName name reg -> pure reg
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
   where
     v = thVersion (thParams c)
+
+-- | The record must name the name that was asked for. A hashed query does not
+-- tell the router which name it is, so the record's own name is the router's
+-- word until the client checks it here.
+resolvedName :: SimplexDomain -> NameRegistration -> Bool
+resolvedName d = \case
+  NRRegistered {nameRecord} -> T.toLower (nrName nameRecord) == fullDomainName d
+  _ -> True
 
 -- | Acknowledge message delivery (server deletes the message).
 --

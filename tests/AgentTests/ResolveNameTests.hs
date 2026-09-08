@@ -91,11 +91,16 @@ resolveNameTests = do
 
 testAvailSuccess :: HasCallStack => IO ()
 testAvailSuccess =
-  withDirectResolver (status404, "{\"error\":\"unregistered\"}") $ \c -> do
+  withDirectResolver (status404, availableBody) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
       Right (SMP.NRAvailable {}) -> pure ()
       _ -> expectationFailure $ "expected Right NRAvailable, got: " <> show r
+
+-- an unregistered name is only available if the resolver also priced it
+availableBody :: LB.ByteString
+availableBody =
+  "{\"error\":\"unregistered\",\"rentPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}"
 
 testDirectNotFound :: HasCallStack => IO ()
 testDirectNotFound =

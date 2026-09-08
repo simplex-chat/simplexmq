@@ -107,6 +107,7 @@ rslvTests = do
   describe "hashed lookups" $ do
     it "RSLV sends the 2LD as its hash" testRslvSendsTheHash
     it "subname labels stay text" testSubnameKeepsItsLabels
+    it "a record naming a different name is rejected" testRslvWrongName
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
@@ -300,6 +301,17 @@ testSubnameKeepsItsLabels =
     pc <- currentClient
     _ <- runExceptT' (directResolveName pc NRMInteractive (domain "x.alice.simplex"))
     resolvePaths reqs `shouldReturn` [["resolve", "x." <> aliceHash <> ".simplex"]]
+
+-- a hashed query does not tell the router the name, so the record's own name is
+-- checked against the one that was asked for
+testRslvWrongName :: IO ()
+testRslvWrongName =
+  withResolverServer (status200, J.encode testNameRecord {SMP.nrName = "mallory.simplex"}) $ do
+    pc <- currentClient
+    r <- runExceptT (directResolveName pc NRMInteractive (domain "alice.simplex"))
+    case r of
+      Left (PCEUnexpectedResponse _) -> pure ()
+      _ -> expectationFailure $ "expected Left (PCEUnexpectedResponse ..), got: " <> show r
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure

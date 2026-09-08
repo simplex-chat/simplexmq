@@ -283,7 +283,7 @@ import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SystemTime (SystemSeconds)
-import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), domainName, labelHash, labelHashText)
+import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash, labelHashText)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -1629,18 +1629,25 @@ instance Encoding NameQueryLabel where
       'H' -> NQHash <$> smpP
       _ -> fail "bad NameQueryLabel"
 
--- | How the backing resolver is addressed for this query. The only place a
--- hashed label is written as text, and it faces the resolver's HTTP API - the
--- SMP protocol tags the choice instead of spelling it.
+-- | How the backing resolver is addressed for this query.
 queryName :: NameQuery -> Text
-queryName NameQuery {queryTLD, queryLabel, querySub} = domainName queryTLD label querySub
+queryName = fullDomainName . queryDomain
+
+-- | The query as a name: what RSLV carries below v22, and what the resolver's
+-- HTTP API takes. The only place a hashed label is written as text - the SMP
+-- protocol tags the choice instead of spelling it.
+queryDomain :: NameQuery -> SimplexDomain
+queryDomain NameQuery {queryTLD, queryLabel, querySub} =
+  SimplexDomain {nameTLD = queryTLD, domain = label, subDomain = querySub}
   where
     label = case queryLabel of
       NQName t -> t
       NQHash h -> labelHashText h
 
--- | The name a client asked about, hashed from v22 so the router is never told
--- what it is. A web TLD has no registry, so it is never hashed.
+-- | The name a client asked about, hashed from v22. The hash only hides an
+-- unregistered name: a registered one comes back with its name in the record,
+-- and a short label is guessable by hashing candidates. A web TLD has no
+-- registry, so it is never hashed.
 nameQuery :: VersionSMP -> SimplexDomain -> NameQuery
 nameQuery v SimplexDomain {nameTLD, domain, subDomain} =
   NameQuery {queryTLD = nameTLD, queryLabel = label, querySub = subDomain}
@@ -2021,7 +2028,9 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
-    RSLV d -> e (RSLV_, ' ', d)
+    RSLV q
+      | v >= nameAvailSMPVersion -> e (RSLV_, ' ', q)
+      | otherwise -> e (RSLV_, ' ', queryDomain q)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2128,7 +2137,9 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
-    CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
+    CT SResolver RSLV_
+      | v >= nameAvailSMPVersion -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
+      | otherwise -> Cmd SResolver . RSLV . nameQuery v <$> _smpP <* A.takeByteString
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}

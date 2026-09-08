@@ -217,10 +217,9 @@ class NameStatusTests(unittest.TestCase):
             "status": status,
             "expires": expires,
             "graceEnds": grace_ends,
-            "auctionEnds": None,
-            "premium": None,
             "reasonCode": None,
             "reason": None,
+            "auctionUntil": None,
         }
 
     def setUp(self):
@@ -360,10 +359,9 @@ class NameStatusTests(unittest.TestCase):
             "status",
             "expires",
             "graceEnds",
-            "auctionEnds",
-            "premium",
             "reasonCode",
             "reason",
+            "auctionUntil",
         }
         snrc.eth_call = self._expiry(0)
         self.assertEqual(set(snrc.name_status("alice.testing")), keys)
@@ -401,18 +399,22 @@ class ReservedTests(unittest.TestCase):
 
         return eth_call
 
-    def test_unregistered_and_reserved_reads_reserved(self):
+    def test_unregistered_and_reserved_reports_the_reservation(self):
         snrc.eth_call = self._chain(0, True)
-        self.assertEqual(snrc.name_status("acme.testing")["status"], "reserved")
+        reg = snrc.name_status("acme.testing")
+        self.assertEqual(reg["status"], "unregistered")
+        self.assertEqual(reg["reasonCode"], "internal")
 
     def test_unregistered_and_not_reserved_reads_unregistered(self):
         snrc.eth_call = self._chain(0, False)
         self.assertEqual(snrc.name_status("acme.testing")["status"], "unregistered")
 
-    def test_a_lapsed_reserved_name_is_reserved_not_claimable(self):
+    def test_a_lapsed_reserved_name_keeps_its_reservation(self):
         past = int(time.time()) - 91 * 86400
         snrc.eth_call = self._chain(past, True)
-        self.assertEqual(snrc.name_status("acme.testing")["status"], "reserved")
+        reg = snrc.name_status("acme.testing")
+        self.assertEqual(reg["status"], "expired")
+        self.assertEqual(reg["reasonCode"], "internal")
 
     def test_a_live_name_is_registered_even_if_reserved(self):
         snrc.eth_call = self._chain(int(time.time()) + 86400, True)
@@ -431,7 +433,7 @@ class ReservedTests(unittest.TestCase):
         # keccak-256("acme")
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(0, True)
-        self.assertEqual(snrc.name_status(hashed + ".testing")["status"], "reserved")
+        self.assertEqual(snrc.name_status(hashed + ".testing")["reasonCode"], "internal")
 
 
 class ReservedReasonTests(unittest.TestCase):
@@ -490,7 +492,6 @@ class ReservedReasonTests(unittest.TestCase):
         for code, (name, sentence) in snrc.RESERVED_REASONS.items():
             snrc.eth_call = self._reserved_as(code)
             reg = snrc.name_status("acme.testing")
-            self.assertEqual(reg["status"], "reserved", name)
             self.assertEqual(reg["reasonCode"], name)
             self.assertEqual(reg["reason"], sentence)
 
@@ -499,27 +500,27 @@ class ReservedReasonTests(unittest.TestCase):
         _, body = snrc.resolve("acme.testing")
         self.assertEqual(body["reasonCode"], "trademark")
 
-    def test_a_controller_storing_a_bool_reads_as_unspecified(self):
+    def test_a_controller_storing_a_bool_reads_as_internal(self):
         """Before the enum `reservedNames` was a bool; its `true` decodes as 1."""
         snrc.eth_call = self._reserved_as(1)
         reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["reasonCode"], "unspecified")
-        self.assertEqual(reg["reason"], "reserved for a brand or public interest")
+        self.assertEqual(reg["reasonCode"], "internal")
+        self.assertEqual(reg["reason"], "reserved for SimpleX")
 
     def test_an_enum_value_this_resolver_predates_is_not_dropped(self):
-        """A new Reason still reads as reserved, and says it is unknown rather
+        """A new Reason still reserves the name, and says it is unknown rather
         than claiming the chain recorded none."""
         snrc.eth_call = self._reserved_as(99)
         reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["status"], "reserved")
         self.assertEqual(reg["reasonCode"], "unknown")
+        self.assertEqual(reg["reason"], "reserved")
 
     def test_a_reserved_name_carries_the_reason(self):
         snrc.eth_call = self._chain(0, True)
         status, body = snrc.resolve("acme.testing")
         self.assertEqual(status, 404)
-        self.assertEqual(body["status"], "reserved")
-        self.assertEqual(body["reason"], "reserved for a brand or public interest")
+        self.assertEqual(body["status"], "unregistered")
+        self.assertEqual(body["reason"], "reserved for SimpleX")
 
     def test_the_message_does_not_claim_a_trademark(self):
         snrc.eth_call = self._chain(0, True)
@@ -531,26 +532,27 @@ class ReservedReasonTests(unittest.TestCase):
         status, body = snrc.resolve("acme.testing")
         self.assertEqual(status, 404)
         self.assertEqual(body["status"], "unregistered")
-        self.assertNotIn("reason", body)
+        self.assertIsNone(body["reason"])
 
     def test_an_expired_name_has_no_reason(self):
         snrc.eth_call = self._chain(1, False)
         status, body = snrc.resolve("acme.testing")
         self.assertEqual(status, 410)
         self.assertEqual(body["status"], "expired")
-        self.assertNotIn("reason", body)
+        self.assertIsNone(body["reason"])
 
     def test_a_hashed_query_gets_the_reason_too(self):
         snrc.eth_call = self._chain(0, True)
         # keccak-256("acme")
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         _, body = snrc.resolve(hashed + ".testing")
-        self.assertEqual(body["reason"], "reserved for a brand or public interest")
+        self.assertEqual(body["reason"], "reserved for SimpleX")
 
 
 class AuctionTests(unittest.TestCase):
-    """Past grace anyone may register the name, but at a premium that halves
-    each day. Reporting it as plainly available would quote the normal price."""
+    """Past grace anyone may register the name, but at a surcharge until the
+    oracle's window closes. `auctionUntil` dates that window; the surcharge
+    itself never travels."""
 
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
@@ -561,6 +563,9 @@ class AuctionTests(unittest.TestCase):
     # The values .testing is deployed with: $100M, halving daily for 21 days.
     START_PREMIUM = 10 ** 26
     TOTAL_DAYS = 21
+    # what the oracle charges per year, in US cents, by label length
+    PRICES = {1: 64000, 2: 16000, 3: 1600, 4: 800, 5: 500, 6: 200}
+    MIN_LENGTH = 3
 
     def setUp(self):
         self._saved = (
@@ -587,8 +592,8 @@ class AuctionTests(unittest.TestCase):
         ) = self._saved
 
     def _chain(self, expires, total_days=TOTAL_DAYS, oracle=None, reserved=0):
-        """Answers as the controller and oracle do, including the oracle's own
-        `decayedPremium` shift, so the decay curve is not copied here."""
+        """Answers as the controller and oracle do, quoting rent in attoUSD per
+        second as the oracle does."""
         oracle = self.ORACLE if oracle is None else oracle
         self.oracle_calls = []
 
@@ -602,18 +607,19 @@ class AuctionTests(unittest.TestCase):
             if data.startswith(snrc.selector("prices()")):
                 self.assertEqual(to, self.CONTROLLER)
                 return "0x" + snrc.encode_uint(int(oracle, 16))
+            if data.startswith(snrc.selector("minCharLength()")):
+                self.assertEqual(to, self.CONTROLLER)
+                return "0x" + snrc.encode_uint(self.MIN_LENGTH)
             self.oracle_calls.append(data[:10])
             self.assertEqual(to, oracle)
-            if data.startswith(snrc.selector("totalDays()")):
-                return "0x" + snrc.encode_uint(total_days)
+            for n, cents in self.PRICES.items():
+                if data.startswith(snrc.selector(f"price{n}Letter()")):
+                    rate = cents * snrc.ATTO_PER_CENT // snrc.SECONDS_PER_YEAR
+                    return "0x" + snrc.encode_uint(rate)
             if data.startswith(snrc.selector("startPremium()")):
                 return "0x" + snrc.encode_uint(self.START_PREMIUM)
             if data.startswith(snrc.selector("endValue()")):
                 return "0x" + snrc.encode_uint(self.START_PREMIUM >> total_days)
-            if data.startswith(snrc.selector("decayedPremium(uint256,uint256)")):
-                start = int(data[10:74], 16)
-                elapsed = int(data[74:138], 16)
-                return "0x" + snrc.encode_uint(start >> (elapsed // 86400))
             return self.fail("unexpected call " + data[:10])
 
         return eth_call
@@ -623,35 +629,39 @@ class AuctionTests(unittest.TestCase):
         second clears the boundary, which counts as still in grace."""
         return self.now - self.GRACE - 1 - days_into_auction * 86400
 
-    def test_a_name_just_past_grace_is_in_auction_not_merely_expired(self):
+    def test_a_name_just_past_grace_is_expired_and_dates_the_auction(self):
         expires = self._lapsed(0)
         snrc.eth_call = self._chain(expires)
         reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["status"], "auction")
-        self.assertEqual(
-            reg["premium"], str(self.START_PREMIUM - (self.START_PREMIUM >> self.TOTAL_DAYS))
-        )
+        self.assertEqual(reg["status"], "expired")
         self.assertEqual(reg["graceEnds"], expires + self.GRACE)
         self.assertEqual(
-            reg["auctionEnds"], expires + self.GRACE + self.TOTAL_DAYS * 86400
+            reg["auctionUntil"], expires + self.GRACE + self.TOTAL_DAYS * 86400
         )
 
-    def test_the_premium_halves_each_day(self):
-        snrc.eth_call = self._chain(self._lapsed(3))
+    def test_the_window_lasts_as_long_as_the_premium_takes_to_decay(self):
+        expires = self._lapsed(0)
+        snrc.eth_call = self._chain(expires, total_days=10)
         reg = snrc.name_status("acme.testing")
-        floor = self.START_PREMIUM >> self.TOTAL_DAYS
-        self.assertEqual(reg["premium"], str((self.START_PREMIUM >> 3) - floor))
+        self.assertEqual(reg["auctionUntil"], expires + self.GRACE + 10 * 86400)
+
+    def test_the_prices_are_the_oracles_rates_in_cents_per_year(self):
+        snrc.eth_call = self._chain(self._lapsed(0))
+        reg = snrc.name_status("acme.testing")
+        # 1 and 2 are below minCharLength; the 6-letter tier is the base price
+        self.assertEqual(reg["rentPrices"], {3: 1600, 4: 800, 5: 500})
+        self.assertEqual(reg["basePrice"], 200)
+        self.assertEqual(reg["minLabelLength"], self.MIN_LENGTH)
 
     def test_past_the_window_prices_are_back_to_normal(self):
         snrc.eth_call = self._chain(self._lapsed(self.TOTAL_DAYS))
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["status"], "expired")
-        self.assertIsNone(reg["premium"])
-        self.assertIsNone(reg["auctionEnds"])
+        self.assertIsNone(reg["auctionUntil"])
 
     def test_a_zero_day_window_switches_the_auction_off(self):
         snrc.eth_call = self._chain(self._lapsed(0), total_days=0)
-        self.assertEqual(snrc.name_status("acme.testing")["status"], "expired")
+        self.assertIsNone(snrc.name_status("acme.testing")["auctionUntil"])
 
     def test_a_controller_with_no_oracle_leaves_the_name_merely_expired(self):
         snrc.eth_call = self._chain(self._lapsed(0), oracle=snrc.ZERO_ADDR)
@@ -663,50 +673,45 @@ class AuctionTests(unittest.TestCase):
         self.assertEqual(self.oracle_calls, [])
 
     def test_the_oracle_curve_is_read_once_not_per_query(self):
-        """The curve changes only on a retune, so only the decaying premium is
-        re-read; the rest would be four RPC calls per query."""
+        """The curve changes only on a retune, so it is read once rather than
+        on every query."""
         snrc.eth_call = self._chain(self._lapsed(1))
         snrc.name_status("acme.testing")
         seen_first = len(self.oracle_calls)
         snrc.name_status("acme.testing")
-        self.assertEqual(
-            self.oracle_calls[seen_first:],
-            [snrc.selector("decayedPremium(uint256,uint256)")],
-        )
+        self.assertEqual(self.oracle_calls[seen_first:], [])
 
-    def test_a_reserved_lapsed_name_stays_reserved_rather_than_auctioned(self):
+    def test_a_reserved_lapsed_name_keeps_its_reservation(self):
         snrc.eth_call = self._chain(self._lapsed(0), reserved=2)
         reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["status"], "reserved")
-        self.assertIsNone(reg["premium"])
+        self.assertEqual(reg["status"], "expired")
+        self.assertEqual(reg["reasonCode"], "trademark")
 
-    def test_resolve_reports_the_auction_with_its_price_and_deadline(self):
+    def test_resolve_reports_the_prices_and_the_auction_deadline(self):
         expires = self._lapsed(1)
         snrc.eth_call = self._chain(expires)
         status, body = snrc.resolve("acme.testing")
         self.assertEqual(status, 410)
-        self.assertEqual(body["status"], "auction")
-        floor = self.START_PREMIUM >> self.TOTAL_DAYS
-        self.assertEqual(body["premium"], str((self.START_PREMIUM >> 1) - floor))
+        self.assertEqual(body["status"], "expired")
+        self.assertEqual(body["basePrice"], 200)
         self.assertEqual(
-            body["auctionEnds"], expires + self.GRACE + self.TOTAL_DAYS * 86400
+            body["auctionUntil"], expires + self.GRACE + self.TOTAL_DAYS * 86400
         )
 
-    def test_an_expired_name_past_the_window_carries_no_auction_fields(self):
+    def test_an_expired_name_past_the_window_has_no_auction_deadline(self):
         snrc.eth_call = self._chain(self._lapsed(self.TOTAL_DAYS))
         status, body = snrc.resolve("acme.testing")
         self.assertEqual(status, 410)
         self.assertEqual(body["status"], "expired")
-        self.assertNotIn("premium", body)
-        self.assertNotIn("auctionEnds", body)
+        self.assertIsNone(body["auctionUntil"])
 
     def test_a_hashed_query_is_priced_too(self):
         # keccak-256("acme")
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(self._lapsed(0))
         _, body = snrc.resolve(hashed + ".testing")
-        self.assertEqual(body["status"], "auction")
-        self.assertIsNotNone(body["premium"])
+        self.assertEqual(body["status"], "expired")
+        self.assertEqual(body["basePrice"], 200)
 
 
 
@@ -757,7 +762,6 @@ class ErrorCodeTests(unittest.TestCase):
     def test_a_registration_problem_reports_the_status_as_the_code(self):
         for expires, code in (
             (0, "unregistered"),
-            (int(time.time()) - 3600, "grace"),
             (int(time.time()) - 91 * 86400, "expired"),
         ):
             with self.subTest(code=code):
@@ -766,12 +770,20 @@ class ErrorCodeTests(unittest.TestCase):
                 self.assertEqual(body["error"], code)
                 self.assertEqual(body["status"], code)
 
-    def test_a_registered_name_pointing_nowhere_is_noResolver(self):
+    def test_a_name_in_grace_still_resolves(self):
+        snrc.eth_call = self._chain(int(time.time()) - 3600)
+        status, body = snrc.resolve("alice.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "grace")
+        self.assertNotIn("error", body)
+
+    def test_a_registered_name_pointing_nowhere_resolves_with_empty_records(self):
         snrc.eth_call = self._chain(int(time.time()) + 86400)
         status, body = snrc.resolve("alice.testing")
-        self.assertEqual(status, 404)
-        self.assertEqual(body["error"], "noResolver")
-        self.assertEqual(body["status"], "noResolver")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "registered")
+        self.assertEqual(body["resolver"], snrc.ZERO_ADDR)
+        self.assertEqual(body["simplexContact"], [])
 
     def test_every_error_body_carries_both_fields(self):
         snrc.eth_call = self._chain(0)

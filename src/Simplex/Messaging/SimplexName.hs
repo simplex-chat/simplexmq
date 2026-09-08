@@ -10,7 +10,6 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
-    domainName,
     LabelHash (..),
     labelHash,
     labelHashText,
@@ -78,11 +77,8 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
--- | A second-level label sent as its keccak256 hash, so a router never learns
--- the name. ENS's bracket form: brackets are outside the name character set, so
--- it cannot collide with a real name. 66 chars, so exempt from the label limit.
 -- | The registry's key for a label, and what BaseRegistrarImplementation.labelOf
--- is keyed on. Always 32 bytes, so it is never told from a name by its shape.
+-- is keyed on. Always 32 bytes.
 newtype LabelHash = LabelHash ByteString
   deriving (Eq, Show)
 
@@ -151,13 +147,9 @@ instance Encoding SimplexTLD where
       _ -> fail "bad SimplexTLD"
 
 fullDomainName :: SimplexDomain -> Text
-fullDomainName SimplexDomain {nameTLD, domain, subDomain} = domainName nameTLD domain subDomain
-
--- | A dotted name from its parts, whatever the second-level label is written as.
-domainName :: SimplexTLD -> Text -> [Text] -> Text
-domainName tld label sub = T.intercalate "." (reverse sub ++ [label] ++ tld')
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
   where
-    tld' = case tld of
+    tld' = case nameTLD of
       TLDSimplex -> ["simplex"]
       TLDTesting -> ["testing"]
       TLDWeb -> []

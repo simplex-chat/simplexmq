@@ -18,7 +18,7 @@ import Network.HTTP.Types (status200, status400, status404, status410, status500
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (ErrorType (..), NameErrorType (..), NamePricing (..), NameRecord (..), NameRegistration (..), NameReservedReason (..), USDCents (..), nameQuery, queryName)
+import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameRecord (..), NameRegistration (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..), nameQuery, queryName)
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
@@ -30,7 +30,7 @@ import Simplex.Messaging.Server.Names
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), fullDomainName)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
-import Simplex.Messaging.Transport (currentClientSMPRelayVersion, namesSMPVersion)
+import Simplex.Messaging.Transport (currentClientSMPRelayVersion, nameAvailSMPVersion, namesSMPVersion, serverInfoSMPVersion)
 import Test.Hspec
 
 testNameRecord :: NameRecord
@@ -54,6 +54,7 @@ smpNamesTests :: Spec
 smpNamesTests = do
   describe "NameRecord JSON (Protocol)" nameRecordEncodingSpec
   describe "ErrorType NAME wire encoding" errorWireSpec
+  describe "RSLV wire encoding" rslvWireSpec
   describe "Name parsing (SimplexDomain)" parseNameSpec
   describe "HTTP resolver" resolverSpec
   describe "name availability" availabilitySpec
@@ -104,6 +105,18 @@ errorWireSpec =
     smpDecode (smpEncode (NAME NOT_FOUND)) `shouldBe` Right (NAME NOT_FOUND)
     -- RESOLVER detail may contain spaces - must survive the round-trip
     smpDecode (smpEncode (NAME (RESOLVER "HTTP 502"))) `shouldBe` Right (NAME (RESOLVER "HTTP 502"))
+
+-- the query format changed at v22, so an older session must still get the name
+rslvWireSpec :: Spec
+rslvWireSpec = do
+  it "below v22 carries the name, as it did before" $
+    encodeProtocol v20 (RSLV (nameQuery v20 aliceDomain')) `shouldBe` "RSLV " <> smpEncode aliceDomain'
+  it "from v22 carries the query" $
+    encodeProtocol v22 (RSLV (nameQuery v22 aliceDomain')) `shouldBe` "RSLV " <> smpEncode (nameQuery v22 aliceDomain')
+  where
+    v20 = serverInfoSMPVersion
+    v22 = nameAvailSMPVersion
+    aliceDomain' = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 availabilitySpec :: Spec
 availabilitySpec = do
