@@ -51,6 +51,7 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.IORef (atomicSwapIORef)
 import GHC.Conc (ThreadStatus (..), threadStatus)
 import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats)
@@ -122,7 +123,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
   raceAny_
     ( ntfSubscriber s
         : periodicNtfsThread ps
-        : leakDiagnosticsThread
+        : ntfDiagnosticsThread
         : map runServer transports
           <> serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
@@ -689,23 +690,23 @@ runPushWorker s srvHost_ isOwn q = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue q)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
+  stats <- asks serverStats
   case ntf of
     PNVerification _ ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification stats st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ setTknStatusConfirmed st tkn
           incNtfStatT t ntfVrfDelivered
         Left _ -> incNtfStatT t ntfVrfFailed
     PNCheckMessages ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification stats st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
           incNtfStatT t ntfCronDelivered
         Left _ -> incNtfStatT t ntfCronFailed
     PNMessage {} -> checkActiveTkn tknStatus $ do
-      stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification stats st pp tkn ntf) >>= \case
         Left _ -> do
           incNtfStatT t ntfFailed
           when isOwn $ liftIO $ mapM_ (`incServerStat` ntfFailedOwn stats) srvHost_
@@ -717,23 +718,38 @@ runPushWorker s srvHost_ isOwn q = forever $ do
     checkActiveTkn status action
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
-    deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
-    deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf' = do
-      (deliver, clientVar) <- getPushClient s pp
-      runExceptT (deliver tkn ntf') >>= \case
-        Right _ -> pure $ Right ()
-        Left e -> case e of
-          PPConnection ce -> retryDeliver clientVar $ "connection " <> tshow ce
-          PPRetryLater r -> retryDeliver clientVar r
-          PPCryptoError _ -> err e
-          PPResponseError {} -> err e
-          PPTokenInvalid r -> do
-            void $ updateTknStatus st tkn $ NTInvalid $ Just r
-            err e
-          PPPermanentError -> err e
+    deliverNotification :: NtfServerStats -> NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
+    deliverNotification stats st pp tkn@NtfTknRec {ntfTknId} ntf' = do
+      t0 <- getMonotonicTimeNSec
+      res <- deliver1
+      t1 <- getMonotonicTimeNSec
+      incNtfStat_ stats apnsReqTotal
+      addNtfStat_ stats apnsLatencyMicros $ fromIntegral $ (t1 - t0) `div` 1000
+      either (incNtfStat_ stats . apnsErrSel) (const $ pure ()) res
+      pure res
       where
+        deliver1 = do
+          (deliver, clientVar) <- getPushClient s pp
+          runExceptT (deliver tkn ntf') >>= \case
+            Right _ -> pure $ Right ()
+            Left e -> case e of
+              PPConnection ce -> retryDeliver clientVar $ "connection " <> tshow ce
+              PPRetryLater r -> retryDeliver clientVar r
+              PPCryptoError _ -> err e
+              PPResponseError {} -> err e
+              PPTokenInvalid r -> do
+                void $ updateTknStatus st tkn $ NTInvalid $ Just r
+                err e
+              PPPermanentError -> err e
+        -- connection and retry-later failures stall the shared APNS connection and are the
+        -- likely push-queue-spike driver; everything else is a per-token/response reject
+        apnsErrSel = \case
+          PPConnection _ -> apnsErrConn
+          PPRetryLater _ -> apnsErrConn
+          _ -> apnsErrResponse
         retryDeliver :: PushClientVar -> Text -> IO (Either PushProviderError ())
         retryDeliver oldVar reason = do
+          incNtfStat_ stats apnsRetries
           logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
           atomically $ removeSessVar oldVar pp (pushClients s)
           (deliver, _) <- getPushClient s pp
@@ -835,27 +851,27 @@ deadSubWorkers workers = do
         Nothing -> pure acc
         Just a -> maybe acc (const $ acc + 1) <$> poll a
 
--- Periodic leak diagnostics: a single greppable "LEAKDIAG" line censusing every growable
--- in-memory structure of the ntf server. Interval seconds via NTF_LEAKDIAG_SEC (default 60).
--- Whichever counter grows monotonically over time is the leak.
-leakDiagnosticsThread :: M ()
-leakDiagnosticsThread = do
-  secStr <- liftIO $ lookupEnv "NTF_LEAKDIAG_SEC"
+-- Periodic diagnostics: a single greppable "NTFDIAG" line censusing every growable
+-- in-memory structure of the ntf server. Interval seconds via NTF_DIAG_SEC (default 60).
+-- A counter that grows monotonically is a leak; one that spikes and recovers is backpressure.
+ntfDiagnosticsThread :: M ()
+ntfDiagnosticsThread = do
+  secStr <- liftIO $ lookupEnv "NTF_DIAG_SEC"
   -- clamped on both sides: a very small value would flood the log, and a very large one
   -- would overflow the microsecond conversion below and make threadDelay return at once
   let sec = min 86400 $ max 5 $ fromMaybe 60 (secStr >>= readMaybe)
   env <- ask
-  labelMyThread "leakDiagnosticsThread"
+  labelMyThread "ntfDiagnosticsThread"
   -- never let a diagnostics error crash the server (this thread is in raceAny_)
   liftIO $ forever $ do
     threadDelay $ sec * 1000000
-    tryAny (logNtfLeakStats env) >>= either (logError . ("LEAKDIAG error: " <>) . tshow) (const $ pure ())
+    tryAny (logNtfDiagStats env) >>= either (logError . ("NTFDIAG error: " <>) . tshow) (const $ pure ())
 
 -- Only structures that are NOT already exported as Prometheus metrics or via the control
 -- port are logged here - see Notifications/Server/Prometheus.hs for what is already tracked
 -- (push queue total, sub/service sub counts, SMP sessions, thread count, period stats).
-logNtfLeakStats :: NtfEnv -> IO ()
-logNtfLeakStats NtfEnv {subscriber, pushServer, store = NtfPostgresStore {dbStore}} = do
+logNtfDiagStats :: NtfEnv -> IO ()
+logNtfDiagStats NtfEnv {subscriber, pushServer, store = NtfPostgresStore {dbStore}} = do
   let NtfSubscriber {smpSubscribers, smpAgent = ca} = subscriber
       NtfPushServer {pushWorkers, pushQSize} = pushServer
       SMPClientAgent {msgQ, agentQ, agentCfg = SMPClientAgentConfig {msgQSize, agentQSize}} = ca
@@ -871,7 +887,7 @@ logNtfLeakStats NtfEnv {subscriber, pushServer, store = NtfPostgresStore {dbStor
   (liveBytes, memInUse) <- rtsBytes
   logNote $
     T.concat
-      [ "LEAKDIAG",
+      [ "NTFDIAG",
         -- push worker map only grows, and its key includes the client-supplied SMP host
         f "pushw_count" pwCount,
         -- workers whose thread has terminated: their queue is never drained again
@@ -1158,6 +1174,10 @@ incNtfStat statSel = asks serverStats >>= liftIO . (`incNtfStat_` statSel)
 incNtfStat_ :: NtfServerStats -> (NtfServerStats -> IORef Int) -> IO ()
 incNtfStat_ stats statSel = atomicModifyIORef'_ (statSel stats) (+ 1)
 {-# INLINE incNtfStat_ #-}
+
+addNtfStat_ :: NtfServerStats -> (NtfServerStats -> IORef Int) -> Int -> IO ()
+addNtfStat_ stats statSel n = atomicModifyIORef'_ (statSel stats) (+ n)
+{-# INLINE addNtfStat_ #-}
 
 restoreServerLastNtfs :: NtfSTMStore -> FilePath -> IO ()
 restoreServerLastNtfs st f =

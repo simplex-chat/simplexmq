@@ -51,6 +51,11 @@ data NtfServerStats = NtfServerStats
     ntfVrfDelivered :: IORef Int,
     ntfVrfFailed :: IORef Int,
     ntfVrfInvalidTkn :: IORef Int,
+    apnsReqTotal :: IORef Int,
+    apnsLatencyMicros :: IORef Int,
+    apnsRetries :: IORef Int,
+    apnsErrConn :: IORef Int,
+    apnsErrResponse :: IORef Int,
     activeTokens :: PeriodStats,
     activeSubs :: PeriodStats
   }
@@ -77,6 +82,11 @@ data NtfServerStatsData = NtfServerStatsData
     _ntfVrfDelivered :: Int,
     _ntfVrfFailed :: Int,
     _ntfVrfInvalidTkn :: Int,
+    _apnsReqTotal :: Int,
+    _apnsLatencyMicros :: Int,
+    _apnsRetries :: Int,
+    _apnsErrConn :: Int,
+    _apnsErrResponse :: Int,
     _activeTokens :: PeriodStatsData,
     _activeSubs :: PeriodStatsData
   }
@@ -104,6 +114,11 @@ newNtfServerStats ts = do
   ntfVrfDelivered <- newIORef 0
   ntfVrfFailed <- newIORef 0
   ntfVrfInvalidTkn <- newIORef 0
+  apnsReqTotal <- newIORef 0
+  apnsLatencyMicros <- newIORef 0
+  apnsRetries <- newIORef 0
+  apnsErrConn <- newIORef 0
+  apnsErrResponse <- newIORef 0
   activeTokens <- newPeriodStats
   activeSubs <- newPeriodStats
   pure
@@ -129,6 +144,11 @@ newNtfServerStats ts = do
         ntfVrfDelivered,
         ntfVrfFailed,
         ntfVrfInvalidTkn,
+        apnsReqTotal,
+        apnsLatencyMicros,
+        apnsRetries,
+        apnsErrConn,
+        apnsErrResponse,
         activeTokens,
         activeSubs
       }
@@ -156,6 +176,11 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
   _ntfVrfDelivered <- readIORef $ ntfVrfDelivered s
   _ntfVrfFailed <- readIORef $ ntfVrfFailed s
   _ntfVrfInvalidTkn <- readIORef $ ntfVrfInvalidTkn s
+  _apnsReqTotal <- readIORef $ apnsReqTotal s
+  _apnsLatencyMicros <- readIORef $ apnsLatencyMicros s
+  _apnsRetries <- readIORef $ apnsRetries s
+  _apnsErrConn <- readIORef $ apnsErrConn s
+  _apnsErrResponse <- readIORef $ apnsErrResponse s
   _activeTokens <- getPeriodStatsData $ activeTokens s
   _activeSubs <- getPeriodStatsData $ activeSubs s
   pure
@@ -181,6 +206,11 @@ getNtfServerStatsData s@NtfServerStats {fromTime} = do
         _ntfVrfDelivered,
         _ntfVrfFailed,
         _ntfVrfInvalidTkn,
+        _apnsReqTotal,
+        _apnsLatencyMicros,
+        _apnsRetries,
+        _apnsErrConn,
+        _apnsErrResponse,
         _activeTokens,
         _activeSubs
       }
@@ -209,6 +239,11 @@ setNtfServerStats s@NtfServerStats {fromTime} d@NtfServerStatsData {_fromTime} =
   writeIORef (ntfVrfDelivered s) $! _ntfVrfDelivered d
   writeIORef (ntfVrfFailed s) $! _ntfVrfFailed d
   writeIORef (ntfVrfInvalidTkn s) $! _ntfVrfInvalidTkn d
+  writeIORef (apnsReqTotal s) $! _apnsReqTotal d
+  writeIORef (apnsLatencyMicros s) $! _apnsLatencyMicros d
+  writeIORef (apnsRetries s) $! _apnsRetries d
+  writeIORef (apnsErrConn s) $! _apnsErrConn d
+  writeIORef (apnsErrResponse s) $! _apnsErrResponse d
   setPeriodStats (activeTokens s) (_activeTokens d)
   setPeriodStats (activeSubs s) (_activeSubs d)
 
@@ -236,6 +271,11 @@ instance StrEncoding NtfServerStatsData where
         _ntfVrfDelivered,
         _ntfVrfFailed,
         _ntfVrfInvalidTkn,
+        _apnsReqTotal,
+        _apnsLatencyMicros,
+        _apnsRetries,
+        _apnsErrConn,
+        _apnsErrResponse,
         _activeTokens,
         _activeSubs
       } =
@@ -261,6 +301,11 @@ instance StrEncoding NtfServerStatsData where
         "ntfVrfDelivered=" <> strEncode _ntfVrfDelivered,
         "ntfVrfFailed=" <> strEncode _ntfVrfFailed,
         "ntfVrfInvalidTkn=" <> strEncode _ntfVrfInvalidTkn,
+        "apnsReqTotal=" <> strEncode _apnsReqTotal,
+        "apnsLatencyMicros=" <> strEncode _apnsLatencyMicros,
+        "apnsRetries=" <> strEncode _apnsRetries,
+        "apnsErrConn=" <> strEncode _apnsErrConn,
+        "apnsErrResponse=" <> strEncode _apnsErrResponse,
         "activeTokens:",
         strEncode _activeTokens,
         "activeSubs:",
@@ -288,6 +333,11 @@ instance StrEncoding NtfServerStatsData where
     _ntfVrfDelivered <- opt "ntfVrfDelivered="
     _ntfVrfFailed <- opt "ntfVrfFailed="
     _ntfVrfInvalidTkn <- opt "ntfVrfInvalidTkn="
+    _apnsReqTotal <- opt "apnsReqTotal="
+    _apnsLatencyMicros <- opt "apnsLatencyMicros="
+    _apnsRetries <- opt "apnsRetries="
+    _apnsErrConn <- opt "apnsErrConn="
+    _apnsErrResponse <- opt "apnsErrResponse="
     _ <- "activeTokens:" <* A.endOfLine
     _activeTokens <- strP <* A.endOfLine
     _ <- "activeSubs:" <* A.endOfLine
@@ -315,6 +365,11 @@ instance StrEncoding NtfServerStatsData where
           _ntfVrfDelivered,
           _ntfVrfFailed,
           _ntfVrfInvalidTkn,
+          _apnsReqTotal,
+          _apnsLatencyMicros,
+          _apnsRetries,
+          _apnsErrConn,
+          _apnsErrResponse,
           _activeTokens,
           _activeSubs
         }
