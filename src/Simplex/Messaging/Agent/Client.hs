@@ -269,7 +269,7 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
-    NameResult,
+    NameRegistration (..),
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,
@@ -1993,7 +1993,7 @@ getQueueLink c nm userId server lnkId =
 -- resolver) and falls back to a direct send when the proxy is unavailable
 -- (faster but exposes the client IP). Mode selection is delegated to
 -- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
-resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameResult
+resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameRegistration
 resolveName c nm userId server domain =
   snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
   where

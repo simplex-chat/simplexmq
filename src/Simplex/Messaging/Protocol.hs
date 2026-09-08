@@ -82,6 +82,8 @@ module Simplex.Messaging.Protocol
     ProxyError (..),
     NameQuery (..),
     NameQueryLabel (..),
+    nameQuery,
+    queryName,
     NameRegistration (..),
     NamePricing (..),
     USDCents (..),
@@ -281,7 +283,7 @@ import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SystemTime (SystemSeconds)
-import Simplex.Messaging.SimplexName (LabelHash, SimplexTLD)
+import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), domainName, labelHash, labelHashText)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -1626,6 +1628,26 @@ instance Encoding NameQueryLabel where
       'N' -> NQName <$> smpP
       'H' -> NQHash <$> smpP
       _ -> fail "bad NameQueryLabel"
+
+-- | How the backing resolver is addressed for this query. The only place a
+-- hashed label is written as text, and it faces the resolver's HTTP API - the
+-- SMP protocol tags the choice instead of spelling it.
+queryName :: NameQuery -> Text
+queryName NameQuery {queryTLD, queryLabel, querySub} = domainName queryTLD label querySub
+  where
+    label = case queryLabel of
+      NQName t -> t
+      NQHash h -> labelHashText h
+
+-- | The name a client asked about, hashed from v22 so the router is never told
+-- what it is. A web TLD has no registry, so it is never hashed.
+nameQuery :: VersionSMP -> SimplexDomain -> NameQuery
+nameQuery v SimplexDomain {nameTLD, domain, subDomain} =
+  NameQuery {queryTLD = nameTLD, queryLabel = label, querySub = subDomain}
+  where
+    label
+      | v >= nameAvailSMPVersion && nameTLD /= TLDWeb = NQHash (labelHash domain)
+      | otherwise = NQName domain
 
 instance Encoding NameQuery where
   smpEncode NameQuery {queryTLD, queryLabel, querySub} =

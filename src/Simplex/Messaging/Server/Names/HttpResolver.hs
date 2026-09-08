@@ -45,6 +45,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Int (Int64)
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
@@ -90,15 +91,16 @@ data NameStatusResp = NameStatusResp
     nsGraceEnds :: Maybe Int64,
     -- | reported alongside the status: a reservation is orthogonal to it
     nsReasonCode :: Maybe Text,
-    -- | when the post-grace surcharge began
-    nsPremiumFrom :: Maybe Int64,
-    -- | the TLD's price oracle, in MicroUSD - per year for the rents. The
-    -- resolver converts from the registry's attoUSD, so nothing 256-bit gets
-    -- this far and every value fits a JSON number exactly.
-    nsRentPrices :: Maybe [Int64],
-    nsMinLabelLength :: Maybe Int,
-    nsStartPremium :: Maybe Int64,
-    nsEndPremium :: Maybe Int64
+    -- | when the post-grace surcharge decays to nothing, so the client can
+    -- count down to the ordinary price. The surcharge itself never travels.
+    nsAuctionUntil :: Maybe Int64,
+    -- | the TLD's price oracle, in US cents per year: the lengths it prices
+    -- specially, and the price for every other length. The resolver converts
+    -- from the registry's attoUSD, so nothing 256-bit gets this far and every
+    -- value fits a JSON number exactly.
+    nsRentPrices :: Maybe (Map Int Int64),
+    nsBasePrice :: Maybe Int64,
+    nsMinLabelLength :: Maybe Int
   }
   deriving (Show)
 
@@ -174,11 +176,10 @@ resolveHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseByt
               nsExpires = jsonField o "expires",
               nsGraceEnds = jsonField o "graceEnds",
               nsReasonCode = jsonField o "reasonCode",
-              nsPremiumFrom = jsonField o "premiumFrom",
+              nsAuctionUntil = jsonField o "auctionUntil",
               nsRentPrices = jsonField o "rentPrices",
-              nsMinLabelLength = jsonField o "minLabelLength",
-              nsStartPremium = jsonField o "startPremium",
-              nsEndPremium = jsonField o "endPremium"
+              nsBasePrice = jsonField o "basePrice",
+              nsMinLabelLength = jsonField o "minLabelLength"
             }
 
 -- | A field the resolver omits or nulls for statuses that do not carry it.

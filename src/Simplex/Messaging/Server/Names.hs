@@ -3,7 +3,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
@@ -18,10 +17,11 @@ where
 
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
-import Simplex.Messaging.Protocol (NameErrorType (..), MicroUSD (..), NamePricing (..), NameRecord, NameRegistration (..), NameResult, NameReservedReason, reservedReason)
+import Simplex.Messaging.Protocol (NameErrorType (..), NamePricing (..), NameRecord, NameQuery, NameRegistration (..), NameReservedReason, USDCents (..), oldRegistration, parseReservedReason, queryName)
 import Simplex.Messaging.Server.Names.HttpResolver
   ( NameStatusResp (..),
     ResolverEnv,
@@ -32,7 +32,7 @@ import Simplex.Messaging.Server.Names.HttpResolver
     newResolverEnv,
     resolveHttp,
   )
-import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import System.Timeout (timeout)
 
 data NamesConfig = NamesConfig
@@ -60,9 +60,9 @@ pingEndpoint :: NamesEnv -> IO (Either ResolverError ())
 pingEndpoint NamesEnv {resolverEnv, config} =
   fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
-resolveName :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameResult)
-resolveName env d = do
-  r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env d))
+resolveName :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameRegistration)
+resolveName env q = do
+  r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env q))
   case r of
     Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
     Left e
@@ -71,61 +71,59 @@ resolveName env d = do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
           pure (Left (RESOLVER "resolver error"))
 
+fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameRegistration)
+fetch NamesEnv {resolverEnv} q =
+  either (Left . mapResolverError) nameRegistration <$> resolveHttp resolverEnv (queryName q)
+
+-- | A resolver that reports no status at all is an older one, and only ever
+-- returned a record for a live registration - which is what oldRegistration says.
+nameRegistration :: (Maybe NameRecord, Maybe NameStatusResp) -> Either NameErrorType NameRegistration
+nameRegistration = \case
+  (rec_, Just ns) -> mapStatus rec_ ns
+  (Just rec, Nothing) -> Right (oldRegistration rec)
+  (Nothing, Nothing) -> Left NOT_FOUND
+
+-- | The resolver's vocabulary. A status this router has no word for is not an
+-- answer: a registration would assert one nobody read, and availability would
+-- offer a name that may be held.
+mapStatus :: Maybe NameRecord -> NameStatusResp -> Either NameErrorType NameRegistration
+mapStatus rec_ ns@NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsReasonCode, nsAuctionUntil} =
+  case nsStatus of
+    "registered" -> registered
+    "grace" -> registered
+    "unregistered" -> available
+    "expired" -> available
+    s -> Left (RESOLVER (T.take 32 s))
+  where
+    reservedReason_ = resolverReason <$> nsReasonCode
+    -- A registered name resolves: where the owner set no records the resolver
+    -- still returns one, every field unset. And a registration this router
+    -- could not date is not one it can report.
+    registered = case (rec_, nsExpires, nsGraceEnds) of
+      (Just nameRecord, Just expires, Just graceUntil) ->
+        Right NRRegistered {expires = Just (RoundedSystemTime expires), graceUntil = Just (RoundedSystemTime graceUntil), reservedReason_, nameRecord}
+      (Nothing, _, _) -> Left (RESOLVER "no record")
+      _ -> Left (RESOLVER "no expiry")
+    -- A held-back name is quoted no price: what it costs, and whether it can be
+    -- had at all, is a conversation with SimpleX.
+    available = case reservedReason_ of
+      Just r -> Right (NRReserved r)
+      Nothing -> case namePricing ns of
+        Just pricing -> Right NRAvailable {pricing, auctionUntil = RoundedSystemTime <$> nsAuctionUntil}
+        Nothing -> Left (RESOLVER "no price oracle")
+
 -- | A code this router has no word for still reserves the name, and travels on
 -- as itself. Bounded to one wire token: it is the resolver's text, and the slot
 -- it goes into ends at a space.
 resolverReason :: Text -> NameReservedReason
-resolverReason = reservedReason . T.take 32 . T.takeWhile (/= ' ')
+resolverReason = parseReservedReason . T.take 32 . T.takeWhile (\c -> c > ' ' && c < '\DEL')
 
-fetch :: NamesEnv -> SimplexDomain -> IO (Either NameErrorType NameResult)
-fetch NamesEnv {resolverEnv} d =
-  either (Left . mapResolverError) nameResult <$> resolveHttp resolverEnv (fullDomainName d)
-
--- | A record answers what the name points to; the status answers whether it can
--- be taken; a reservation is orthogonal to both. A resolver that reports no
--- status at all is an older one, and only ever returned a record for a live
--- registration - the client reads the absent status that way.
-nameResult :: (Maybe NameRecord, Maybe NameStatusResp) -> Either NameErrorType NameResult
-nameResult = \case
-  (rec_, Just ns) -> (\(reserved_, reg) -> (reserved_, Just reg, rec_)) <$> mapStatus ns
-  (Just rec, Nothing) -> Right (Nothing, Nothing, Just rec)
-  (Nothing, Nothing) -> Left NOT_FOUND
-
--- | The resolver's vocabulary. A status this router has no word for is not an
--- answer: "registered" would assert a registration nobody read, and
--- "unregistered" would offer a name that may be held.
-mapStatus :: NameStatusResp -> Either NameErrorType (Maybe NameReservedReason, NameRegistration)
-mapStatus ns@NameStatusResp {nsStatus, nsExpires, nsGraceEnds, nsReasonCode} =
-  (reserved_,) <$> case nsStatus of
-    "registered" -> registered
-    -- registered, but its records point nowhere
-    "noResolver" -> registered
-    "grace" -> registered
-    "unregistered" -> Right unregistered
-    "expired" -> Right unregistered
-    "auction" -> Right unregistered
-    s -> Left (RESOLVER (T.take 32 s))
-  where
-    reserved_ = resolverReason <$> nsReasonCode
-    -- a registration the router could not date is not one it can report
-    registered = maybe (Left $ RESOLVER "no expiry") Right $ do
-      expires <- nsExpires
-      graceUntil <- nsGraceEnds
-      pure NRRegistered {expires, graceUntil}
-    -- a held-back name is not for sale at the registry's price, so it is quoted
-    -- no price at all: what it costs is a conversation with SimpleX
-    unregistered = NRUnregistered {pricing = if isJust reserved_ then Nothing else namePricing ns}
-
--- | Absent when the TLD has no controller or price oracle configured. The
--- surcharge start is absent for a name that never lapsed.
 namePricing :: NameStatusResp -> Maybe NamePricing
-namePricing NameStatusResp {nsRentPrices, nsMinLabelLength, nsPremiumFrom, nsStartPremium, nsEndPremium} = do
-  rentPrices <- map MicroUSD <$> nsRentPrices
+namePricing NameStatusResp {nsRentPrices, nsBasePrice, nsMinLabelLength} = do
+  rentPrices <- M.map USDCents <$> nsRentPrices
+  basePrice <- USDCents <$> nsBasePrice
   minLabelLength <- nsMinLabelLength
-  startPremium <- MicroUSD <$> nsStartPremium
-  endPremium <- MicroUSD <$> nsEndPremium
-  pure NamePricing {rentPrices, minLabelLength, premiumFrom = nsPremiumFrom, startPremium, endPremium}
-
+  pure NamePricing {rentPrices, basePrice, minLabelLength}
 
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case

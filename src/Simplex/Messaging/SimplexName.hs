@@ -10,6 +10,7 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
+    domainName,
     LabelHash (..),
     labelHash,
     labelHashText,
@@ -150,9 +151,13 @@ instance Encoding SimplexTLD where
       _ -> fail "bad SimplexTLD"
 
 fullDomainName :: SimplexDomain -> Text
-fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} = domainName nameTLD domain subDomain
+
+-- | A dotted name from its parts, whatever the second-level label is written as.
+domainName :: SimplexTLD -> Text -> [Text] -> Text
+domainName tld label sub = T.intercalate "." (reverse sub ++ [label] ++ tld')
   where
-    tld' = case nameTLD of
+    tld' = case tld of
       TLDSimplex -> ["simplex"]
       TLDTesting -> ["testing"]
       TLDWeb -> []

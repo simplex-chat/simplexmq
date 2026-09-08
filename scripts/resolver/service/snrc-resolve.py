@@ -107,13 +107,12 @@ CONTROLLERS = {
 
 # `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
 # controller from before the enum stores a bool, whose `true` decodes as 1.
+# SimplexController.Reason. 1 is also what the boolean reservedNames of the
+# first .testing deployment set, which is why it reads as "internal".
 RESERVED_REASONS = {
-    1: ("unspecified", "reserved for a brand or public interest"),
+    1: ("internal", "reserved for SimpleX"),
     2: ("trademark", "reserved to protect a trademark"),
-    3: ("publicInterest", "reserved in the public interest"),
-    4: ("offensive", "reserved as an offensive name"),
-    5: ("internal", "reserved for SimpleX"),
-    6: ("premium", "reserved as a premium name"),
+    3: ("community", "reserved for the community"),
 }
 # a Reason added to the contract after this resolver: still reserved, unworded
 UNKNOWN_REASON = ("unknown", "reserved")
@@ -126,8 +125,8 @@ COIN_DOT = 354
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
-# The registry prices in attoUSD (1e-18 USD); the protocol carries MicroUSD.
-ATTO_PER_MICRO = 10**12
+# The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
+ATTO_PER_CENT = 10**16
 SECONDS_PER_YEAR = 31536000
 
 
@@ -262,13 +261,11 @@ def read_pricing_params(tld: str):
 
 
 def read_oracle_prices(controller: str, oracle: str):
-    # The oracle prices rent in attoUSD per second and the premium in attoUSD.
-    # Quotes round so they are never below what the registry charges: rents and
-    # the surcharge up, the floor that is subtracted from the surcharge down.
-    # An oracle built before the six-letter tier stops at five, and the contract
-    # itself then charges price5Letter for anything longer - which is what the
-    # last entry means here too.
-    rents = []
+    # The oracle prices rent in attoUSD per second. Quotes round up, so one is
+    # never below what the registry charges. An oracle built before the
+    # six-letter tier stops at five, and the contract then charges price5Letter
+    # for anything longer - which is what basePrice means here.
+    tiers = {}
     for n in range(1, 7):
         try:
             rate = decode_uint(eth_call(oracle, selector(f"price{n}Letter()")))
@@ -276,13 +273,25 @@ def read_oracle_prices(controller: str, oracle: str):
             if n <= 5:
                 raise
             break
-        rents.append(ceil_div(rate * SECONDS_PER_YEAR, ATTO_PER_MICRO))
+        tiers[n] = ceil_div(rate * SECONDS_PER_YEAR, ATTO_PER_CENT)
+    base = tiers.pop(max(tiers))
+    min_len = decode_uint(eth_call(controller, selector("minCharLength()")))
     return {
-        "rentPrices": rents,
-        "minLabelLength": decode_uint(eth_call(controller, selector("minCharLength()"))),
-        "startPremium": ceil_div(decode_uint(eth_call(oracle, selector("startPremium()"))), ATTO_PER_MICRO),
-        "endPremium": decode_uint(eth_call(oracle, selector("endValue()"))) // ATTO_PER_MICRO,
+        # lengths the registry refuses are left out rather than priced at zero
+        "rentPrices": {n: c for n, c in tiers.items() if n >= min_len},
+        "basePrice": base,
+        "minLabelLength": min_len,
+        # not sent: only used to date the end of the surcharge window
+        "_auctionDays": auction_days(oracle),
     }
+
+
+def auction_days(oracle: str) -> int:
+    """The surcharge halves daily from startPremium until it falls below
+    endValue, so the window is log2(startPremium / endValue) days."""
+    start = decode_uint(eth_call(oracle, selector("startPremium()")))
+    end = decode_uint(eth_call(oracle, selector("endValue()")))
+    return (start // end).bit_length() - 1 if end and start > end else 0
 
 
 def ceil_div(a: int, b: int) -> int:
@@ -300,17 +309,13 @@ def name_status(name: str):
             "graceEnds": None,
             "reasonCode": None,
             "reason": None,
-            "premiumFrom": None,
+            "auctionUntil": None,
         }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
     # Only the 2LD's label is a registry key, wherever it sits - the same rule
     # node_of applies to the node.
-    label = labels[-2]
-    if is_encoded_labelhash(label):
-        token = int(label[1:-1], 16)
-    else:
-        token = int.from_bytes(keccak(label.encode()), "big")
+    token = label_token(labels[-2])
     expires = decode_uint(
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
     )
@@ -332,12 +337,17 @@ def name_status(name: str):
         "graceEnds": (expires + grace) if expires else None,
         "reasonCode": reason[0] if reason else None,
         "reason": reason[1] if reason else None,
-        # past grace the name is registrable again, at a surcharge decaying from
-        # the moment grace ended; the client computes it from the curve's ends
-        "premiumFrom": (expires + grace) if status == "expired" and expires else None,
+        "auctionUntil": None,
     }
     if status in ("unregistered", "expired"):
-        out.update(pricing_params(tld) or {})
+        pricing = pricing_params(tld)
+        if pricing:
+            out.update({k: v for k, v in pricing.items() if not k.startswith("_")})
+            # past grace the name is registrable again, but at a surcharge until
+            # the oracle's window closes; the surcharge itself never travels
+            ends = (expires + grace + pricing["_auctionDays"] * 86400) if expires else 0
+            if status == "expired" and ends > now:
+                out["auctionUntil"] = ends
     return out
 
 
@@ -362,6 +372,35 @@ def decode_bytes(hex_data: str) -> bytes:
         return b""
     length = int.from_bytes(raw[32:64], "big")
     return raw[64:64 + length]
+
+
+def registered_label(registrar: str, token: int) -> str:
+    """The registrar records the plaintext label at registration, keyed by its
+    own hash, so a hashed query still answers with the name it asked about. A
+    name registered without registerWithLabel has none, which is an error we
+    name rather than paper over."""
+    raw = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token)))
+    return raw.decode("utf-8", errors="replace") if raw else "unknown"
+
+
+def canonical_name(name: str) -> str:
+    """The name the registry holds. A hashed query never told anyone the name,
+    so the registrar's own record of it is what comes back; a plaintext query
+    already carries it."""
+    labels = name.split(".")
+    registrar = REGISTRARS.get(labels[-1])
+    if not registrar or len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
+        return name
+    label = registered_label(registrar, label_token(labels[-2]))
+    return ".".join(labels[:-2] + [label, labels[-1]])
+
+
+def label_token(label: str) -> int:
+    """The registry key for a second-level label, whether it arrived as text or
+    already hashed."""
+    if is_encoded_labelhash(label):
+        return int(label[1:-1], 16)
+    return int.from_bytes(keccak(label.encode()), "big")
 
 
 def decode_uint(hex_data: str) -> int:
@@ -666,12 +705,24 @@ def resolve(name: str):
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
-        return 404, {
-            "name": name,
+        # A registered name always resolves. With no resolver set the record is
+        # still returned, every field unset, so that "taken until <date>" stays
+        # answerable for the name a would-be registrant is asking about.
+        owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+        return 200, {
+            "name": canonical_name(name),
+            "nickname": "",
+            "website": "",
+            "location": "",
+            "simplexContact": [],
+            "simplexChannel": [],
+            "eth": None,
+            "btc": None,
+            "xmr": None,
+            "dot": None,
+            "owner": owner,
+            "resolver": ZERO_ADDR,
             **reg,
-            "status": "noResolver",
-            "error": "noResolver",
-            "message": "no resolver set for this name",
         }
 
     owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
@@ -696,7 +747,7 @@ def resolve(name: str):
     # use the ENSIP-5 dot convention (e.g. "simplex.contact") — only the
     # resolver's JSON surface camelCases them.
     return 200, {
-        "name": name,
+        "name": canonical_name(name),
         "nickname": nickname,
         "website": texts.get("url", ""),
         "location": texts.get("location", ""),

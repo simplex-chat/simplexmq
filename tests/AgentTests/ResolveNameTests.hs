@@ -87,15 +87,15 @@ resolveNameTests = do
   describe "success path" $
     it "returns NameRecord" testDirectSuccess
   describe "name availability" $
-    it "an unregistered name answers as unregistered" testAvailSuccess
+    it "an unregistered name answers as available" testAvailSuccess
 
 testAvailSuccess :: HasCallStack => IO ()
 testAvailSuccess =
   withDirectResolver (status404, "{\"error\":\"unregistered\"}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Right (Nothing, Just (SMP.NRUnregistered _), Nothing) -> pure ()
-      _ -> expectationFailure $ "expected Right (_, NRUnregistered, _), got: " <> show r
+      Right (SMP.NRAvailable {}) -> pure ()
+      _ -> expectationFailure $ "expected Right NRAvailable, got: " <> show r
 
 testDirectNotFound :: HasCallStack => IO ()
 testDirectNotFound =
@@ -158,5 +158,5 @@ testDirectSuccess =
   withDirectResolver (status200, J.encode testNameRecord) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Right (_, _, Just nr) -> nr `shouldBe` testNameRecord
-      _ -> expectationFailure $ "expected Right (_, _, Just record), got: " <> show r
+      Right (SMP.NRRegistered {nameRecord}) -> nameRecord `shouldBe` testNameRecord
+      _ -> expectationFailure $ "expected Right NRRegistered, got: " <> show r

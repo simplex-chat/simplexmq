@@ -1494,12 +1494,12 @@ client
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
     -- concurrency is limited by serverResolverConcurrency in forkCmd.
-    resolveNameMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
+    resolveNameMsg :: NamesEnv -> NameQuery -> M s BrokerMsg
     resolveNameMsg nenv d = do
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-
         liftIO (resolveName nenv d) <&> \case
-          Right (reserved_, reg_, rec_) -> (rslvSucc, RNAME reserved_ reg_ rec_)
+          Right reg -> (rslvSucc, RNAME reg)
           Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
           Left e -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg
