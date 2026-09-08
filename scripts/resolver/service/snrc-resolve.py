@@ -106,9 +106,8 @@ CONTROLLERS = {
 }
 
 # `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
-# controller from before the enum stores a bool, whose `true` decodes as 1.
-# SimplexController.Reason. 1 is also what the boolean reservedNames of the
-# first .testing deployment set, which is why it reads as "internal".
+# controller from before the enum stores a bool, whose `true` decodes as 1,
+# which is why 1 reads as "internal".
 RESERVED_REASONS = {
     1: ("internal", "reserved for SimpleX"),
     2: ("trademark", "reserved to protect a trademark"),
@@ -240,7 +239,7 @@ def reservation_reason(tld: str, token: int) -> int:
 
 
 def pricing_params(tld: str):
-    """What it costs to register a name under this TLD, in MicroUSD, or None
+    """What it costs to register a name under this TLD, in US cents, or None
     when no controller or price oracle is configured."""
     return cached(("pricing", tld), lambda: read_pricing_params(tld))
 
@@ -327,7 +326,7 @@ def name_status(name: str):
         status = expiry_status(expires, grace, now)
 
     # A reservation is orthogonal to the registration: a registered name can be
-    # held back too, and that is why it will not free up when it expires.
+    # held back too.
     code = reservation_reason(tld, token)
     reason = RESERVED_REASONS.get(code, UNKNOWN_REASON) if code else None
 
@@ -375,18 +374,16 @@ def decode_bytes(hex_data: str) -> bytes:
 
 
 def registered_label(registrar: str, token: int) -> str:
-    """The registrar records the plaintext label at registration, keyed by its
-    own hash, so a hashed query still answers with the name it asked about. A
-    name registered without registerWithLabel has none, which is an error we
-    name rather than paper over."""
+    """The plaintext label the registrar recorded at registration, keyed by the
+    hash of that label. A name registered without registerWithLabel has none,
+    and answers "unknown" instead."""
     raw = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token)))
     return raw.decode("utf-8", errors="replace") if raw else "unknown"
 
 
 def canonical_name(name: str) -> str:
-    """The name the registry holds. A hashed query never told anyone the name,
-    so the registrar's own record of it is what comes back; a plaintext query
-    already carries it."""
+    """The name to answer with: a hashed query does not carry one, so the
+    registrar's record of the label fills it in."""
     labels = name.split(".")
     registrar = REGISTRARS.get(labels[-1])
     if not registrar or len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
@@ -688,8 +685,7 @@ def resolve(name: str):
     # Before the resolver lookup, so a lapsed name is not reported as noResolver.
     reg = name_status(name)
     if reg["status"] in ("unregistered", "expired"):
-        # A name in grace is not here: its record still resolves, so that whoever
-        # opens it can tell the owner it is about to lapse.
+        # A name in grace is not here: its record still resolves.
         body = {
             "name": name,
             **reg,
@@ -705,9 +701,9 @@ def resolve(name: str):
     resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
     resolver_addr = decode_address(resolver_raw)
     if resolver_addr == ZERO_ADDR:
-        # A registered name always resolves. With no resolver set the record is
-        # still returned, every field unset, so that "taken until <date>" stays
-        # answerable for the name a would-be registrant is asking about.
+        # A registered name always resolves: with no resolver set the record is
+        # still returned with every field unset, so "taken until <date>" stays
+        # answerable.
         owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
         return 200, {
             "name": canonical_name(name),

@@ -77,8 +77,8 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
--- | The registry's key for a label, and what BaseRegistrarImplementation.labelOf
--- is keyed on. Always 32 bytes.
+-- | The registry's key for a label, and what
+-- BaseRegistrarImplementation.labelOf takes. Always 32 bytes.
 newtype LabelHash = LabelHash ByteString
   deriving (Eq, Show)
 
@@ -86,14 +86,12 @@ instance Encoding LabelHash where
   smpEncode (LabelHash h) = h
   smpP = LabelHash <$> A.take 32
 
--- | keccak-256 of the lowercased label. Only a second-level label is a registry
--- key: subname labels are needed as text to reach the record.
+-- | keccak-256 of the lowercased label, as the registry keys it.
 labelHash :: Text -> LabelHash
 labelHash label = LabelHash $ BA.convert (hash (encodeUtf8 (T.toLower label)) :: Digest Keccak_256)
 
--- | How the backing resolver is addressed for a hashed label: ENS's encoding
--- for a label whose text is unknown. The SMP protocol never parses this form -
--- it tags the choice instead - so the brackets live here alone.
+-- | ENS's encoding for a label whose text is unknown, which is what the
+-- backing resolver's HTTP API takes.
 labelHashText :: LabelHash -> Text
 labelHashText (LabelHash h) = "[" <> decodeLatin1 (BAE.convertToBase BAE.Base16 h) <> "]"
 

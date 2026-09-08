@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 
 -- | HTTP transport for the public-namespace resolver.
@@ -37,8 +38,9 @@ where
 import qualified Control.Exception as E
 import qualified Data.Aeson as J
 import Data.Aeson.Key (Key)
-import qualified Data.Aeson.Types as JT
 import qualified Data.Aeson.KeyMap as JKM
+import qualified Data.Aeson.TH as JQ
+import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
@@ -66,6 +68,7 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
 import Simplex.Messaging.Names.Record (NameRecord)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -89,20 +92,18 @@ data NameStatusResp = NameStatusResp
   { nsStatus :: Text,
     nsExpires :: Maybe Int64,
     nsGraceEnds :: Maybe Int64,
-    -- | reported alongside the status: a reservation is orthogonal to it
     nsReasonCode :: Maybe Text,
-    -- | when the post-grace surcharge decays to nothing, so the client can
-    -- count down to the ordinary price. The surcharge itself never travels.
+    -- | when the post-grace surcharge decays to nothing
     nsAuctionUntil :: Maybe Int64,
-    -- | the TLD's price oracle, in US cents per year: the lengths it prices
-    -- specially, and the price for every other length. The resolver converts
-    -- from the registry's attoUSD, so nothing 256-bit gets this far and every
-    -- value fits a JSON number exactly.
+    -- | US cents per year, by label length
     nsRentPrices :: Maybe (Map Int Int64),
+    -- | US cents per year for every other length
     nsBasePrice :: Maybe Int64,
     nsMinLabelLength :: Maybe Int
   }
   deriving (Show)
+
+$(JQ.deriveFromJSON defaultJSON {J.fieldLabelModifier = dropPrefix "ns"} ''NameStatusResp)
 
 data ResolverError
   = HttpFailure HttpException
@@ -138,63 +139,41 @@ authHeader = \case
      in ("Authorization", "Basic " <> encoded)
 
 -- | GET <baseUrl>/resolve/<percent-encoded name>, returning the record when the
--- name resolves and what the resolver says about the name either way. The
--- status code cannot tell an unregistered name from a reserved or lapsed one;
--- that is in the body, under "status" on a 200 and "error" otherwise. Older
--- resolvers omit it, hence the Maybe. The name is percent-encoded (every
--- non-unreserved byte per RFC 3986): the resolver expects raw labels, so
--- slashes/punctuation must not alter the path.
+-- name resolves and what the resolver says about the name either way. The status
+-- code cannot tell an unregistered name from a reserved or lapsed one, so on the
+-- two codes that carry availability the body is read as well. The name is
+-- percent-encoded (every non-unreserved byte per RFC 3986): the resolver expects
+-- raw labels, so slashes/punctuation must not alter the path.
 resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError (Maybe NameRecord, Maybe NameStatusResp))
-resolveHttp ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} name = do
-  req0 <- parseRequest (baseUrl <> "/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
-  let req =
-        req0
-          { redirectCount = 0,
-            requestHeaders = ("Accept", "application/json") : authHdr,
-            HC.responseTimeout = responseTimeoutMicro timeoutMicro
-          }
-  result <- E.try $ withResponse req manager $ \res -> do
-    let status = HT.statusCode (responseStatus res)
-    bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
-    pure $
-      if BL.length bs > fromIntegral maxResponseBytes
-        then Left BodyTooLarge
-        else case J.decode bs of
-          Just v@(J.Object o)
-            | status < 400 -> (,statusResp o "status") . Just <$> first InvalidJson (JT.parseEither J.parseJSON v)
-            | otherwise -> maybe (Left $ HttpStatusErr status) (Right . (Nothing,) . Just) (statusResp o "error")
-          _
-            | status < 400 -> Left (InvalidJson "not a JSON object")
-            | otherwise -> Left (HttpStatusErr status)
-  pure (either (Left . HttpFailure) id result)
+resolveHttp env name =
+  (>>= nameResp) <$> httpGet env ("/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
   where
-    statusResp o field = mkResp <$> jsonField o field
-      where
-        mkResp t =
-          NameStatusResp
-            { nsStatus = t,
-              nsExpires = jsonField o "expires",
-              nsGraceEnds = jsonField o "graceEnds",
-              nsReasonCode = jsonField o "reasonCode",
-              nsAuctionUntil = jsonField o "auctionUntil",
-              nsRentPrices = jsonField o "rentPrices",
-              nsBasePrice = jsonField o "basePrice",
-              nsMinLabelLength = jsonField o "minLabelLength"
-            }
+    nameResp (status, bs)
+      | status < 400 = (,statusResp bs "status") . Just <$> first InvalidJson (J.eitherDecode bs)
+      | status == 404 || status == 410 =
+          maybe (Left $ HttpStatusErr status) (Right . (Nothing,) . Just) (statusResp bs "error")
+      | otherwise = Left (HttpStatusErr status)
 
--- | A field the resolver omits or nulls for statuses that do not carry it.
-jsonField :: J.FromJSON a => J.Object -> Key -> Maybe a
-jsonField o k = JT.parseMaybe J.parseJSON =<< JKM.lookup k o
+-- | What the resolver says about the name, under "status" on a 200 and "error"
+-- on the codes that carry availability. Older resolvers send neither.
+statusResp :: BL.ByteString -> Key -> Maybe NameStatusResp
+statusResp bs k = case J.decode bs of
+  Just (J.Object o) -> do
+    v <- JKM.lookup k o
+    JT.parseMaybe J.parseJSON (J.Object (JKM.insert "status" v o))
+  _ -> Nothing
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.
 healthHttp :: ResolverEnv -> IO (Either ResolverError ())
-healthHttp env = (() <$) <$> httpGet env "/health"
+healthHttp env = (>>= statusOk . fst) <$> httpGet env "/health"
+  where
+    statusOk status = if status >= 400 then Left (HttpStatusErr status) else Right ()
 
--- | GET <baseUrl><path>, returning the response body bytes on status < 400
--- within the size cap. Redirects are disabled and Authorization is attached
--- only when configured.
-httpGet :: ResolverEnv -> String -> IO (Either ResolverError BL.ByteString)
+-- | GET <baseUrl><path>, returning the response status and body bytes within the
+-- size cap. Redirects are disabled and Authorization is attached only when
+-- configured.
+httpGet :: ResolverEnv -> String -> IO (Either ResolverError (Int, BL.ByteString))
 httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} path = do
   req0 <- parseRequest (baseUrl <> path)
   let req =
@@ -205,9 +184,6 @@ httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} 
           }
   result <- E.try $ withResponse req manager $ \res -> do
     let status = HT.statusCode (responseStatus res)
-    if status >= 400
-      then pure (Left (HttpStatusErr status))
-      else do
-        bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
-        pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right bs
+    bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
+    pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right (status, bs)
   pure (either (Left . HttpFailure) id result)

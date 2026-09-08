@@ -121,19 +121,16 @@ rslvWireSpec = do
 availabilitySpec :: Spec
 availabilitySpec = do
   -- one lookup answers what the name points to, whether it can be taken, and
-  -- whether the registry holds it back
+  -- whether it is held back
   it "a registered name answers with its record and dates" $
     answers status200 (recordWith "\"status\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483") $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Nothing, nameRecord = testNameRecord}
-  -- the record travels through grace: the UI decides how long to keep opening it
   it "a name in grace keeps its record" $
     answers status200 (recordWith "\"status\":\"grace\",\"expires\":1785000000,\"graceEnds\":1792776000") $
       NRRegistered {expires = Just (RoundedSystemTime 1785000000), graceUntil = Just (RoundedSystemTime 1792776000), reservedReason_ = Nothing, nameRecord = testNameRecord}
-  -- reservation is orthogonal: it is why the name will not free up at expiry
   it "a registered name can be held back too" $
     answers status200 (recordWith "\"status\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483,\"reasonCode\":\"internal\"") $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
-  -- an older resolver reports no status; the record is still the answer
   it "a resolver that sends no status still answers with the record" $
     answers status200 (J.encode testNameRecord) $
       NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord = testNameRecord}
@@ -143,16 +140,14 @@ availabilitySpec = do
   it "expired is available, counting down to the ordinary price" $
     answers status410 (jsonBody ("{\"error\":\"expired\",\"auctionUntil\":1790294400," <> pricingJson <> "}")) $
       NRAvailable {pricing = testPricing, auctionUntil = Just (RoundedSystemTime 1790294400)}
-  -- a held-back name is not for sale at the registry's price
   it "reserved carries the reason and no price" $
     answers status404 (jsonBody ("{\"error\":\"unregistered\",\"reasonCode\":\"trademark\"," <> pricingJson <> "}")) $
       NRReserved NRRTrademark
-  -- a later version may reserve names for reasons this one cannot name; the
-  -- reservation must survive that, or a client would offer a name it cannot get
+  -- losing the reservation would offer a name that cannot be registered
   it "a reason from a later version still reserves the name" $
     answers status404 "{\"error\":\"unregistered\",\"reasonCode\":\"seasonal\"}" (NRReserved (NRRUnknown "seasonal"))
-  -- the reason re-encodes into a slot that ends at a space, so the router keeps
-  -- it to one bounded token rather than trusting the resolver's text
+  -- the reason re-encodes into a slot that ends at a space, so it is cut to one
+  -- token
   it "a reason with a space is cut at the space" $
     answers status404 "{\"error\":\"unregistered\",\"reasonCode\":\"two words\"}" (NRReserved (NRRUnknown "two"))
   it "an over-long reason is truncated" $
@@ -165,16 +160,18 @@ availabilitySpec = do
     refuses status404 "{\"error\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483}" (RESOLVER "no record")
   it "no price oracle is a resolver error" $
     refuses status404 "{\"error\":\"unregistered\"}" (RESOLVER "no price oracle")
+  -- only 404 and 410 carry availability, so only their bodies are read as a
+  -- status
   it "upstream failure is a resolver error" $
-    refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "upstreamError")
-  it "unconfigured TLD is a resolver error" $
-    refuses status400 "{\"error\":\"tldNotConfigured\"}" (RESOLVER "tldNotConfigured")
+    refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "HTTP 502")
+  it "unconfigured TLD is not found" $
+    refuses status400 "{\"error\":\"tldNotConfigured\"}" NOT_FOUND
   it "unreadable status is a resolver error" $
     refuses status404 "{\"error\":\"unknown\"}" (RESOLVER "unknown")
   it "long status is truncated" $
-    refuses status502 (jsonBody ("{\"error\":\"" <> replicate 400 'e' <> "\"}")) (RESOLVER (T.replicate 32 "e"))
-  -- a body the router cannot read is the pre-v22 answer, unchanged: NOT_FOUND
-  -- says the router has nothing to say, never that the name is registrable
+    refuses status404 (jsonBody ("{\"error\":\"" <> replicate 400 'e' <> "\"}")) (RESOLVER (T.replicate 32 "e"))
+  -- NOT_FOUND says the router has nothing to say, never that the name is
+  -- registrable
   it "unreadable 404 body stays NOT_FOUND" $
     refuses status404 "<html>gateway</html>" NOT_FOUND
   it "over-cap body is a resolver error" $
@@ -223,7 +220,7 @@ pricingJson = "\"rentPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLa
 
 parseNameSpec :: Spec
 parseNameSpec = do
-  -- a name is a name: the hashed form is a query, and has its own type
+  -- the hashed form is a query, not a name: it has its own type
   it "a name is never a hash" $
     parseN ("[" <> T.replicate 64 "b" <> "].simplex") `shouldSatisfy` isLeft
   -- keccak-256("alice"), the same constant the resolver's own tests use

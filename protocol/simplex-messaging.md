@@ -1475,19 +1475,18 @@ domain = 1*253 OCTET            ; the name as text
 explicit (e.g. `privacy.simplex`, `test.testing`, `example.com`), bounded to
 253 bytes.
 
-**Hashed labels.** `RSLV` does not carry a name. It carries a query, whose
-second-level label is either the label itself or the keccak-256 of it, tagged so
-that the two are told apart by the encoding rather than by their shape. Nothing
-decides what a label is by counting characters or looking for punctuation.
+**Hashed labels.** The query's second-level label is either the label itself or
+the keccak-256 of it, tagged, so the two are told apart by the tag and never by
+the shape of the value.
 
 Only the second-level label may be hashed: subname labels are needed as text to
 reach the record, and a web TLD has no registry to key on. `sub.<hash>.simplex`
 reaches the node `sub.name.simplex` does.
 
 From v22 a client MUST send the hash. Older routers can only read the name, so a
-client on an older session sends it, and gets what it always got. A router
-answering a hashed query does not know the name's length, so it cannot check a
-minimum-length policy either — the client does that, from the pricing it is sent.
+client on an older session sends the name. A router answering a hashed query
+does not know the label's length, so it cannot check a minimum-length policy
+either: the client does that, from the pricing it is sent.
 
 The hash reaches the backing resolver as `[` + 64 lowercase hex + `]`, ENS's
 encoding for a label whose text is unknown, because that is what its HTTP API
@@ -1525,9 +1524,9 @@ fact that this router cannot resolve, so iterating past it is safe.
 
 #### Name response
 
-Resolving a name and asking whether it can be registered are one question to the
-registry, and one lookup answers both: a client offering a taken name to
-register wants to show what took it. `RNAME` carries what the registry holds.
+Resolving a name and asking whether it can be registered are one lookup in the
+registry, and `RNAME` answers both: a client offering to register a name that
+turns out to be taken can show what took it.
 
 ```abnf
 rname        = %s"RNAME" SP registration
@@ -1560,25 +1559,25 @@ seconds since the Unix epoch. Lengths are characters.
 | `A` | available: held by nobody and registrable now, at `pricing` |
 | `R` | reserved: held back by the registry and not registered |
 
-Availability is not a state of its own but the conjunction the registry itself
-computes: registrable means `A`, since a name that is held back answers `R` instead. A reservation on a name that *is* registered rides along in
-the `reserved` field, and is why that name will not free up when it expires.
+`A` alone means registrable: a name the registry holds back answers `R`
+instead, so a client has no flags to combine. A reservation on a name that *is*
+registered is carried in the `reserved` field, and is why that name will not
+free up when it expires.
 
-An auction is not a state either. A name past its grace period answers `A`
-with the ordinary price, plus the time its surcharge expires. The
-surcharge itself is deliberately not carried: it decays continuously, so it
-cannot be quoted as a purchase price. A client shows the ordinary price and
-counts down to when it applies.
+There is no separate answer for an auction. A name past its grace period answers
+`A` with the ordinary price and the time its surcharge expires. The surcharge
+itself is not carried: it decays continuously, so it cannot be quoted as a
+purchase price. A client shows the ordinary price and counts down to when it
+applies.
 
-A router MUST NOT quote a price for a reserved name. A name the registry holds
-back is not for sale at the registry's price, and quoting one would be an offer
-the registry will not honour - which is why `R` has no pricing field at all
-rather than an empty one.
+A router MUST NOT quote a price for a reserved name: it is not for sale at the
+registry's price, and quoting one would be an offer the registry will not
+honour. That is why `R` has no pricing field.
 
-The record travels while a name is registered, through its grace period, and
-stops at the moment the name becomes registrable by anyone. Keeping it that far
-lets whoever opens the name tell its owner that it is about to lapse; keeping it
-past that would show a record whose owner no longer holds the name. How long a
+The record is carried while a name is registered and through its grace period,
+and stops once the name is registrable by anyone. Keeping it through grace lets
+whoever opens the name tell its owner that it is about to lapse; keeping it
+longer would show a record whose owner no longer holds the name. How long a
 client goes on opening an expiring name is its own decision.
 
 **Computing the price.** In US cents, for a duration in seconds:
@@ -1599,12 +1598,12 @@ Below v22, `RNAME` carries the bare record and nothing else, and every answer
 without one is `ERR NAME NOT_FOUND`, as it was before this version. A name in
 its grace period therefore resolves for those clients too, without the expiry
 they have no field to carry. In the other direction a v22 client reads such an
-answer as `N` with no expiry, grace or reservation - which is the only
-reason those three fields are optional.
+answer as `N` with no expiry, grace or reservation, which is the only reason
+those three fields are optional.
 
-From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable" - only `A`
-says that. `NOT_FOUND` means the router has nothing to say about the
-name, which includes a backing resolver whose answer it could not read.
+From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable": only `A`
+says that. `NOT_FOUND` means the router has nothing to say about the name, which
+includes a backing resolver whose answer it could not read.
 
 A router that cannot state an answer completely MUST say so as `ERR NAME
 RESOLVER <detail>` rather than answer partially. That covers a TLD with no
@@ -1617,12 +1616,11 @@ name that may be held.
 A client MUST read a `reason` it does not know as unknown and still treat the
 name as reserved: a later version may reserve names for reasons this one cannot
 name, and losing the reservation over that would offer a name that cannot be
-registered. The word itself travels, unchanged, so that a later client can act
-on it and a current one can show or log it - which is why the set is open rather
-than an enumeration. A router sends at most one bounded token of printable
-ASCII, since the field ends at a space.
+registered. The word itself travels unchanged, so a later client can act on it
+and a current one can show or log it, which is why the set is open rather than
+an enumeration. A router sends at most one token of printable ASCII, since the
+field ends at a space.
 
-`json-bytes` MUST be a UTF-8 JSON object with the following schema:
 `json-bytes` MUST be a UTF-8 JSON object with the following schema:
 
 | Field | JSON type | Constraints |

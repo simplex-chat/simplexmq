@@ -217,8 +217,8 @@ oldClient = do
   g <- C.newRandom
   ts <- getCurrentTime
   let srv = SMPServer testHost testPort testKeyHash
-      -- the version just below the gate: a lower ceiling would also pass for a
-      -- gate at 20 or 21 and prove nothing about v22
+      -- the version just below the gate: a lower ceiling would pass even if
+      -- the gate were at 20 or 21
       oldCfg = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion serverInfoSMPVersion}
   pcE <- getProtocolClient g NRMInteractive (1, srv, Nothing) oldCfg [] Nothing ts (\_ -> pure ())
   either (fail . show) pure pcE
@@ -269,7 +269,7 @@ auctionPricing =
 aliceHash :: Text
 aliceHash = "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
 
--- | A current client must never put a registrable name on the wire.
+-- | The paths the client asked the resolver for.
 resolvePaths :: IORef [[Text]] -> IO [[Text]]
 resolvePaths reqs = filter isResolve <$> readIORef reqs
   where
@@ -289,8 +289,7 @@ testRslvSendsTheHash =
     pc <- currentClient
     r <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
     resolvePaths reqs `shouldReturn` [["resolve", aliceHash <> ".simplex"]]
-    -- the client never sent the name, and the record still names it: the
-    -- registrar records the label at registration, keyed by its own hash
+    -- the client never sent the name, and the record still names it
     case r of
       NRRegistered {nameRecord} -> SMP.nrName nameRecord `shouldBe` "alice.simplex"
       _ -> expectationFailure $ "expected NRRegistered, got: " <> show r

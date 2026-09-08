@@ -88,7 +88,6 @@ module Simplex.Messaging.Protocol
     NamePricing (..),
     USDCents (..),
     NameReservedReason (..),
-    parseReservedReason,
     oldRegistration,
     NameErrorType (..),
     BrokerErrorType (..),
@@ -1602,12 +1601,12 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | What RSLV asks about. Distinct from SimplexDomain, which stays a name a
--- person can type and a UI can show: only this may name a label by its hash.
+-- | What RSLV asks about. Unlike SimplexDomain, which is always text, this may
+-- name a label by its hash.
 data NameQuery = NameQuery
   { queryTLD :: SimplexTLD,
-    -- | only the second-level label may be hashed - subnames are needed as text
-    -- to reach the record, so they are not part of this choice
+    -- | only the second-level label may be hashed: subname labels are needed as
+    -- text to reach the record
     queryLabel :: NameQueryLabel,
     -- | parent to child, as in SimplexDomain
     querySub :: [Text]
@@ -1634,8 +1633,8 @@ queryName :: NameQuery -> Text
 queryName = fullDomainName . queryDomain
 
 -- | The query as a name: what RSLV carries below v22, and what the resolver's
--- HTTP API takes. The only place a hashed label is written as text - the SMP
--- protocol tags the choice instead of spelling it.
+-- HTTP API takes. The only place a hashed label is written as text; SMP tags
+-- the choice instead.
 queryDomain :: NameQuery -> SimplexDomain
 queryDomain NameQuery {queryTLD, queryLabel, querySub} =
   SimplexDomain {nameTLD = queryTLD, domain = label, subDomain = querySub}
@@ -1663,23 +1662,20 @@ instance Encoding NameQuery where
     (queryTLD, queryLabel, EncList querySub) <- smpP
     pure NameQuery {queryTLD, queryLabel, querySub}
 
--- | US cents. Rounded up wherever the registry's unit does not divide evenly,
--- so a quote is never below what is charged; the exact figure is settled on
--- chain at registration.
+-- | US cents, rounded up where the registry's unit does not divide evenly, so
+-- a quote is never below what is charged. The exact price is settled on chain.
 newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, ToJSON, FromJSON)
+  deriving newtype (Encoding)
 
--- | What the registry holds for a name. A TLD with no registrar or no price
--- oracle configured is not a case here - it is ERR NAME RESOLVER, because a
--- name that cannot be dated or priced is not one this router can report on.
+-- | What the registry holds for a name. A name that cannot be dated or priced
+-- is not a case here: the router answers ERR NAME RESOLVER instead.
 data NameRegistration
-  = -- | Held by someone. A registered name always resolves: where its owner set
-    -- no records the record is still present, every field unset and nrResolver
-    -- the zero address, so "taken until <date>" stays answerable.
+  = -- | Held by someone. Always carries a record: where the owner set none,
+    -- every field is unset and the resolver address is zero.
     NRRegistered
       { -- | unix seconds the registration runs out. Absent only from a v20/v21
-        -- router, whose answer carried the record and nothing else.
+        -- router, whose answer carried the record alone.
         expires :: Maybe SystemSeconds,
         -- | unix seconds, > expires: until here only the owner may renew
         graceUntil :: Maybe SystemSeconds,
@@ -1691,14 +1687,12 @@ data NameRegistration
     NRAvailable
       { pricing :: NamePricing,
         -- | while set, the name also costs a surcharge above `pricing` that
-        -- decays to nothing at this time. The surcharge itself is deliberately
-        -- not carried: it changes continuously, so it cannot be an in-app
-        -- purchase price. A client counts down to the ordinary price instead.
+        -- decays to nothing at this time. The surcharge itself is not carried:
+        -- it changes continuously, so it cannot be quoted as a price.
         auctionUntil :: Maybe SystemSeconds
       }
-  | -- | Held back by the registry and not registered. No price: what it costs,
-    -- and whether it can be had at all, is a conversation with SimpleX. This is
-    -- also why a reserved name never frees up on its own.
+  | -- | Held back by the registry and not registered. No price: it is not for
+    -- sale at the registry's price.
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
@@ -1722,21 +1716,14 @@ instance Encoding NameRegistration where
       _ -> fail "bad NameRegistration"
 
 -- | Enough to price the name locally. The client knows the label, so it knows
--- both which tier applies and whether the label is long enough - neither of
--- which the router can see behind a hash.
---
---   price len duration = fromMaybe basePrice (M.lookup len rentPrices)
---                          * duration `div` 31536000
---
--- The registry's minimum registration is 28 days, a contract constant rather
--- than a per-deployment value, so it is specified rather than sent.
+-- which tier applies and whether the label is long enough; the router, behind a
+-- hash, knows neither. The formula is in protocol/simplex-messaging.md.
 data NamePricing = NamePricing
-  { -- | US cents per year for the label lengths the registry prices specially.
-    -- Lengths below minLabelLength are absent, being unregistrable.
+  { -- | US cents per year, for the lengths the registry prices specially
     rentPrices :: Map Int USDCents,
-    -- | US cents per year for every length not in rentPrices.
+    -- | US cents per year for every other length
     basePrice :: USDCents,
-    -- | characters: the registry refuses shorter, so the client must check it.
+    -- | characters; the registry refuses shorter labels
     minLabelLength :: Int
   }
   deriving (Eq, Show)
@@ -1754,16 +1741,14 @@ instance Encoding NamePricing where
       tierMap :: [(Word16, USDCents)] -> Map Int USDCents
       tierMap = M.fromList . map (\(len, price) -> (fromIntegral len, price))
 
--- | Why the registry holds a name back. A reason this version has no word for
--- keeps its own word rather than losing the reservation.
+-- | Why the registry holds a name back.
 data NameReservedReason
-  = -- | held for SimpleX. On chain this is 1, which is also what the boolean
-    -- reservedNames of the first .testing deployment set.
+  = -- | held for SimpleX
     NRRInternal
   | NRRTrademark
   | NRRCommunity
   | -- | a reason added to the registry after this version: still reserved, and
-    -- carrying its own word so a later version can name it
+    -- carries its own word so a later version can name it
     NRRUnknown Text
   deriving (Eq, Show)
 
@@ -1774,22 +1759,19 @@ instance StrEncoding NameReservedReason where
     NRRTrademark -> "trademark"
     NRRCommunity -> "community"
     NRRUnknown t -> encodeUtf8 t
-  strP = parseReservedReason . safeDecodeUtf8 <$> A.takeTill (== ' ')
+  strP = reservedReasonOf . safeDecodeUtf8 <$> A.takeTill (== ' ')
+    where
+      reservedReasonOf = \case
+        "internal" -> NRRInternal
+        "trademark" -> NRRTrademark
+        "community" -> NRRCommunity
+        t -> NRRUnknown t
 
 instance Encoding NameReservedReason where
   smpEncode = strEncode
   smpP = strP
 
--- | Keeps its word rather than losing the reservation.
-parseReservedReason :: Text -> NameReservedReason
-parseReservedReason = \case
-  "internal" -> NRRInternal
-  "trademark" -> NRRTrademark
-  "community" -> NRRCommunity
-  t -> NRRUnknown t
-
--- | What a v20/v21 router's answer amounts to: it resolves, and nothing else
--- was said about it.
+-- | A v20/v21 router's answer: the name resolves, and nothing else was said.
 oldRegistration :: NameRecord -> NameRegistration
 oldRegistration nameRecord =
   NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}

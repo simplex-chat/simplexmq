@@ -1080,9 +1080,8 @@ directResolveName c nm name
   where
     v = thVersion (thParams c)
 
--- | The record must name the name that was asked for. A hashed query does not
--- tell the router which name it is, so the record's own name is the router's
--- word until the client checks it here.
+-- | The record must name the name that was asked for: a hashed query does not
+-- tell the router which name it is, so the router is not trusted for it.
 resolvedName :: SimplexDomain -> NameRegistration -> Bool
 resolvedName d = \case
   NRRegistered {nameRecord} -> T.toLower (nrName nameRecord) == fullDomainName d
