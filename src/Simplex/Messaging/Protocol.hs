@@ -85,6 +85,7 @@ module Simplex.Messaging.Protocol
     USDCents (..),
     NameReservedReason (..),
     parseReservedReason,
+    oldRegistration,
     NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
@@ -253,6 +254,8 @@ import Data.Kind
 import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.String
 import Data.Text (Text)
@@ -1657,27 +1660,35 @@ instance Encoding NameRegistration where
 -- both which tier applies and whether the label is long enough - neither of
 -- which the router can see behind a hash.
 --
---   price len duration = rentPrices !! min (len - 1) (length rentPrices - 1)
+--   price len duration = fromMaybe basePrice (M.lookup len rentPrices)
 --                          * duration `div` 31536000
 --
 -- The registry's minimum registration is 28 days, a contract constant rather
 -- than a per-deployment value, so it is specified rather than sent.
 data NamePricing = NamePricing
-  { -- | US cents per year by label length: first entry a one-letter label, last
-    -- covering every longer one.
-    rentPrices :: [USDCents],
+  { -- | US cents per year for the label lengths the registry prices specially.
+    -- Lengths below minLabelLength are absent, being unregistrable.
+    rentPrices :: Map Int USDCents,
+    -- | US cents per year for every length not in rentPrices.
+    basePrice :: USDCents,
     -- | characters: the registry refuses shorter, so the client must check it.
     minLabelLength :: Int
   }
   deriving (Eq, Show)
 
 instance Encoding NamePricing where
-  smpEncode NamePricing {rentPrices, minLabelLength} =
-    smpEncodeList rentPrices <> smpEncode (fromIntegral minLabelLength :: Word16)
+  smpEncode NamePricing {rentPrices, basePrice, minLabelLength} =
+    smpEncodeList (map tier $ M.toList rentPrices) <> smpEncode (basePrice, w16 minLabelLength)
+    where
+      tier (len, price) = (w16 len, price)
+      w16 = fromIntegral :: Int -> Word16
   smpP = do
-    rentPrices <- smpListP
-    minLen <- smpP
-    pure NamePricing {rentPrices, minLabelLength = fromIntegral (minLen :: Word16)}
+    tiers <- smpListP
+    (basePrice, minLen) <- smpP
+    pure NamePricing {rentPrices = tierMap tiers, basePrice, minLabelLength = fromIntegral (minLen :: Word16)}
+    where
+      tierMap :: [(Word16, USDCents)] -> Map Int USDCents
+      tierMap = M.fromList . map (\(len, price) -> (fromIntegral len, price))
 
 -- | Why the registry holds a name back. A reason this version has no word for
 -- keeps its own word rather than losing the reservation.
