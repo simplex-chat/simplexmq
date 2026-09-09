@@ -228,7 +228,7 @@ import Data.Type.Equality
 import Data.Typeable (Typeable)
 import Data.Word (Word16, Word32)
 import Simplex.FileTransfer.Description
-import Simplex.FileTransfer.Protocol (FileParty (..))
+import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime)
 import Simplex.FileTransfer.Transport (XFTPErrorType)
 import Simplex.FileTransfer.Types (FileErrorType)
 import Simplex.Messaging.Agent.QueryString
@@ -444,7 +444,7 @@ data AEvent (e :: AEntity) where
   RFERR :: AgentErrorType -> AEvent AERcvFile
   RFWARN :: AgentErrorType -> AEvent AERcvFile
   SFPROG :: Int64 -> Int64 -> AEvent AESndFile
-  SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> AEvent AESndFile
+  SFDONE :: ValidFileDescription 'FSender -> [ValidFileDescription 'FRecipient] -> Maybe GrantedStorageTime -> AEvent AESndFile
   SFERR :: AgentErrorType -> AEvent AESndFile
   SFWARN :: AgentErrorType -> AEvent AESndFile
 
