@@ -284,16 +284,19 @@ def read_oracle_prices(controller: str, oracle: str):
 
 def decode_letter_prices(oracle: str):
     """`price1Letter()`..`price6Letter()`, in attoUSD per second. Quotes round
-    up, so one is never below what the registry charges. Six and above is the
-    base price, as StablePriceOracle charges it."""
-    tiers = {
-        n: ceil_div(
-            decode_uint(eth_call(oracle, selector(f"price{n}Letter()"))) * SECONDS_PER_YEAR,
-            ATTO_PER_CENT,
-        )
-        for n in range(1, 7)
-    }
-    return tiers.pop(6), tiers
+    up, so one is never below what the registry charges. An oracle built before
+    the six-letter tier stops at five, and charges its highest tier for anything
+    longer, which is what basePrice means here."""
+    tiers = {}
+    for n in range(1, 7):
+        try:
+            rate = decode_uint(eth_call(oracle, selector(f"price{n}Letter()")))
+        except RuntimeError:
+            if n <= 5:
+                raise
+            break
+        tiers[n] = ceil_div(rate * SECONDS_PER_YEAR, ATTO_PER_CENT)
+    return tiers.pop(max(tiers)), tiers
 
 
 def ceil_div(a: int, b: int) -> int:
