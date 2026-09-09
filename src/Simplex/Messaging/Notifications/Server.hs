@@ -660,7 +660,7 @@ pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(Device
     (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
   where
-    pushWorkersPerServer = 8
+    pushWorkersPerServer = 64
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
