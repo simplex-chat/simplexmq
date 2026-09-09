@@ -98,7 +98,7 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError, transportHost')
 import Simplex.Messaging.Client.Agent (AgentLeakStats (..), OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getAgentLeakStats, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -1579,7 +1579,9 @@ client
                 Right r -> PRES r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
                   PCEProtocolError {} -> inc own pSuccesses
-                  _ -> inc own pErrorsOther
+                  _ -> do
+                    logWarn $ "Error forwarding to relay: " <> decodeLatin1 (strEncode $ transportHost' smp) <> " own=" <> tshow own <> " " <> tshow e
+                    inc own pErrorsOther
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
