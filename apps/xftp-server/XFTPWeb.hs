@@ -58,7 +58,7 @@ xftpSubsts XFTPServerConfig {fileExpiration, logStatsInterval, allowNewFiles, ne
   [("smpConfig", Nothing), ("xftpConfig", Just "y")] <> substConfig <> serverInfoSubsts simplexmqSource information <> [("onionHost", strEncode <$> onionHost), ("iniFileName", Just "file-server.ini")]
   where
     substConfig =
-      [ ("fileExpiration", Just $ maybe "Never" (fromString . timedTTLText . ttl) fileExpiration),
+      [ ("fileExpiration", Just . fromString . timedTTLText . ttl $ fileExpiration),
         ("statsEnabled", Just . yesNo $ isJust logStatsInterval),
         ("newUploadsAllowed", Just . yesNo $ allowNewFiles),
         ("basicAuthEnabled", Just . yesNo $ isJust newFileBasicAuth)

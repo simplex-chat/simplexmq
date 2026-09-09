@@ -63,6 +63,7 @@ initServers =
     { smp = M.fromList [(1, testSMPServers)],
       ntf = [testNtfServer],
       xftp = userServers [testXFTPServer],
+      entitlements = M.empty,
       netCfg = defaultNetworkConfig,
       useServices = M.empty,
       presetDomains = [],

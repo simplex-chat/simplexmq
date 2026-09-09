@@ -81,7 +81,7 @@ getXFTPServerClient XFTPClientAgent {xftpClients, startedAt, config} srv = do
     connectClient =
       ExceptT $
         first (XFTPClientAgentError srv)
-          <$> getXFTPClient (1, srv, Nothing) (xftpConfig config) [] startedAt clientDisconnected
+          <$> getXFTPClient (1, srv, Nothing) (xftpConfig config) [] startedAt (\_ -> pure Nothing) clientDisconnected
 
     clientDisconnected :: XFTPClient -> IO ()
     clientDisconnected _ = do
