@@ -11,7 +11,10 @@
 
 module RSLVTests (rslvTests) where
 
+import Control.Concurrent (threadDelay)
+import Control.Monad (forM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
+import Data.IORef (readIORef)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -82,6 +85,23 @@ rslvTests = do
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
+  describe "RSLV resource use" $
+    xit "one connection must not fan out to many concurrent resolver requests" testRslvFanOut
+
+testRslvFanOut :: IO ()
+testRslvFanOut =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ const $
+      testSMPClient @TLS $ \(h@THandle {params} :: THandleSMP TLS 'TClient) -> do
+        let k = 64 :: Int
+            globalCap = 8 :: Int
+        forM_ [1 .. k] $ \i -> do
+          let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId (B.pack $ "fan" <> show i), NoEntity, Cmd SResolver (RSLV (domain "alice.simplex")))
+          [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
+          pure ()
+        threadDelay 800000
+        inFlight <- length . filter ((== ["resolve"]) . take 1) <$> readIORef reqs
+        inFlight `shouldSatisfy` (<= globalCap)
 
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =

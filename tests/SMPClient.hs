@@ -346,6 +346,17 @@ proxyCfgShortTimeout =
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
 
+-- Proxy whose forward (RFWD) response deadline is 1us: every forward to the relay times out
+-- while the initial relay connect (tcpConnectTimeout) is unaffected, so a session is established
+-- and then every forward on it fails with a response timeout.
+proxyCfgForwardTimeout :: AServerConfig
+proxyCfgForwardTimeout =
+  updateCfg proxyCfg $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+        nt = NetworkTimeout {backgroundTimeout = 1, interactiveTimeout = 1}
+     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
+
 withSmpServerStoreMsgLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =
   withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
