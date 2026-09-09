@@ -4,9 +4,9 @@ Found with `bench/MemBench.hs` using a proxy-plus-relay topology and a transport
 and drops replies. Journal store and PostgreSQL gave the same numbers except where a row says
 otherwise.
 
-Eleven findings: three proxy-path memory leaks (Leak 1-3), two `forkClient` bugs (Bug 3-4), an
-unauthenticated resolver fan-out (Bug 5), and five PostgreSQL-backend costs (Bug 6-10). The TLS/TCP
-stack is clean (last two sections).
+Twelve findings: three proxy-path memory leaks (Leak 1-3), two `forkClient` bugs (Bug 3-4), an
+unauthenticated resolver fan-out (Bug 5), five PostgreSQL-backend costs (Bug 6-10), and a stuck proxy
+session (Bug 11). The TLS/TCP stack is clean (last two sections).
 
 ## Overview
 
@@ -23,8 +23,9 @@ stack is clean (last two sections).
 | Bug 8 | Service handshake grows `services` table | Client, pre-auth | postgres | code review | present |
 | Bug 9 | Prometheus scrape scans everything | internal, periodic | postgres | code review | present |
 | Bug 10 | Subscription churn serialized | authenticated SUB | all | code review | present |
+| Bug 11 | Proxy never drops a stuck relay session | Client, pre-auth (PRXY) | all | reproduced | present |
 
-Leak 1, Leak 2, Leak 3, and Bug 3 share one entry point. `PRXY` is unauthenticated unless
+Leak 1, Leak 2, Leak 3, Bug 3, and Bug 11 share one entry point. `PRXY` is unauthenticated unless
 `newQueueBasicAuth` is set (`Server.hs:1534`) and it names an arbitrary destination, so a client can
 point the proxy at a relay it controls.
 
@@ -437,6 +438,40 @@ writes to `subQ` (`Server.hs:1845`), so subscription throughput does not scale w
 ### Fix
 
 Shard the subscriber map, or batch `subQ` events per client.
+
+---
+
+## Bug 11: proxy never drops a stuck relay session
+
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth via PRXY |
+| Trigger | relay stops answering forwards once the session is open |
+| Cost | forwards keep failing, no recovery until the ~20 min monitor drop |
+| Evidence | `testProxyForwardTimeoutStuckSession` (pending spec) |
+| Status | present |
+
+### How it works
+
+Shares Leak 1's mechanism. The forward path never calls `enablePings`, so a dead relay session is
+dropped only by `monitor` (`Client.hs:668`), which closes the client when `timeoutErrorCount >=
+smpPingCount` (3, `Client.hs:439`) and the last receive is older than `recoverWindow` (900s,
+`Client.hs:685`). `receive` (`Client.hs:663`) resets both counters on any inbound byte.
+
+### The bug
+
+A broken session is not dropped, so the proxy keeps forwarding to it and every forward fails. This is
+the reported symptom: `Error forwarding to relay ... PCEResponseTimeout` continued after the relay was
+restarted, because the proxy held the old session instead of reconnecting. Reproduced by
+`testProxyForwardTimeoutStuckSession` (`SMPProxyTests.hs:499`): 10 forwards on one timed-out session
+expecting a `PROXY NO_SESSION` drop, but all 10 return `BROKER TIMEOUT`. Unlike Leak 1 this is
+availability, not memory; the same persistent session is what makes Leak 1 unbounded.
+
+### Fix
+
+Drop the relay session after a bounded number of forward timeouts so the next forward returns
+`NO_SESSION` and the agent reconnects, instead of waiting out the 900s receive window. Enabling pings
+on the forward path would also let `monitor` detect the dead session.
 
 ---
 
