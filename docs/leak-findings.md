@@ -4,6 +4,7 @@ Found with `bench/MemBench.hs`, extended with a proxy plus relay topology and a 
 adds latency and drops replies. Measured on both the journal store and PostgreSQL, same results.
 
 Three leaks on the proxy path, all client reachable. Two related bugs. TLS/TCP stack is clean.
+Leak 3 has since been fixed in master by #1839 (`7d0820dd`); Leak 1 and Leak 2 remain.
 
 All three leaks are reached the same way: `PRXY` is unauthenticated unless `newQueueBasicAuth` is
 set (`Server.hs:1534`) and names an arbitrary destination, so a client can point the proxy at a
@@ -95,6 +96,12 @@ Check the map on a timer and remove entries past their expiry. The timestamp is 
 ---
 
 ## Leak 3: the proxy's relay message queue has no reader
+
+> [!TIP]
+> Fixed in master by #1839 (`7d0820dd`), which took the approach proposed below. `msgQ` is now
+> `Maybe (TBQueue ...)` (`Client/Agent.hs:143`), the proxy agent is built with `msgQSize = Nothing`
+> (`Server/Main.hs:607`), and `sendMsg` logs late replies instead of enqueuing them when there is no
+> queue (`Client.hs:722`). The analysis below is kept for context.
 
 ### Issue
 
