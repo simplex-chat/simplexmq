@@ -676,6 +676,69 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(body["basePrice"], self.BASE)
 
 
+class EnsOracleTests(unittest.TestCase):
+    """.testing runs an ENS-shaped oracle: it prices in attoUSD per second and
+    charges a premium on lapsed names that it does not expose."""
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
+    GRACE = 90 * 86400
+    MIN_LENGTH = 6
+
+    def setUp(self):
+        self._saved = (snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now)
+        snrc.REGISTRIES = {"testing": self.REGISTRY}
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+        self.now = int(time.time())
+        snrc.chain_now = lambda: self.now
+        snrc._constants.clear()
+
+    def tearDown(self):
+        (snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now) = self._saved
+
+    def _chain(self, expires, letter_cents=0):
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("nameExpires(uint256)")):
+                return "0x" + snrc.encode_uint(expires)
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(self.GRACE)
+            if data.startswith(snrc.selector("reservedNames(bytes32)")):
+                return "0x" + snrc.encode_uint(0)
+            if data.startswith(snrc.selector("minCharLength()")):
+                return "0x" + snrc.encode_uint(self.MIN_LENGTH)
+            if data.startswith(snrc.selector("prices()")):
+                if to == self.CONTROLLER:
+                    return "0x" + snrc.encode_uint(int(self.ORACLE, 16))
+                raise RuntimeError("eth_call returned 0x")  # no prices() on this oracle
+            for n in range(1, 7):
+                if data.startswith(snrc.selector(f"price{n}Letter()")):
+                    rate = letter_cents * snrc.ATTO_PER_CENT // snrc.SECONDS_PER_YEAR
+                    return "0x" + snrc.encode_uint(rate)
+            return self.fail("unexpected call " + data[:10])
+
+        return eth_call
+
+    def test_a_never_registered_name_is_priced_from_the_letter_curve(self):
+        snrc.eth_call = self._chain(0)
+        reg = snrc.name_status("ghost.testing")
+        self.assertEqual(reg["status"], "unregistered")
+        self.assertEqual(reg["basePrice"], 0)
+        self.assertEqual(reg["minLabelLength"], self.MIN_LENGTH)
+
+    def test_a_non_zero_letter_curve_converts_to_cents_per_year(self):
+        snrc.eth_call = self._chain(0, letter_cents=1200)
+        self.assertEqual(snrc.name_status("ghost.testing")["basePrice"], 1200)
+
+    def test_a_lapsed_name_is_not_priced_because_the_premium_is_unreadable(self):
+        snrc.eth_call = self._chain(self.now - self.GRACE - 1)
+        reg = snrc.name_status("acme.testing")
+        self.assertEqual(reg["status"], "expired")
+        self.assertNotIn("basePrice", reg)
+
+
 class ErrorCodeTests(unittest.TestCase):
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"

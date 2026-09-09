@@ -257,22 +257,55 @@ def read_pricing_params(tld: str):
         return None
 
 
+SECONDS_PER_YEAR = 31536000
+ATTO_PER_CENT = 10**16
+
+
 def read_oracle_prices(controller: str, oracle: str):
-    """The oracle keeps the curve in US cents per year, which is the unit the
-    SMP protocol carries, so nothing is converted here."""
-    base, tiers = decode_prices(eth_call(oracle, selector("prices()")))
+    """SimplexPriceOracle keeps the curve in US cents per year, the unit the SMP
+    protocol carries. An ENS-shaped oracle prices in attoUSD per second and
+    charges a premium on lapsed names that it does not expose, so a quote from
+    it is only safe for a name that was never registered."""
+    try:
+        base, tiers = decode_prices(eth_call(oracle, selector("prices()")))
+        premium_unknown = False
+    except RuntimeError:
+        base, tiers = decode_letter_prices(oracle)
+        premium_unknown = True
     min_len = decode_uint(eth_call(controller, selector("minCharLength()")))
     return {
         # lengths the registry refuses are left out rather than priced at zero
         "rentPrices": {n: c for n, c in tiers.items() if n >= min_len},
         "basePrice": base,
         "minLabelLength": min_len,
+        "_premiumUnknown": premium_unknown,
     }
+
+
+def decode_letter_prices(oracle: str):
+    """`price1Letter()`..`price6Letter()`, in attoUSD per second. Quotes round
+    up, so one is never below what the registry charges. Six and above is the
+    base price, as StablePriceOracle charges it."""
+    tiers = {
+        n: ceil_div(
+            decode_uint(eth_call(oracle, selector(f"price{n}Letter()"))) * SECONDS_PER_YEAR,
+            ATTO_PER_CENT,
+        )
+        for n in range(1, 7)
+    }
+    return tiers.pop(6), tiers
+
+
+def ceil_div(a: int, b: int) -> int:
+    return -(-a // b)
 
 
 def decode_prices(hex_data: str):
     """`prices()` returns the base price and the lengths priced differently."""
     raw = bytes.fromhex(hex_data[2:] if hex_data.startswith("0x") else hex_data)
+    # a short answer is not a curve: decoding it would quote every name as free
+    if len(raw) < 96:
+        raise RuntimeError("prices(): short response")
     base = int.from_bytes(raw[:32], "big")
     at = int.from_bytes(raw[32:64], "big")
     count = int.from_bytes(raw[at:at + 32], "big")
@@ -327,8 +360,10 @@ def name_status(name: str):
     }
     if status in ("unregistered", "expired"):
         pricing = pricing_params(tld)
-        if pricing:
-            out.update(pricing)
+        # a lapsed name may carry a premium this resolver cannot read, and a
+        # quote without it would be below what the registry charges
+        if pricing and not (status == "expired" and pricing["_premiumUnknown"]):
+            out.update({k: v for k, v in pricing.items() if not k.startswith("_")})
     return out
 
 
