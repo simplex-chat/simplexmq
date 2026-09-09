@@ -549,10 +549,9 @@ class ReservedReasonTests(unittest.TestCase):
         self.assertEqual(body["reason"], "reserved for SimpleX")
 
 
-class AuctionTests(unittest.TestCase):
-    """Past grace anyone may register the name, but at a surcharge until the
-    oracle's window closes. `auctionUntil` dates that window; the surcharge
-    itself never travels."""
+class PricingTests(unittest.TestCase):
+    """The oracle keeps the curve in US cents per year, and a lapsed name costs
+    the ordinary price: this registry runs no auction."""
 
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
@@ -560,11 +559,8 @@ class AuctionTests(unittest.TestCase):
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
 
     GRACE = 90 * 86400
-    # The values .testing is deployed with: $100M, halving daily for 21 days.
-    START_PREMIUM = 10 ** 26
-    TOTAL_DAYS = 21
-    # what the oracle charges per year, in US cents, by label length
-    PRICES = {1: 64000, 2: 16000, 3: 1600, 4: 800, 5: 500, 6: 200}
+    BASE = 200
+    EXCEPTIONS = {1: 64000, 2: 16000, 3: 1600, 4: 800, 5: 500}
     MIN_LENGTH = 3
 
     def setUp(self):
@@ -591,9 +587,14 @@ class AuctionTests(unittest.TestCase):
             snrc.chain_now,
         ) = self._saved
 
-    def _chain(self, expires, total_days=TOTAL_DAYS, oracle=None, reserved=0):
-        """Answers as the controller and oracle do, quoting rent in attoUSD per
-        second as the oracle does."""
+    def _prices_return(self):
+        words = [snrc.encode_uint(self.BASE), snrc.encode_uint(0x40),
+                 snrc.encode_uint(len(self.EXCEPTIONS))]
+        for length, cents in self.EXCEPTIONS.items():
+            words += [snrc.encode_uint(length), snrc.encode_uint(cents)]
+        return "0x" + "".join(words)
+
+    def _chain(self, expires, oracle=None, reserved=0):
         oracle = self.ORACLE if oracle is None else oracle
         self.oracle_calls = []
 
@@ -604,64 +605,37 @@ class AuctionTests(unittest.TestCase):
                 return "0x" + snrc.encode_uint(self.GRACE)
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
                 return "0x" + snrc.encode_uint(reserved)
-            if data.startswith(snrc.selector("prices()")):
-                self.assertEqual(to, self.CONTROLLER)
-                return "0x" + snrc.encode_uint(int(oracle, 16))
             if data.startswith(snrc.selector("minCharLength()")):
                 self.assertEqual(to, self.CONTROLLER)
                 return "0x" + snrc.encode_uint(self.MIN_LENGTH)
-            self.oracle_calls.append(data[:10])
-            self.assertEqual(to, oracle)
-            for n, cents in self.PRICES.items():
-                if data.startswith(snrc.selector(f"price{n}Letter()")):
-                    rate = cents * snrc.ATTO_PER_CENT // snrc.SECONDS_PER_YEAR
-                    return "0x" + snrc.encode_uint(rate)
-            if data.startswith(snrc.selector("startPremium()")):
-                return "0x" + snrc.encode_uint(self.START_PREMIUM)
-            if data.startswith(snrc.selector("endValue()")):
-                return "0x" + snrc.encode_uint(self.START_PREMIUM >> total_days)
+            if data.startswith(snrc.selector("prices()")):
+                if to == self.CONTROLLER:
+                    return "0x" + snrc.encode_uint(int(oracle, 16))
+                self.oracle_calls.append(data[:10])
+                self.assertEqual(to, oracle)
+                return self._prices_return()
             return self.fail("unexpected call " + data[:10])
 
         return eth_call
 
-    def _lapsed(self, days_into_auction):
-        """An expiry whose grace ended `days_into_auction` days ago. The extra
+    def _lapsed(self, days_past_grace):
+        """An expiry whose grace ended `days_past_grace` days ago. The extra
         second clears the boundary, which counts as still in grace."""
-        return self.now - self.GRACE - 1 - days_into_auction * 86400
+        return self.now - self.GRACE - 1 - days_past_grace * 86400
 
-    def test_a_name_just_past_grace_is_expired_and_dates_the_auction(self):
-        expires = self._lapsed(0)
-        snrc.eth_call = self._chain(expires)
-        reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["status"], "expired")
-        self.assertEqual(reg["graceEnds"], expires + self.GRACE)
-        self.assertEqual(
-            reg["auctionUntil"], expires + self.GRACE + self.TOTAL_DAYS * 86400
-        )
-
-    def test_the_window_lasts_as_long_as_the_premium_takes_to_decay(self):
-        expires = self._lapsed(0)
-        snrc.eth_call = self._chain(expires, total_days=10)
-        reg = snrc.name_status("acme.testing")
-        self.assertEqual(reg["auctionUntil"], expires + self.GRACE + 10 * 86400)
-
-    def test_the_prices_are_the_oracles_rates_in_cents_per_year(self):
+    def test_the_prices_are_the_oracles_cents_per_year(self):
         snrc.eth_call = self._chain(self._lapsed(0))
         reg = snrc.name_status("acme.testing")
-        # 1 and 2 are below minCharLength; the 6-letter tier is the base price
+        # 1 and 2 are below minCharLength
         self.assertEqual(reg["rentPrices"], {3: 1600, 4: 800, 5: 500})
-        self.assertEqual(reg["basePrice"], 200)
+        self.assertEqual(reg["basePrice"], self.BASE)
         self.assertEqual(reg["minLabelLength"], self.MIN_LENGTH)
 
-    def test_past_the_window_prices_are_back_to_normal(self):
-        snrc.eth_call = self._chain(self._lapsed(self.TOTAL_DAYS))
+    def test_a_lapsed_name_costs_the_ordinary_price(self):
+        snrc.eth_call = self._chain(self._lapsed(0))
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["status"], "expired")
         self.assertIsNone(reg["auctionUntil"])
-
-    def test_a_zero_day_window_switches_the_auction_off(self):
-        snrc.eth_call = self._chain(self._lapsed(0), total_days=0)
-        self.assertIsNone(snrc.name_status("acme.testing")["auctionUntil"])
 
     def test_a_controller_with_no_oracle_leaves_the_name_merely_expired(self):
         snrc.eth_call = self._chain(self._lapsed(0), oracle=snrc.ZERO_ADDR)
@@ -673,8 +647,6 @@ class AuctionTests(unittest.TestCase):
         self.assertEqual(self.oracle_calls, [])
 
     def test_the_oracle_curve_is_read_once_not_per_query(self):
-        """The curve changes only on a retune, so it is read once rather than
-        on every query."""
         snrc.eth_call = self._chain(self._lapsed(1))
         snrc.name_status("acme.testing")
         seen_first = len(self.oracle_calls)
@@ -687,22 +659,12 @@ class AuctionTests(unittest.TestCase):
         self.assertEqual(reg["status"], "expired")
         self.assertEqual(reg["reasonCode"], "trademark")
 
-    def test_resolve_reports_the_prices_and_the_auction_deadline(self):
-        expires = self._lapsed(1)
-        snrc.eth_call = self._chain(expires)
+    def test_resolve_reports_the_prices(self):
+        snrc.eth_call = self._chain(self._lapsed(1))
         status, body = snrc.resolve("acme.testing")
         self.assertEqual(status, 410)
         self.assertEqual(body["status"], "expired")
-        self.assertEqual(body["basePrice"], 200)
-        self.assertEqual(
-            body["auctionUntil"], expires + self.GRACE + self.TOTAL_DAYS * 86400
-        )
-
-    def test_an_expired_name_past_the_window_has_no_auction_deadline(self):
-        snrc.eth_call = self._chain(self._lapsed(self.TOTAL_DAYS))
-        status, body = snrc.resolve("acme.testing")
-        self.assertEqual(status, 410)
-        self.assertEqual(body["status"], "expired")
+        self.assertEqual(body["basePrice"], self.BASE)
         self.assertIsNone(body["auctionUntil"])
 
     def test_a_hashed_query_is_priced_too(self):
@@ -711,8 +673,7 @@ class AuctionTests(unittest.TestCase):
         snrc.eth_call = self._chain(self._lapsed(0))
         _, body = snrc.resolve(hashed + ".testing")
         self.assertEqual(body["status"], "expired")
-        self.assertEqual(body["basePrice"], 200)
-
+        self.assertEqual(body["basePrice"], self.BASE)
 
 
 class ErrorCodeTests(unittest.TestCase):

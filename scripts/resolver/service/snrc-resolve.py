@@ -125,8 +125,6 @@ COIN_DOT = 354
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
-ATTO_PER_CENT = 10**16
-SECONDS_PER_YEAR = 31536000
 
 
 # ---------- RPC + ABI helpers (mirrors ens-lookup.py shape) ----------
@@ -260,41 +258,30 @@ def read_pricing_params(tld: str):
 
 
 def read_oracle_prices(controller: str, oracle: str):
-    # The oracle prices rent in attoUSD per second. Quotes round up, so one is
-    # never below what the registry charges. An oracle built before the
-    # six-letter tier stops at five, and the contract then charges price5Letter
-    # for anything longer - which is what basePrice means here.
-    tiers = {}
-    for n in range(1, 7):
-        try:
-            rate = decode_uint(eth_call(oracle, selector(f"price{n}Letter()")))
-        except RuntimeError:
-            if n <= 5:
-                raise
-            break
-        tiers[n] = ceil_div(rate * SECONDS_PER_YEAR, ATTO_PER_CENT)
-    base = tiers.pop(max(tiers))
+    """The oracle keeps the curve in US cents per year, which is the unit the
+    SMP protocol carries, so nothing is converted here."""
+    base, tiers = decode_prices(eth_call(oracle, selector("prices()")))
     min_len = decode_uint(eth_call(controller, selector("minCharLength()")))
     return {
         # lengths the registry refuses are left out rather than priced at zero
         "rentPrices": {n: c for n, c in tiers.items() if n >= min_len},
         "basePrice": base,
         "minLabelLength": min_len,
-        # not sent: only used to date the end of the surcharge window
-        "_auctionDays": auction_days(oracle),
     }
 
 
-def auction_days(oracle: str) -> int:
-    """The surcharge halves daily from startPremium until it falls below
-    endValue, so the window is log2(startPremium / endValue) days."""
-    start = decode_uint(eth_call(oracle, selector("startPremium()")))
-    end = decode_uint(eth_call(oracle, selector("endValue()")))
-    return (start // end).bit_length() - 1 if end and start > end else 0
-
-
-def ceil_div(a: int, b: int) -> int:
-    return -(-a // b)
+def decode_prices(hex_data: str):
+    """`prices()` returns the base price and the lengths priced differently."""
+    raw = bytes.fromhex(hex_data[2:] if hex_data.startswith("0x") else hex_data)
+    base = int.from_bytes(raw[:32], "big")
+    at = int.from_bytes(raw[32:64], "big")
+    count = int.from_bytes(raw[at:at + 32], "big")
+    tiers = {}
+    for i in range(count):
+        item = at + 32 + i * 64
+        length = int.from_bytes(raw[item:item + 32], "big")
+        tiers[length] = int.from_bytes(raw[item + 32:item + 64], "big")
+    return base, tiers
 
 
 def name_status(name: str):
@@ -341,12 +328,7 @@ def name_status(name: str):
     if status in ("unregistered", "expired"):
         pricing = pricing_params(tld)
         if pricing:
-            out.update({k: v for k, v in pricing.items() if not k.startswith("_")})
-            # past grace the name is registrable again, but at a surcharge until
-            # the oracle's window closes; the surcharge itself never travels
-            ends = (expires + grace + pricing["_auctionDays"] * 86400) if expires else 0
-            if status == "expired" and ends > now:
-                out["auctionUntil"] = ends
+            out.update(pricing)
     return out
 
 
