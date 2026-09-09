@@ -1,97 +1,128 @@
 # SMP server leak findings
 
-Found with `bench/MemBench.hs`, extended with a proxy plus relay topology and a transport that
-adds latency and drops replies. Measured on both the journal store and PostgreSQL, same results.
+Found with `bench/MemBench.hs` using a proxy-plus-relay topology and a transport that adds latency
+and drops replies. Journal store and PostgreSQL gave the same numbers except where a row says
+otherwise.
 
-Three leaks on the proxy path, all client reachable. Two related bugs. TLS/TCP stack is clean.
-Leak 3 has since been fixed in master by #1839 (`7d0820dd`); Leak 1 and Leak 2 remain.
+Eleven findings: three proxy-path memory leaks (Leak 1-3), two `forkClient` bugs (Bug 3-4), an
+unauthenticated resolver fan-out (Bug 5), and five PostgreSQL-backend costs (Bug 6-10). The TLS/TCP
+stack is clean (last two sections).
 
-All three leaks are reached the same way: `PRXY` is unauthenticated unless `newQueueBasicAuth` is
-set (`Server.hs:1534`) and names an arbitrary destination, so a client can point the proxy at a
-relay it controls.
+## Overview
+
+| # | Issue | Reachable | Backend | Evidence | Status |
+| --- | --- | --- | --- | --- | --- |
+| Leak 1 | Forwarded commands not removed on timeout | Client, pre-auth (PRXY) | all | measured | present |
+| Leak 2 | Failed relay connects not cleared | Client, pre-auth (PRXY) | all | measured | present |
+| Leak 3 | Proxy relay queue has no reader | Client, pre-auth (PRXY) | all | measured | fixed, #1839 |
+| Bug 3 | Proxy concurrency limit does nothing | Client, pre-auth (PRXY) | all | measured | present |
+| Bug 4 | Stale `endThreads` entry on fast finish | Client, limited window | all | isolation only | present |
+| Bug 5 | RSLV resolver fan-out | Client, if `[NAMES]` on | all | measured | present |
+| Bug 6 | SEND is three DB transactions | authenticated SEND | postgres | code review | present |
+| Bug 7 | Per-transmission verify and DB lookup | Client, pre-auth | postgres | code review | present |
+| Bug 8 | Service handshake grows `services` table | Client, pre-auth | postgres | code review | present |
+| Bug 9 | Prometheus scrape scans everything | internal, periodic | postgres | code review | present |
+| Bug 10 | Subscription churn serialized | authenticated SUB | all | code review | present |
+
+Leak 1, Leak 2, Leak 3, and Bug 3 share one entry point. `PRXY` is unauthenticated unless
+`newQueueBasicAuth` is set (`Server.hs:1534`) and it names an arbitrary destination, so a client can
+point the proxy at a relay it controls.
 
 ---
 
 ## Leak 1: forwarded commands are never removed on timeout
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth via PRXY |
+| Trigger | relay replies to some forwards, drops others |
+| Cost | ~20 KiB per stuck forward, unbounded |
+| Measured | yes, 64 to 1280 entries over 20 min on one session |
+| Status | present |
 
-Entries go into `sentCommands` in `mkTransmission_` (`Client.hs:1418`). The only removal is in
-`processMsg` (`Client.hs:706`), which runs when a reply arrives. `getResponse` (`Client.hs:1383`)
-handles the timeout but never gets the map, so it cannot delete.
+### How it works
 
-Each entry holds the forwarded command: 16226 bytes for `RFWD`.
+When the agent forwards a command it stores the in-flight command in `sentCommands`, keyed by
+correlation id, so the reply can be matched later. The entry is added in `mkTransmission_`
+(`Client.hs:1414`) and removed in `processMsg` (`Client.hs:706`) when the reply arrives. Each `RFWD`
+entry holds the whole forwarded command, 16226 bytes (`Protocol.hs:319`).
 
-The session survives too. `monitor` (`Client.hs:668`) drops the client only when
-`timeoutErrorCount >= smpPingCount` and nothing has arrived for 900s, and `receive`
-(`Client.hs:663`) resets both on every inbound transmission.
+### The bug
+
+The timeout path, `getResponse` (`Client.hs:1378`), does not hold the map, so a forward that times
+out is never removed. The session does not die either: `monitor` (`Client.hs:668`) closes the client
+only after `timeoutErrorCount >= smpPingCount` with nothing received for 900s, and `receive`
+(`Client.hs:663`) resets both counters on any inbound transmission.
 
 ### Impact
 
-About 20 KiB per unanswered forward. How long it is held depends on how the relay misbehaves.
+About 20 KiB per unanswered forward. How long it is held depends on the relay.
 
-| relay behaviour | result |
+| Relay behaviour | Result |
 | --- | --- |
 | slow but still replies | not a leak here, the late reply deletes the entry (but see Leak 3) |
 | goes fully silent | bounded, `monitor` closes the client at ~20 min |
-| replies to some, drops others | **unbounded** |
+| replies to some, drops others | unbounded |
 
-The third case is the problem. Any arriving reply resets `lastReceived` and `timeoutErrorCount`,
-so the drop condition is never met. Measured with 1 in 3 relay writes dropped and forwarding
-running: `proxy_sentCommands` climbed 64 to 1280 over 20 minutes, linear at 64/min, zero
-disconnects. That is ~1.3 MiB/min, ~77 MiB/hour, on one session.
+The third case is the leak. Any arriving reply resets `lastReceived` and `timeoutErrorCount`, so the
+drop condition is never met. Measured with 1 in 3 relay writes dropped: `proxy_sentCommands` climbed
+64 to 1280 over 20 minutes, linear at 64/min, zero disconnects. That is ~1.3 MiB/min on one session.
+Traffic has to be ongoing; stop the flood and it is reclaimed after 20 minutes.
 
-Traffic has to be ongoing. Flood and stop and it is reclaimed after 20 minutes.
+The ntf server runs the same client code and is exposed the same way through unanswered `NSUB`.
+Measured with `subtmo 200`: 200 timed-out subscriptions, `sentCommands` 0 to 200, ~1.76 KiB each. At
+the ntf batch size of 1360 that is ~2.3 MiB per unanswered batch.
 
-The ntf server uses the same client code and has the same exposure through unanswered `NSUB`.
-Measured with `subtmo 200`: 200 queues, 200 timed out, `sentCommands` 0 to 200, ~1.76 KiB each.
-At the ntf batch size of 1360 that is ~2.3 MiB per unanswered batch.
-
-Pings do not help. Subscribe paths call `enablePings` and the proxy send path does not, but in
-the unbounded case replies are arriving anyway, which resets the counters either way.
+Pings do not help. Subscribe paths call `enablePings` (`Client.hs:953`) and the proxy send path does
+not, but in the unbounded case replies are arriving anyway and reset the counters.
 
 ### Fix
 
-Do not just delete on timeout. The agent still needs late replies. `processMsg` forwards them as
-`STResponse` (`Client.hs:713`), and `Agent.hs:3093` acts on them. A late `OK`/`SOK` to a `SUB`
-calls `processSubOk`, which is what brings a connection back UP, and a late `MSG` is processed as
-a real message. Deleting on timeout turns both into `STUnexpectedError` (`Client.hs:702`), so the
-agent would report an error instead of recovering, and drop the message.
+Deleting on timeout is wrong: the agent still needs late replies. `processMsg` forwards them as
+`STResponse` (`Client.hs:713`) and the agent acts on them, so a late `OK`/`SOK` to a `SUB` brings a
+connection back up and a late `MSG` is processed. Deleting would turn both into `STUnexpectedError`.
 
-Delete by age instead: record the time on `Request` when it is added, and remove entries with
-`pending == False` that are older than the point where a late reply is no longer useful. Choosing
-that age needs the agent's recovery behaviour measured, which is not done here.
-
-Two entry points can be fixed by deleting, because no reply is ever coming. `mkTransmission_`
-inserts before sending (`Client.hs:1361`) and `sendRecv` returns early at `Client.hs:1366`
-(transport error) and `Client.hs:1368` (oversized block) without sending or deleting.
+Delete by age instead. Record the insert time on `Request` and remove `pending == False` entries once
+a late reply is no longer useful. The cutoff needs the agent's recovery behaviour measured, which is
+not done here. Two paths can be deleted immediately because no reply is coming: `sendRecv` returns
+early on transport error (`Client.hs:1364`) and on an oversized block (`Client.hs:1366`) without
+sending.
 
 ---
 
 ## Leak 2: failed relay connects are never cleared
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth via PRXY |
+| Trigger | forward to distinct dead addresses |
+| Cost | ~19 KiB per address, held for the process lifetime |
+| Measured | yes, 300 entries from 300 dead addresses |
+| Status | present |
 
-A failed connect is cached in `smpClients` as `Left (error, expiry)` (`Client/Agent.hs:275`) and
-removed only on a later lookup of the same server (`:250`, `:411`). Nothing removes it on a timer.
-The other removals are `clientDisconnected` (`:311`, connected clients only) and shutdown
-(`:427`).
+### How it works
 
-Conditional on `persistErrorInterval > 0`. At 0 the entry goes immediately, but production sets
-30 (`Server/Main.hs:607`).
+Relay clients are cached in `smpClients`. A successful connect caches the client; a failed connect
+caches the error as `Left (error, expiry)` (`Client/Agent.hs:277`) so repeat lookups fail fast until
+the expiry passes.
+
+### The bug
+
+Nothing removes a failed entry on a timer. It is dropped only when the same server is looked up again
+and found expired (`:253`, `:414`). The other removals are `clientDisconnected` (`:314`, connected
+clients only) and shutdown (`:430`). Conditional on `persistErrorInterval > 0`; at 0 the entry is
+removed at once, but production sets 30 (`Server/Main.hs:608`).
 
 ### Impact
 
 Host, port and key hash come from the client, so distinct addresses are unlimited. Measured:
-`proxy_smpClients = 300` after 300 dead addresses, ~19 KiB each, never freed while the process
-runs. 1000 entries created in about 1s.
-
-That is ~19 MiB/s when the address refuses the connection immediately. An address that accepts
-nothing and never answers waits out the 45s connect timeout, which slows it right down.
+`proxy_smpClients = 300` after 300 dead addresses, ~19 KiB each, never freed while the process runs.
+1000 entries created in about 1s, so ~19 MiB/s when the address refuses immediately. An address that
+accepts nothing and never answers waits out the 45s connect timeout, which slows it down.
 
 ### Fix
 
-Check the map on a timer and remove entries past their expiry. The timestamp is already stored.
+Scan the map on a timer and remove entries past their expiry. The timestamp is already stored.
 
 ---
 
@@ -100,81 +131,73 @@ Check the map on a timer and remove entries past their expiry. The timestamp is 
 > [!TIP]
 > Fixed in master by #1839 (`7d0820dd`), which took the approach proposed below. `msgQ` is now
 > `Maybe (TBQueue ...)` (`Client/Agent.hs:143`), the proxy agent is built with `msgQSize = Nothing`
-> (`Server/Main.hs:607`), and `sendMsg` logs late replies instead of enqueuing them when there is no
-> queue (`Client.hs:722`). The analysis below is kept for context.
+> (`Server/Main.hs:607`), and `sendMsg` logs late replies instead of enqueuing them (`Client.hs:722`).
+> The analysis below is kept for context.
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth via PRXY |
+| Trigger | relay replies land after the 30s RFWD timeout |
+| Cost | permanent proxy stall once the queue fills |
+| Measured | yes, `msgqfill` phase |
+| Status | fixed, #1839 |
 
-`newSMPClientAgent` creates one `msgQ` (`Client/Agent.hs:194`) and `connectClient` gives that same
-queue to every relay client (`:296`). The ntf server reads its copy
-(`Notifications/Server.hs:537`). The SMP server never reads its own: `receiveFromProxyAgent`
-reads `agentQ` only (`Server.hs:475`). There are three `readTBQueue` sites on a `msgQ` in `src/`
-and none is the proxy's.
+### How it works
 
-It fills from late replies. `processMsg` routes a response to `msgQ` when the request is still in
-`sentCommands` but `pending` is already `False` (`Client.hs:713`), so every reply arriving after
-the proxy's 30s RFWD timeout leaves an entry that nothing takes out.
+`newSMPClientAgent` created one `msgQ` and gave that same queue to every relay client. The ntf server
+reads its copy (`Notifications/Server.hs`), but the SMP server never read its own: `receiveFromProxyAgent`
+reads `agentQ` only.
 
-When it is full, `processMsgs` blocks in `writeTBQueue` (`Client.hs:694`). That is the `process`
-thread, the only reader of `rcvQ`, so the proxy stops handling responses entirely.
+### The bug
+
+The queue filled from late replies. `processMsg` routes a response to `msgQ` when the request is
+still in `sentCommands` but `pending` is already `False` (`Client.hs:713`), so every reply arriving
+after the proxy's 30s RFWD timeout left an entry that nothing removed. When full, `processMsgs`
+blocked in `writeTBQueue` on the `process` thread, the only reader of `rcvQ`, so the proxy stopped
+handling responses entirely.
 
 ### Impact
 
-Measured with the `msgqfill` phase: 4 forwards at 40s each way so replies land after the timeout,
-then lag cleared and 3 more attempted. Only `msgQSize` differs.
+Measured with the `msgqfill` phase: 4 forwards at 40s each way so replies land after the timeout, then
+lag cleared and 3 more attempted. Only `msgQSize` differs.
 
 | `msgQSize` | `proxy_msgQ` at end | `sentCommands` at end | recovery forwards |
 | --- | --- | --- | --- |
-| 2 | 2 (at cap) | 4 and climbing | **0 of 3** |
+| 2 | 2 (at cap) | 4 and climbing | 0 of 3 |
 | 2048 (production) | 4 | 0 | 3 of 3 |
 
-Two things. The queue is never emptied: at production size it still holds the 4 late replies at
-the end of the run. And when it fills the stall is permanent, not slow: the recovery forwards ran
-with no latency at all and got nothing back.
-
-One `msgQ` per agent and one `ProxyAgent` per server, so one slow relay stalls the proxy for every
-relay it talks to. That part is from the code, not measured: the bench has one relay.
-
-Someone who controls the destination relay only needs 2048 late replies to do this.
-
-This also corrects Leak 1's "slow relay is not a leak" row. That is right about `sentCommands` and
-wrong about the session: the late replies that clear `sentCommands` are the ones that pile up
-here.
-
-### Fix
-
-Make `msgQ` optional in `SMPClientAgent` and pass `Nothing` for the proxy. `getProtocolClient`
-already takes a `Maybe` and `sendMsg` logs instead when it is `Nothing`. A discarding reader would
-also work but still allocates and copies every batch.
+The queue was never emptied, and once full the stall was permanent: the recovery forwards ran with no
+latency and got nothing back. One `msgQ` per agent and one `ProxyAgent` per server, so one slow relay
+stalled the proxy for every relay it talked to. Someone controlling the destination relay needed only
+2048 late replies. This also corrects Leak 1's "slow relay is not a leak" row: those late replies are
+what piled up here.
 
 ---
 
 ## Bug 3: proxy concurrency limit does nothing
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth via PRXY |
+| Trigger | concurrent PFWDs on one connection |
+| Cost | none directly, uncaps Leak 1's growth rate |
+| Measured | yes, `conclimit` phase |
+| Status | present |
 
-`Server.hs:1590`:
+### How it works
 
-```haskell
-bracket_ wait signal . forkClient clnt label $ action
-```
+`forkCmd` (`Server.hs:1591`) is meant to cap in-flight forked commands at `serverClientConcurrency`.
+`wait` blocks until a slot is free and `signal` releases it.
 
-`.` binds tighter than `$`, so `signal` runs when the thread starts, not when it finishes. Only
-forking is limited.
+### The bug
 
-Measured with `conclimit 8` and `serverClientConcurrency = 1`, eight concurrent PFWDs on one
-connection, relay silent:
-
-```
-conclimit: n=8 cap=1 completions first=20.0s last=20.0s spread=0.0s
-```
-
-All eight ran at once. Enforced, each would hold the slot for the 30s RFWD timeout, needing ~240s.
-
-### Impact
-
-No memory cost of its own. Removes the cap on how fast Leak 1 grows, and `procThreads` reads near
-zero at any load.
+The code is `bracket_ wait signal . forkClient clnt label $ action` (`Server.hs:1592`). `.` binds
+tighter than `$`, so it parses as `bracket_ wait signal (forkClient ... action)`. `forkClient`
+returns as soon as the thread is spawned, so `signal` runs at spawn time, not at completion. Only
+forking is serialized. Measured with `conclimit 8` and `serverClientConcurrency = 1`, all eight PFWDs
+ran at once (`first=20.0s last=20.0s spread=0.0s`); enforced, each would hold the slot for the 30s
+RFWD timeout. `procThreads` also reads near zero at any load. The counter is per-connection, so even
+when fixed the cap is per-client, not global.
 
 ### Fix
 
@@ -182,60 +205,49 @@ zero at any load.
 wait >> forkClient clnt label (action `finally` signal)
 ```
 
-This turns the limit on for the first time. Default is 32 and `wait` blocks the client's whole
-command loop when hit, so check that value first.
+This enables the limit for the first time. Default is 32 and `wait` blocks the client's whole command
+loop when hit, so check that value first.
 
 ---
 
 ## Bug 4: stale endThreads entry when a command finishes fast
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | client, narrow timing window |
+| Trigger | forked child finishes before it is registered |
+| Cost | ~320 bytes per stale entry, misleading counter |
+| Measured | isolation only, not against a running server |
+| Status | present |
 
-`forkClient` (`Server.hs:1480`) registers the thread after `forkIO`. If the action finishes first,
-its delete misses and the insert is never undone.
+### How it works
 
-Reproduced in isolation, 100k forks: 20% stale at `-N1`, 13% at `-N4`, ~320 bytes each.
-`deRefWeak` returns `Nothing` for all of them, so no thread is retained.
+`forkClient` (`Server.hs:1482`) registers the child in `endThreads` for shutdown tracking. It forks
+first (`:1485`), the child deletes its own key on exit (`:1487`), and the parent inserts the weak
+thread id afterward (`:1488`).
 
-What decides it is not how long the child takes. Measured over 20k forks, varying only the child's
-work before its delete:
+### The bug
 
-| child does | -N1 | -N4 |
+If the child finishes before the parent's insert, the delete finds no key and the later insert is
+never undone, leaving a permanent entry. Reproduced over 100k forks: 20% stale at `-N1`, 13% at `-N4`,
+~320 bytes each. `deRefWeak` returns `Nothing` for all, so no thread is retained.
+
+What decides the race is whether the child yields the CPU back, not how long it runs:
+
+| Child does | -N1 | -N4 |
 | --- | --- | --- |
 | nothing | 17.5% | 10.7% |
 | spins 1us | 19.2% | 9.7% |
 | spins 100us | 17.8% | 9.8% |
-| one failing `connect()` | **0%** | **0.1%** |
+| one failing `connect()` | 0% | 0.1% |
 
-A child that just spins does not lose the race, it keeps the CPU from the parent. The parent only
-wins when the child hands the CPU back, which happens on a syscall, a safe FFI call, or an STM
-retry.
-
-Against that rule, of the three call sites:
-
-- `forkCmd` (`Server.hs:1593`) for `PFWD`/`PRXY`/`RSLV`: all do network IO, all yield. `RSLV` was
-  checked separately since it is client driven at command rate, but `resolveName` has no cache
-  (`Server/Names.hs:62`).
-- `deliverServiceMessages` (`Server.hs:1977`): `clientServiceSubscribed` is set to `True` once
-  (`Server.hs:2031`) and never reset, so this runs at most once per connection.
-- `sendPendingEvtsThread.queueEvts` (`Server.hs:463`): the only one that can finish without
-  yielding. The child does `writeTBQueue sndQ` and three `IORef` updates, so if space appeared in
-  the queue it finishes straight away.
-
-### Impact
-
-Small, and not reproduced against a running server.
-
-The one path that can skip yielding forks at most twice per client every 15s
-(`pendingENDInterval`, `Server/Main.hs:581`), and only when that client's `sndQ` was full at the
-check and had emptied by the time the child ran. `clientDisconnected` (`Server.hs:1237`) clears
-the whole map, so nothing outlives the session.
-
-A client can affect both of those by pausing and resuming its socket reads, so this is not out of
-reach, but hitting a sub-millisecond window at two tries per 15s was not shown.
-
-The real cost is that the `endThreads` counter is misleading: it mixes stale entries with commands
-that are actually still running.
+A child that spins keeps the CPU; the parent wins only when the child hits a syscall, safe FFI call,
+or STM retry. Of the three call sites, `forkCmd` (`PFWD`/`PRXY`/`RSLV`) and `deliverServiceMessages`
+all do IO and yield, and the service path runs at most once per connection. Only
+`sendPendingEvtsThread.queueEvts` can finish without yielding, and it forks at most twice per client
+per 15s (`pendingENDInterval`) and only when the client's `sndQ` was full then emptied.
+`clientDisconnected` clears the map, so nothing outlives the session. The real cost is that the
+`endThreads` counter mixes stale entries with commands still running.
 
 ### Fix
 
@@ -250,50 +262,64 @@ atomically $ modifyTVar' endThreads $ IM.adjust (const (Just w)) tId
 
 ## Bug 5: unauthenticated RSLV resolver fan-out
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth, when `[NAMES]` is enabled |
+| Trigger | a block full of RSLV commands |
+| Cost | up to 1000 concurrent outbound TLS handshakes per connection |
+| Measured | yes, `testRslvFanOut` (64 in flight, asserts <= 8) |
+| Status | present |
 
-`RSLV` is unauthenticated (`Server.hs:1279`, `vc SResolver (RSLV _) = VRVerified Nothing`) and forks
-one outbound HTTP/TLS request per command, bounded only by `serverResolverConcurrency` (default
-1000, `Env/STM.hs:256`) through the per-client `procThreads` counter (`Env/STM.hs:461`) with no
-global cap. `managerConnCount = 10` (`HttpResolver.hs:88`) sizes the keep-alive pool, not
-concurrency. One 16 KB block carries ~255 RSLVs. Only when `[NAMES]` is enabled.
+### How it works
 
-Not proxy related, and off by default, but client reachable when the resolver is on.
+`RSLV` resolves a name over an outbound HTTP/TLS request. It is verified as unauthenticated
+(`Server.hs:1393`, `vc SResolver (RSLV _) = VRVerified Nothing`) and each command forks one request
+(`Server.hs:1638`). One 16 KB block carries ~255 RSLVs. Off by default, on only with `[NAMES]`.
 
-### Impact
+### The bug
 
-One connection drives up to `serverResolverConcurrency` concurrent outbound TLS handshakes and
-sockets; more connections multiply it with no global bound. Measured with `testRslvFanOut`: one
-connection sends 64 RSLVs against a resolver that holds each request, and 64 outbound requests are
-in flight at once (the test asserts <= 8). CPU (handshakes), threads and FDs scale with the flood.
+The only bound is `serverResolverConcurrency` (default 1000, `Env/STM.hs:255`), applied through the
+per-client `procThreads` counter via the same broken `forkCmd` path as Bug 3, so it is neither global
+nor effective. `managerConnCount = 10` (`HttpResolver.hs:88`) sizes the keep-alive pool, not
+concurrency, so excess requests open extra connections rather than blocking. `resolveName` has no
+cache (`Server/Names.hs:61`). One connection drives up to `serverResolverConcurrency` concurrent
+outbound handshakes, sockets and FDs; more connections multiply it with no global bound.
 
 ### Fix
 
 Add a global resolver-concurrency limit, a shared semaphore in `NamesEnv` acquired around the
-outbound call, separate from the per-client counter, and lower the default. A result cache would
-also cut repeat lookups (`resolveName` has none, `Server/Names.hs:61`).
+outbound call, separate from the per-client counter, and lower the default. A result cache would also
+cut repeat lookups.
 
 ---
 
-The findings below are from code review of the PostgreSQL backend (`store_messages: database`),
-not bench-measured.
+The findings below are from code review of the PostgreSQL backend (`store_messages: database`), not
+bench-measured.
 
 ## Bug 6: every SEND is three DB transactions behind a pool of 10
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | authenticated SEND |
+| Trigger | normal message sending |
+| Cost | SEND rate capped at ~`poolSize / 3` per transaction latency |
+| Evidence | code review |
+| Status | present |
 
-With `store_messages: database` the queue store runs `useCache = False`
-(`MsgStore/Postgres.hs:100`), so each command hits the DB. A SEND does three separate transactions:
-load the queue, `delete_expired_msgs`, then `write_message`. `expireMessagesOnSend` defaults to
-`True` (`Main.hs:563`, `Server.hs:2121`), so the middle one runs on every SEND to a non-empty
-queue. All transactions draw from one pool of `poolSize` connections (default 10,
-`Main/Init.hs:44`). A second pool (`dbPriorityPool`, another `poolSize`) is opened but never used by
-the SMP server.
+### How it works
 
-### Impact
+With `store_messages: database` the queue store runs `useCache = False` (`MsgStore/Postgres.hs:100`),
+so each command hits the DB.
 
-Max SEND rate is about `poolSize / (3 x per-transaction latency)` regardless of client count; past
-that all clients block on the pool. Twice `poolSize` backends are opened, half of them idle.
+### The bug
+
+A SEND does three separate transactions: load the queue (`QueueStore/Postgres.hs:230`),
+`delete_expired_msgs` (`MsgStore/Postgres.hs:289`), then `write_message` (`MsgStore/Postgres.hs:193`).
+`expireMessagesOnSend` defaults to `True` (`Main.hs:563`, `Server.hs:2118`), so the middle one runs on
+every SEND to a non-empty queue. All draw from one pool of `poolSize` (default 10, `Main/Init.hs:44`).
+A second pool, `dbPriorityPool`, is opened (`Agent/Store/Postgres.hs:59`) but the SMP server never
+uses it. Max SEND rate is about `poolSize / (3 x per-transaction latency)` regardless of client count;
+past that all clients block on the pool, and half the opened backends sit idle.
 
 ### Fix
 
@@ -304,78 +330,109 @@ priority pool.
 
 ## Bug 7: unauthenticated batched crypto and per-transmission DB lookup
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any handshake-completing peer, pre-auth |
+| Trigger | one 16 KB block of SENDs to unknown queues |
+| Cost | ~130-250 asymmetric verifications and DB SELECTs per block |
+| Evidence | code review |
+| Status | present |
 
-`dummyVerifyCmd` (`Server.hs:1457`) runs a real Ed25519/Ed448 verify or an X25519 DH per
-transmission whose queue is unknown. SEND is not a batch party (`batchParty` is Recipient/Notifier
-only, `Server.hs:1273`), so verification takes the per-transmission path
-`mapM (\t -> verifyTransmission ...)` (`Server.hs:1279`): one crypto op and, with
-`useCache = False`, one DB `getQueueRec` SELECT per transmission. A 16 KB block holds up to 254
-transmissions (`Protocol.hs:2317`).
+### How it works
 
-### Impact
+Recipient and Notifier commands are batch parties (`Protocol.hs:420`), so their queue lookups are
+batched. SEND is not, so it takes the per-transmission path
+`mapM (\t -> verifyTransmission ...)` (`Server.hs:1281`).
 
-One write by any handshake-completing peer costs ~130-250 asymmetric verifications and ~130-250 DB
-SELECTs. The attacker chooses the auth type and that the queue is absent.
+### The bug
+
+Each transmission runs one crypto op and, with `useCache = False`, one `getQueueRec` SELECT
+(`Server.hs:1361`). For an unknown queue, `dummyVerifyCmd` (`Server.hs:1459`) still runs a real
+Ed25519/Ed448 verify or an X25519 DH. A 16 KB block holds up to 254 transmissions (`Protocol.hs:2292`,
+one-byte count), so one write by any peer that completed the handshake costs ~130-250 asymmetric
+verifications and ~130-250 SELECTs. The attacker chooses the auth type and that the queue is absent.
 
 ### Fix
 
-Batch the sender/link lookups as Recipient/Notifier already are; cap unknown-queue verifications
-per block.
+Batch the sender lookups as Recipient and Notifier already are; cap unknown-queue verifications per
+block.
 
 ---
 
-## Bug 8: unauthenticated clientService grows the services table
+## Bug 8: unauthenticated service handshake grows the services table
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | any client, pre-auth |
+| Trigger | a fresh self-signed service cert per handshake |
+| Cost | one persistent `services` row and one X509 verify per connection |
+| Evidence | code review |
+| Status | present |
 
-The SMP handshake accepts a self-signed service chain (`CCSelf`, `Transport.hs:786`) and verifies
-an attacker-supplied cert per connection; `getCreateService` inserts a `services` row on any new
-fingerprint (`QueueStore/Postgres.hs:469`). A fresh self-signed cert per handshake is a new
-fingerprint.
+### How it works
 
-### Impact
+The SMP handshake accepts a self-signed service chain (`CCSelf`, `Transport.hs:759`) and verifies the
+supplied cert (`Transport.hs:763`). `getClientService` (`Server.hs:864`) then calls `getCreateService`.
 
-One unbounded, persistent `services` row per connection, pre-auth, plus one X509 verification per
-connection.
+### The bug
+
+`getCreateService` inserts a `services` row on any new fingerprint (`QueueStore/Postgres.hs:478`), and
+a fresh self-signed cert is a new fingerprint every time. The only guard is a role check on an
+existing fingerprint, so each connection can create one unbounded, persistent row plus one X509 verify,
+all before authentication.
 
 ### Fix
 
-Require the service to be pre-registered, or authenticate/rate-limit service creation.
+Require the service to be pre-registered, or authenticate and rate-limit service creation.
 
 ---
 
 ## Bug 9: Prometheus scrape scans all queues and folds all subscriptions
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | internal, fires every `prometheus_interval` |
+| Trigger | Prometheus enabled |
+| Cost | scales with queue count and live subscriptions, every scrape |
+| Evidence | code review |
+| Status | present |
 
-Every `prometheus_interval` (default 60s), `getEntityCounts` runs six `COUNT(1)` scans over
-`msg_queues`/`services` (`QueueStore/Postgres.hs:154`, called at `Server.hs:812`), and
-`getDeliveredMetrics` folds over all clients times all their subscriptions in memory
-(`Server.hs:836`).
+### How it works
 
-### Impact
+On each scrape the server refreshes its metrics from live state rather than incremental counters.
 
-Cost scales with the largest dimensions (queues, live subscriptions) and recurs every minute while
-Prometheus is enabled.
+### The bug
+
+`getEntityCounts` runs six `COUNT(1)` scans over `msg_queues` and `services`
+(`QueueStore/Postgres.hs:154`, called at `Server.hs:813`), and `getDeliveredMetrics` folds over all
+clients times all their subscriptions in memory (`Server.hs:837`, called at `Server.hs:825`). Cost
+scales with the largest dimensions and recurs every interval while Prometheus is on.
 
 ### Fix
 
-Maintain the counts incrementally; avoid the per-scrape full fold.
+Maintain the counts incrementally; drop the per-scrape full fold.
 
 ---
 
 ## Bug 10: subscription changes serialize through one thread and one map
 
-### Issue
+| | |
+| --- | --- |
+| Reachable | authenticated SUB |
+| Trigger | subscription churn, batched SUB of many queues |
+| Cost | throughput bounded by one thread and one contended TVar |
+| Evidence | code review |
+| Status | present |
 
-All subscription churn goes through one `subQ` drained by one `serverThread` (`Server.hs:273`) that
-mutates the single `queueSubscribers` map held in one TVar. A batched SUB of N queues is N separate
-writes to `subQ` (`Server.hs:1848`).
+### How it works
 
-### Impact
+Subscription state lives in `queueSubscribers`, one `Map` in one TVar (`Env/STM.hs:377`). Changes are
+enqueued to `subQ` and applied by a single `serverThread` (`Server.hs:284`).
 
-Subscription throughput is bounded by one thread and one contended TVar under churn.
+### The bug
+
+All churn passes through that one thread and one TVar, and a batched SUB of N queues is N separate
+writes to `subQ` (`Server.hs:1845`), so subscription throughput does not scale with cores or clients.
 
 ### Fix
 
@@ -385,9 +442,9 @@ Shard the subscriber map, or batch `subQ` events per client.
 
 ## Clean: TLS/TCP stack
 
-200 connections opened at once, closed, then measured again:
+200 connections opened at once, closed, then measured again.
 
-| test | peak per conn | after 25s |
+| Test | Peak per conn | After 25s |
 | --- | --- | --- |
 | TCP connect, never start TLS | 48.2 KiB | 0.31 KiB |
 | TLS done, no SMP handshake | 203.1 KiB | 0.71 KiB |
@@ -395,20 +452,20 @@ Shard the subscriber map, or batch `subQ` events per client.
 
 All recovered. Also clean: 400 connect/disconnect rounds, and steady forwarding at 50ms each way.
 
-Measure well after closing. At +5s the middle two still read ~120 KiB per connection, which looks
-like a 24 MiB leak but is just connections still closing. A number that keeps falling is being
-freed; a number that stops above where it started is leaked.
+Measure well after closing. At +5s the middle two still read ~120 KiB per connection, which looks like
+a 24 MiB leak but is just connections still closing. A number that keeps falling is being freed; one
+that stops above where it started is leaked.
 
-The peaks are still worth knowing. 200 abandoned half open connections hold ~40 MiB for ~25s, with
-no authentication needed. A client that finishes the handshake then sends one byte holds ~265 KiB
-for as long as it stays connected, because there is no read timeout: `transportTimeout` is
-hardcoded `Nothing` (`Transport/Server.hs:104`).
+The peaks still matter. 200 abandoned half-open connections hold ~40 MiB for ~25s with no
+authentication. A client that finishes the handshake then sends one byte holds ~265 KiB for as long as
+it stays connected, because there is no read timeout: `transportTimeout` is hardcoded `Nothing`
+(`Transport/Server.hs:104`).
 
 ## Clean: connectivity and sockets under latency
 
 Latency set with `BENCHLAG_MS` on `proxyfwd`, one way. Sockets counted from `/proc/<pid>/fd`.
 
-| lag each way | delivered | sockets | relay connects | reconnects | timeouts |
+| Lag each way | Delivered | Sockets | Relay connects | Reconnects | Timeouts |
 | --- | --- | --- | --- | --- | --- |
 | 0ms | 12/12 | 8 | 1 | 0 | 0 |
 | 500ms | 10/10 | 8 | 1 | 0 | 0 |
@@ -416,10 +473,8 @@ Latency set with `BENCHLAG_MS` on `proxyfwd`, one way. Sockets counted from `/pr
 | 16s | 4/4 | 8 | 1 | 0 | 0 |
 | 40s | 0/2 | 8 | 1 | 0 | 1 |
 
-Nothing builds up. The socket count is the same whether forwards succeed or time out, the session
-is opened once and reused, and there are no reconnects at any latency.
-
-This is why Leak 1 has no upper bound: the session holding the stuck entries never closes.
-
-Forwards work to 16s each way and fail at 40s, because of the 30s RFWD timeout. The exact cutoff is
-not measured, since the test transport adds its delay per read/write rather than per message.
+Nothing builds up. The socket count is the same whether forwards succeed or time out, the session is
+opened once and reused, and there are no reconnects at any latency. This is why Leak 1 has no upper
+bound: the session holding the stuck entries never closes. Forwards work to 16s each way and fail at
+40s because of the 30s RFWD timeout; the exact cutoff is not measured, since the test transport adds
+its delay per read/write rather than per message.
