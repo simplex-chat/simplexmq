@@ -46,9 +46,9 @@ import Test.Hspec hiding (fit, it)
 import Util
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig)
 import Simplex.FileTransfer.Server.Store (STMFileStore)
-import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpTestPort)
+import XFTPClient (testXFTPServerConfigEd25519SNI, testXFTPServerConfigSNI, withXFTPServerCfg, xftpSendFile, xftpTestPort)
 import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAgent)
-import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpSendFile, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Protocol (AEvent (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
 import XFTPCLI (recipientFiles, senderFiles, testBracket)
@@ -2885,6 +2885,7 @@ webHandshakeTest cfg caFile = do
         \import sodium from 'libsodium-wrappers-sumo';\
         \import * as Addr from './dist/protocol/address.js';\
         \import * as Hs from './dist/protocol/handshake.js';\
+        \import * as Tx from './dist/protocol/transmission.js';\
         \import * as Id from './dist/crypto/identity.js';\
         \await sodium.ready;\
         \const server = Addr.parseXFTPServer('"
@@ -2905,7 +2906,7 @@ webHandshakeTest cfg caFile = do
              \ ? Id.verifyIdentityProof({certChainDer: hs.certChainDer, signedKeyDer: hs.signedKeyDer,\
              \sigBytes: hs.webIdentityProof, challenge, sessionId: hs.sessionId, keyHash: server.keyHash})\
              \ : false;\
-             \const ver = hs.xftpVersionRange.maxVersion;\
+             \const ver = Math.min(hs.xftpVersionRange.maxVersion, Tx.currentXFTPVersion);\
              \const s2 = client.request({':method': 'POST', ':path': '/', 'xftp-handshake': '1'});\
              \s2.end(Buffer.from(Hs.encodeClientHandshake({xftpVersion: ver, keyHash: server.keyHash})));\
              \const ack = await readBody(s2);\
@@ -3197,7 +3198,7 @@ haskellUploadTsDownloadTest cfg = do
       runRight_ $ xftpStartWorkers sndr (Just senderFiles)
       _ <- runRight $ xftpSendFile sndr 1 (CF.plain filePath) 1
       sfProgress sndr 50000
-      (_, _, SFDONE _ [rfd]) <- sfGet sndr
+      (_, _, SFDONE _ [rfd] _) <- sfGet sndr
       pure rfd
     let yamlDesc = strEncode vfd
         tmpYaml = "tests/tmp/hs-to-ts-desc.yaml"

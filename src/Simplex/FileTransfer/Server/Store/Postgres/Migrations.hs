@@ -14,7 +14,8 @@ import Text.RawString.QQ (r)
 
 xftpSchemaMigrations :: [(String, Text, Maybe Text)]
 xftpSchemaMigrations =
-  [ ("20260325_initial", m20260325_initial, Nothing)
+  [ ("20260325_initial", m20260325_initial, Nothing),
+    ("20260823_file_expiration", m20260823_file_expiration, Just down_m20260823_file_expiration)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -44,4 +45,18 @@ CREATE TABLE recipients (
 
 CREATE INDEX idx_recipients_sender_id ON recipients (sender_id);
 CREATE INDEX idx_files_created_at ON files (created_at);
+|]
+
+m20260823_file_expiration :: Text
+m20260823_file_expiration =
+  [r|
+ALTER TABLE files ADD COLUMN expires_at BIGINT;
+CREATE INDEX idx_files_expiry ON files (expires_at, created_at);
+|]
+
+down_m20260823_file_expiration :: Text
+down_m20260823_file_expiration =
+  [r|
+DROP INDEX idx_files_expiry;
+ALTER TABLE files DROP COLUMN expires_at;
 |]

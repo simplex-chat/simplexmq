@@ -132,7 +132,7 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer _serviceKeys = do
 
 ntfThHandleServer :: forall c. THandleNTF c 'TServer -> VersionNTF -> VersionRangeNTF -> C.PrivateKeyX25519 -> THandleNTF c 'TServer
 ntfThHandleServer th v vr pk =
-  let thAuth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, sessSecret' = Nothing}
+  let thAuth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Nothing}
    in ntfThHandle_ th v vr (Just thAuth)
 
 ntfThHandleClient :: forall c. THandleNTF c 'TClient -> VersionNTF -> VersionRangeNTF -> (C.PublicKeyX25519, CertChainPubKey) -> THandleNTF c 'TClient

@@ -37,6 +37,7 @@ xftpStoreTests = do
     it "should block file and update status" testBlockFile
     it "should ack file reception" testAckFile
     it "should return expired files with limit" testExpiredFiles
+    it "should expire files by stored expiration" testExpiredFilesStoredExpiration
     it "should compute committed used storage and file count" testStorageAndCount
 
 xftpMigrationTests :: Spec
@@ -68,6 +69,9 @@ testFileInfo sndKey =
 testCreatedAt :: RoundedFileTime
 testCreatedAt = RoundedSystemTime 1000000
 
+testExpiresAt :: RoundedFileTime
+testExpiresAt = RoundedSystemTime 2000000
+
 -- Tests
 
 testAddGetFileSender :: Expectation
@@ -75,7 +79,7 @@ testAddGetFileSender = withPgStore $ \st -> do
   g <- C.newRandom
   (sk, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sk
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   result <- getFile st SFSender testSenderId
   case result of
     Right (FileRec {senderId, fileInfo = fi, createdAt}, key) -> do
@@ -92,7 +96,7 @@ testAddGetFileRecipient = withPgStore $ \st -> do
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
   result <- getFile st SFRecipient testRecipientId
   case result of
@@ -106,8 +110,8 @@ testDuplicateFile = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Left DUPLICATE_
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Left DUPLICATE_
 
 testGetNonexistent :: Expectation
 testGetNonexistent = withPgStore $ \st -> do
@@ -119,7 +123,7 @@ testSetFilePath = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   setFilePath st testSenderId "/tmp/test_file" `shouldReturn` Right ()
   -- Second setFilePath should fail (file_path IS NULL guard)
   setFilePath st testSenderId "/tmp/other_file" `shouldReturn` Left AUTH
@@ -135,7 +139,7 @@ testDuplicateRecipient = withPgStore $ \st -> do
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Left DUPLICATE_
 
@@ -145,7 +149,7 @@ testDeleteFileCascade = withPgStore $ \st -> do
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
   deleteFile st testSenderId `shouldReturn` Right ()
   -- File and recipient should both be gone
@@ -157,7 +161,7 @@ testBlockFile = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
   blockFile st testSenderId blockInfo False `shouldReturn` Right ()
   result <- getFile st SFSender testSenderId
@@ -171,7 +175,7 @@ testAckFile = withPgStore $ \st -> do
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
-  addFile st testSenderId fileInfo testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
   ackFile st testRecipientId `shouldReturn` Right ()
   -- Recipient gone, but file still exists
@@ -189,11 +193,11 @@ testExpiredFiles = withPgStore $ \st -> do
       oldTime = RoundedSystemTime 100000
       newTime = RoundedSystemTime 999999999
   -- Add old and new files
-  addFile st (EntityId "old_file________") fileInfo oldTime EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "old_file________") fileInfo oldTime Nothing EntityActive `shouldReturn` Right ()
   void $ setFilePath st (EntityId "old_file________") "/tmp/old"
-  addFile st (EntityId "new_file________") fileInfo newTime EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "new_file________") fileInfo newTime Nothing EntityActive `shouldReturn` Right ()
   -- Query expired with cutoff that only catches old file
-  expired <- expiredFiles st 500000 100
+  expired <- expiredFiles st (RoundedSystemTime 500000) 500000 100
   length expired `shouldBe` 1
   case expired of
     [(sId, path, sz)] -> do
@@ -201,6 +205,18 @@ testExpiredFiles = withPgStore $ \st -> do
       path `shouldBe` Just "/tmp/old"
       sz `shouldBe` 128000
     _ -> expectationFailure "expected 1 expired file"
+
+testExpiredFilesStoredExpiration :: Expectation
+testExpiredFilesStoredExpiration = withPgStore $ \st -> do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let fileInfo = testFileInfo sndKey
+      oldTime = RoundedSystemTime 100000
+  -- both files are created before the cutoff, the stored expiration decides
+  addFile st (EntityId "expired_file____") fileInfo oldTime (Just (RoundedSystemTime 400000)) EntityActive `shouldReturn` Right ()
+  addFile st (EntityId "stored_file_____") fileInfo oldTime (Just (RoundedSystemTime 900000)) EntityActive `shouldReturn` Right ()
+  expired <- expiredFiles st (RoundedSystemTime 500000) 0 100
+  map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
 
 testStorageAndCount :: Expectation
 testStorageAndCount = withPgStore $ \st -> do
@@ -222,8 +238,8 @@ testStorageAndCountForStore st = do
       fileInfoB = fileInfoA {size = 64000}
       fileA = EntityId "file_a__________"
       fileB = EntityId "file_b__________"
-  addFile st fileA fileInfoA testCreatedAt EntityActive `shouldReturn` Right ()
-  addFile st fileB fileInfoB testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile st fileA fileInfoA testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addFile st fileB fileInfoB testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   getFileCount st `shouldReturn` 2
   getUsedStorage st `shouldReturn` 0
   setFilePath st fileA "/tmp/file_a" `shouldReturn` Right ()
@@ -248,11 +264,11 @@ testMigrationRoundTrip = do
       sId1 = EntityId "migration_file_1"
       sId2 = EntityId "migration_file_2"
       rId1 = EntityId "migration_rcp_1_"
-  addFile stmStore sId1 fileInfo1 testCreatedAt EntityActive `shouldReturn` Right ()
+  addFile stmStore sId1 fileInfo1 testCreatedAt (Just testExpiresAt) EntityActive `shouldReturn` Right ()
   void $ setFilePath stmStore sId1 "/tmp/file1"
   addRecipient stmStore sId1 (FileRecipient rId1 rcpKey1) `shouldReturn` Right ()
   let testBlockInfo = BlockingInfo {reason = BRSpam, notice = Nothing}
-  addFile stmStore sId2 fileInfo2 testCreatedAt (EntityBlocked testBlockInfo) `shouldReturn` Right ()
+  addFile stmStore sId2 fileInfo2 testCreatedAt Nothing (EntityBlocked testBlockInfo) `shouldReturn` Right ()
   -- 2. Write to StoreLog
   sl <- openWriteStoreLog False storeLogPath
   writeFileStore sl stmStore
@@ -271,9 +287,10 @@ testMigrationRoundTrip = do
   -- Verify file 1
   result1 <- getFile stmStore2 SFSender sId1
   case result1 of
-    Right (FileRec {fileInfo = fi, filePath, fileStatus}, _) -> do
+    Right (FileRec {fileInfo = fi, filePath, expiresAt, fileStatus}, _) -> do
       size fi `shouldBe` 128000
       readTVarIO filePath `shouldReturn` Just "/tmp/file1"
+      expiresAt `shouldBe` Just testExpiresAt
       readTVarIO fileStatus `shouldReturn` EntityActive
     Left e -> expectationFailure $ "getFile sId1 failed: " <> show e
   -- Verify recipient

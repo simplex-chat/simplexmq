@@ -352,7 +352,8 @@ CREATE TABLE snd_files(
   src_file_nonce BLOB,
   failed INTEGER DEFAULT 0,
   redirect_size INTEGER,
-  redirect_digest BLOB
+  redirect_digest BLOB,
+  storage_time INTEGER
 ) STRICT;
 CREATE TABLE snd_file_chunks(
   snd_file_chunk_id INTEGER PRIMARY KEY,
@@ -376,6 +377,8 @@ CREATE TABLE snd_file_chunk_replicas(
   retries INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT(datetime('now')),
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+  ,
+  replica_expires_at INTEGER
 ) STRICT;
 CREATE TABLE snd_file_chunk_replica_recipients(
   snd_file_chunk_replica_recipient_id INTEGER PRIMARY KEY,

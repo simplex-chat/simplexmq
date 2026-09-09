@@ -54,6 +54,7 @@ module AgentTests.FunctionalAPITests
     pattern SENT,
     agentCfgVPrevPQ,
     agentCfgV7,
+    testServerInformation,
   )
 where
 
