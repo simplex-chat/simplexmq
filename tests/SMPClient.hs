@@ -346,6 +346,14 @@ proxyCfgShortTimeout =
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
 
+proxyCfgForwardTimeout :: AServerConfig
+proxyCfgForwardTimeout =
+  updateCfg proxyCfg $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+        nt = NetworkTimeout {backgroundTimeout = 1, interactiveTimeout = 1}
+     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
+
 withSmpServerStoreMsgLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =
   withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
