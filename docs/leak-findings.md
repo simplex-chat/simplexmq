@@ -268,6 +268,114 @@ also cut repeat lookups (`resolveName` has none, `Server/Names.hs:61`).
 
 ---
 
+The findings below are from code review of the PostgreSQL backend (`store_messages: database`),
+not bench-measured.
+
+## Bug 6: every SEND is three DB transactions behind a pool of 10
+
+### Issue
+
+With `store_messages: database` the queue store runs `useCache = False`
+(`MsgStore/Postgres.hs:100`), so each command hits the DB. A SEND does three separate transactions:
+load the queue, `delete_expired_msgs`, then `write_message`. `expireMessagesOnSend` defaults to
+`True` (`Main.hs:563`, `Server.hs:2121`), so the middle one runs on every SEND to a non-empty
+queue. All transactions draw from one pool of `poolSize` connections (default 10,
+`Main/Init.hs:44`). A second pool (`dbPriorityPool`, another `poolSize`) is opened but never used by
+the SMP server.
+
+### Impact
+
+Max SEND rate is about `poolSize / (3 x per-transaction latency)` regardless of client count; past
+that all clients block on the pool. Twice `poolSize` backends are opened, half of them idle.
+
+### Fix
+
+Fewer transactions per SEND; make `expireMessagesOnSend` cheaper or default off; drop or use the
+priority pool.
+
+---
+
+## Bug 7: unauthenticated batched crypto and per-transmission DB lookup
+
+### Issue
+
+`dummyVerifyCmd` (`Server.hs:1457`) runs a real Ed25519/Ed448 verify or an X25519 DH per
+transmission whose queue is unknown. SEND is not a batch party (`batchParty` is Recipient/Notifier
+only, `Server.hs:1273`), so verification takes the per-transmission path
+`mapM (\t -> verifyTransmission ...)` (`Server.hs:1279`): one crypto op and, with
+`useCache = False`, one DB `getQueueRec` SELECT per transmission. A 16 KB block holds up to 254
+transmissions (`Protocol.hs:2317`).
+
+### Impact
+
+One write by any handshake-completing peer costs ~130-250 asymmetric verifications and ~130-250 DB
+SELECTs. The attacker chooses the auth type and that the queue is absent.
+
+### Fix
+
+Batch the sender/link lookups as Recipient/Notifier already are; cap unknown-queue verifications
+per block.
+
+---
+
+## Bug 8: unauthenticated clientService grows the services table
+
+### Issue
+
+The SMP handshake accepts a self-signed service chain (`CCSelf`, `Transport.hs:786`) and verifies
+an attacker-supplied cert per connection; `getCreateService` inserts a `services` row on any new
+fingerprint (`QueueStore/Postgres.hs:469`). A fresh self-signed cert per handshake is a new
+fingerprint.
+
+### Impact
+
+One unbounded, persistent `services` row per connection, pre-auth, plus one X509 verification per
+connection.
+
+### Fix
+
+Require the service to be pre-registered, or authenticate/rate-limit service creation.
+
+---
+
+## Bug 9: Prometheus scrape scans all queues and folds all subscriptions
+
+### Issue
+
+Every `prometheus_interval` (default 60s), `getEntityCounts` runs six `COUNT(1)` scans over
+`msg_queues`/`services` (`QueueStore/Postgres.hs:154`, called at `Server.hs:812`), and
+`getDeliveredMetrics` folds over all clients times all their subscriptions in memory
+(`Server.hs:836`).
+
+### Impact
+
+Cost scales with the largest dimensions (queues, live subscriptions) and recurs every minute while
+Prometheus is enabled.
+
+### Fix
+
+Maintain the counts incrementally; avoid the per-scrape full fold.
+
+---
+
+## Bug 10: subscription changes serialize through one thread and one map
+
+### Issue
+
+All subscription churn goes through one `subQ` drained by one `serverThread` (`Server.hs:273`) that
+mutates the single `queueSubscribers` map held in one TVar. A batched SUB of N queues is N separate
+writes to `subQ` (`Server.hs:1848`).
+
+### Impact
+
+Subscription throughput is bounded by one thread and one contended TVar under churn.
+
+### Fix
+
+Shard the subscriber map, or batch `subQ` events per client.
+
+---
+
 ## Clean: TLS/TCP stack
 
 200 connections opened at once, closed, then measured again:
