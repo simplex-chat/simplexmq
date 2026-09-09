@@ -241,6 +241,33 @@ atomically $ modifyTVar' endThreads $ IM.adjust (const (Just w)) tId
 
 ---
 
+## Bug 5: unauthenticated RSLV resolver fan-out
+
+### Issue
+
+`RSLV` is unauthenticated (`Server.hs:1279`, `vc SResolver (RSLV _) = VRVerified Nothing`) and forks
+one outbound HTTP/TLS request per command, bounded only by `serverResolverConcurrency` (default
+1000, `Env/STM.hs:256`) through the per-client `procThreads` counter (`Env/STM.hs:461`) with no
+global cap. `managerConnCount = 10` (`HttpResolver.hs:88`) sizes the keep-alive pool, not
+concurrency. One 16 KB block carries ~255 RSLVs. Only when `[NAMES]` is enabled.
+
+Not proxy related, and off by default, but client reachable when the resolver is on.
+
+### Impact
+
+One connection drives up to `serverResolverConcurrency` concurrent outbound TLS handshakes and
+sockets; more connections multiply it with no global bound. Measured with `testRslvFanOut`: one
+connection sends 64 RSLVs against a resolver that holds each request, and 64 outbound requests are
+in flight at once (the test asserts <= 8). CPU (handshakes), threads and FDs scale with the flood.
+
+### Fix
+
+Add a global resolver-concurrency limit, a shared semaphore in `NamesEnv` acquired around the
+outbound call, separate from the per-client counter, and lower the default. A result cache would
+also cut repeat lookups (`resolveName` has none, `Server/Names.hs:61`).
+
+---
+
 ## Clean: TLS/TCP stack
 
 200 connections opened at once, closed, then measured again:
