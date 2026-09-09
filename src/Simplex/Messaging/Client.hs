@@ -35,6 +35,7 @@ module Simplex.Messaging.Client
     ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
+    pClientSentCommandsCount,
     protocolClientServer,
     protocolClientServer',
     transportHost',
@@ -167,6 +168,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.SimplexName (SimplexDomain)
+import qualified Data.Map.Strict as M
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -736,6 +738,10 @@ useWebPort cfg presetDomains ProtocolServer {host = h :| _} = case smpWebPortSer
   SWPAll -> True
   SWPPreset -> isPresetDomain presetDomains h
   SWPOff -> False
+
+-- | Count of in-flight (awaiting-response) commands on a client - for leak diagnostics.
+pClientSentCommandsCount :: ProtocolClient v err msg -> IO Int
+pClientSentCommandsCount ProtocolClient {client_ = PClient {sentCommands}} = M.size <$> readTVarIO sentCommands
 
 isPresetDomain :: [HostName] -> TransportHost -> Bool
 isPresetDomain presetDomains = \case
