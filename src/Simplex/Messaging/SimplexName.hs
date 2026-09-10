@@ -10,9 +10,12 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
+    tldSuffix,
     LabelHash (..),
     labelHash,
     labelHashText,
+    labelHashOfText,
+    boundedNonSpace,
     shortNameInfoStr,
   )
 where
@@ -77,8 +80,7 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
--- | The registry's key for a label, and what
--- BaseRegistrarImplementation.labelOf takes. Always 32 bytes.
+-- | The registry's key for a label: 32 bytes, as labelOf takes it.
 newtype LabelHash = LabelHash ByteString
   deriving (Eq, Show)
 
@@ -90,10 +92,16 @@ instance Encoding LabelHash where
 labelHash :: Text -> LabelHash
 labelHash label = LabelHash $ BA.convert (hash (encodeUtf8 (T.toLower label)) :: Digest Keccak_256)
 
--- | ENS's encoding for a label whose text is unknown, which is what the
--- backing resolver's HTTP API takes.
+-- | ENS's encoding for an unknown label, as the resolver's HTTP API takes it.
 labelHashText :: LabelHash -> Text
 labelHashText (LabelHash h) = "[" <> decodeLatin1 (BAE.convertToBase BAE.Base16 h) <> "]"
+
+-- | The inverse: `[` cannot occur in a label, so the form is unambiguous.
+labelHashOfText :: Text -> Maybe LabelHash
+labelHashOfText t = do
+  hex <- T.stripSuffix "]" =<< T.stripPrefix "[" t
+  h <- eitherToMaybe (BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) :: Either String ByteString)
+  if B.length h == 32 then Just (LabelHash h) else Nothing
 
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString
@@ -145,12 +153,15 @@ instance Encoding SimplexTLD where
       _ -> fail "bad SimplexTLD"
 
 fullDomainName :: SimplexDomain -> Text
-fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
-  where
-    tld' = case nameTLD of
-      TLDSimplex -> ["simplex"]
-      TLDTesting -> ["testing"]
-      TLDWeb -> []
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} =
+  T.intercalate "." (reverse subDomain ++ [domain]) <> tldSuffix nameTLD
+
+-- | A web name carries its own TLD, so it gets no suffix.
+tldSuffix :: SimplexTLD -> Text
+tldSuffix = \case
+  TLDSimplex -> ".simplex"
+  TLDTesting -> ".testing"
+  TLDWeb -> ""
 
 shortNameInfoStr :: SimplexNameInfo -> Text
 shortNameInfoStr = \case

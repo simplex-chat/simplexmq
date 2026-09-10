@@ -81,8 +81,6 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     NameQuery (..),
-    NameQueryLabel (..),
-    nameQuery,
     queryName,
     NameRegistration (..),
     NamePricing (..),
@@ -254,7 +252,7 @@ import Data.Constraint (Dict (..))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
-import Data.List (foldl')
+import Data.List (find, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
@@ -282,7 +280,7 @@ import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SystemTime (SystemSeconds)
-import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash, labelHashText)
+import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), boundedNonSpace, fullDomainName, labelHash, labelHashOfText, labelHashText, tldSuffix)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -1601,81 +1599,43 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
--- | What RSLV asks about. Unlike SimplexDomain, which is always text, this may
--- name a label by its hash.
-data NameQuery = NameQuery
-  { queryTLD :: SimplexTLD,
-    -- | only the second-level label may be hashed: subname labels are needed as
-    -- text to reach the record
-    queryLabel :: NameQueryLabel,
-    -- | parent to child, as in SimplexDomain
-    querySub :: [Text]
-  }
+-- | What RSLV asks about: a name, or the hash of a second-level label.
+data NameQuery = NQDomain SimplexDomain | NQHash SimplexTLD LabelHash
   deriving (Eq, Show)
 
-data NameQueryLabel
-  = NQName Text
-  | NQHash LabelHash
-  deriving (Eq, Show)
+instance Encoding NameQuery where
+  smpEncode = encodeUtf8 . queryName
+  smpP = nameQueryOf . safeDecodeUtf8 <$?> boundedNonSpace
 
-instance Encoding NameQueryLabel where
-  smpEncode = \case
-    NQName t -> smpEncode ('N', t)
-    NQHash h -> smpEncode ('H', h)
-  smpP =
-    A.anyChar >>= \case
-      'N' -> NQName <$> smpP
-      'H' -> NQHash <$> smpP
-      _ -> fail "bad NameQueryLabel"
+-- | A hashed label is bracketed, which no name can be, so no tag is needed.
+nameQueryOf :: Text -> Either String NameQuery
+nameQueryOf t = case find ((`T.isSuffixOf` t) . tldSuffix) ([TLDSimplex, TLDTesting] :: [SimplexTLD]) of
+  Just tld | Just h <- labelHashOfText (T.dropEnd (T.length (tldSuffix tld)) t) -> Right (NQHash tld h)
+  _ -> NQDomain <$> strDecode (encodeUtf8 t)
+
+-- | Hashed from v22, except a name with subnames or a web TLD.
+hashedQuery :: NameQuery -> NameQuery
+hashedQuery q = case q of
+  NQDomain SimplexDomain {nameTLD, domain, subDomain}
+    | null subDomain && nameTLD /= TLDWeb -> NQHash nameTLD (labelHash domain)
+  _ -> q
 
 -- | How the backing resolver is addressed for this query.
 queryName :: NameQuery -> Text
-queryName = fullDomainName . queryDomain
+queryName = \case
+  NQDomain d -> fullDomainName d
+  NQHash tld h -> labelHashText h <> tldSuffix tld
 
--- | The query as a name: what RSLV carries below v22, and what the resolver's
--- HTTP API takes. The only place a hashed label is written as text; SMP tags
--- the choice instead.
-queryDomain :: NameQuery -> SimplexDomain
-queryDomain NameQuery {queryTLD, queryLabel, querySub} =
-  SimplexDomain {nameTLD = queryTLD, domain = label, subDomain = querySub}
-  where
-    label = case queryLabel of
-      NQName t -> t
-      NQHash h -> labelHashText h
-
--- | The name a client asked about, hashed from v22. The hash only hides an
--- unregistered name: a registered one comes back with its name in the record,
--- and a short label is guessable by hashing candidates. A web TLD has no
--- registry, so it is never hashed.
-nameQuery :: VersionSMP -> SimplexDomain -> NameQuery
-nameQuery v SimplexDomain {nameTLD, domain, subDomain} =
-  NameQuery {queryTLD = nameTLD, queryLabel = label, querySub = subDomain}
-  where
-    label
-      | v >= nameAvailSMPVersion && nameTLD /= TLDWeb = NQHash (labelHash domain)
-      | otherwise = NQName domain
-
-instance Encoding NameQuery where
-  smpEncode NameQuery {queryTLD, queryLabel, querySub} =
-    smpEncode (queryTLD, queryLabel, EncList querySub)
-  smpP = do
-    (queryTLD, queryLabel, EncList querySub) <- smpP
-    pure NameQuery {queryTLD, queryLabel, querySub}
-
--- | US cents, rounded up where the registry's unit does not divide evenly, so
--- a quote is never below what is charged. The exact price is settled on chain.
+-- | US cents, rounded up so a quote is never below what is charged.
 newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
   deriving newtype (Encoding)
 
--- | What the registry holds for a name. A name that cannot be dated or priced
--- is not a case here: the router answers ERR NAME RESOLVER instead.
+-- | What the registry holds for a name.
 data NameRegistration
-  = -- | Held by someone. Always carries a record: where the owner set none,
-    -- every field is unset and the resolver address is zero.
+  = -- | Held by someone. Always carries a record, empty where none was set.
     NRRegistered
-      { -- | unix seconds the registration runs out. Absent only from a v20/v21
-        -- router, whose answer carried the record alone.
+      { -- | absent only from a v20/v21 router, which sent the record alone
         expires :: Maybe SystemSeconds,
         -- | unix seconds, > expires: until here only the owner may renew
         graceUntil :: Maybe SystemSeconds,
@@ -1684,15 +1644,8 @@ data NameRegistration
         nameRecord :: NameRecord
       }
   | -- | Held by nobody, and registrable now.
-    NRAvailable
-      { pricing :: NamePricing,
-        -- | while set, the name also costs a surcharge above `pricing` that
-        -- decays to nothing at this time. The surcharge itself is not carried:
-        -- it changes continuously, so it cannot be quoted as a price.
-        auctionUntil :: Maybe SystemSeconds
-      }
-  | -- | Held back by the registry and not registered. No price: it is not for
-    -- sale at the registry's price.
+    NRAvailable {pricing :: NamePricing}
+  | -- | Held back by the registry, and not for sale at its price.
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
@@ -1700,7 +1653,7 @@ instance Encoding NameRegistration where
   smpEncode = \case
     NRRegistered {expires, graceUntil, reservedReason_, nameRecord} ->
       smpEncode ('N', expires, graceUntil, reservedReason_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
-    NRAvailable {pricing, auctionUntil} -> smpEncode ('A', auctionUntil, pricing)
+    NRAvailable {pricing} -> smpEncode ('A', pricing)
     NRReserved {reservedReason} -> smpEncode ('R', reservedReason)
   smpP =
     A.anyChar >>= \case
@@ -1708,19 +1661,14 @@ instance Encoding NameRegistration where
         (expires, graceUntil, reservedReason_) <- smpP
         nameRecord <- J.eitherDecodeStrict . unTail <$?> _smpP
         pure NRRegistered {expires, graceUntil, reservedReason_, nameRecord}
-      'A' -> do
-        auctionUntil <- smpP
-        pricing <- smpP
-        pure NRAvailable {pricing, auctionUntil}
+      'A' -> NRAvailable <$> smpP
       'R' -> NRReserved <$> smpP
       _ -> fail "bad NameRegistration"
 
--- | Enough to price the name locally. The client knows the label, so it knows
--- which tier applies and whether the label is long enough; the router, behind a
--- hash, knows neither. The formula is in protocol/simplex-messaging.md.
+-- | Enough to price the name locally, which the router cannot do behind a hash.
 data NamePricing = NamePricing
   { -- | US cents per year, for the lengths the registry prices specially
-    rentPrices :: Map Int USDCents,
+    registrationPrices :: Map Int USDCents,
     -- | US cents per year for every other length
     basePrice :: USDCents,
     -- | characters; the registry refuses shorter labels
@@ -1729,14 +1677,14 @@ data NamePricing = NamePricing
   deriving (Eq, Show)
 
 instance Encoding NamePricing where
-  smpEncode NamePricing {rentPrices, basePrice, minLabelLength} =
-    smpEncode (EncList $ map tier $ M.toList rentPrices, basePrice, w16 minLabelLength)
+  smpEncode NamePricing {registrationPrices, basePrice, minLabelLength} =
+    smpEncode (EncList $ map tier $ M.toList registrationPrices, basePrice, w16 minLabelLength)
     where
       tier (len, price) = (w16 len, price)
       w16 = fromIntegral :: Int -> Word16
   smpP = do
     (EncList tiers, basePrice, minLen) <- smpP
-    pure NamePricing {rentPrices = tierMap tiers, basePrice, minLabelLength = fromIntegral (minLen :: Word16)}
+    pure NamePricing {registrationPrices = tierMap tiers, basePrice, minLabelLength = fromIntegral (minLen :: Word16)}
     where
       tierMap :: [(Word16, USDCents)] -> Map Int USDCents
       tierMap = M.fromList . map (\(len, price) -> (fromIntegral len, price))
@@ -1747,31 +1695,31 @@ data NameReservedReason
     NRRInternal
   | NRRTrademark
   | NRRCommunity
-  | -- | a reason added to the registry after this version: still reserved, and
-    -- carries its own word so a later version can name it
+  | -- | added to the registry after this version, and still reserved
     NRRUnknown Text
   deriving (Eq, Show)
 
--- | One vocabulary, shared by the wire, the backing resolver and the JSON API.
-instance StrEncoding NameReservedReason where
-  strEncode = \case
+instance TextEncoding NameReservedReason where
+  textEncode = \case
     NRRInternal -> "internal"
     NRRTrademark -> "trademark"
     NRRCommunity -> "community"
-    NRRUnknown t -> encodeUtf8 t
-  strP = reservedReasonOf . safeDecodeUtf8 <$> A.takeTill (== ' ')
-    where
-      reservedReasonOf = \case
-        "internal" -> NRRInternal
-        "trademark" -> NRRTrademark
-        "community" -> NRRCommunity
-        t -> NRRUnknown t
+    NRRUnknown t -> t
+  textDecode = Just . reservedReasonOf
+
+-- | A reason this version has no word for keeps its own.
+reservedReasonOf :: Text -> NameReservedReason
+reservedReasonOf = \case
+  "internal" -> NRRInternal
+  "trademark" -> NRRTrademark
+  "community" -> NRRCommunity
+  t -> NRRUnknown t
 
 instance Encoding NameReservedReason where
-  smpEncode = strEncode
-  smpP = strP
+  smpEncode = encodeUtf8 . textEncode
+  smpP = reservedReasonOf . safeDecodeUtf8 <$> A.takeTill (== ' ')
 
--- | A v20/v21 router's answer: the name resolves, and nothing else was said.
+-- | What a v20/v21 router's answer amounts to.
 oldRegistration :: NameRecord -> NameRegistration
 oldRegistration nameRecord =
   NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}
@@ -2011,8 +1959,8 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
     RSLV q
-      | v >= nameAvailSMPVersion -> e (RSLV_, ' ', q)
-      | otherwise -> e (RSLV_, ' ', queryDomain q)
+      | v >= nameAvailSMPVersion -> e (RSLV_, ' ', hashedQuery q)
+      | otherwise -> e (RSLV_, ' ') <> encodeUtf8 (queryName q)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2121,7 +2069,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
     CT SResolver RSLV_
       | v >= nameAvailSMPVersion -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
-      | otherwise -> Cmd SResolver . RSLV . nameQuery v <$> _smpP <* A.takeByteString
+      | otherwise -> Cmd SResolver . RSLV . NQDomain <$> _smpP <* A.takeByteString
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -2612,8 +2560,8 @@ $(J.deriveJSON defaultJSON ''BlockingInfo)
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
 
 instance ToJSON NameReservedReason where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
+  toJSON = textToJSON
+  toEncoding = textToEncoding
 
 instance FromJSON NameReservedReason where
-  parseJSON = strParseJSON "NameReservedReason"
+  parseJSON = textParseJSON "NameReservedReason"
