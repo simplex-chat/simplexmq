@@ -71,6 +71,12 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
+**4. the route your router will call** (check 3 passes on an older resolver too):
+```sh
+curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
+# → {"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}
+```
+
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
 
@@ -110,7 +116,52 @@ standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
 ```
 
-### Response shape
+Three routes, versioned separately from the protocol so each only changes when
+its own shape does:
+
+| Route | Called by | Answers |
+|---|---|---|
+| `/v2/resolve/<query>` | routers from SMP v22 | a `NameRegistration` |
+| `/resolve/<name>` | routers before SMP v22 | a name record, flat |
+| `/health` | anyone | readiness |
+
+`/v1/resolve/<name>` is an alias for `/resolve/<name>`.
+
+### v2: `/v2/resolve/<query>`
+
+The body is the SMP protocol's `NameRegistration`, which the router decodes as
+is and forwards; translating the registry's model to it is this resolver's job.
+Its `type` is `registered`, `available` or `reserved`, and the fields each one
+carries are specified once, in the **Name response** section of
+[`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md). It is
+the wire format, so it is documented with the wire.
+
+Two things follow from that and are worth stating here. Expiry and grace belong
+to the registration, not to the record: `expires` and `graceUntil` sit beside
+`nameRecord`, not inside it. And a name nobody holds is not an error: it
+answers 200 with `type: available` and its price, so no status code from this
+route means "not registered".
+
+| Status | Meaning |
+|---|---|
+| 200 | a registration: `registered`, `available` or `reserved` |
+| 400 | `tldNotConfigured`, `notFullyQualified` |
+| 502 | `noPriceOracle`, `labelNotRecorded`, an unreadable status, or `upstreamError` |
+
+Error bodies carry `name` and a fixed `error` code to branch on. Only
+`upstreamError` adds a `message`; the v1 route always adds one.
+
+`labelNotRecorded` means the registrar holds the name but never recorded its
+label, so a hashed query cannot be answered with a name. See
+[Querying by labelhash](#querying-by-labelhash).
+
+### v1: `/resolve/<name>`
+
+What routers before SMP v22 call. Its shape is unrelated to v2's: the record is
+flat, and `status`, `expires`, `graceEnds`, `reasonCode` and `reason` sit
+alongside its fields.
+
+#### v1 response shape
 
 ```jsonc
 {
@@ -134,7 +185,7 @@ text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
 
-### Registration status and expiry
+#### v1 registration status and expiry
 
 A response carries `status`, `expires` and `graceEnds` whenever the resolver
 read them, a successful resolve included, so a client that has just resolved a
@@ -164,6 +215,90 @@ released*.
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under.
 
+#### v1 errors
+
+Every non-2xx body carries two fields: `error` is a fixed code to branch on,
+and `message` is a sentence for a human. Match on `error`, never on `message`,
+which is free to change.
+
+```jsonc
+{"name": "nope.testing", "error": "unregistered",
+ "message": "this name has never been registered",
+ "status": "unregistered", "expires": null, "graceEnds": null}
+```
+
+The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
+`expired`, `noSuchRoute` and `upstreamError`. When the registration is what went
+wrong, `error` and `status` hold the same value, so one field is enough to read.
+
+`upstreamError` says only which exception type the RPC call raised. The text
+goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
+and urlopen puts the URL it failed on into the message. It is also the answer
+when a registrar, controller or oracle address has no contract behind it: the
+empty reply is refused rather than read as zero, which would make every name
+look free.
+
+#### v1 status codes
+
+| Status | Meaning |
+|---|---|
+| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when no registrar is configured) |
+| 400 | TLD not configured, or not a fully-qualified name |
+| 404 | `unregistered` |
+| 410 | `expired`: lapsed and past grace, so anyone may take it |
+| 502 | upstream RPC error / reth not synced |
+
+### Querying by labelhash
+
+A client asking whether a name is free is usually about to register it, and
+whoever runs the resolver could register it first. To avoid that, send the
+keccak hash of the label in ENS's `[<64 hex>]` form instead of the label:
+
+```sh
+# instead of /resolve/acme.testing
+curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
+```
+
+namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
+returns the same record. The registrar keys `nameExpires` and `reservedNames` on
+the labelhash too, so the status fields do not need the label either. The
+resolver learns the name only by guessing the label and hashing it.
+
+Only the second-level label is a registry key, and `status` decodes a bracket
+there at any depth. The record does not: a bracket is decoded only in a
+two-label name, so `sub.[<hash>].testing` is not a supported query. Subname
+labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
+from v22 send every 2LD this way, so a registrable name normally never reaches
+this service.
+
+On v2, read `type`: only `available` means the name is free. On v1, read
+`status`: a name is free on `unregistered` (404) and on `expired` (410), every
+other status means somebody holds it, and a `reasonCode` means the registry will
+refuse it whatever the status says.
+
+The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
+SHA3-256, a different function that returns 64 valid-looking hex characters
+pointing at the wrong node.
+
+The resolver lowercases the query before matching, so uppercase hex works too.
+Clients that refuse raw brackets in a path can percent-encode them as `%5B` and
+`%5D`.
+
+Brackets cannot collide with a real name: they are invalid in a normalised ENS
+name, and a `[<64 hex>]` label is 66 bytes against the registrar's
+`maxLabelLength` of 63. A plain `0x…` label is not treated as a hash, since that
+is an ordinary, registrable name.
+
+Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
+created by the 2LD's owner. A bracket label in a subname is hashed as written,
+so it points at a node nobody can own. ENS tooling accepts the bracketed form at
+any depth; this resolver does not, on purpose.
+
+This hides interest in a name and nothing else: the registration itself is
+public, and commit-reveal covers that step. A short or well-known label is easy
+to guess by hashing candidates, and the reveal publishes the labelhash, so an
+operator who logged the query can match it to the name afterwards.
+
 ### What a name costs
 
 The controller's `prices()` names the price oracle, so no extra configuration is
@@ -189,9 +324,10 @@ answers `ERR NAME RESOLVER "HTTP 404"` until this service is upgraded, while
 
 ### Why a name is reserved
 
-A held-back name carries `reasonCode`, the controller's reason, and `reason`, an
-English sentence for a human reading this API. Clients should branch on
-`reasonCode` and word it themselves, in the user's language.
+v2 carries the controller's reason as `reservedReason`. v1 carries the same word
+as `reasonCode`, plus `reason`, an English sentence for a human reading this API.
+Clients should branch on the word and phrase it themselves, in the user's
+language.
 
 | `reasonCode` | Meaning |
 |---|---|
@@ -203,89 +339,6 @@ English sentence for a human reading this API. Clients should branch on
 These are `SimplexController.Reason`, where 0 means not reserved. A controller
 from before the enum stores a boolean, whose `true` decodes as 1, which is why
 1 reads as `internal`, so nothing needs migrating.
-
-### Querying by labelhash
-
-A client asking whether a name is free is usually about to register it, and
-whoever runs the resolver could register it first. To avoid that, send the
-keccak hash of the label in ENS's `[<64 hex>]` form instead of the label:
-
-```sh
-# instead of /resolve/acme.testing
-curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
-```
-
-namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
-returns the same record. The registrar keys `nameExpires` and `reservedNames` on
-the labelhash too, so the status fields do not need the label either. The
-resolver learns the name only by guessing the label and hashing it.
-
-Only the second-level label is a registry key, and `status` decodes a bracket
-there at any depth. The record does not: a bracket is decoded only in a
-two-label name, so `sub.[<hash>].testing` is not a supported query. Subname
-labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
-from v22 send every 2LD this way, so a registrable name normally never reaches
-this service.
-
-Read the answer from `status`. A name is free on `unregistered` (404) and on
-`expired` (410). Every other status means somebody holds the name. A `reasonCode`
-means the registry will refuse it whatever the status says.
-
-The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
-SHA3-256, a different function that returns 64 valid-looking hex characters
-pointing at the wrong node.
-
-The resolver lowercases the query before matching, so uppercase hex works too.
-Clients that refuse raw brackets in a path can percent-encode them as `%5B` and
-`%5D`.
-
-Brackets cannot collide with a real name: they are invalid in a normalised ENS
-name, and a `[<64 hex>]` label is 66 bytes against the registrar's
-`maxLabelLength` of 63. A plain `0x…` label is not treated as a hash, since that
-is an ordinary, registrable name.
-
-Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
-created by the 2LD's owner. A bracket label in a subname is hashed as written,
-so it points at a node nobody can own. ENS tooling accepts the bracketed form at
-any depth; this resolver does not, on purpose.
-
-This hides interest in a name and nothing else: the registration itself is
-public, and commit-reveal covers that step. A short or well-known label is easy
-to guess by hashing candidates, and the reveal publishes the labelhash, so an
-operator who logged the query can match it to the name afterwards.
-
-### Errors
-
-Every non-2xx body carries two fields: `error` is a fixed code to branch on,
-and `message` is a sentence for a human. Match on `error`, never on `message`,
-which is free to change.
-
-```jsonc
-{"name": "nope.testing", "error": "unregistered",
- "message": "this name has never been registered",
- "status": "unregistered", "expires": null, "graceEnds": null}
-```
-
-The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
-`expired`, `noSuchRoute` and `upstreamError`. When the registration is what went
-wrong, `error` and `status` hold the same value, so one field is enough to read.
-
-`upstreamError` says only which exception type the RPC call raised. The text
-goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
-and urlopen puts the URL it failed on into the message. It is also the answer
-when a registrar, controller or oracle address has no contract behind it: the
-empty reply is refused rather than read as zero, which would make every name
-look free.
-
-### Status codes
-
-| Status | Meaning |
-|---|---|
-| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when no registrar is configured) |
-| 400 | TLD not configured, or not a fully-qualified name |
-| 404 | `unregistered` |
-| 410 | `expired`: lapsed and past grace, so anyone may take it |
-| 502 | upstream RPC error / reth not synced |
 
 ### Configuring addresses
 
