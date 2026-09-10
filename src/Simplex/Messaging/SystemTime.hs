@@ -23,12 +23,11 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime, systemToUTCTime)
 import Data.Typeable (Proxy (..))
 import GHC.TypeLits (KnownNat, Nat, natVal)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
-import Simplex.Messaging.Encoding (Encoding)
 import Simplex.Messaging.Encoding.String
 
 newtype RoundedSystemTime (t :: Nat) = RoundedSystemTime {roundedSeconds :: Int64}
   deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, FromJSON, ToJSON, FromField, ToField)
+  deriving newtype (FromJSON, ToJSON, FromField, ToField)
 
 type SystemDate = RoundedSystemTime 86400
 

@@ -1056,14 +1056,12 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 -- the client never sends RSLV to a relay that predates names support.
 proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRegistration)
 proxyResolveName c nm proxiedRelay name
-  | v >= namesSMPVersion =
+  | prVersion proxiedRelay >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (NQDomain name)) >>= \case
         Right (RNAME reg) | resolvedName name reg -> pure $ Right reg
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
-  where
-    v = prVersion proxiedRelay
 
 -- | Direct (non-PFWD) name resolution. Exposes the client IP to the resolver;
 -- callers that want anonymity should use `proxyResolveName` via the standard
@@ -1072,13 +1070,11 @@ proxyResolveName c nm proxiedRelay name
 -- the server has no RSLV at all; the encoder gates the query format separately.
 directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRegistration
 directResolveName c nm name
-  | v >= namesSMPVersion =
+  | thVersion (thParams c) >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (NQDomain name))) >>= \case
         RNAME reg | resolvedName name reg -> pure reg
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
-  where
-    v = thVersion (thParams c)
 
 -- | The record must name the name that was asked for: a hashed query does not
 -- tell the router which name it is, so the router is not trusted for it.

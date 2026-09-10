@@ -3,8 +3,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TupleSections #-}
 
 -- | HTTP transport for the public-namespace resolver.
 --
@@ -37,17 +35,11 @@ where
 
 import qualified Control.Exception as E
 import qualified Data.Aeson as J
-import Data.Aeson.Key (Key)
-import qualified Data.Aeson.KeyMap as JKM
-import qualified Data.Aeson.TH as JQ
-import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
-import Data.Int (Int64)
-import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
@@ -68,7 +60,6 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
 import Simplex.Messaging.Names.Record (NameRegistration)
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -119,12 +110,8 @@ authHeader = \case
     let encoded = BAE.convertToBase BAE.Base64 (encodeUtf8 u <> ":" <> encodeUtf8 p) :: ByteString
      in ("Authorization", "Basic " <> encoded)
 
--- | GET <baseUrl>/v2/resolve/<percent-encoded query>, which answers with
--- NameRegistration JSON. v1 is /resolve, which answers with a NameRecord and is
--- what relays before SMP v22 call; the resolver API is versioned separately from
--- the protocol, so it only changes when its own shape does. The query is a name,
--- or a bracketed label hash, percent-encoded (every non-unreserved byte per RFC
--- 3986) so slashes and punctuation cannot alter the path.
+-- | The query is a name or a bracketed label hash, percent-encoded (every
+-- non-unreserved byte per RFC 3986) so it cannot alter the path.
 resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRegistration)
 resolveHttp env q =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)

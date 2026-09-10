@@ -19,15 +19,15 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 
 ## 1. Configure
 
-Edit `.env`. The defaults work as they are; change them only if you need to:
+Edit `.env` — the defaults work as-is; override only if needed:
 
 ```sh
 NETWORK=mainnet                                               # default
 TRUSTED_NODE_URL=https://mainnet-checkpoint-sync.attestant.io # default
 ```
 
-Everything else (NAT) already has a working default in `docker-compose.yml`.
-Uncomment the hints in `.env` only if you need to change one.
+Everything else (NAT) has a working default baked into `docker-compose.yml`;
+uncomment the hints in `.env` only to override.
 
 ## 2. Run
 
@@ -37,7 +37,7 @@ docker compose up -d
 docker compose logs -f reth resolver
 ```
 
-Compose starts the node before the resolver; `depends_on` takes care of that.
+`depends_on` handles ordering automatically (start node → start resolver).
 
 ## 3. Wait for the node to sync
 
@@ -45,13 +45,12 @@ Compose starts the node before the resolver; `depends_on` takes care of that.
 docker compose logs --tail=20 reth
 ```
 
-This is the slow step: about a day on mainnet. Until reth has synced, the
-resolver returns `502`.
+This is the long pole (~1 day on mainnet). Until reth is synced the resolver
+returns `502`.
 
 ## Verify
 
-Run the three checks below once the stack is up. The ones that need chain data
-pass only after the node has synced.
+Run these once the stack is up (the node-dependent ones pass after sync):
 
 **1. reth is reachable and reporting a block:**
 ```sh
@@ -72,7 +71,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
-**Point your smp-server at it:** in its `[NAMES]` section set
+**Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
 
 ## Ports (all loopback unless noted)
@@ -87,10 +86,9 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 
 ## Caveats
 
-- **All images track `:latest`** (reth, nimbus). Each `docker compose pull`
-  brings upstream fixes, so re-run the checks above afterwards.
-- All ports bind to loopback. Expose only what you put behind a TLS reverse
-  proxy.
+- **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
+  `docker compose pull`; re-run the verify checks after pulling.
+- All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
 
 ## Teardown
 
@@ -105,9 +103,8 @@ docker compose down -v    # also wipe volumes → full re-sync
 
 ## Resolver API reference
 
-You can also run the resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) on its
-own for local development, without Docker, using
-[`uv`](https://docs.astral.sh/uv/):
+The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
+standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 
 ```sh
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
@@ -131,12 +128,11 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
 }
 ```
 
-`simplexContact` and `simplexChannel` are arrays, because a name can advertise
-several SMP servers; clients try them in order. On chain each one is a single
-text record with the entries joined by `;`. The resolver splits that record,
-trims each entry and drops the empty ones. Addresses come back in each chain's
-usual format (EIP-55, bech32, SS58, Monero base58). Subnames work the same way
-(`bar.foobar.testing`).
+`simplexContact`/`simplexChannel` are arrays (a name can advertise multiple SMP
+servers; clients try them in order). On-chain they're a single `;`-separated
+text record; the resolver splits/trims/drops-empties. Address encodings are
+canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
+identically (`bar.foobar.testing`).
 
 ### Registration status and expiry
 
@@ -179,9 +175,9 @@ per second, and charges a premium on a lapsed name that it does not expose. A
 quote from one is therefore only safe for a name that was never registered: an
 `expired` name gets no price rather than one below what the registrar charges.
 
-Deployment constants - the grace period, the oracle and its curve - are cached
-for `CONSTANTS_TTL` (5 minutes), so a retune shows up within that. Per-name
-values are read on every query.
+The grace period, the oracle and its curve are cached for `CONSTANTS_TTL`
+(5 minutes), so a retune shows up within that. Per-name values are read on
+every query.
 
 **Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
 controller there is no oracle, so no name can be priced.
@@ -219,8 +215,9 @@ returns the same record. The registrar keys `nameExpires` and `reservedNames` on
 the labelhash too, so the status fields do not need the label either. The
 resolver learns the name only by guessing the label and hashing it.
 
-Only the second-level label is a registry key, and it is decoded wherever it
-sits: `sub.[<hash>].testing` reaches the node `sub.name.testing` does. Subname
+Only the second-level label is a registry key, and `status` decodes a bracket
+there at any depth. The record does not: a bracket is decoded only in a
+two-label name, so `sub.[<hash>].testing` is not a supported query. Subname
 labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
 from v22 send every 2LD this way, so a registrable name normally never reaches
 this service.

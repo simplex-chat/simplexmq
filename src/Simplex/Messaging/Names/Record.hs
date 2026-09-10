@@ -58,7 +58,7 @@ $( JQ.deriveJSON
     ''NameRecord
  )
 
--- | US cents, rounded up so a quote is never below what is charged.
+-- | US cents.
 newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
   deriving newtype (ToJSON, FromJSON)
@@ -110,7 +110,7 @@ instance TextEncoding NameReservedReason where
     NRRUnknown t -> t
   textDecode = Just . reservedReasonOf
 
--- | A reason this version has no word for keeps its own.
+-- | An unknown reason is kept as text.
 reservedReasonOf :: Text -> NameReservedReason
 reservedReasonOf = \case
   "internal" -> NRRInternal
@@ -125,7 +125,7 @@ instance ToJSON NameReservedReason where
 instance FromJSON NameReservedReason where
   parseJSON = textParseJSON "NameReservedReason"
 
--- | What a v20/v21 router's answer amounts to.
+-- | A v20/v21 router's record as a registration.
 oldRegistration :: NameRecord -> NameRegistration
 oldRegistration nameRecord =
   NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}

@@ -272,7 +272,7 @@ import Simplex.Messaging.Protocol
     NetworkError (..),
     MsgFlags (..),
     MsgId,
-    NameRegistration (..),
+    NameRegistration,
     NtfServer,
     NtfServerWithAuth,
     ProtoServer,

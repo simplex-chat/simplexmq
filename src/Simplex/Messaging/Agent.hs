@@ -228,7 +228,7 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
-    NameRegistration (..),
+    NameRegistration,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),

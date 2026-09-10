@@ -190,9 +190,9 @@ def chain_now() -> int:
     return decode_uint(block["timestamp"])
 
 
-# Deployment constants - the grace period, the oracle and its curve - change only
-# when the owner retunes a contract, so they are read once per TTL rather than on
-# every query. Per-name values and the decaying premium are never cached.
+# The grace period, the oracle and its curve change only when a contract is
+# retuned, so they are read once per TTL rather than on every query. Per-name
+# values are never cached.
 CONSTANTS_TTL = 300
 _constants: dict = {}
 
@@ -331,8 +331,8 @@ def name_status(name: str):
         }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
-    # Only the 2LD's label is a registry key, wherever it sits - the same rule
-    # node_of applies to the node.
+    # The 2LD's label is that key at any depth. node_of decodes a bracket only
+    # in a two-label name, so a bracket subname gets a status but no record.
     token = label_token(labels[-2])
     expires = decode_uint(
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))

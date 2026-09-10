@@ -84,10 +84,6 @@ nameLabelP = do
 newtype LabelHash = LabelHash ByteString
   deriving (Eq, Show)
 
-instance Encoding LabelHash where
-  smpEncode (LabelHash h) = h
-  smpP = LabelHash <$> A.take 32
-
 -- | keccak-256 of the lowercased label, as the registry keys it.
 labelHash :: Text -> LabelHash
 labelHash label = LabelHash $ BA.convert (hash (encodeUtf8 (T.toLower label)) :: Digest Keccak_256)
@@ -139,18 +135,6 @@ instance StrEncoding SimplexDomain where
 instance Encoding SimplexDomain where
   smpEncode = strEncode
   smpP = strP
-
-instance Encoding SimplexTLD where
-  smpEncode = \case
-    TLDSimplex -> "s"
-    TLDTesting -> "t"
-    TLDWeb -> "w"
-  smpP =
-    A.anyChar >>= \case
-      's' -> pure TLDSimplex
-      't' -> pure TLDTesting
-      'w' -> pure TLDWeb
-      _ -> fail "bad SimplexTLD"
 
 fullDomainName :: SimplexDomain -> Text
 fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')

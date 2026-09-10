@@ -17,7 +17,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Types (status200, status400, status404, status410, status500, status502)
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
-import Simplex.Messaging.Encoding.String (strDecode, strEncode)
+import Simplex.Messaging.Encoding.String (strDecode)
 import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
@@ -28,7 +28,7 @@ import Simplex.Messaging.Server.Names
     resolveName,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
-import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
+import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), labelHash)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import Simplex.Messaging.Transport (nameAvailSMPVersion, serverInfoSMPVersion)
 import Test.Hspec

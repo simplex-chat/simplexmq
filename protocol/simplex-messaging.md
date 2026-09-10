@@ -1496,9 +1496,8 @@ label when a name is registered, keyed by the hash of that label, so a router ca
 look up what the hash stands for without ever being told. The router is not
 trusted for it: a client MUST check that the record names the name it asked
 about, and reject the answer otherwise. A name registered without that record
-answers `unknown`, which fails that check. What stays impossible is learning a
-name that is *not* registered: there is nothing recorded to look up, so a name
-someone is merely considering never becomes known.
+answers `unknown`, which fails that check. An unregistered name has no
+recorded label, so it cannot be looked up.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1582,8 +1581,7 @@ honour. That is why `reserved` has no pricing field.
 The record is carried while a name is registered and through its grace period,
 and stops once the name is registrable by anyone. Keeping it through grace lets
 whoever opens the name tell its owner that it is about to lapse; keeping it
-longer would show a record whose owner no longer holds the name. How long a
-client goes on opening an expiring name is its own decision.
+longer would show a record whose owner no longer holds the name.
 
 **Computing the price.** In US cents, for a duration in seconds:
 
@@ -1596,8 +1594,8 @@ The registry's minimum registration is 730 days, a contract constant rather
 than a per-deployment value, so it is specified here rather than sent.
 `registrationPrices` omits any length below `minLabelLength`, those being
 unregistrable. `minLabelLength` is sent because a hashed query carries no
-length: the router cannot check it, so the client must, and a price quoted for a
-label the registry will refuse is worse than no quote at all.
+length: the router cannot check it, so the client must, and a quote for a label
+the registry refuses must not be shown.
 
 Below v22, `RNAME` carries the bare record and nothing else, and every answer
 without one is `ERR NAME NOT_FOUND`, as it was before this version. A name in
@@ -1614,9 +1612,7 @@ A router that cannot state an answer completely MUST say so as `ERR NAME
 RESOLVER <detail>` rather than answer partially. That covers a TLD with no
 registrar or no price oracle configured, an unreachable chain, a timeout, a
 registration it could not date, a registered name it could not resolve, and any
-status word it does not recognise. Neither a registration nor availability may
-be guessed: one would assert a registration nobody read, the other would offer a
-name that may be held.
+status word it does not recognise. A router MUST NOT guess either.
 
 A client MUST read a `reason` it does not know as unknown and still treat the
 name as reserved: a later version may reserve names for reasons this one cannot

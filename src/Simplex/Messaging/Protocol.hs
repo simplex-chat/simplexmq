@@ -255,8 +255,6 @@ import Data.Kind
 import Data.List (find, foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as M
 import Data.Maybe (isJust, isNothing)
 import Data.String
 import Data.Text (Text)
@@ -279,7 +277,6 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), boundedNonSpace, fullDomainName, labelHash, labelHashOfText, labelHashText, tldSuffix)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
