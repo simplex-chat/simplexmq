@@ -179,7 +179,7 @@ bip32Tests = do
     it "renders a path" $
       B32.renderPath [hardened' 44, hardened' 60, hardened' 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
     it "round-trips render and parse" $
-      B32.parsePath (B32.renderPath (ethereumPath 7)) `shouldBe` Right (ethereumPath 7)
+      B32.parsePath (B32.renderPath (ethereumPath 7 3)) `shouldBe` Right (ethereumPath 7 3)
     it "rejects a non-numeric component" $
       B32.parsePath "m/44x/60" `shouldSatisfy` isLeft
     it "rejects an index at the hardened boundary" $
@@ -239,7 +239,7 @@ derivationTests = do
     m = right $ B39.parseMnemonic canonicalPhrase
     seed = B39.mnemonicToSeed m ""
     master = right $ B32.masterKey seed
-    addrAt i = addressFromPrivateKey . B32.xkKey . right $ B32.derivePath master (ethereumPath i)
+    addrAt i = addressFromPrivateKey . B32.xkKey . right $ B32.derivePath master (ethereumPath i 0)
     dedup a as = if a `elem` as then as else a : as
 
 eip55Tests :: Spec

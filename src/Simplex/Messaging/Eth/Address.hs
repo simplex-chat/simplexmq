@@ -108,9 +108,11 @@ parseAddress s
     letters = filter (not . isDigit) bodyC
     mixedCase = any isUpper letters && any isLower letters
 
--- | BIP-44 path for Ethereum account @i@: @m\/44'\/60'\/i'\/0\/0@.
-ethereumPath :: Word32 -> [Word32]
-ethereumPath account = [hardened 44, hardened 60, hardened account, 0, 0]
+-- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@.
+-- The account must be below 'hardenedOffset', as 'hardened' returns anything
+-- at or above it unchanged and the path would be another account's.
+ethereumPath :: Word32 -> Word32 -> [Word32]
+ethereumPath account address = [hardened 44, hardened 60, hardened account, 0, address]
 
 -- Hex via memory's Base16, which this package already depends on and which
 -- Crypto.Secp256k1 already uses. Base16 emits lowercase, which is what EIP-55
