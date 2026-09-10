@@ -21,6 +21,7 @@ license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
     README.md
+    src/Simplex/Messaging/Crypto/BIP39/english.txt
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
@@ -31,6 +32,8 @@ extra-source-files:
     cbits/blst/**/*.asm
     cbits/libbbs/**/*.c
     cbits/libbbs/**/*.h
+    cbits/libsecp256k1/**/*.c
+    cbits/libsecp256k1/**/*.h
     apps/common/Web/static/index.html
     apps/common/Web/static/link.html
     apps/common/Web/static/media/apk_icon.png
@@ -135,7 +138,11 @@ library
       Simplex.Messaging.Crypto.Lazy
       Simplex.Messaging.Crypto.Ratchet
       Simplex.Messaging.Crypto.BBS
+      Simplex.Messaging.Crypto.BIP32
+      Simplex.Messaging.Crypto.BIP39
+      Simplex.Messaging.Crypto.BIP39.English
       Simplex.Messaging.Crypto.Entitlement
+      Simplex.Messaging.Crypto.Secp256k1
       Simplex.Messaging.Crypto.SNTRUP761
       Simplex.Messaging.Crypto.SNTRUP761.Bindings
       Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
@@ -144,6 +151,10 @@ library
       Simplex.Messaging.Crypto.ShortLink
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
+      Simplex.Messaging.Eth.Address
+      Simplex.Messaging.Eth.EIP712
+      Simplex.Messaging.Eth.Keccak
+      Simplex.Messaging.Eth.Stealth
       Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
@@ -326,7 +337,13 @@ library
       cbits/blst/src
       cbits/libbbs/include
       cbits/libbbs/src
-  cc-options: -D__BLST_PORTABLE__
+      cbits/libsecp256k1
+      cbits/libsecp256k1/include
+      cbits/libsecp256k1/src
+  -- libsecp256k1 is built without its autotools config header: every knob it
+  -- needs has an #ifndef default, and the checked-in precomputed tables match
+  -- those defaults. Only the recovery module has to be switched on explicitly.
+  cc-options: -D__BLST_PORTABLE__ -DENABLE_MODULE_RECOVERY=1
   if flag(commoncrypto)
     cc-options: -DBBS_CRYPTO_CC
     frameworks: Security
@@ -340,6 +357,9 @@ library
       cbits/libbbs/src/compat-string.c
       cbits/libbbs/src/sha256.c
       cbits/libbbs/src/shake256.c
+      cbits/libsecp256k1/src/secp256k1.c
+      cbits/libsecp256k1/src/precomputed_ecmult.c
+      cbits/libsecp256k1/src/precomputed_ecmult_gen.c
   asm-sources:
       cbits/blst/build/assembly.S
   extra-libraries:
@@ -367,6 +387,7 @@ library
     , cryptostore ==0.3.*
     , data-default ==0.7.*
     , directory ==1.3.*
+    , file-embed >=0.0.10 && <0.1
     , filepath ==1.4.*
     , hourglass ==0.2.*
     , http-types ==0.12.*
@@ -544,6 +565,7 @@ test-suite simplexmq-test
       CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
+      CoreTests.EthCryptoTests
       CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
