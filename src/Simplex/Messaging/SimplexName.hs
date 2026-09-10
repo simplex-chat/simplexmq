@@ -153,8 +153,12 @@ instance Encoding SimplexTLD where
       _ -> fail "bad SimplexTLD"
 
 fullDomainName :: SimplexDomain -> Text
-fullDomainName SimplexDomain {nameTLD, domain, subDomain} =
-  T.intercalate "." (reverse subDomain ++ [domain]) <> tldSuffix nameTLD
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
+  where
+    tld' = case nameTLD of
+      TLDSimplex -> ["simplex"]
+      TLDTesting -> ["testing"]
+      TLDWeb -> []
 
 -- | A web name carries its own TLD, so it gets no suffix.
 tldSuffix :: SimplexTLD -> Text
