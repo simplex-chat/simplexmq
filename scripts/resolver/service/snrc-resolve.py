@@ -909,7 +909,7 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "error": "noSuchRoute",
                 "message": "not found",
-                "routes": ["/health", "/resolve/<name>"],
+                "routes": ["/health", "/v2/resolve/<query>", "/v1/resolve/<name>", "/resolve/<name>"],
             },
         )
 

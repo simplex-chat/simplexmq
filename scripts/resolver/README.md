@@ -83,7 +83,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 | reth p2p | `:30303` tcp/udp | Ethereum sync (open on firewall) |
 | nimbus p2p | `:9000` tcp/udp | beacon sync (open on firewall) |
 | nimbus REST | `127.0.0.1:5052` | beacon API |
-| **resolver** | `127.0.0.1:8000` | SNRC REST (`/resolve`, `/health`) |
+| **resolver** | `127.0.0.1:8000` | SNRC REST (`/v2/resolve`, `/resolve`, `/health`) |
 
 ## Caveats
 
@@ -123,13 +123,11 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
   "simplexChannel": [],
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
   "owner": "0xd83b…", "resolver": "0x80fa…",
-  "status": "registered",      // registered | grace | auction | expired | unregistered | reserved | noResolver | unknown
+  "status": "registered",      // registered | grace | expired | unregistered | unknown
   "expires": 1780000000,       // Unix seconds; when the registration ends
   "graceEnds": 1787776000,     // expires + GRACE_PERIOD; last moment the owner can renew
-  "auctionEnds": null,         // when the premium reaches zero; only on `auction`
-  "premium": null,             // decimal string, attoUSD; only on `auction`
-  "reasonCode": null,          // only on `reserved`
-  "reason": null               // only on `reserved`
+  "reasonCode": null,          // set when the name is held back as well
+  "reason": null               // set when the name is held back as well
 }
 ```
 
@@ -151,12 +149,12 @@ name already knows when it expires. Both timestamps are Unix seconds, and
 |---|---|
 | `registered` | live; `expires` is when that ends |
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
-| `auction` | past grace, so anyone may register it — but at a premium, until `auctionEnds` |
-| `expired` | lapsed, past grace, and past the auction — anyone may register it at the ordinary price |
+| `expired` | lapsed and past grace; anyone may register it |
 | `unregistered` | never registered, and free to take |
-| `reserved` | not registered, and held back — registration will be refused; the body carries `reasonCode` and `reason` |
-| `noResolver` | registered, but points nowhere |
 | `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+
+A reservation is orthogonal to the status: a name held back by the registry
+carries `reasonCode` and `reason` whether or not it is registered.
 
 `grace` and `expired` are told apart by the registrar's own `available(id)`
 rule, `expires + GRACE_PERIOD < now`. `GRACE_PERIOD` is read from the contract
@@ -170,48 +168,40 @@ released*.
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under.
 
-### The post-grace auction
+### What a name costs
 
-When grace ends anyone may register the name, but the price oracle adds a
-premium that halves each day until it reaches zero. A name in that window
-reports `auction` instead of `expired`, with `premium` (attoUSD as a decimal
-string, since no JSON number holds a 256-bit integer) and `auctionEnds`.
+The controller's `prices()` names the price oracle, so no extra configuration is
+needed beyond `SNRC_CONTROLLER_<TLD>`. A `SimplexPriceOracle` exposes its curve
+through `prices()`, in US cents per year, which is the unit this API carries.
 
-`premium` is the surcharge alone: it depends only on when the registration
-lapsed, so a labelhash query gets it, but the base price depends on the label's
-length, which a hash does not carry. The client adds that.
+An ENS-shaped oracle exposes only `price1Letter()`..`price6Letter()`, in attoUSD
+per second, and charges a premium on a lapsed name that it does not expose. A
+quote from one is therefore only safe for a name that was never registered: an
+`expired` name gets no price rather than one below what the registrar charges.
 
-The oracle comes from the controller's `prices()`, so no extra configuration is
-needed. Its window is read from the chain; zero days switches the auction off.
 Deployment constants - the grace period, the oracle and its curve - are cached
 for `CONSTANTS_TTL` (5 minutes), so a retune shows up within that. Per-name
-values and the decaying premium are read on every query.
+values are read on every query.
 
-**Upgrade this service before the routers that query it.** An older resolver
-reports a name in its auction as plain `expired`, which routers read as
-"available at the ordinary price" while the registrar charges the premium. It
-also fails to decode a bracket label under a subname (`sub.[<hash>].tld`), which
-routers from v22 send. The same wrong quote happens when the auction cannot be
-read at all, so set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.
+**Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
+controller there is no oracle, so no name can be priced.
 
 ### Why a name is reserved
 
-`reserved` carries `reasonCode`, the controller's reason, and `reason`, an
+A held-back name carries `reasonCode`, the controller's reason, and `reason`, an
 English sentence for a human reading this API. Clients should branch on
 `reasonCode` and word it themselves, in the user's language.
 
 | `reasonCode` | Meaning |
 |---|---|
-| `unspecified` | reserved, with no reason recorded on chain |
-| `trademark` | reserved to protect a trademark |
-| `publicInterest` | reserved in the public interest |
-| `offensive` | reserved as an offensive name |
 | `internal` | reserved for SimpleX |
-| `premium` | reserved as a premium name |
+| `trademark` | reserved to protect a trademark |
+| `community` | reserved for the community |
 | `unknown` | a reason added to the contract after this resolver; still reserved |
 
-A controller from before reasons existed stores a boolean; its `true` reads as
-`unspecified`, so nothing needs migrating.
+These are `SimplexController.Reason`, where 0 means not reserved. A controller
+from before the enum stores a boolean, whose `true` decodes as 1, which is why
+1 reads as `internal`, so nothing needs migrating.
 
 ### Querying by labelhash
 
@@ -235,9 +225,9 @@ labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
 from v22 send every 2LD this way, so a registrable name normally never reaches
 this service.
 
-Read the answer from `status`. A name is free on `unregistered` (404), and on
-`expired` or `auction` (410) — `auction` costs a premium on top. Every other
-status means somebody holds the name. Watch `noResolver`: also a 404, but taken.
+Read the answer from `status`. A name is free on `unregistered` (404) and on
+`expired` (410). Every other status means somebody holds the name. A `reasonCode`
+means the registry will refuse it whatever the status says.
 
 The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
 SHA3-256, a different function that returns 64 valid-looking hex characters
@@ -275,9 +265,8 @@ which is free to change.
 ```
 
 The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
-`reserved`, `grace`, `auction`, `expired`, `noResolver`, `noSuchRoute` and
-`upstreamError`. When the registration is what went wrong, `error` and `status`
-hold the same value, so one field is enough to read.
+`expired`, `noSuchRoute` and `upstreamError`. When the registration is what went
+wrong, `error` and `status` hold the same value, so one field is enough to read.
 
 `upstreamError` says only which exception type the RPC call raised. The text
 goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
@@ -290,10 +279,10 @@ look free.
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved (`status` is `registered`, or `unknown` when no registrar is configured) |
+| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when no registrar is configured) |
 | 400 | TLD not configured, or not a fully-qualified name |
-| 404 | `unregistered`, `reserved` or `noResolver` — the `status` field says which |
-| 410 | registration lapsed — `status` says whether the owner can still renew (`grace`), anyone may take it at a premium (`auction`), or anyone may take it at the ordinary price (`expired`) |
+| 404 | `unregistered` |
+| 410 | `expired`: lapsed and past grace, so anyone may take it |
 | 502 | upstream RPC error / reth not synced |
 
 ### Configuring addresses
@@ -304,8 +293,8 @@ The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
 is where every expiry field comes from. With no registrar for a TLD, `/resolve`
 still works and reports `"status": "unknown"`. The **controller** holds
-`reservedNames`, which is where the `reserved` status comes from. With no
-controller, a reserved name reads as `unregistered`.
+`reservedNames`, which is where `reasonCode` comes from. With no controller a
+held-back name reads as not reserved, and no name can be priced.
 
 All three default to the mainnet `.testing` deployment. `.simplex` is unset
 until it is deployed.

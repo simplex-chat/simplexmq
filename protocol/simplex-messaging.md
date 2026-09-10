@@ -1528,50 +1528,56 @@ registry, and `RNAME` answers both: a client offering to register a name that
 turns out to be taken can show what took it.
 
 ```abnf
-rname        = %s"RNAME" SP registration
-registration = %s"N" optTime optTime reserved SP json-bytes ; registered
-             / %s"A" optTime pricing                        ; available
-             / %s"R" reason                                  ; reserved
-optTime      = %s"0" / (%s"1" 8*8 OCTET) ; Int64, big-endian, unix seconds
-reserved     = %s"0" / (%s"1" reason)    ; absent = not held back
-pricing      = tiers basePrice minLabelLength
-tiers        = length *(2*2 OCTET 8*8 OCTET) ; label length -> US cents per year
-basePrice    = 8*8 OCTET ; US cents per year for every other length
-minLabelLength = 2*2 OCTET ; characters
-reason       = %s"internal" / %s"trademark" / %s"community" / word
-word         = 1*32(%x21-7E) ; a reason this version has no word for
+rname = %s"RNAME" SP registration
 ```
 
-On `N` the two `optTime` fields are the expiry and the end of the grace period,
-in that order, and `json-bytes` is the record, consuming the remainder of the
-transmission. On `A` the `optTime` is when a post-grace surcharge decays to
-nothing. The reason words are the same on the wire, in the backing resolver's
-JSON and in a client's own API.
+`registration` is a UTF-8 JSON object consuming the remainder of the
+transmission. Its `type` field says which of the three answers it is; the other
+fields are the ones that answer carries.
 
 Money is US cents; the registry denominates in USD, never in ETH, and the
 backing resolver converts before the value reaches the protocol. Times are
 seconds since the Unix epoch. Lengths are characters.
 
-| Answer | Meaning |
+| `type` | Meaning |
 |---|---|
-| `N` | registered: held by someone until the expiry, renewable by its owner alone until the end of grace. It always carries a record: where the owner set none, every field is unset and the resolver address is zero |
-| `A` | available: held by nobody and registrable now, at `pricing` |
-| `R` | reserved: held back by the registry and not registered |
+| `registered` | held by someone until `expires`, renewable by its owner alone until `graceUntil`. It always carries `nameRecord`: where the owner set none, every field is unset and the resolver address is zero |
+| `available` | held by nobody and registrable now, at `pricing` |
+| `reserved` | held back by the registry and not registered |
 
-`A` alone means registrable: a name the registry holds back answers `R`
-instead, so a client has no flags to combine. A reservation on a name that *is*
-registered is carried in the `reserved` field, and is why that name will not
-free up when it expires.
+| Field | On | JSON type | Constraints |
+|---|---|---|---|
+| `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
+| `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
+| `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
+| `nameRecord` | `registered` | object | the record, schema below |
+| `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |
+| `reservedReason` | `reserved` | string | a reason word |
+
+| `pricing` field | JSON type | Constraints |
+|---|---|---|
+| `registrationPrices` | object | label length, as a decimal string, to US cents per year, for the lengths the registry prices specially |
+| `basePrice` | number | US cents per year for every other length |
+| `minLabelLength` | number | characters; the registry refuses shorter labels |
+
+A reason word is `internal`, `trademark`, `community`, or a word a later version
+reserves under. The words are the same on the wire, in the backing resolver's
+JSON and in a client's own API.
+
+`available` alone means registrable: a name the registry holds back answers
+`reserved` instead, so a client has no flags to combine. A reservation on a name
+that *is* registered is carried in `reservedReason_`, and is why that name will
+not free up when it expires.
 
 There is no separate answer for an auction. A name past its grace period answers
-`A` with the ordinary price and the time its surcharge expires. The surcharge
-itself is not carried: it decays continuously, so it cannot be quoted as a
-purchase price. A client shows the ordinary price and counts down to when it
-applies.
+`available` at the ordinary price. Where the registry charges a post-grace
+surcharge it is not carried: it decays continuously, so it cannot be quoted as a
+purchase price, and a router that cannot read it answers `ERR NAME RESOLVER`
+rather than a price below what the registry charges.
 
 A router MUST NOT quote a price for a reserved name: it is not for sale at the
 registry's price, and quoting one would be an offer the registry will not
-honour. That is why `R` has no pricing field.
+honour. That is why `reserved` has no pricing field.
 
 The record is carried while a name is registered and through its grace period,
 and stops once the name is registrable by anyone. Keeping it through grace lets
@@ -1583,25 +1589,25 @@ client goes on opening an expiring name is its own decision.
 
 ```
 price len duration = tier len * duration / 31536000
-tier len = the entry for len in tiers, or basePrice when len is not in tiers
+tier len = the entry for len in registrationPrices, or basePrice when there is none
 ```
 
-The registry's minimum registration is 28 days, a contract constant rather than
-a per-deployment value, so it is specified here rather than sent. `tiers` omits
-any length below `minLabelLength`, those being unregistrable. `minLabelLength`
-is sent because a hashed query carries no length: the router cannot check it, so
-the client must, and a price quoted for a label the registry will refuse is
-worse than no quote at all.
+The registry's minimum registration is 730 days, a contract constant rather
+than a per-deployment value, so it is specified here rather than sent.
+`registrationPrices` omits any length below `minLabelLength`, those being
+unregistrable. `minLabelLength` is sent because a hashed query carries no
+length: the router cannot check it, so the client must, and a price quoted for a
+label the registry will refuse is worse than no quote at all.
 
 Below v22, `RNAME` carries the bare record and nothing else, and every answer
 without one is `ERR NAME NOT_FOUND`, as it was before this version. A name in
 its grace period therefore resolves for those clients too, without the expiry
 they have no field to carry. In the other direction a v22 client reads such an
-answer as `N` with no expiry, grace or reservation, which is the only reason
-those three fields are optional.
+answer as `registered` with no expiry, grace or reservation, which is the only
+reason those three fields are optional.
 
-From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable": only `A`
-says that. `NOT_FOUND` means the router has nothing to say about the name, which
+From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable": only
+`available` says that. `NOT_FOUND` means the router has nothing to say about the name, which
 includes a backing resolver whose answer it could not read.
 
 A router that cannot state an answer completely MUST say so as `ERR NAME
@@ -1617,10 +1623,9 @@ name as reserved: a later version may reserve names for reasons this one cannot
 name, and losing the reservation over that would offer a name that cannot be
 registered. The word itself travels unchanged, so a later client can act on it
 and a current one can show or log it, which is why the set is open rather than
-an enumeration. A router sends at most one token of printable ASCII, since the
-field ends at a space.
+an enumeration.
 
-`json-bytes` MUST be a UTF-8 JSON object with the following schema:
+`nameRecord` MUST be a UTF-8 JSON object with the following schema:
 
 | Field | JSON type | Constraints |
 |---|---|---|
@@ -1644,9 +1649,9 @@ an empty string, not JSON `null` and not an absent key. Link fields
 empty array `[]` when unset. Coin fields (`eth`, `btc`, `xmr`, `dot`) use JSON
 `null` as the "unset" sentinel and MAY also be absent from the object entirely.
 
-The record carries no expiry field of its own: `N` carries it alongside.
-The backing resolver stops resolving a name once it is registrable by anyone, so
-a record only ever accompanies `N`. Testnet-vs-mainnet status is derived
+The record carries no expiry field of its own: `registered` carries it
+alongside. The backing resolver stops resolving a name once it is registrable by
+anyone, so a record only ever accompanies `registered`. Testnet-vs-mainnet status is derived
 from the queried TLD rather than an in-record flag.
 
 Receivers MUST tolerate extra unknown fields (forward-compatibility for future
