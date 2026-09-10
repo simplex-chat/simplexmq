@@ -23,6 +23,7 @@ import Data.Word (Word32)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.BIP32 as B32
 import qualified Simplex.Messaging.Crypto.BIP39 as B39
+import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Eth.Address
 import Simplex.Messaging.Eth.EIP712
@@ -120,6 +121,10 @@ bip39Tests = do
         toHex (B39.mnemonicToSeed p "TREZOR") `shouldBe` seedHex
   it "has a 2048-word list" $
     B39.wordListSize `shouldBe` 2048
+  it "embeds the upstream wordlist, unchanged" $
+    -- sha256 of bitcoin/bips/bip-0039/english.txt
+    C.sha256Hash (BC.unlines englishWordList)
+      `shouldBe` hx "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda"
   it "maps strengths to word counts" $
     map B39.strengthWordCount [minBound .. maxBound] `shouldBe` [12, 15, 18, 21, 24]
   it "rejects a bad checksum" $
