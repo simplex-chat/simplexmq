@@ -70,13 +70,13 @@ withNoNameServers k = withAgent 1 agentCfg (oneSrv (proxySrvCfg testSMPServer)) 
 resolveNameTests :: Spec
 resolveNameTests = do
   describe "direct path (SPMNever)" $
-    it "404 propagates as SMP host (NAME NOT_FOUND)" testDirectNotFound
+    it "a resolver error propagates as SMP host (NAME RESOLVER)" testDirectResolverErr
   describe "proxy path (SPMAlways)" $
-    it "404 from resolver propagates via proxy as SMP <proxyHost> (NAME NOT_FOUND)" testProxyNotFound
+    it "a resolver error propagates via proxy as SMP <proxyHost> (NAME RESOLVER)" testProxyResolverErr
   describe "TLDTesting path" $
-    it "NAME NOT_FOUND for TLDTesting too" testTestingTldNotFound
+    it "NAME RESOLVER for TLDTesting too" testTestingTldResolverErr
   describe "TLDWeb path" $
-    it "NAME NOT_FOUND for TLDWeb too" testWebTldNotFound
+    it "NAME RESOLVER for TLDWeb too" testWebTldResolverErr
   describe "no resolver configured" $
     it "answers NAME NO_RESOLVER" testNoResolver
   describe "no names servers (names role off everywhere)" $
@@ -96,37 +96,39 @@ testAvailSuccess =
       Right (SMP.NRAvailable {}) -> pure ()
       _ -> expectationFailure $ "expected Right NRAvailable, got: " <> show r
 
-testDirectNotFound :: HasCallStack => IO ()
-testDirectNotFound =
+-- | 404 is a resolver that predates /v2/resolve: no status from that endpoint
+-- means "not registered", since an unregistered name answers NRAvailable.
+testDirectResolverErr :: HasCallStack => IO ()
+testDirectResolverErr =
   withDirectResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Left (SMP _ (SMP.NAME SMP.NOT_FOUND)) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ (NAME NOT_FOUND)), got: " <> show r
+      Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
-testProxyNotFound :: HasCallStack => IO ()
-testProxyNotFound =
+testProxyResolverErr :: HasCallStack => IO ()
+testProxyResolverErr =
   withProxyAndResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Left (SMP host (SMP.NAME SMP.NOT_FOUND)) | testPort `isInfixOf` host -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP <proxyHost:" <> testPort <> "> (NAME NOT_FOUND)), got: " <> show r
+      Left (SMP host (SMP.NAME (SMP.RESOLVER _))) | testPort `isInfixOf` host -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP <proxyHost:" <> testPort <> "> (NAME (RESOLVER _))), got: " <> show r
 
-testTestingTldNotFound :: HasCallStack => IO ()
-testTestingTldNotFound =
+testTestingTldResolverErr :: HasCallStack => IO ()
+testTestingTldResolverErr =
   withDirectResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDTesting "bob" [])
     case r of
-      Left (SMP _ (SMP.NAME SMP.NOT_FOUND)) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ (NAME NOT_FOUND)), got: " <> show r
+      Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
-testWebTldNotFound :: HasCallStack => IO ()
-testWebTldNotFound =
+testWebTldResolverErr :: HasCallStack => IO ()
+testWebTldResolverErr =
   withDirectResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDWeb "example.com" [])
     case r of
-      Left (SMP _ (SMP.NAME SMP.NOT_FOUND)) -> pure ()
-      _ -> expectationFailure $ "expected Left (SMP _ (NAME NOT_FOUND)), got: " <> show r
+      Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
 testNoResolver :: HasCallStack => IO ()
 testNoResolver =

@@ -112,12 +112,13 @@ instance TextEncoding NameReservedReason where
   textDecode = Just . reservedReasonOf
 
 -- | An unknown reason is kept as text, capped: it reaches a client as a word.
+-- Capping precedes the match, so what is kept encodes back to what it decoded.
 reservedReasonOf :: Text -> NameReservedReason
-reservedReasonOf = \case
+reservedReasonOf t = case T.take 32 $ T.takeWhile (\c -> c > ' ' && c < '\DEL') t of
   "internal" -> NRRInternal
   "trademark" -> NRRTrademark
   "community" -> NRRCommunity
-  t -> NRRUnknown $ T.take 32 $ T.takeWhile (\c -> c > ' ' && c < '\DEL') t
+  r -> NRRUnknown r
 
 instance ToJSON NameReservedReason where
   toJSON = textToJSON

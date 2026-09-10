@@ -1495,9 +1495,10 @@ A hashed query still answers with the name. The registrar records the plaintext
 label when a name is registered, keyed by the hash of that label, so a router can
 look up what the hash stands for without ever being told. The router is not
 trusted for it: a client MUST check that the record names the name it asked
-about, and reject the answer otherwise. A name registered without that record
-answers `unknown`, which fails that check. An unregistered name has no
-recorded label, so it cannot be looked up.
+about, and reject the answer otherwise. A registry that does not record the
+label cannot answer a hashed query at all, and the router answers `ERR NAME
+RESOLVER` rather than a record it knows the client will reject. An unregistered
+name has no recorded label, so it cannot be looked up either.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1511,7 +1512,7 @@ several configured servers can act on distinctly:
 | Response | Condition | Client action |
 |---|---|---|
 | `RNAME` | the router read the registry | use it |
-| `ERR NAME NOT_FOUND` | the router could not read any answer for the name; below v22 also every name that does not resolve | stop, and do not read it as registrable |
+| `ERR NAME NOT_FOUND` | below v22 only: every name that does not resolve. From v22 a router never sends it | stop, and do not read it as registrable |
 | `ERR NAME NO_RESOLVER` | this router has no resolver (names role not enabled) | skip this server, try the next |
 | `ERR NAME RESOLVER <detail>` | the router cannot state an answer completely: no registrar or price oracle for the TLD, an unreachable chain, a transport failure, a timeout, a registration it could not date or resolve | surface `<detail>`; retry only if it reads as transient |
 

@@ -293,8 +293,11 @@ The resolver reads three contracts, each configured per TLD.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
-is where every expiry field comes from. With no registrar for a TLD, `/resolve`
-still works and reports `"status": "unknown"`. The **controller** holds
+is where every expiry field comes from, and `labelOf`, which is how a hashed
+query is answered with a name. A name registered without recording its label
+cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
+the client will reject. With no registrar for a TLD, `/resolve` still works and
+reports `"status": "unknown"`. The **controller** holds
 `reservedNames`, which is where `reasonCode` comes from. With no controller a
 held-back name reads as not reserved, and no name can be priced.
 

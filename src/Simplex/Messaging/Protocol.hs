@@ -1627,7 +1627,7 @@ queryName = \case
 data NameErrorType
   = -- | the names role / resolver is not configured on this server
     NO_RESOLVER
-  | -- | the name is not registered (resolver returned not-found)
+  | -- | the name does not resolve; sent only to a session below v22
     NOT_FOUND
   | -- | backing resolver/RPC failure - contains the diagnostic detail
     RESOLVER {resolverErr :: Text}
