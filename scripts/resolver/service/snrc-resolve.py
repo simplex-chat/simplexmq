@@ -172,16 +172,13 @@ def is_encoded_labelhash(label: str) -> bool:
 
 
 def node_of(name: str) -> bytes:
-    """namehash, decoding the 2LD's label as a labelhash wherever it sits, so
-    `[hash].tld` and `sub.[hash].tld` reach the nodes their names do. A bracket
-    label anywhere else is hashed as written."""
+    """namehash, decoding a second-level labelhash so `[hash].tld` reaches the
+    node its name does. Only a second-level name is ever hashed; a bracket
+    anywhere else is hashed as written."""
     labels = name.split(".")
-    if len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
+    if len(labels) != 2 or not is_encoded_labelhash(labels[0]):
         return namehash(name)
-    node = keccak(namehash(labels[-1]) + bytes.fromhex(labels[-2][1:-1]))
-    for label in reversed(labels[:-2]):
-        node = keccak(node + keccak(label.encode()))
-    return node
+    return keccak(namehash(labels[1]) + bytes.fromhex(labels[0][1:-1]))
 
 
 # ---------- Registration status ----------
@@ -406,10 +403,9 @@ def canonical_name(name: str) -> str:
     registrar's record of the label fills it in."""
     labels = name.split(".")
     registrar = REGISTRARS.get(labels[-1])
-    if not registrar or len(labels) < 2 or not is_encoded_labelhash(labels[-2]):
+    if not registrar or len(labels) != 2 or not is_encoded_labelhash(labels[0]):
         return name
-    label = registered_label(registrar, label_token(labels[-2]))
-    return ".".join(labels[:-2] + [label, labels[-1]])
+    return registered_label(registrar, label_token(labels[0])) + "." + labels[1]
 
 
 def label_token(label: str) -> int:
@@ -687,6 +683,86 @@ def upstream_error(subject: dict, e: Exception) -> dict:
     }
 
 
+def name_record(name: str):
+    """The NameRecord for a registered name. A name with no resolver set still
+    has one, with every field unset."""
+    registry = REGISTRIES[name.rsplit(".", 1)[-1]]
+    node = node_of(name)
+    node_hex = node.hex()
+    resolver_addr = decode_address(eth_call(registry, selector("resolver(bytes32)") + node_hex))
+    owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+    rec = {
+        "name": canonical_name(name),
+        "nickname": "",
+        "website": "",
+        "location": "",
+        "simplexContact": [],
+        "simplexChannel": [],
+        "eth": None,
+        "btc": None,
+        "xmr": None,
+        "dot": None,
+        "owner": owner,
+        "resolver": resolver_addr,
+    }
+    if resolver_addr == ZERO_ADDR:
+        return rec
+    texts = {}
+    for k in TEXT_KEYS:
+        try:
+            v = text(resolver_addr, node, k)
+        except RuntimeError:
+            v = ""
+        if v:
+            texts[k] = v
+    rec.update(
+        {
+            "nickname": texts.get("nickname") or texts.get("name") or texts.get("description") or "",
+            "website": texts.get("url", ""),
+            "location": texts.get("location", ""),
+            "simplexContact": split_links(texts.get("simplex.contact", "")),
+            "simplexChannel": split_links(texts.get("simplex.channel", "")),
+            "eth": addr_multicoin(resolver_addr, node, COIN_ETH),
+            "btc": addr_multicoin(resolver_addr, node, COIN_BTC),
+            "xmr": addr_multicoin(resolver_addr, node, COIN_XMR),
+            "dot": addr_multicoin(resolver_addr, node, COIN_DOT),
+        }
+    )
+    return rec
+
+
+def registration(name: str):
+    """The SMP protocol's NameRegistration, which the relay decodes as is.
+    Translating the contract's model to it is this resolver's job."""
+    tld = name.rsplit(".", 1)[-1]
+    if not REGISTRIES.get(tld):
+        return 400, {"name": name, "error": "tldNotConfigured"}
+    reg = name_status(name)
+    status = reg["status"]
+    if status in ("registered", "grace"):
+        return 200, {
+            "type": "registered",
+            "expires": reg["expires"],
+            "graceUntil": reg["graceEnds"],
+            "reservedReason_": reg["reasonCode"],
+            "nameRecord": name_record(name),
+        }
+    if reg["reasonCode"]:
+        return 200, {"type": "reserved", "reservedReason": reg["reasonCode"]}
+    if status in ("unregistered", "expired"):
+        if "basePrice" not in reg:
+            return 502, {"name": name, "error": "noPriceOracle"}
+        return 200, {
+            "type": "available",
+            "pricing": {
+                "registrationPrices": reg["rentPrices"],
+                "basePrice": reg["basePrice"],
+                "minLabelLength": reg["minLabelLength"],
+            },
+        }
+    return 502, {"name": name, "error": status}
+
+
 def resolve(name: str):
     tld = name.rsplit(".", 1)[-1]
     registry = REGISTRIES.get(tld)
@@ -793,6 +869,22 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if len(parts) == 3 and parts[0] == "v2" and parts[1] == "resolve":
+            name = parts[2].strip().lower()
+            if not name or "." not in name:
+                self._respond(400, {"name": name, "error": "notFullyQualified"})
+                return
+            try:
+                status, body = registration(name)
+            except Exception as e:  # surface upstream errors as 502
+                status, body = 502, upstream_error({"name": name}, e)
+            self._respond(status, body)
+            return
+
+        # /v1/resolve is an alias: relays before SMP v22 call /resolve
+        if parts[:2] == ["v1", "resolve"] and len(parts) == 3:
+            parts = ["resolve", parts[2]]
+
         if len(parts) == 2 and parts[0] == "resolve":
             name = parts[1].strip().lower()
             if not name or "." not in name:
@@ -843,7 +935,7 @@ def main():
     )
     for tld, addr in REGISTRIES.items():
         sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
-    sys.stderr.write("  GET /resolve/<name>   GET /health\n")
+    sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

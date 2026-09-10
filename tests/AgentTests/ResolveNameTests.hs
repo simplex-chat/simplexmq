@@ -14,7 +14,6 @@ module AgentTests.ResolveNameTests (resolveNameTests) where
 
 import AgentTests.FunctionalAPITests (withAgent)
 import Control.Monad.Except (runExceptT)
-import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy as LB
 import Data.List (isInfixOf)
 import Network.HTTP.Types (Status, status200, status404, status502)
@@ -22,7 +21,7 @@ import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
 import qualified NamesResolverServer as NRS
 import SMPAgentClient
 import SMPClient
-import SMPNamesTests (testNameRecord)
+import SMPNamesTests (availableBody, registeredBody, testNameRecord)
 import Simplex.Messaging.Agent (resolveSimplexName)
 import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..), ServerCfg, ServerRoles (..), presetServerCfg)
@@ -91,16 +90,11 @@ resolveNameTests = do
 
 testAvailSuccess :: HasCallStack => IO ()
 testAvailSuccess =
-  withDirectResolver (status404, availableBody) $ \c -> do
+  withDirectResolver (status200, availableBody) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
       Right (SMP.NRAvailable {}) -> pure ()
       _ -> expectationFailure $ "expected Right NRAvailable, got: " <> show r
-
--- an unregistered name is only available if the resolver also priced it
-availableBody :: LB.ByteString
-availableBody =
-  "{\"error\":\"unregistered\",\"rentPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}"
 
 testDirectNotFound :: HasCallStack => IO ()
 testDirectNotFound =
@@ -160,7 +154,7 @@ testBackendError =
 
 testDirectSuccess :: HasCallStack => IO ()
 testDirectSuccess =
-  withDirectResolver (status200, J.encode testNameRecord) $ \c -> do
+  withDirectResolver (status200, registeredBody testNameRecord) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
       Right (SMP.NRRegistered {nameRecord}) -> nameRecord `shouldBe` testNameRecord

@@ -10,11 +10,12 @@
 --
 -- The Python REST resolver (see scripts/resolver/snrc-resolve.py) exposes
 --
---   GET /resolve/<name>   -> 200 with a NameRecord JSON document
---                            404 / 410 for names that do not resolve, the body
---                            saying why (reserved, lapsed, never registered)
---                            400 for unknown TLDs, 502 for upstream RPC failures
---   GET /health           -> 200 when the resolver process is ready
+--   GET /v2/resolve/<query> -> 200 with a NameRegistration JSON document, for
+--                              all three registration shapes; 400 for unknown
+--                              TLDs, 502 for upstream RPC failures
+--   GET /v1/resolve/<name>  -> 200 with a NameRecord, what relays before SMP
+--                              v22 call as /resolve
+--   GET /health             -> 200 when the resolver process is ready
 --
 -- Boundary properties:
 --   * Response body read with `brReadSome maxResponseBytes` — adversarial
@@ -27,7 +28,6 @@ module Simplex.Messaging.Server.Names.HttpResolver
   ( RpcAuth (..),
     ResolverEnv,
     ResolverError (..),
-    NameStatusResp (..),
     newResolverEnv,
     closeResolverEnv,
     resolveHttp,
@@ -67,7 +67,7 @@ import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
-import Simplex.Messaging.Names.Record (NameRecord)
+import Simplex.Messaging.Names.Record (NameRegistration)
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
@@ -85,25 +85,6 @@ data ResolverEnv = ResolverEnv
     timeoutMicro :: Int,
     maxResponseBytes :: Int
   }
-
--- | What the resolver says about a name. Only some statuses carry the fields
--- below the status.
-data NameStatusResp = NameStatusResp
-  { nsStatus :: Text,
-    nsExpires :: Maybe Int64,
-    nsGraceEnds :: Maybe Int64,
-    nsReasonCode :: Maybe Text,
-    -- | when the post-grace surcharge decays to nothing
-    nsAuctionUntil :: Maybe Int64,
-    -- | US cents per year, by label length
-    nsRentPrices :: Maybe (Map Int Int64),
-    -- | US cents per year for every other length
-    nsBasePrice :: Maybe Int64,
-    nsMinLabelLength :: Maybe Int
-  }
-  deriving (Show)
-
-$(JQ.deriveFromJSON defaultJSON {J.fieldLabelModifier = dropPrefix "ns"} ''NameStatusResp)
 
 data ResolverError
   = HttpFailure HttpException
@@ -138,30 +119,19 @@ authHeader = \case
     let encoded = BAE.convertToBase BAE.Base64 (encodeUtf8 u <> ":" <> encodeUtf8 p) :: ByteString
      in ("Authorization", "Basic " <> encoded)
 
--- | GET <baseUrl>/resolve/<percent-encoded name>, returning the record when the
--- name resolves and what the resolver says about the name either way. The status
--- code cannot tell an unregistered name from a reserved or lapsed one, so on the
--- two codes that carry availability the body is read as well. The name is
--- percent-encoded (every non-unreserved byte per RFC 3986): the resolver expects
--- raw labels, so slashes/punctuation must not alter the path.
-resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError (Maybe NameRecord, Maybe NameStatusResp))
-resolveHttp env name =
-  (>>= nameResp) <$> httpGet env ("/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
+-- | GET <baseUrl>/v2/resolve/<percent-encoded query>, which answers with
+-- NameRegistration JSON. v1 is /resolve, which answers with a NameRecord and is
+-- what relays before SMP v22 call; the resolver API is versioned separately from
+-- the protocol, so it only changes when its own shape does. The query is a name,
+-- or a bracketed label hash, percent-encoded (every non-unreserved byte per RFC
+-- 3986) so slashes and punctuation cannot alter the path.
+resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRegistration)
+resolveHttp env q =
+  (>>= registration) <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
   where
-    nameResp (status, bs)
-      | status < 400 = (,statusResp bs "status") . Just <$> first InvalidJson (J.eitherDecode bs)
-      | status == 404 || status == 410 =
-          maybe (Left $ HttpStatusErr status) (Right . (Nothing,) . Just) (statusResp bs "error")
+    registration (status, bs)
+      | status < 400 = first InvalidJson (J.eitherDecode bs)
       | otherwise = Left (HttpStatusErr status)
-
--- | What the resolver says about the name, under "status" on a 200 and "error"
--- on the codes that carry availability. Older resolvers send neither.
-statusResp :: BL.ByteString -> Key -> Maybe NameStatusResp
-statusResp bs k = case J.decode bs of
-  Just (J.Object o) -> do
-    v <- JKM.lookup k o
-    JT.parseMaybe J.parseJSON (J.Object (JKM.insert "status" v o))
-  _ -> Nothing
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.

@@ -1452,45 +1452,44 @@ reads `NameRecord` from. The reference implementation forwards each RSLV to a
 companion REST resolver process (`scripts/resolver/snrc-resolve.py`) that
 queries the SNRC contract on Ethereum; alternative backings (different chains,
 DHT, etc.) are valid as long as they expose the documented HTTP shape (`GET
-/resolve/<name>` returning a `NameRecord` on 200, 404 / 400 for unknown names
-or TLDs, 502 for upstream RPC failures) or substitute a different transport
-while still returning a `NameRecord` matching the encoding below.
+/v2/resolve/<query>` returning a `NameRegistration` on 200 for every
+registration shape, 400 for unknown TLDs, 502 for upstream failures) or
+substitute a different transport returning the same JSON. The resolver API is
+versioned separately from this protocol: `/v1/resolve/<name>` returns a bare
+`NameRecord` and is what relays before v22 call as `/resolve/<name>`.
 
 #### Resolve name command
 
-From v22 the `RSLV` command carries a query; below v22 it carries the name
-directly, as it always did (not JSON):
+The `RSLV` command carries the query as text, not JSON. A client sends the
+hashed form only from v22, and the name itself below it:
 
 ```abnf
-rslv   = %s"RSLV" SP (query / domain)  ; query from v22, domain below it
-query  = tld label sub
-tld    = %s"s" / %s"t" / %s"w"  ; .simplex / .testing / a web name
-label  = %s"N" shortString      ; the second-level label as text
-       / %s"H" 32*32 OCTET      ; its keccak-256
-sub    = length *shortString    ; subname labels, parent to child
+rslv   = %s"RSLV" SP query
+query  = domain / hashed        ; hashed only from v22
 domain = 1*253 OCTET            ; the name as text
+hashed = "[" 64HEXDIG "]" tld   ; keccak-256 of the second-level label
+tld    = %s".simplex" / %s".testing"
 ```
 
 `domain` is the UTF-8 canonical fully-qualified name with the TLD always
 explicit (e.g. `privacy.simplex`, `test.testing`, `example.com`), bounded to
 253 bytes.
 
-**Hashed labels.** The query's second-level label is either the label itself or
-the keccak-256 of it, tagged, so the two are told apart by the tag and never by
-the shape of the value.
+**Hashed labels.** The query is a name, or the keccak-256 of a second-level
+label in ENS's bracketed form. A label can only be letters, digits and hyphens,
+so `[` tells the two apart and no tag is needed.
 
-Only the second-level label may be hashed: subname labels are needed as text to
-reach the record, and a web TLD has no registry to key on. `sub.<hash>.simplex`
-reaches the node `sub.name.simplex` does.
+Only a second-level name may be hashed. A name with subnames is sent as text: it
+is resolved rather than priced, and its record names it anyway. A web TLD has no
+registry to key a hash on.
 
 From v22 a client MUST send the hash. Older routers can only read the name, so a
 client on an older session sends the name. A router answering a hashed query
 does not know the label's length, so it cannot check a minimum-length policy
 either: the client does that, from the pricing it is sent.
 
-The hash reaches the backing resolver as `[` + 64 lowercase hex + `]`, ENS's
-encoding for a label whose text is unknown, because that is what its HTTP API
-takes. That form appears nowhere in SMP.
+The same form reaches the backing resolver, which is what its HTTP API takes, so
+the query is one string end to end.
 
 A hashed query still answers with the name. The registrar records the plaintext
 label when a name is registered, keyed by the hash of that label, so a router can

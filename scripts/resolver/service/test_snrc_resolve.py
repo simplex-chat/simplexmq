@@ -147,25 +147,6 @@ class EncodedLabelhashTests(unittest.TestCase):
             snrc.namehash("alice.alice.testing"),
         )
 
-    def test_a_hashed_2ld_under_a_subname_reaches_the_same_node(self):
-        """`sub.[hash].tld` must reach the node `sub.name.tld` does."""
-        self.assertEqual(
-            snrc.node_of(
-                "sub."
-                "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
-                ".testing"
-            ),
-            snrc.namehash("sub.alice.testing"),
-        )
-        self.assertEqual(
-            snrc.node_of(
-                "a.b."
-                "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501]"
-                ".testing"
-            ),
-            snrc.namehash("a.b.alice.testing"),
-        )
-
     def test_a_0x_prefixed_label_is_taken_literally(self):
         name = "0x9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501.testing"
         self.assertEqual(snrc.node_of(name), snrc.namehash(name))

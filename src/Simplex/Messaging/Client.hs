@@ -1057,7 +1057,7 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRegistration)
 proxyResolveName c nm proxiedRelay name
   | v >= namesSMPVersion =
-      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (nameQuery v name)) >>= \case
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (NQDomain name)) >>= \case
         Right (RNAME reg) | resolvedName name reg -> pure $ Right reg
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
@@ -1073,7 +1073,7 @@ proxyResolveName c nm proxiedRelay name
 directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRegistration
 directResolveName c nm name
   | v >= namesSMPVersion =
-      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (nameQuery v name))) >>= \case
+      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (NQDomain name))) >>= \case
         RNAME reg | resolvedName name reg -> pure reg
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion

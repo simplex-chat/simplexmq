@@ -274,7 +274,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Names.Record (NameRecord (..))
+import Simplex.Messaging.Names.Record
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -1626,105 +1626,6 @@ queryName = \case
   NQDomain d -> fullDomainName d
   NQHash tld h -> labelHashText h <> tldSuffix tld
 
--- | US cents, rounded up so a quote is never below what is charged.
-newtype USDCents = USDCents Int64
-  deriving (Eq, Ord, Show)
-  deriving newtype (Encoding)
-
--- | What the registry holds for a name.
-data NameRegistration
-  = -- | Held by someone. Always carries a record, empty where none was set.
-    NRRegistered
-      { -- | absent only from a v20/v21 router, which sent the record alone
-        expires :: Maybe SystemSeconds,
-        -- | unix seconds, > expires: until here only the owner may renew
-        graceUntil :: Maybe SystemSeconds,
-        -- | held back as well, which is why it will not free up at expiry
-        reservedReason_ :: Maybe NameReservedReason,
-        nameRecord :: NameRecord
-      }
-  | -- | Held by nobody, and registrable now.
-    NRAvailable {pricing :: NamePricing}
-  | -- | Held back by the registry, and not for sale at its price.
-    NRReserved {reservedReason :: NameReservedReason}
-  deriving (Eq, Show)
-
-instance Encoding NameRegistration where
-  smpEncode = \case
-    NRRegistered {expires, graceUntil, reservedReason_, nameRecord} ->
-      smpEncode ('N', expires, graceUntil, reservedReason_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
-    NRAvailable {pricing} -> smpEncode ('A', pricing)
-    NRReserved {reservedReason} -> smpEncode ('R', reservedReason)
-  smpP =
-    A.anyChar >>= \case
-      'N' -> do
-        (expires, graceUntil, reservedReason_) <- smpP
-        nameRecord <- J.eitherDecodeStrict . unTail <$?> _smpP
-        pure NRRegistered {expires, graceUntil, reservedReason_, nameRecord}
-      'A' -> NRAvailable <$> smpP
-      'R' -> NRReserved <$> smpP
-      _ -> fail "bad NameRegistration"
-
--- | Enough to price the name locally, which the router cannot do behind a hash.
-data NamePricing = NamePricing
-  { -- | US cents per year, for the lengths the registry prices specially
-    registrationPrices :: Map Int USDCents,
-    -- | US cents per year for every other length
-    basePrice :: USDCents,
-    -- | characters; the registry refuses shorter labels
-    minLabelLength :: Int
-  }
-  deriving (Eq, Show)
-
-instance Encoding NamePricing where
-  smpEncode NamePricing {registrationPrices, basePrice, minLabelLength} =
-    smpEncode (EncList $ map tier $ M.toList registrationPrices, basePrice, w16 minLabelLength)
-    where
-      tier (len, price) = (w16 len, price)
-      w16 = fromIntegral :: Int -> Word16
-  smpP = do
-    (EncList tiers, basePrice, minLen) <- smpP
-    pure NamePricing {registrationPrices = tierMap tiers, basePrice, minLabelLength = fromIntegral (minLen :: Word16)}
-    where
-      tierMap :: [(Word16, USDCents)] -> Map Int USDCents
-      tierMap = M.fromList . map (\(len, price) -> (fromIntegral len, price))
-
--- | Why the registry holds a name back.
-data NameReservedReason
-  = -- | held for SimpleX
-    NRRInternal
-  | NRRTrademark
-  | NRRCommunity
-  | -- | added to the registry after this version, and still reserved
-    NRRUnknown Text
-  deriving (Eq, Show)
-
-instance TextEncoding NameReservedReason where
-  textEncode = \case
-    NRRInternal -> "internal"
-    NRRTrademark -> "trademark"
-    NRRCommunity -> "community"
-    NRRUnknown t -> t
-  textDecode = Just . reservedReasonOf
-
--- | A reason this version has no word for keeps its own.
-reservedReasonOf :: Text -> NameReservedReason
-reservedReasonOf = \case
-  "internal" -> NRRInternal
-  "trademark" -> NRRTrademark
-  "community" -> NRRCommunity
-  t -> NRRUnknown t
-
-instance Encoding NameReservedReason where
-  smpEncode = encodeUtf8 . textEncode
-  smpP = reservedReasonOf . safeDecodeUtf8 <$> A.takeTill (== ' ')
-
--- | What a v20/v21 router's answer amounts to.
-oldRegistration :: NameRecord -> NameRegistration
-oldRegistration nameRecord =
-  NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}
-
-
 -- | Name resolution error
 data NameErrorType
   = -- | the names role / resolver is not configured on this server
@@ -2113,7 +2014,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           _ -> err
     PONG -> e PONG_
     RNAME reg
-      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', reg)
+      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode reg)
       | otherwise -> case reg of
           NRRegistered {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
           _ -> e (ERR_, ' ', NAME NOT_FOUND)
@@ -2164,7 +2065,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
     RNAME_
-      | v >= nameAvailSMPVersion -> RNAME <$> _smpP
+      | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
       | otherwise -> fmap (RNAME . oldRegistration) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       serviceRespP resp
@@ -2559,9 +2460,3 @@ $(J.deriveJSON defaultJSON ''BlockingInfo)
 -- run deriveJSON in one TH splice to allow mutual instance
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
 
-instance ToJSON NameReservedReason where
-  toJSON = textToJSON
-  toEncoding = textToEncoding
-
-instance FromJSON NameReservedReason where
-  parseJSON = textParseJSON "NameReservedReason"

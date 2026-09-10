@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, testNameRecord) where
+module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -18,7 +18,7 @@ import Network.HTTP.Types (status200, status400, status404, status410, status500
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
-import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameRecord (..), NameRegistration (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..), nameQuery, queryName)
+import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
@@ -28,9 +28,9 @@ import Simplex.Messaging.Server.Names
     resolveName,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
-import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), fullDomainName)
+import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
-import Simplex.Messaging.Transport (currentClientSMPRelayVersion, nameAvailSMPVersion, namesSMPVersion, serverInfoSMPVersion)
+import Simplex.Messaging.Transport (nameAvailSMPVersion, serverInfoSMPVersion)
 import Test.Hspec
 
 testNameRecord :: NameRecord
@@ -49,6 +49,23 @@ testNameRecord =
       nrOwner = "0x0101010101010101010101010101010101010101",
       nrResolver = "0x0202020202020202020202020202020202020202"
     }
+
+-- | What the resolver serves on /v2/resolve. Spelled out rather than encoded
+-- from the Haskell value: the literal JSON is the contract with the resolver.
+registeredBody :: NameRecord -> LB.ByteString
+registeredBody nameRec =
+  "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+
+availableBody :: LB.ByteString
+availableBody = "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
+
+reservedBody :: LB.ByteString
+reservedBody = "{\"type\":\"reserved\",\"reservedReason\":\"trademark\"}"
+
+-- | What `registeredBody testNameRecord` resolves to.
+registeredAlice :: NameRegistration
+registeredAlice =
+  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Nothing, nameRecord = testNameRecord}
 
 smpNamesTests :: Spec
 smpNamesTests = do
@@ -110,136 +127,82 @@ errorWireSpec =
 rslvWireSpec :: Spec
 rslvWireSpec = do
   it "below v22 carries the name, as it did before" $
-    encodeProtocol v20 (RSLV (nameQuery v20 aliceDomain')) `shouldBe` "RSLV " <> smpEncode aliceDomain'
-  it "from v22 carries the query" $
-    encodeProtocol v22 (RSLV (nameQuery v22 aliceDomain')) `shouldBe` "RSLV " <> smpEncode (nameQuery v22 aliceDomain')
+    encodeProtocol v20 (RSLV (NQDomain aliceDomain')) `shouldBe` "RSLV " <> smpEncode aliceDomain'
+  -- keccak-256("alice"), the same constant the resolver's own tests use
+  it "from v22 carries the 2LD as its hash" $
+    encodeProtocol v22 (RSLV (NQDomain aliceDomain'))
+      `shouldBe` "RSLV [9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
+  -- the hashed query has no room for subname labels, so such a name goes as text
+  it "a name with subnames is not hashed" $
+    encodeProtocol v22 (RSLV (NQDomain aliceDomain' {subDomain = ["x"]})) `shouldBe` "RSLV x.alice.simplex"
+  it "leaves a web name alone: no registry, nothing to key on" $
+    encodeProtocol v22 (RSLV (NQDomain webDomain')) `shouldBe` "RSLV example.com"
   where
     v20 = serverInfoSMPVersion
     v22 = nameAvailSMPVersion
     aliceDomain' = SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+    webDomain' = SimplexDomain {nameTLD = TLDWeb, domain = "example.com", subDomain = []}
 
 availabilitySpec :: Spec
 availabilitySpec = do
   -- one lookup answers what the name points to, whether it can be taken, and
   -- whether it is held back
   it "a registered name answers with its record and dates" $
-    answers status200 (recordWith "\"status\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483") $
-      NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Nothing, nameRecord = testNameRecord}
-  it "a name in grace keeps its record" $
-    answers status200 (recordWith "\"status\":\"grace\",\"expires\":1785000000,\"graceEnds\":1792776000") $
-      NRRegistered {expires = Just (RoundedSystemTime 1785000000), graceUntil = Just (RoundedSystemTime 1792776000), reservedReason_ = Nothing, nameRecord = testNameRecord}
+    answers (registeredBody testNameRecord) registeredAlice
   it "a registered name can be held back too" $
-    answers status200 (recordWith "\"status\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483,\"reasonCode\":\"internal\"") $
+    answers heldBackBody $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
-  it "a resolver that sends no status still answers with the record" $
-    answers status200 (J.encode testNameRecord) $
-      NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord = testNameRecord}
   it "an unregistered name answers with the price" $
-    answers status404 (jsonBody ("{\"error\":\"unregistered\"," <> pricingJson <> "}")) $
-      NRAvailable {pricing = testPricing, auctionUntil = Nothing}
-  it "expired is available, counting down to the ordinary price" $
-    answers status410 (jsonBody ("{\"error\":\"expired\",\"auctionUntil\":1790294400," <> pricingJson <> "}")) $
-      NRAvailable {pricing = testPricing, auctionUntil = Just (RoundedSystemTime 1790294400)}
+    answers availableBody NRAvailable {pricing = testPricing}
   it "reserved carries the reason and no price" $
-    answers status404 (jsonBody ("{\"error\":\"unregistered\",\"reasonCode\":\"trademark\"," <> pricingJson <> "}")) $
-      NRReserved NRRTrademark
+    answers reservedBody (NRReserved NRRTrademark)
   -- losing the reservation would offer a name that cannot be registered
   it "a reason from a later version still reserves the name" $
-    answers status404 "{\"error\":\"unregistered\",\"reasonCode\":\"seasonal\"}" (NRReserved (NRRUnknown "seasonal"))
-  -- the reason re-encodes into a slot that ends at a space, so it is cut to one
-  -- token
-  it "a reason with a space is cut at the space" $
-    answers status404 "{\"error\":\"unregistered\",\"reasonCode\":\"two words\"}" (NRReserved (NRRUnknown "two"))
-  it "an over-long reason is truncated" $
-    answers status404 (jsonBody ("{\"error\":\"unregistered\",\"reasonCode\":\"" <> replicate 100 'z' <> "\"}")) $
-      NRReserved (NRRUnknown (T.replicate 32 "z"))
-  -- a name that cannot be dated or priced is not one this router reports on
-  it "a registration without expiry is a resolver error" $
-    refuses status200 (recordWith "\"status\":\"registered\"") (RESOLVER "no expiry")
-  it "a registered name without a record is a resolver error" $
-    refuses status404 "{\"error\":\"registered\",\"expires\":1813853483,\"graceEnds\":1821629483}" (RESOLVER "no record")
-  it "no price oracle is a resolver error" $
-    refuses status404 "{\"error\":\"unregistered\"}" (RESOLVER "no price oracle")
-  -- only 404 and 410 carry availability, so only their bodies are read as a
-  -- status
-  it "upstream failure is a resolver error" $
-    refuses status502 "{\"error\":\"upstreamError\"}" (RESOLVER "HTTP 502")
-  it "unconfigured TLD is not found" $
-    refuses status400 "{\"error\":\"tldNotConfigured\"}" NOT_FOUND
-  it "unreadable status is a resolver error" $
-    refuses status404 "{\"error\":\"unknown\"}" (RESOLVER "unknown")
-  it "long status is truncated" $
-    refuses status404 (jsonBody ("{\"error\":\"" <> replicate 400 'e' <> "\"}")) (RESOLVER (T.replicate 32 "e"))
-  -- NOT_FOUND says the router has nothing to say, never that the name is
-  -- registrable
-  it "unreadable 404 body stays NOT_FOUND" $
-    refuses status404 "<html>gateway</html>" NOT_FOUND
-  it "over-cap body is a resolver error" $
-    withResolverServer (resolveResp status200 (jsonBody ("{\"status\":\"registered\",\"pad\":\"" <> replicate 400 'x' <> "\"}"))) $ \port _ -> do
-      env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 200}
-      resolveName env navlDomain `shouldReturn` Left (RESOLVER "response too large")
+    answers "{\"type\":\"reserved\",\"reservedReason\":\"seasonal\"}" (NRReserved (NRRUnknown "seasonal"))
+  -- RNAME carries the registration as JSON, so that is the encoding to hold
   it "every registration survives the wire" $
     mapM_
-      (\a -> smpDecode (smpEncode a) `shouldBe` Right a)
-      [ NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Nothing, nameRecord = testNameRecord},
+      (\a -> J.eitherDecodeStrict (LB.toStrict (J.encode a)) `shouldBe` Right a)
+      [ registeredAlice,
         NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord},
-        NRAvailable {pricing = testPricing, auctionUntil = Nothing},
-        NRAvailable {pricing = testPricing, auctionUntil = Just (RoundedSystemTime 1790294400)},
+        NRAvailable {pricing = testPricing},
         NRReserved NRRInternal,
         NRReserved NRRTrademark,
         NRReserved NRRCommunity,
         NRReserved (NRRUnknown "seasonal")
       ]
-  -- one vocabulary: the same word on the wire, from the resolver, and in JSON
-  it "a reason reads the same in JSON as on the wire" $ do
+  -- one vocabulary: the same word from the resolver and in JSON
+  it "a reason reads the same in JSON as from the resolver" $ do
     J.encode (NRRUnknown "seasonal") `shouldBe` "\"seasonal\""
     J.encode NRRTrademark `shouldBe` "\"trademark\""
   where
-    jsonBody = LB.fromStrict . B.pack
-    -- the resolver returns the record and the registration status in one body
-    recordWith extra = LB.init (J.encode testNameRecord) <> "," <> extra <> "}"
-    answers st body a = resolverSays st body (Right a)
-    refuses st body e = resolverSays st body (Left e)
-    resolverSays st body expected =
-      withResolverServer (resolveResp st body) $ \port _ -> do
+    heldBackBody =
+      "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
+    answers body a =
+      withResolverServer (resolveResp status200 body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)
-        resolveName env navlDomain `shouldReturn` expected
-    navlDomain = nameQuery namesSMPVersion SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+        resolveName env aliceQuery `shouldReturn` Right a
+    aliceQuery = NQDomain SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 -- | The .testing oracle: US cents per year by label length.
 testPricing :: NamePricing
 testPricing =
   NamePricing
-    { rentPrices = M.fromList [(3, USDCents 12793), (4, USDCents 3198)],
+    { registrationPrices = M.fromList [(3, USDCents 12793), (4, USDCents 3198)],
       basePrice = USDCents 100,
       minLabelLength = 3
     }
-
-pricingJson :: String
-pricingJson = "\"rentPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3"
 
 parseNameSpec :: Spec
 parseNameSpec = do
   -- the hashed form is a query, not a name: it has its own type
   it "a name is never a hash" $
     parseN ("[" <> T.replicate 64 "b" <> "].simplex") `shouldSatisfy` isLeft
-  -- keccak-256("alice"), the same constant the resolver's own tests use
-  it "hashes the 2LD to the registry key" $
-    (queryName . nameQuery currentClientSMPRelayVersion <$> parseN "alice.simplex")
-      `shouldBe` Right "[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
-  it "leaves subname labels as text" $
-    (queryName . nameQuery currentClientSMPRelayVersion <$> parseN "x.alice.simplex")
-      `shouldBe` Right "x.[9c0257114eb9399a2985f8e75dad7600c5d89fe3824ffa99ec1c3eb8bf3b0501].simplex"
-  it "leaves a web name alone: no registry, nothing to key on" $
-    (queryName . nameQuery currentClientSMPRelayVersion <$> parseN "example.com") `shouldBe` Right "example.com"
-  -- below v22 a router can only read the name
-  it "sends the name itself below v22" $
-    (queryName . nameQuery namesSMPVersion <$> parseN "alice.simplex") `shouldBe` Right "alice.simplex"
   it "a query survives the wire" $
     mapM_
       (\q -> smpDecode (smpEncode q) `shouldBe` Right q)
-      [ nameQuery currentClientSMPRelayVersion d,
-        nameQuery namesSMPVersion d
+      [ NQDomain d,
+        NQHash TLDSimplex (labelHash "alice")
       ]
   it "accepts a valid simplex-TLD name" $
     case parseN "privacy.simplex" of
@@ -280,10 +243,10 @@ parseNameSpec = do
 
 resolverSpec :: Spec
 resolverSpec = do
-  it "returns NameRecord on 200 OK" $
-    withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port _ -> do
+  it "returns the registration on 200 OK" $
+    withResolverServer (resolveResp status200 (registeredBody testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Right (NRRegistered Nothing Nothing Nothing testNameRecord)
+      resolveName env aliceDomain `shouldReturn` Right registeredAlice
 
   it "returns NOT_FOUND on 404" $
     withResolverServer (resolveResp status404 "{}") $ \port _ -> do
@@ -315,31 +278,31 @@ resolverSpec = do
       env <- newNamesEnv (testNamesConfig port)
       resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
-  it "returns RESOLVER when JSON parses but isn't a NameRecord shape" $
+  it "returns RESOLVER when JSON parses but isn't a NameRegistration shape" $
     withResolverServer (resolveResp status200 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
       resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
 
   it "returns RESOLVER (timeout) when the resolver is slower than resolverTimeoutMs" $
-    withResolverServerDelayed 1500 (resolveResp status200 (J.encode testNameRecord)) $ \port _ -> do
+    withResolverServerDelayed 1500 (resolveResp status200 (registeredBody testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverTimeoutMs = 300}
       resolveName env aliceDomain `shouldReturn` Left (RESOLVER "timeout")
 
   it "sends one HTTP request per lookup (no cache)" $
-    withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port reqs -> do
+    withResolverServer (resolveResp status200 (registeredBody testNameRecord)) $ \port reqs -> do
       env <- newNamesEnv (testNamesConfig port)
       _ <- resolveName env aliceDomain
       _ <- resolveName env aliceDomain
       readIORef reqs >>= \rs -> length rs `shouldBe` 2
 
   it "addresses the resolver with the full canonical domain name" $
-    withResolverServer (resolveResp status200 (J.encode testNameRecord)) $ \port reqs -> do
+    withResolverServer (resolveResp status200 (registeredBody testNameRecord)) $ \port reqs -> do
       env <- newNamesEnv (testNamesConfig port)
       _ <- resolveName env aliceDomain
-      readIORef reqs `shouldReturn` [["resolve", "alice.simplex"]]
+      readIORef reqs `shouldReturn` [["v2", "resolve", "alice.simplex"]]
 
   where
-    aliceDomain = nameQuery namesSMPVersion SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
+    aliceDomain = NQDomain SimplexDomain {nameTLD = TLDSimplex, domain = "alice", subDomain = []}
 
 healthSpec :: Spec
 healthSpec = do
