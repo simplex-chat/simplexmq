@@ -127,23 +127,18 @@ authHeader = \case
 -- 3986) so slashes and punctuation cannot alter the path.
 resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRegistration)
 resolveHttp env q =
-  (>>= registration) <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
-  where
-    registration (status, bs)
-      | status < 400 = first InvalidJson (J.eitherDecode bs)
-      | otherwise = Left (HttpStatusErr status)
+  (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
+    <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.
 healthHttp :: ResolverEnv -> IO (Either ResolverError ())
-healthHttp env = (>>= statusOk . fst) <$> httpGet env "/health"
-  where
-    statusOk status = if status >= 400 then Left (HttpStatusErr status) else Right ()
+healthHttp env = (() <$) <$> httpGet env "/health"
 
--- | GET <baseUrl><path>, returning the response status and body bytes within the
--- size cap. Redirects are disabled and Authorization is attached only when
--- configured.
-httpGet :: ResolverEnv -> String -> IO (Either ResolverError (Int, BL.ByteString))
+-- | GET <baseUrl><path>, returning the response body bytes on status < 400
+-- within the size cap. Redirects are disabled and Authorization is attached
+-- only when configured.
+httpGet :: ResolverEnv -> String -> IO (Either ResolverError BL.ByteString)
 httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} path = do
   req0 <- parseRequest (baseUrl <> path)
   let req =
@@ -154,6 +149,9 @@ httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} 
           }
   result <- E.try $ withResponse req manager $ \res -> do
     let status = HT.statusCode (responseStatus res)
-    bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
-    pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right (status, bs)
+    if status >= 400
+      then pure (Left (HttpStatusErr status))
+      else do
+        bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
+        pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right bs
   pure (either (Left . HttpFailure) id result)

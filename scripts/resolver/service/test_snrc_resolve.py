@@ -200,7 +200,6 @@ class NameStatusTests(unittest.TestCase):
             "graceEnds": grace_ends,
             "reasonCode": None,
             "reason": None,
-            "auctionUntil": None,
         }
 
     def setUp(self):
@@ -342,7 +341,6 @@ class NameStatusTests(unittest.TestCase):
             "graceEnds",
             "reasonCode",
             "reason",
-            "auctionUntil",
         }
         snrc.eth_call = self._expiry(0)
         self.assertEqual(set(snrc.name_status("alice.testing")), keys)
@@ -616,7 +614,6 @@ class PricingTests(unittest.TestCase):
         snrc.eth_call = self._chain(self._lapsed(0))
         reg = snrc.name_status("acme.testing")
         self.assertEqual(reg["status"], "expired")
-        self.assertIsNone(reg["auctionUntil"])
 
     def test_a_controller_with_no_oracle_leaves_the_name_merely_expired(self):
         snrc.eth_call = self._chain(self._lapsed(0), oracle=snrc.ZERO_ADDR)
@@ -646,7 +643,6 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(status, 410)
         self.assertEqual(body["status"], "expired")
         self.assertEqual(body["basePrice"], self.BASE)
-        self.assertIsNone(body["auctionUntil"])
 
     def test_a_hashed_query_is_priced_too(self):
         # keccak-256("acme")
@@ -812,6 +808,174 @@ class ErrorCodeTests(unittest.TestCase):
         self.assertNotIn("secret", body["message"])
         self.assertNotIn("kEy8", body["message"])
 
+
+class RegistrationV2Tests(unittest.TestCase):
+    """`/v2/resolve` answers with the SMP protocol's NameRegistration, which the
+    relay decodes as is. The key names are the wire contract, so they are pinned
+    here: renaming one without the Haskell side is a silent break."""
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
+    OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
+
+    GRACE = 90 * 86400
+    BASE = 200
+    EXCEPTIONS = {1: 64000, 2: 16000, 3: 1600, 4: 800, 5: 500}
+    MIN_LENGTH = 3
+
+    def setUp(self):
+        self._saved = (
+            snrc.REGISTRIES,
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+            snrc.chain_now,
+        )
+        snrc.REGISTRIES = {"testing": self.REGISTRY}
+        snrc.REGISTRARS = {"testing": self.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+        self.now = int(time.time())
+        snrc.chain_now = lambda: self.now
+        snrc._constants.clear()
+
+    def tearDown(self):
+        (
+            snrc.REGISTRIES,
+            snrc.REGISTRARS,
+            snrc.CONTROLLERS,
+            snrc.eth_call,
+            snrc.chain_now,
+        ) = self._saved
+
+    def _prices_return(self):
+        words = [snrc.encode_uint(self.BASE), snrc.encode_uint(0x40),
+                 snrc.encode_uint(len(self.EXCEPTIONS))]
+        for length, cents in self.EXCEPTIONS.items():
+            words += [snrc.encode_uint(length), snrc.encode_uint(cents)]
+        return "0x" + "".join(words)
+
+    def _chain(self, expires, reserved=0, oracle=None):
+        """The registry answers a zero resolver, so name_record returns the
+        empty record a registered name still has."""
+        oracle = self.ORACLE if oracle is None else oracle
+
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("nameExpires(uint256)")):
+                return "0x" + snrc.encode_uint(expires)
+            if data.startswith(snrc.selector("GRACE_PERIOD()")):
+                return "0x" + snrc.encode_uint(self.GRACE)
+            if data.startswith(snrc.selector("reservedNames(bytes32)")):
+                return "0x" + snrc.encode_uint(reserved)
+            if data.startswith(snrc.selector("minCharLength()")):
+                return "0x" + snrc.encode_uint(self.MIN_LENGTH)
+            if data.startswith(snrc.selector("prices()")):
+                if to == self.CONTROLLER:
+                    return "0x" + snrc.encode_uint(int(oracle, 16))
+                return self._prices_return()
+            if data.startswith(snrc.selector("resolver(bytes32)")):
+                return "0x" + snrc.encode_uint(0)
+            if data.startswith(snrc.selector("owner(bytes32)")):
+                return "0x" + snrc.encode_uint(int(self.OWNER, 16))
+            return self.fail("unexpected call " + data[:10])
+
+        return eth_call
+
+    def _lapsed(self, days_past_grace):
+        return self.now - self.GRACE - 1 - days_past_grace * 86400
+
+    def test_a_live_name_is_registered_and_carries_its_record(self):
+        expires = self.now + 3600
+        snrc.eth_call = self._chain(expires)
+        status, body = snrc.registration("acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["type"], "registered")
+        self.assertEqual(body["expires"], expires)
+        self.assertEqual(body["graceUntil"], expires + self.GRACE)
+        self.assertIsNone(body["reservedReason"])
+        self.assertEqual(body["nameRecord"]["name"], "acme.testing")
+
+    def test_a_name_in_grace_is_still_registered(self):
+        expires = self.now - 3600
+        snrc.eth_call = self._chain(expires)
+        _, body = snrc.registration("acme.testing")
+        self.assertEqual(body["type"], "registered")
+        self.assertGreater(body["graceUntil"], self.now)
+
+    def test_a_registered_name_that_is_held_back_says_so(self):
+        snrc.eth_call = self._chain(self.now + 3600, reserved=1)
+        _, body = snrc.registration("acme.testing")
+        self.assertEqual(body["type"], "registered")
+        self.assertEqual(body["reservedReason"], "internal")
+
+    def test_an_unregistered_name_is_available_with_its_pricing(self):
+        snrc.eth_call = self._chain(0)
+        status, body = snrc.registration("acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["type"], "available")
+        # lengths below minCharLength are unregistrable, so they are not priced
+        self.assertEqual(body["pricing"]["registrationPrices"], {3: 1600, 4: 800, 5: 500})
+        self.assertEqual(body["pricing"]["basePrice"], self.BASE)
+        self.assertEqual(body["pricing"]["minLabelLength"], self.MIN_LENGTH)
+
+    def test_a_lapsed_name_is_available_at_the_ordinary_price(self):
+        snrc.eth_call = self._chain(self._lapsed(1))
+        _, body = snrc.registration("acme.testing")
+        self.assertEqual(body["type"], "available")
+        self.assertEqual(body["pricing"]["basePrice"], self.BASE)
+
+    def test_a_held_back_name_is_reserved_and_is_never_priced(self):
+        snrc.eth_call = self._chain(0, reserved=2)
+        status, body = snrc.registration("acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["type"], "reserved")
+        self.assertEqual(body["reservedReason"], "trademark")
+        self.assertNotIn("pricing", body)
+
+    def test_a_hashed_query_answers_the_same_as_the_name(self):
+        # keccak-256("acme")
+        hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
+        snrc.eth_call = self._chain(0)
+        _, by_name = snrc.registration("acme.testing")
+        _, by_hash = snrc.registration(hashed + ".testing")
+        self.assertEqual(by_name, by_hash)
+
+    def test_an_unconfigured_tld_is_refused_not_answered(self):
+        snrc.REGISTRIES = {"testing": ""}
+        snrc.eth_call = lambda *a: self.fail("must not reach the chain")
+        status, body = snrc.registration("acme.testing")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "tldNotConfigured")
+
+    def test_no_price_oracle_is_an_error_not_a_free_name(self):
+        snrc.eth_call = self._chain(0, oracle=snrc.ZERO_ADDR)
+        status, body = snrc.registration("acme.testing")
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "noPriceOracle")
+
+    def test_a_status_it_cannot_read_is_an_error_not_a_registration(self):
+        snrc.REGISTRARS = {"testing": ""}
+        snrc.eth_call = self._chain(0)
+        status, body = snrc.registration("acme.testing")
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "unknown")
+
+    def test_each_answer_carries_exactly_its_own_fields(self):
+        """The relay decodes by these names; an extra or missing one is a break."""
+        cases = {
+            "registered": (self._chain(self.now + 3600),
+                           {"type", "expires", "graceUntil", "reservedReason", "nameRecord"}),
+            "available": (self._chain(0), {"type", "pricing"}),
+            "reserved": (self._chain(0, reserved=1), {"type", "reservedReason"}),
+        }
+        for expected_type, (chain, keys) in cases.items():
+            with self.subTest(type=expected_type):
+                snrc.eth_call = chain
+                snrc._constants.clear()
+                _, body = snrc.registration("acme.testing")
+                self.assertEqual(body["type"], expected_type)
+                self.assertEqual(set(body), keys)
 
 if __name__ == "__main__":
     unittest.main()

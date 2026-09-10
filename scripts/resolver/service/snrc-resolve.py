@@ -328,7 +328,6 @@ def name_status(name: str):
             "graceEnds": None,
             "reasonCode": None,
             "reason": None,
-            "auctionUntil": None,
         }
 
     # nameExpires and reservedNames are keyed on uint256(keccak(label)).
@@ -356,7 +355,6 @@ def name_status(name: str):
         "graceEnds": (expires + grace) if expires else None,
         "reasonCode": reason[0] if reason else None,
         "reason": reason[1] if reason else None,
-        "auctionUntil": None,
     }
     if status in ("unregistered", "expired"):
         pricing = pricing_params(tld)

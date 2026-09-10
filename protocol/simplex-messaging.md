@@ -1621,9 +1621,10 @@ name that may be held.
 A client MUST read a `reason` it does not know as unknown and still treat the
 name as reserved: a later version may reserve names for reasons this one cannot
 name, and losing the reservation over that would offer a name that cannot be
-registered. The word itself travels unchanged, so a later client can act on it
-and a current one can show or log it, which is why the set is open rather than
-an enumeration.
+registered. A router passes the word through unchanged, which is why the set is
+open rather than an enumeration. A resolver can only send a word it has, though:
+SNRC's registry records a numeric reason, so a code added after the resolver
+arrives as `unknown` and only the reservation survives.
 
 `nameRecord` MUST be a UTF-8 JSON object with the following schema:
 
