@@ -1549,7 +1549,7 @@ seconds since the Unix epoch. Lengths are characters.
 |---|---|---|---|
 | `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
 | `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
-| `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
+| `reservedReason` | `registered` | string | a reason word, present only when the name is held back as well |
 | `nameRecord` | `registered` | object | the record, schema below |
 | `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |
 | `reservedReason` | `reserved` | string | a reason word |
@@ -1566,7 +1566,7 @@ JSON and in a client's own API.
 
 `available` alone means registrable: a name the registry holds back answers
 `reserved` instead, so a client has no flags to combine. A reservation on a name
-that *is* registered is carried in `reservedReason_`, and is why that name will
+that *is* registered is carried in `reservedReason`, and is why that name will
 not free up when it expires.
 
 There is no separate answer for an auction. A name past its grace period answers

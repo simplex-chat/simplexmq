@@ -23,7 +23,7 @@ import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, sumTypeJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, taggedObjectJSON)
 import Simplex.Messaging.SystemTime (SystemSeconds)
 
 -- | Resolved name record returned by the names role. JSON keys match the
@@ -132,4 +132,10 @@ oldRegistration nameRecord =
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 
-$(JQ.deriveJSON (sumTypeJSON $ dropPrefix "NR") ''NameRegistration)
+-- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
+-- resolver contract, so it must not vary with the swift build flag. The label
+-- modifier keeps the reservedReason_ collision escape out of the API.
+$( JQ.deriveJSON
+    (taggedObjectJSON $ dropPrefix "NR") {J.fieldLabelModifier = takeWhile (/= '_')}
+    ''NameRegistration
+ )
