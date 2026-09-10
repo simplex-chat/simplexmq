@@ -104,7 +104,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
@@ -1495,14 +1494,18 @@ client
     -- Runs on a forked thread so RSLV does not block other commands;
     -- concurrency is limited by serverResolverConcurrency in forkCmd.
     resolveNameMsg :: NamesEnv -> NameQuery -> M s BrokerMsg
-    resolveNameMsg nenv d = do
+    resolveNameMsg nenv q = do
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-
-        liftIO (resolveName nenv d) <&> \case
-          Right reg -> (rslvSucc, RNAME reg)
-          Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
+        liftIO (resolveName nenv q) <&> \case
+          Right reg -> (if answered reg then rslvSucc else rslvNotFound, RNAME reg)
           Left e -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg
+      where
+        -- below v22 the encoder answers anything but a record as NAME NOT_FOUND
+        answered = \case
+          NRRegistered {} -> True
+          _ -> thVersion thParams' >= nameAvailSMPVersion
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()

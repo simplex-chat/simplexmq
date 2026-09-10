@@ -473,7 +473,7 @@ prometheusMetrics sm rtm ts =
           \# TYPE simplex_smp_names_success counter\n\
           \simplex_smp_names_success " <> mshow _rslvSucc <> "\n# rslvSucc\n\
           \\n\
-          \# HELP simplex_smp_names_not_found Name not registered (resolver returned 404 / 400).\n\
+          \# HELP simplex_smp_names_not_found Answers a client below v22 reads as NOT_FOUND.\n\
           \# TYPE simplex_smp_names_not_found counter\n\
           \simplex_smp_names_not_found " <> mshow _rslvNotFound <> "\n# rslvNotFound\n\
           \\n\

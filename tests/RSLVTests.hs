@@ -19,7 +19,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (getCurrentTime)
-import Network.HTTP.Types (Status, status200, status404, status410, status502)
+import Network.HTTP.Types (Status, status200, status404, status502)
 import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
 import qualified NamesResolverServer as NRS
 import SMPClient
@@ -81,13 +81,12 @@ sendRslv h@THandle {params} corrId d = do
 rslvTests :: Spec
 rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
-    it "resolver replies 404 -> NAME NOT_FOUND (reached, not CMD PROHIBITED)" testRslvBackendNotFound
-    it "resolver replies 410 -> NAME NOT_FOUND (a lapsed name, not a resolver failure)" testRslvBackendGone
+    it "resolver without the v2 route (404) -> NAME RESOLVER, not NOT_FOUND" testRslvBackendNotFound
     it "resolver replies 502 -> NAME (RESOLVER ..)" testRslvBackendHttpErr
     it "no names config -> NAME NO_RESOLVER" testRslvDisabled
     it "refuses to send RSLV on a session below namesSMPVersion" testRslvVersion
   describe "RSLV forwarded (PFWD)" $ do
-    it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME NOT_FOUND))" testRslvForwarded
+    it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME RESOLVER))" testRslvForwarded
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
@@ -103,20 +102,15 @@ rslvTests = do
     it "a name with subnames is sent as text" testSubnameKeepsItsLabels
     it "a record naming a different name is rejected" testRslvWrongName
 
+-- | /v2/resolve answers 200, 400 or 502, so a 404 is a resolver that predates
+-- the route, not a name that does not exist.
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
   withResolverServer (status404, "{}") $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "rs01"
-      resp `shouldBe` Right (ERR (NAME NOT_FOUND))
-
-testRslvBackendGone :: IO ()
-testRslvBackendGone =
-  withResolverServer (status410, "{}") $
-    testSMPClient @TLS $ \h -> do
-      (_, _, resp) <- sendRslv h "rs08" (domain "lapsed.simplex")
-      resp `shouldBe` Right (ERR (NAME NOT_FOUND))
+      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
 
 testRslvBackendHttpErr :: IO ()
 testRslvBackendHttpErr =
@@ -162,8 +156,8 @@ testRslvForwarded :: IO ()
 testRslvForwarded =
   withProxyAndResolver (status404, "{}") $
     forwardedResolveAlice >>= \r -> case r of
-      Left (PCEProtocolError (SMP.NAME SMP.NOT_FOUND)) -> pure ()
-      _ -> expectationFailure $ "expected Left (PCEProtocolError (NAME NOT_FOUND)), got: " <> show r
+      Left (PCEProtocolError (SMP.NAME (SMP.RESOLVER _))) -> pure ()
+      _ -> expectationFailure $ "expected Left (PCEProtocolError (NAME (RESOLVER _))), got: " <> show r
 
 testRslvForwardedSuccess :: IO ()
 testRslvForwardedSuccess =

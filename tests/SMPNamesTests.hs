@@ -14,7 +14,7 @@ import Data.List (sort)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import Network.HTTP.Types (status200, status400, status404, status410, status500, status502)
+import Network.HTTP.Types (status200, status400, status404, status500, status502)
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
@@ -248,20 +248,17 @@ resolverSpec = do
       env <- newNamesEnv (testNamesConfig port)
       resolveName env aliceDomain `shouldReturn` Right registeredAlice
 
-  it "returns NOT_FOUND on 404" $
+  -- /v2/resolve answers 200, 400 or 502 and never says "no such name": an
+  -- unregistered name is NRAvailable. So no status maps to NOT_FOUND.
+  it "returns RESOLVER on 404 (a resolver without the v2 route)" $
     withResolverServer (resolveResp status404 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 404")
 
-  it "returns NOT_FOUND on 400 (unknown TLD)" $
+  it "returns RESOLVER on 400 (TLD not configured)" $
     withResolverServer (resolveResp status400 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
-
-  it "returns NOT_FOUND on 410 (registration lapsed)" $
-    withResolverServer (resolveResp status410 "{}") $ \port _ -> do
-      env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left NOT_FOUND
+      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 400")
 
   it "returns RESOLVER on 502 (upstream failure)" $
     withResolverServer (resolveResp status502 "{}") $ \port _ -> do

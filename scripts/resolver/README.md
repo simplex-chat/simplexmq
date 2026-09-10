@@ -182,6 +182,11 @@ every query.
 **Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
 controller there is no oracle, so no name can be priced.
 
+**Upgrade this service before the routers that query it.** Routers from SMP v22
+call `/v2/resolve`, which an older resolver does not serve. Every name then
+answers `ERR NAME RESOLVER "HTTP 404"` until this service is upgraded, while
+`/health` still reports it as ready.
+
 ### Why a name is reserved
 
 A held-back name carries `reasonCode`, the controller's reason, and `reason`, an

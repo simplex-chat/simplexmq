@@ -1560,7 +1560,8 @@ seconds since the Unix epoch. Lengths are characters.
 | `minLabelLength` | number | characters; the registry refuses shorter labels |
 
 A reason word is `internal`, `trademark`, `community`, or a word a later version
-reserves under. The words are the same on the wire, in the backing resolver's
+reserves under, at most 32 printable ASCII characters. A router truncates an
+unknown word to that, since it reaches the client as a word. The words are the same on the wire, in the backing resolver's
 JSON and in a client's own API.
 
 `available` alone means registrable: a name the registry holds back answers

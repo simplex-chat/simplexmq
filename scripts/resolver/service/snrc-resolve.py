@@ -272,7 +272,7 @@ def read_oracle_prices(controller: str, oracle: str):
     min_len = decode_uint(eth_call(controller, selector("minCharLength()")))
     return {
         # lengths the registry refuses are left out rather than priced at zero
-        "rentPrices": {n: c for n, c in tiers.items() if n >= min_len},
+        "registrationPrices": {n: c for n, c in tiers.items() if n >= min_len},
         "basePrice": base,
         "minLabelLength": min_len,
         "_premiumUnknown": premium_unknown,
@@ -388,22 +388,23 @@ def decode_bytes(hex_data: str) -> bytes:
     return raw[64:64 + length]
 
 
-def registered_label(registrar: str, token: int) -> str:
+def registered_label(registrar: str, token: int):
     """The plaintext label the registrar recorded at registration, keyed by the
-    hash of that label. A name registered without registerWithLabel has none,
-    and answers "unknown" instead."""
+    hash of that label. None when the name was registered without
+    registerWithLabel, so the registrar cannot name it."""
     raw = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token)))
-    return raw.decode("utf-8", errors="replace") if raw else "unknown"
+    return raw.decode("utf-8", errors="replace") if raw else None
 
 
-def canonical_name(name: str) -> str:
+def canonical_name(name: str):
     """The name to answer with: a hashed query does not carry one, so the
-    registrar's record of the label fills it in."""
+    registrar's record of the label fills it in. None when it recorded none."""
     labels = name.split(".")
     registrar = REGISTRARS.get(labels[-1])
     if not registrar or len(labels) != 2 or not is_encoded_labelhash(labels[0]):
         return name
-    return registered_label(registrar, label_token(labels[0])) + "." + labels[1]
+    label = registered_label(registrar, label_token(labels[0]))
+    return label + "." + labels[1] if label else None
 
 
 def label_token(label: str) -> int:
@@ -738,12 +739,17 @@ def registration(name: str):
     reg = name_status(name)
     status = reg["status"]
     if status in ("registered", "grace"):
+        rec = name_record(name)
+        # the client checks that the record names what it asked about, so a
+        # hashed query the registrar cannot name is refused rather than answered
+        if rec["name"] is None:
+            return 502, {"name": name, "error": "labelNotRecorded"}
         return 200, {
             "type": "registered",
             "expires": reg["expires"],
             "graceUntil": reg["graceEnds"],
             "reservedReason": reg["reasonCode"],
-            "nameRecord": name_record(name),
+            "nameRecord": rec,
         }
     if reg["reasonCode"]:
         return 200, {"type": "reserved", "reservedReason": reg["reasonCode"]}
@@ -753,7 +759,7 @@ def registration(name: str):
         return 200, {
             "type": "available",
             "pricing": {
-                "registrationPrices": reg["rentPrices"],
+                "registrationPrices": reg["registrationPrices"],
                 "basePrice": reg["basePrice"],
                 "minLabelLength": reg["minLabelLength"],
             },
@@ -800,7 +806,7 @@ def resolve(name: str):
         # answerable.
         owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
         return 200, {
-            "name": canonical_name(name),
+            "name": canonical_name(name) or name,
             "nickname": "",
             "website": "",
             "location": "",
@@ -837,7 +843,7 @@ def resolve(name: str):
     # use the ENSIP-5 dot convention (e.g. "simplex.contact") — only the
     # resolver's JSON surface camelCases them.
     return 200, {
-        "name": canonical_name(name),
+        "name": canonical_name(name) or name,
         "nickname": nickname,
         "website": texts.get("url", ""),
         "location": texts.get("location", ""),

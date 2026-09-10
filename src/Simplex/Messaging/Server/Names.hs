@@ -74,9 +74,6 @@ fetch NamesEnv {resolverEnv} q =
 
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case
-  HttpStatusErr 404 -> NOT_FOUND
-  HttpStatusErr 410 -> NOT_FOUND
-  HttpStatusErr 400 -> NOT_FOUND
   HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
   HttpFailure _ -> RESOLVER "transport failure"
   BodyTooLarge -> RESOLVER "response too large"

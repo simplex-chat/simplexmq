@@ -606,7 +606,7 @@ class PricingTests(unittest.TestCase):
         snrc.eth_call = self._chain(self._lapsed(0))
         reg = snrc.name_status("acme.testing")
         # 1 and 2 are below minCharLength
-        self.assertEqual(reg["rentPrices"], {3: 1600, 4: 800, 5: 500})
+        self.assertEqual(reg["registrationPrices"], {3: 1600, 4: 800, 5: 500})
         self.assertEqual(reg["basePrice"], self.BASE)
         self.assertEqual(reg["minLabelLength"], self.MIN_LENGTH)
 
@@ -856,12 +856,22 @@ class RegistrationV2Tests(unittest.TestCase):
             words += [snrc.encode_uint(length), snrc.encode_uint(cents)]
         return "0x" + "".join(words)
 
-    def _chain(self, expires, reserved=0, oracle=None):
+    @staticmethod
+    def _abi_bytes(value: bytes) -> str:
+        """head offset, length, then the payload padded to a 32-byte word."""
+        pad = (-len(value)) % 32
+        return ("0x" + snrc.encode_uint(0x20) + snrc.encode_uint(len(value))
+                + (value + b"\x00" * pad).hex())
+
+    def _chain(self, expires, reserved=0, oracle=None, label=b"acme"):
         """The registry answers a zero resolver, so name_record returns the
-        empty record a registered name still has."""
+        empty record a registered name still has. `label` is what the registrar
+        recorded for the 2LD; b"" means it recorded none."""
         oracle = self.ORACLE if oracle is None else oracle
 
         def eth_call(to, data):
+            if data.startswith(snrc.selector("labelOf(uint256)")):
+                return self._abi_bytes(label)
             if data.startswith(snrc.selector("nameExpires(uint256)")):
                 return "0x" + snrc.encode_uint(expires)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
@@ -976,6 +986,21 @@ class RegistrationV2Tests(unittest.TestCase):
                 _, body = snrc.registration("acme.testing")
                 self.assertEqual(body["type"], expected_type)
                 self.assertEqual(set(body), keys)
+    def test_a_hashed_query_the_registrar_cannot_name_is_refused(self):
+        """The client checks the record names what it asked about, so answering
+        with a record the registrar could not name would only fail there."""
+        hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
+        snrc.eth_call = self._chain(self.now + 3600, label=b"")
+        status, body = snrc.registration(hashed + ".testing")
+        self.assertEqual(status, 502)
+        self.assertEqual(body["error"], "labelNotRecorded")
+
+    def test_a_hashed_query_is_answered_with_the_name_the_registrar_recorded(self):
+        hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
+        snrc.eth_call = self._chain(self.now + 3600)
+        status, body = snrc.registration(hashed + ".testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["nameRecord"]["name"], "acme.testing")
 
 if __name__ == "__main__":
     unittest.main()

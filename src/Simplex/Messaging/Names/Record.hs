@@ -22,6 +22,7 @@ import qualified Data.Aeson.TH as JQ
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, taggedObjectJSON)
 import Simplex.Messaging.SystemTime (SystemSeconds)
@@ -110,13 +111,13 @@ instance TextEncoding NameReservedReason where
     NRRUnknown t -> t
   textDecode = Just . reservedReasonOf
 
--- | An unknown reason is kept as text.
+-- | An unknown reason is kept as text, capped: it reaches a client as a word.
 reservedReasonOf :: Text -> NameReservedReason
 reservedReasonOf = \case
   "internal" -> NRRInternal
   "trademark" -> NRRTrademark
   "community" -> NRRCommunity
-  t -> NRRUnknown t
+  t -> NRRUnknown $ T.take 32 $ T.takeWhile (\c -> c > ' ' && c < '\DEL') t
 
 instance ToJSON NameReservedReason where
   toJSON = textToJSON
