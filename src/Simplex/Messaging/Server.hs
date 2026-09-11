@@ -1498,7 +1498,7 @@ client
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-
         liftIO (resolveName nenv q) <&> \case
-          Right reg -> (if answered reg then rslvSucc else rslvNotFound, RNAME reg)
+          Right res -> (if answered (registration res) then rslvSucc else rslvNotFound, RNAME res)
           Left e -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg
       where

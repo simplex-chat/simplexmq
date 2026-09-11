@@ -1054,7 +1054,7 @@ proxySMPMessage c nm proxiedRelay spKey sId flags msg = proxyOKSMPCommand c nm p
 -- through `proxySMPCommand` and pattern-matches the expected RNAME response.
 -- Version-gated on the destination relay (mirrors `connectSMPProxiedRelay`):
 -- the client never sends RSLV to a relay that predates names support.
-proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameRegistration)
+proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDomain -> ExceptT SMPClientError IO (Either ProxyClientError NameResponse)
 proxyResolveName c nm proxiedRelay name
   | prVersion proxiedRelay >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (NQDomain name)) >>= \case
@@ -1068,7 +1068,7 @@ proxyResolveName c nm proxiedRelay name
 -- proxy fallback in the agent. RSLV requires no entity ID or authorization
 -- (see `noAuthCmd` in Protocol.hs). Gated on the session version, below which
 -- the server has no RSLV at all; the encoder gates the query format separately.
-directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameRegistration
+directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT SMPClientError IO NameResponse
 directResolveName c nm name
   | thVersion (thParams c) >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (NQDomain name))) >>= \case
@@ -1076,8 +1076,8 @@ directResolveName c nm name
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
 
-resolvedNameOrNotFound :: SimplexDomain -> NameRegistration -> Bool
-resolvedNameOrNotFound d = \case
+resolvedNameOrNotFound :: SimplexDomain -> NameResponse -> Bool
+resolvedNameOrNotFound d NameResponse {registration} = case registration of
   NRRegistered {nameRecord} -> T.toLower (nrName nameRecord) == fullDomainName d
   _ -> True
 

@@ -81,6 +81,7 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     NameQuery (..),
+    NameResponse (..),
     NameRegistration (..),
     NamePricing (..),
     USDCents (..),
@@ -745,7 +746,7 @@ data BrokerMsg where
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   -- What the router knows about a SimpleX name.
-  RNAME :: NameRegistration -> BrokerMsg
+  RNAME :: NameResponse -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -1994,9 +1995,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    RNAME reg
-      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode reg)
-      | otherwise -> case reg of
+    RNAME res
+      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode res)
+      | otherwise -> case registration res of
           NRRegistered {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
           _ -> e (ERR_, ' ', NAME NOT_FOUND)
     where
@@ -2047,9 +2048,10 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG_ -> pure PONG
     RNAME_
       | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
-      | otherwise -> fmap (RNAME . oldRegistration) . J.eitherDecodeStrict . unTail <$?> _smpP
+      | otherwise -> fmap (RNAME . oldResponse) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
-      oldRegistration nameRecord = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}
+      oldResponse nameRecord =
+        NameResponse {lastBlockTs = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
