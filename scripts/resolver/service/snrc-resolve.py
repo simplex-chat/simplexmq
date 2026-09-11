@@ -722,13 +722,25 @@ def registration(name: str):
         # hashed query the registrar cannot name is refused rather than answered
         if rec["name"] is None:
             return 502, {"name": name, "error": "labelNotRecorded"}
-        return 200, {
-            "type": "registered",
-            "expires": reg["expires"],
-            "graceUntil": reg["graceEnds"],
-            "reservedReason_": reg["reasonCode"],
-            "nameRecord": rec,
-        }
+        # The registrar only tracks 2LDs, so a subname inherits its status from
+        # the name above it. That says nothing about whether the subname itself
+        # was ever created: one that was not has no owner on its node.
+        if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
+            # answer as a subname under an unregistered name already does, so
+            # pricing has to be read here: name_status only reads it when the
+            # name above was itself unregistered
+            status = "unregistered"
+            pricing = pricing_params(tld)
+            if pricing:
+                reg.update({k: v for k, v in pricing.items() if not k.startswith("_")})
+        else:
+            return 200, {
+                "type": "registered",
+                "expires": reg["expires"],
+                "graceUntil": reg["graceEnds"],
+                "reservedReason_": reg["reasonCode"],
+                "nameRecord": rec,
+            }
     if reg["reasonCode"]:
         return 200, {"type": "reserved", "reservedReason": reg["reasonCode"]}
     if status in ("unregistered", "expired"):
@@ -781,8 +793,18 @@ def resolve(name: str):
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
-        # answerable.
+        # answerable. A subname is different: it inherits the 2LD's status, so a
+        # node with no owner is one nobody created rather than one with no
+        # record, and reporting it as registered would invent a name.
         owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+        if len(name.split(".")) > 2 and owner == ZERO_ADDR:
+            return 404, {
+                "name": name,
+                **reg,
+                "status": "unregistered",
+                "error": "unregistered",
+                "message": "this subname has never been created",
+            }
         return 200, {
             "name": canonical_name(name) or name,
             "nickname": "",

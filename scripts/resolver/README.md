@@ -155,6 +155,12 @@ Error bodies carry `name` and a fixed `error` code to branch on. Only
 label, so a hashed query cannot be answered with a name. See
 [Querying by labelhash](#querying-by-labelhash).
 
+A subname's lifetime is bounded by the 2LD above it, so one that exists reports
+that name's expiry and grace. The registrar tracks only 2LDs, though, so the
+parent's registration says nothing about whether the subname itself was ever
+created. One that was not has no owner on its node, and is reported as not
+registered rather than inheriting the parent's registration.
+
 ### v1: `/resolve/<name>`
 
 What routers before SMP v22 call. Its shape is unrelated to v2's: the record is
@@ -212,8 +218,10 @@ holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
 expiry is what separates *never registered* from *registered and since
 released*.
 
-A subname reports the status of the 2LD above it, which is only as good as the
-name it sits under.
+A subname that exists reports the status of the 2LD above it, which is only as
+good as the name it sits under. One that was never created is not reported as
+registered: the registrar tracks only 2LDs, so a node with no owner is the only
+signal there is, and it answers 404 `unregistered`.
 
 #### v1 errors
 
