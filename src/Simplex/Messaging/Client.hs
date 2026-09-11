@@ -1058,7 +1058,7 @@ proxyResolveName :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> SimplexDo
 proxyResolveName c nm proxiedRelay name
   | prVersion proxiedRelay >= namesSMPVersion =
       proxySMPCommand c nm proxiedRelay Nothing NoEntity (RSLV (NQDomain name)) >>= \case
-        Right (RNAME reg) | resolvedName name reg -> pure $ Right reg
+        Right (RNAME reg) | resolvedNameOrNotFound name reg -> pure $ Right reg
         Right r -> throwE $ unexpectedResponse r
         Left e -> pure $ Left e
   | otherwise = throwE $ PCETransportError TEVersion
@@ -1072,14 +1072,12 @@ directResolveName :: SMPClient -> NetworkRequestMode -> SimplexDomain -> ExceptT
 directResolveName c nm name
   | thVersion (thParams c) >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (NQDomain name))) >>= \case
-        RNAME reg | resolvedName name reg -> pure reg
+        RNAME reg | resolvedNameOrNotFound name reg -> pure reg
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
 
--- | The record must name the name that was asked for: a hashed query does not
--- tell the router which name it is, so the router is not trusted for it.
-resolvedName :: SimplexDomain -> NameRegistration -> Bool
-resolvedName d = \case
+resolvedNameOrNotFound :: SimplexDomain -> NameRegistration -> Bool
+resolvedNameOrNotFound d = \case
   NRRegistered {nameRecord} -> T.toLower (nrName nameRecord) == fullDomainName d
   _ -> True
 
