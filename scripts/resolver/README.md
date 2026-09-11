@@ -310,10 +310,6 @@ per second, and charges a premium on a lapsed name that it does not expose. A
 quote from one is therefore only safe for a name that was never registered: an
 `expired` name gets no price rather than one below what the registrar charges.
 
-The grace period, the oracle and its curve are cached for `CONSTANTS_TTL`
-(5 minutes), so a retune shows up within that. Per-name values are read on
-every query.
-
 **Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
 controller there is no oracle, so no name can be priced.
 

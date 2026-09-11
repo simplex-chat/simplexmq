@@ -97,7 +97,6 @@ class EncodedLabelhashTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
-        snrc._constants.clear()
 
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
@@ -214,7 +213,6 @@ class NameStatusTests(unittest.TestCase):
         # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
-        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -245,20 +243,6 @@ class NameStatusTests(unittest.TestCase):
         snrc.rpc = lambda method, params: "0x"
         with self.assertRaises(RuntimeError):
             snrc.name_status("alice.testing")
-
-    def test_the_grace_period_is_read_once_not_per_query(self):
-        seen = []
-
-        def eth_call(to, data):
-            seen.append(data[:10])
-            if data.startswith(snrc.selector("GRACE_PERIOD()")):
-                return "0x" + snrc.encode_uint(self.GRACE)
-            return "0x" + snrc.encode_uint(int(time.time()) - 3600)
-
-        snrc.eth_call = eth_call
-        snrc.name_status("alice.testing")
-        snrc.name_status("alice.testing")
-        self.assertEqual(seen.count(snrc.selector("GRACE_PERIOD()")), 1)
 
     def test_zero_expiry_means_never_registered(self):
         snrc.eth_call = self._expiry(0)
@@ -360,7 +344,6 @@ class ReservedTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         snrc.chain_now = lambda: int(time.time())
-        snrc._constants.clear()
 
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
@@ -432,7 +415,6 @@ class ReservedReasonTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         snrc.chain_now = lambda: int(time.time())
-        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -555,7 +537,6 @@ class PricingTests(unittest.TestCase):
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
-        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -624,13 +605,6 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(snrc.name_status("acme.testing")["status"], "grace")
         self.assertEqual(self.oracle_calls, [])
 
-    def test_the_oracle_curve_is_read_once_not_per_query(self):
-        snrc.eth_call = self._chain(self._lapsed(1))
-        snrc.name_status("acme.testing")
-        seen_first = len(self.oracle_calls)
-        snrc.name_status("acme.testing")
-        self.assertEqual(self.oracle_calls[seen_first:], [])
-
     def test_a_reserved_lapsed_name_keeps_its_reservation(self):
         snrc.eth_call = self._chain(self._lapsed(0), reserved=2)
         reg = snrc.name_status("acme.testing")
@@ -671,7 +645,6 @@ class EnsOracleTests(unittest.TestCase):
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
-        snrc._constants.clear()
 
     def tearDown(self):
         (snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now) = self._saved
@@ -732,7 +705,6 @@ class ErrorCodeTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
-        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -838,7 +810,6 @@ class RegistrationV2Tests(unittest.TestCase):
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
-        snrc._constants.clear()
 
     def tearDown(self):
         (
@@ -982,7 +953,6 @@ class RegistrationV2Tests(unittest.TestCase):
         for expected_type, (chain, keys) in cases.items():
             with self.subTest(type=expected_type):
                 snrc.eth_call = chain
-                snrc._constants.clear()
                 _, body = snrc.registration("acme.testing")
                 self.assertEqual(body["type"], expected_type)
                 self.assertEqual(set(body), keys)
