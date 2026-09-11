@@ -129,9 +129,5 @@ instance FromJSON NameReservedReason where
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 
 -- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
--- resolver contract, so it must not vary with the swift build flag. The label
--- modifier keeps the reservedReason_ collision escape out of the API.
-$( JQ.deriveJSON
-    (taggedObjectJSON $ dropPrefix "NR") {J.fieldLabelModifier = takeWhile (/= '_')}
-    ''NameRegistration
- )
+-- resolver contract, so it must not vary with the swift build flag.
+$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NR") ''NameRegistration)

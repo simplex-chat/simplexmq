@@ -54,7 +54,7 @@ testNameRecord =
 -- from the Haskell value: the literal JSON is the contract with the resolver.
 registeredBody :: NameRecord -> LB.ByteString
 registeredBody nameRec =
-  "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+  "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
 
 availableBody :: LB.ByteString
 availableBody = "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
@@ -177,7 +177,7 @@ availabilitySpec = do
     J.encode NRRTrademark `shouldBe` "\"trademark\""
   where
     heldBackBody =
-      "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
+      "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
     answers body a =
       withResolverServer (resolveResp status200 body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)

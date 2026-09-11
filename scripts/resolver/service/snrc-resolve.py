@@ -726,7 +726,7 @@ def registration(name: str):
             "type": "registered",
             "expires": reg["expires"],
             "graceUntil": reg["graceEnds"],
-            "reservedReason": reg["reasonCode"],
+            "reservedReason_": reg["reasonCode"],
             "nameRecord": rec,
         }
     if reg["reasonCode"]:

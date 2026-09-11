@@ -1543,7 +1543,7 @@ cents, times are seconds since the Unix epoch, and lengths are characters.
 |---|---|---|---|
 | `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
 | `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
-| `reservedReason` | `registered` | string | a reason word, present only when the name is held back as well |
+| `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
 | `nameRecord` | `registered` | object | the record, schema below |
 | `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |
 | `reservedReason` | `reserved` | string | a reason word |

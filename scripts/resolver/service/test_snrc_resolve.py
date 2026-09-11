@@ -874,7 +874,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["expires"], expires)
         self.assertEqual(body["graceUntil"], expires + self.GRACE)
-        self.assertIsNone(body["reservedReason"])
+        self.assertIsNone(body["reservedReason_"])
         self.assertEqual(body["nameRecord"]["name"], "acme.testing")
 
     def test_a_name_in_grace_is_still_registered(self):
@@ -888,7 +888,7 @@ class RegistrationV2Tests(unittest.TestCase):
         snrc.eth_call = self._chain(self.now + 3600, reserved=1)
         _, body = snrc.registration("acme.testing")
         self.assertEqual(body["type"], "registered")
-        self.assertEqual(body["reservedReason"], "internal")
+        self.assertEqual(body["reservedReason_"], "internal")
 
     def test_an_unregistered_name_is_available_with_its_pricing(self):
         snrc.eth_call = self._chain(0)
@@ -946,7 +946,7 @@ class RegistrationV2Tests(unittest.TestCase):
         """The relay decodes by these names; an extra or missing one is a break."""
         cases = {
             "registered": (self._chain(self.now + 3600),
-                           {"type", "expires", "graceUntil", "reservedReason", "nameRecord"}),
+                           {"type", "expires", "graceUntil", "reservedReason_", "nameRecord"}),
             "available": (self._chain(0), {"type", "pricing"}),
             "reserved": (self._chain(0, reserved=1), {"type", "reservedReason"}),
         }
