@@ -20,7 +20,9 @@ import Control.Logger.Simple (logError)
 import Data.Bifunctor (first)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
-import Simplex.Messaging.Protocol (NameErrorType (..), NameQuery, NameRegistration, queryName)
+import Data.Text.Encoding (decodeLatin1)
+import Simplex.Messaging.Encoding
+import Simplex.Messaging.Protocol (NameErrorType (..), NameQuery, NameRegistration)
 import Simplex.Messaging.Server.Names.HttpResolver
   ( ResolverEnv,
     ResolverError (..),
@@ -70,7 +72,7 @@ resolveName env q = do
 
 fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameRegistration)
 fetch NamesEnv {resolverEnv} q =
-  first mapResolverError <$> resolveHttp resolverEnv (queryName q)
+  first mapResolverError <$> resolveHttp resolverEnv (decodeLatin1 $ smpEncode q)
 
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case

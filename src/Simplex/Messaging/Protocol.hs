@@ -81,12 +81,10 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     NameQuery (..),
-    queryName,
     NameRegistration (..),
     NamePricing (..),
     USDCents (..),
     NameReservedReason (..),
-    oldRegistration,
     NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
@@ -252,7 +250,7 @@ import Data.Constraint (Dict (..))
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
-import Data.List (find, foldl')
+import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isJust, isNothing)
@@ -277,7 +275,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), boundedNonSpace, fullDomainName, labelHash, labelHashOfText, labelHashText, tldSuffix)
+import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -1597,31 +1595,21 @@ data ErrorType
   deriving (Eq, Show)
 
 -- | What RSLV asks about: a name, or the hash of a second-level label.
-data NameQuery = NQDomain SimplexDomain | NQHash SimplexTLD LabelHash
+data NameQuery = NQDomain SimplexDomain | NQHash LabelHash SimplexTLD
   deriving (Eq, Show)
 
 instance Encoding NameQuery where
-  smpEncode = encodeUtf8 . queryName
-  smpP = nameQueryOf . safeDecodeUtf8 <$?> boundedNonSpace
-
--- | A hashed label is bracketed, which no name can be, so no tag is needed.
-nameQueryOf :: Text -> Either String NameQuery
-nameQueryOf t = case find ((`T.isSuffixOf` t) . tldSuffix) ([TLDSimplex, TLDTesting] :: [SimplexTLD]) of
-  Just tld | Just h <- labelHashOfText (T.dropEnd (T.length (tldSuffix tld)) t) -> Right (NQHash tld h)
-  _ -> NQDomain <$> strDecode (encodeUtf8 t)
+  smpEncode = \case
+    NQDomain d -> encodeUtf8 $ fullDomainName d
+    NQHash h tld -> strEncode h <> strEncode tld
+  smpP = NQHash <$> strP <*> strP <|> NQDomain <$> strP
 
 -- | Hashed from v22, except a name with subnames or a web TLD.
 hashedQuery :: NameQuery -> NameQuery
 hashedQuery q = case q of
   NQDomain SimplexDomain {nameTLD, domain, subDomain}
-    | null subDomain && nameTLD /= TLDWeb -> NQHash nameTLD (labelHash domain)
+    | null subDomain && nameTLD /= TLDWeb -> NQHash (labelHash domain) nameTLD
   _ -> q
-
--- | How the backing resolver is addressed for this query.
-queryName :: NameQuery -> Text
-queryName = \case
-  NQDomain d -> fullDomainName d
-  NQHash tld h -> labelHashText h <> tldSuffix tld
 
 -- | Name resolution error
 data NameErrorType
@@ -1856,9 +1844,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
-    RSLV q
-      | v >= nameAvailSMPVersion -> e (RSLV_, ' ', hashedQuery q)
-      | otherwise -> e (RSLV_, ' ') <> encodeUtf8 (queryName q)
+    RSLV q -> e (RSLV_, ' ', if v >= nameAvailSMPVersion then hashedQuery q else q)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1965,9 +1951,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
-    CT SResolver RSLV_
-      | v >= nameAvailSMPVersion -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
-      | otherwise -> Cmd SResolver . RSLV . NQDomain <$> _smpP <* A.takeByteString
+    CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -2065,6 +2049,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
       | otherwise -> fmap (RNAME . oldRegistration) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
+      oldRegistration nameRecord = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty

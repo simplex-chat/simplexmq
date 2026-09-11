@@ -202,7 +202,7 @@ parseNameSpec = do
     mapM_
       (\q -> smpDecode (smpEncode q) `shouldBe` Right q)
       [ NQDomain d,
-        NQHash TLDSimplex (labelHash "alice")
+        NQHash (labelHash "alice") TLDSimplex
       ]
   it "accepts a valid simplex-TLD name" $
     case parseN "privacy.simplex" of

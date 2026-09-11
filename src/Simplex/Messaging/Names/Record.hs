@@ -12,7 +12,6 @@ module Simplex.Messaging.Names.Record
     NamePricing (..),
     USDCents (..),
     NameReservedReason (..),
-    oldRegistration,
   )
 where
 
@@ -126,11 +125,6 @@ instance ToJSON NameReservedReason where
 
 instance FromJSON NameReservedReason where
   parseJSON = textParseJSON "NameReservedReason"
-
--- | A v20/v21 router's record as a registration.
-oldRegistration :: NameRecord -> NameRegistration
-oldRegistration nameRecord =
-  NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 

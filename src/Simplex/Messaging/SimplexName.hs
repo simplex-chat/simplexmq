@@ -10,11 +10,8 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
-    tldSuffix,
     LabelHash (..),
     labelHash,
-    labelHashText,
-    labelHashOfText,
     boundedNonSpace,
     shortNameInfoStr,
   )
@@ -88,16 +85,11 @@ newtype LabelHash = LabelHash ByteString
 labelHash :: Text -> LabelHash
 labelHash label = LabelHash $ BA.convert (hash (encodeUtf8 (T.toLower label)) :: Digest Keccak_256)
 
--- | ENS's encoding for an unknown label, as the resolver's HTTP API takes it.
-labelHashText :: LabelHash -> Text
-labelHashText (LabelHash h) = "[" <> decodeLatin1 (BAE.convertToBase BAE.Base16 h) <> "]"
-
--- | The inverse: `[` cannot occur in a label, so the form is unambiguous.
-labelHashOfText :: Text -> Maybe LabelHash
-labelHashOfText t = do
-  hex <- T.stripSuffix "]" =<< T.stripPrefix "[" t
-  h <- eitherToMaybe (BAE.convertFromBase BAE.Base16 (encodeUtf8 hex) :: Either String ByteString)
-  if B.length h == 32 then Just (LabelHash h) else Nothing
+instance StrEncoding LabelHash where
+  strEncode (LabelHash h) = '[' `B.cons` (BAE.convertToBase BAE.Base16 h `B.snoc` ']')
+  strP = do
+    h <- BAE.convertFromBase BAE.Base16 <$?> (A.char '[' *> A.takeWhile (/= ']') <* A.char ']')
+    if B.length h == 32 then pure $ LabelHash h else fail "bad LabelHash"
 
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString
@@ -137,19 +129,15 @@ instance Encoding SimplexDomain where
   smpP = strP
 
 fullDomainName :: SimplexDomain -> Text
-fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
-  where
-    tld' = case nameTLD of
-      TLDSimplex -> ["simplex"]
-      TLDTesting -> ["testing"]
-      TLDWeb -> []
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain]) <> decodeLatin1 (strEncode nameTLD)
 
--- | A web name carries its own TLD, so it gets no suffix.
-tldSuffix :: SimplexTLD -> Text
-tldSuffix = \case
-  TLDSimplex -> ".simplex"
-  TLDTesting -> ".testing"
-  TLDWeb -> ""
+instance StrEncoding SimplexTLD where
+  strEncode = \case
+    TLDSimplex -> ".simplex"
+    TLDTesting -> ".testing"
+    TLDWeb -> ""
+  strP =
+    ".simplex" $> TLDSimplex <|> ".testing" $> TLDTesting <|> pure TLDWeb
 
 shortNameInfoStr :: SimplexNameInfo -> Text
 shortNameInfoStr = \case
