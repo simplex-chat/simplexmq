@@ -722,13 +722,11 @@ def registration(name: str):
         # hashed query the registrar cannot name is refused rather than answered
         if rec["name"] is None:
             return 502, {"name": name, "error": "labelNotRecorded"}
-        # The registrar only tracks 2LDs, so a subname inherits its status from
-        # the name above it. That says nothing about whether the subname itself
-        # was ever created: one that was not has no owner on its node.
+        # a subname inherits the 2LD's status, so only its node's owner says
+        # whether anyone created it
         if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
-            # answer as a subname under an unregistered name already does, so
-            # pricing has to be read here: name_status only reads it when the
-            # name above was itself unregistered
+            # name_status reads pricing only when the name was already
+            # unregistered, so read it here
             status = "unregistered"
             pricing = pricing_params(tld)
             if pricing:
@@ -793,9 +791,7 @@ def resolve(name: str):
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
-        # answerable. A subname is different: it inherits the 2LD's status, so a
-        # node with no owner is one nobody created rather than one with no
-        # record, and reporting it as registered would invent a name.
+        # answerable. For a subname, no owner means nobody created it.
         owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
         if len(name.split(".")) > 2 and owner == ZERO_ADDR:
             return 404, {
