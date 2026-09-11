@@ -722,13 +722,23 @@ def registration(name: str):
         # hashed query the registrar cannot name is refused rather than answered
         if rec["name"] is None:
             return 502, {"name": name, "error": "labelNotRecorded"}
-        return 200, {
-            "type": "registered",
-            "expires": reg["expires"],
-            "graceUntil": reg["graceEnds"],
-            "reservedReason_": reg["reasonCode"],
-            "nameRecord": rec,
-        }
+        # a subname inherits the 2LD's status, so only its node's owner says
+        # whether anyone created it
+        if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
+            # name_status reads pricing only when the name was already
+            # unregistered, so read it here
+            status = "unregistered"
+            pricing = pricing_params(tld)
+            if pricing:
+                reg.update({k: v for k, v in pricing.items() if not k.startswith("_")})
+        else:
+            return 200, {
+                "type": "registered",
+                "expires": reg["expires"],
+                "graceUntil": reg["graceEnds"],
+                "reservedReason_": reg["reasonCode"],
+                "nameRecord": rec,
+            }
     if reg["reasonCode"]:
         return 200, {"type": "reserved", "reservedReason": reg["reasonCode"]}
     if status in ("unregistered", "expired"):
@@ -781,8 +791,16 @@ def resolve(name: str):
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
-        # answerable.
+        # answerable. For a subname, no owner means nobody created it.
         owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+        if len(name.split(".")) > 2 and owner == ZERO_ADDR:
+            return 404, {
+                "name": name,
+                **reg,
+                "status": "unregistered",
+                "error": "unregistered",
+                "message": "this subname has never been created",
+            }
         return 200, {
             "name": canonical_name(name) or name,
             "nickname": "",

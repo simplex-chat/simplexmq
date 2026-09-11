@@ -155,6 +155,9 @@ Error bodies carry `name` and a fixed `error` code to branch on. Only
 label, so a hashed query cannot be answered with a name. See
 [Querying by labelhash](#querying-by-labelhash).
 
+A subname reports the expiry and grace of the 2LD above it, since that is what
+bounds its lifetime. A subname nobody created reports as not registered.
+
 ### v1: `/resolve/<name>`
 
 What routers before SMP v22 call. Its shape is unrelated to v2's: the record is
@@ -213,7 +216,7 @@ expiry is what separates *never registered* from *registered and since
 released*.
 
 A subname reports the status of the 2LD above it, which is only as good as the
-name it sits under.
+name it sits under. A subname nobody created answers 404 `unregistered`.
 
 #### v1 errors
 
