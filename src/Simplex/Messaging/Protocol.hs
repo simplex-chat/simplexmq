@@ -2050,7 +2050,6 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
       | otherwise -> fmap (RNAME . oldResolution) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
-      -- a v20/v21 router sent the record alone: no dates, no reservation, no block
       oldResolution nameRecord =
         NameResolution {readAt = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
       serviceRespP resp

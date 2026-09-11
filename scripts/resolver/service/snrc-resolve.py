@@ -184,6 +184,19 @@ def node_of(name: str) -> bytes:
 # ---------- Registration status ----------
 
 
+def head_block():
+    """How far behind the node is. Unlike expiry, this is the one thing that has
+    to be measured against the host clock: a node that stops still has a block."""
+    try:
+        block = rpc("eth_getBlockByNumber", ["latest", False])
+        return {
+            "blockNumber": decode_uint(block["number"]),
+            "chainLagSeconds": int(time.time()) - decode_uint(block["timestamp"]),
+        }
+    except Exception:
+        return {"blockNumber": None, "chainLagSeconds": None}
+
+
 def chain_now() -> int:
     """Expiry is compared against the block timestamp, never the host clock."""
     block = rpc("eth_getBlockByNumber", ["latest", False])
@@ -329,7 +342,7 @@ def name_status(name: str):
 
     out = {
         "status": status,
-        # the block this was read at: the resolver is only as current as its node
+        # the block this was read at
         "readAt": now,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
@@ -711,8 +724,7 @@ def name_record(name: str):
 
 
 def resolution(reg, registration_body):
-    """The SMP protocol's NameResolution: the registration and the block it was
-    read at, so a client can tell an answer that predates its own transaction."""
+    """The SMP protocol's NameResolution: the registration and the block read at."""
     return 200, {"readAt": reg["readAt"], "registration": registration_body}
 
 
@@ -853,19 +865,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
-            try:
-                block = rpc("eth_getBlockByNumber", ["latest", False])
-                head = {
-                    "blockNumber": decode_uint(block["number"]),
-                    "readAt": decode_uint(block["timestamp"]),
-                    "lagSeconds": int(time.time()) - decode_uint(block["timestamp"]),
-                }
-            except Exception:  # unreachable node: say so rather than omit it
-                head = {"blockNumber": None, "readAt": None, "lagSeconds": None}
-            self._respond(
-                200,
-                {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head},
-            )
+            self._respond(200, {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head_block()})
             return
 
         if len(parts) == 3 and parts[0] == "v2" and parts[1] == "resolve":

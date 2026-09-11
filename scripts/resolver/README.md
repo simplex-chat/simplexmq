@@ -63,12 +63,12 @@ curl -s -X POST http://127.0.0.1:8545 \
 ```sh
 curl -s http://127.0.0.1:8000/health | jq
 # → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": ""},
-#    "blockNumber": 23400000, "readAt": 1780000000, "lagSeconds": 12}
+#    "blockNumber": 23400000, "chainLagSeconds": 12}
 ```
 
-`lagSeconds` is the node's latest block against the wall clock. A resolver that
+`chainLagSeconds` is how far the node is behind the wall clock. A resolver that
 is reachable and answering can still be hours behind, and every name it reports
-is that stale; `null` means the node could not be reached at all.
+is that stale. `null` means the node could not be reached.
 
 **3. resolver resolves a live name** (`foobar.testing` is a populated test name):
 ```sh

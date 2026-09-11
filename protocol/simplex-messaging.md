@@ -1539,10 +1539,9 @@ characters.
 | `readAt` | number | block timestamp the answer was read at. Absent only from a v20/v21 router, which sent the record alone |
 | `registration` | object | below |
 
-A router reads the registry through a node of its own, so an answer can predate
-a client's own transaction. `readAt` is what lets the client tell that apart
-from a current answer: a name registered after `readAt` still reads as
-`available`. A client MUST NOT treat an answer as current without checking it.
+A router reads the registry through a node of its own, which can lag. A name
+registered or changed after `readAt` still reads as it did before, so a client
+MUST NOT treat an answer as current without checking it.
 
 `registration`'s `type` selects which of the three answers it is.
 

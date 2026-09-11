@@ -64,12 +64,9 @@ newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
   deriving newtype (ToJSON, FromJSON)
 
--- | What the registry holds for a name, and the chain state it was read at, so
--- a client can tell an answer that predates its own transaction from a current
--- one. The resolver is only as current as the node behind it.
+-- | What the registry holds for a name, and the block it was read at.
 data NameResolution = NameResolution
-  { -- | block timestamp the registry was read at; absent only from a v20/v21
-    --   router, which sent the record alone
+  { -- | absent only from a v20/v21 router, which sent the record alone
     readAt :: Maybe SystemSeconds,
     registration :: NameRegistration
   }
