@@ -93,7 +93,7 @@ testAvailSuccess =
   withDirectResolver (status200, availableBody) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Right (SMP.NRAvailable {}) -> pure ()
+      Right SMP.NameResolution {registration = SMP.NRAvailable {}} -> pure ()
       _ -> expectationFailure $ "expected Right NRAvailable, got: " <> show r
 
 -- | 404 is a resolver that predates /v2/resolve: no status from that endpoint
@@ -159,5 +159,5 @@ testDirectSuccess =
   withDirectResolver (status200, registeredBody testNameRecord) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
-      Right (SMP.NRRegistered {nameRecord}) -> nameRecord `shouldBe` testNameRecord
+      Right SMP.NameResolution {registration = SMP.NRRegistered {nameRecord}} -> nameRecord `shouldBe` testNameRecord
       _ -> expectationFailure $ "expected Right NRRegistered, got: " <> show r

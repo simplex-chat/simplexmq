@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody) where
+module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, resolutionBody, resolved) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -18,7 +18,7 @@ import Network.HTTP.Types (status200, status400, status404, status500, status502
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
-import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
+import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameResolution (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
@@ -54,13 +54,23 @@ testNameRecord =
 -- from the Haskell value: the literal JSON is the contract with the resolver.
 registeredBody :: NameRecord -> LB.ByteString
 registeredBody nameRec =
-  "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+  resolutionBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
 
 availableBody :: LB.ByteString
-availableBody = "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
+availableBody = resolutionBody "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
 
 reservedBody :: LB.ByteString
-reservedBody = "{\"type\":\"reserved\",\"reservedReason\":\"trademark\"}"
+reservedBody = resolutionBody "{\"type\":\"reserved\",\"reservedReason\":\"trademark\"}"
+
+-- | The registration, and the block the resolver read it at.
+resolutionBody :: LB.ByteString -> LB.ByteString
+resolutionBody reg = "{\"readAt\":" <> testReadAt <> ",\"registration\":" <> reg <> "}"
+
+testReadAt :: LB.ByteString
+testReadAt = "1813000000"
+
+resolved :: NameRegistration -> NameResolution
+resolved registration = NameResolution {readAt = Just (RoundedSystemTime 1813000000), registration}
 
 -- | What `registeredBody testNameRecord` resolves to.
 registeredAlice :: NameRegistration
@@ -148,17 +158,17 @@ availabilitySpec = do
   -- one lookup answers what the name points to, whether it can be taken, and
   -- whether it is held back
   it "a registered name answers with its record and dates" $
-    answers (registeredBody testNameRecord) registeredAlice
+    answers (registeredBody testNameRecord) (resolved registeredAlice)
   it "a registered name can be held back too" $
-    answers heldBackBody $
+    answers heldBackBody . resolved $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
   it "an unregistered name answers with the price" $
-    answers availableBody NRAvailable {pricing = testPricing}
+    answers availableBody (resolved NRAvailable {pricing = testPricing})
   it "reserved carries the reason and no price" $
-    answers reservedBody (NRReserved NRRTrademark)
+    answers reservedBody (resolved $ NRReserved NRRTrademark)
   -- losing the reservation would offer a name that cannot be registered
   it "a reason from a later version still reserves the name" $
-    answers "{\"type\":\"reserved\",\"reservedReason\":\"seasonal\"}" (NRReserved (NRRUnknown "seasonal"))
+    answers (resolutionBody "{\"type\":\"reserved\",\"reservedReason\":\"seasonal\"}") (resolved $ NRReserved (NRRUnknown "seasonal"))
   -- RNAME carries the registration as JSON, so that is the encoding to hold
   it "every registration survives the wire" $
     mapM_
@@ -177,7 +187,7 @@ availabilitySpec = do
     J.encode NRRTrademark `shouldBe` "\"trademark\""
   where
     heldBackBody =
-      "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
+      resolutionBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
     answers body a =
       withResolverServer (resolveResp status200 body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)
@@ -246,7 +256,7 @@ resolverSpec = do
   it "returns the registration on 200 OK" $
     withResolverServer (resolveResp status200 (registeredBody testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Right registeredAlice
+      resolveName env aliceDomain `shouldReturn` Right (resolved registeredAlice)
 
   -- /v2/resolve answers 200, 400 or 502 and never says "no such name": an
   -- unregistered name is NRAvailable. So no status maps to NOT_FOUND.

@@ -20,6 +20,12 @@ snrc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(snrc)
 
 
+def registration(name):
+    """registration() answers a NameResolution; most tests assert what is in it."""
+    status, body = snrc.registration(name)
+    return status, (body["registration"] if status == 200 else body)
+
+
 class SplitLinksTests(unittest.TestCase):
     """`split_links` decodes the multi-URL convention for simplex.contact /
     simplex.channel text records. Reuses the same rule the dApp's
@@ -191,10 +197,11 @@ class NameStatusTests(unittest.TestCase):
 
         return eth_call
 
-    def _keys(self, status, expires, grace_ends):
+    def _keys(self, status, expires, grace_ends, read_at=-1):
         """Every branch answers with the same keys; only some carry values."""
         return {
             "status": status,
+            "readAt": self.now if read_at == -1 else read_at,
             "expires": expires,
             "graceEnds": grace_ends,
             "reasonCode": None,
@@ -212,7 +219,8 @@ class NameStatusTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
-        snrc.chain_now = lambda: int(time.time())
+        self.now = int(time.time())
+        snrc.chain_now = lambda: self.now
 
     def tearDown(self):
         (
@@ -315,12 +323,13 @@ class NameStatusTests(unittest.TestCase):
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
         self.assertEqual(
             snrc.name_status("alice.testing"),
-            self._keys("unknown", None, None),
+            self._keys("unknown", None, None, read_at=None),
         )
 
     def test_every_branch_returns_the_same_keys(self):
         keys = {
             "status",
+            "readAt",
             "expires",
             "graceEnds",
             "reasonCode",
@@ -869,7 +878,7 @@ class RegistrationV2Tests(unittest.TestCase):
     def test_a_live_name_is_registered_and_carries_its_record(self):
         expires = self.now + 3600
         snrc.eth_call = self._chain(expires)
-        status, body = snrc.registration("acme.testing")
+        status, body = registration("acme.testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["expires"], expires)
@@ -880,19 +889,19 @@ class RegistrationV2Tests(unittest.TestCase):
     def test_a_name_in_grace_is_still_registered(self):
         expires = self.now - 3600
         snrc.eth_call = self._chain(expires)
-        _, body = snrc.registration("acme.testing")
+        _, body = registration("acme.testing")
         self.assertEqual(body["type"], "registered")
         self.assertGreater(body["graceUntil"], self.now)
 
     def test_a_registered_name_that_is_held_back_says_so(self):
         snrc.eth_call = self._chain(self.now + 3600, reserved=1)
-        _, body = snrc.registration("acme.testing")
+        _, body = registration("acme.testing")
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["reservedReason_"], "internal")
 
     def test_an_unregistered_name_is_available_with_its_pricing(self):
         snrc.eth_call = self._chain(0)
-        status, body = snrc.registration("acme.testing")
+        status, body = registration("acme.testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "available")
         # lengths below minCharLength are unregistrable, so they are not priced
@@ -902,13 +911,13 @@ class RegistrationV2Tests(unittest.TestCase):
 
     def test_a_lapsed_name_is_available_at_the_ordinary_price(self):
         snrc.eth_call = self._chain(self._lapsed(1))
-        _, body = snrc.registration("acme.testing")
+        _, body = registration("acme.testing")
         self.assertEqual(body["type"], "available")
         self.assertEqual(body["pricing"]["basePrice"], self.BASE)
 
     def test_a_held_back_name_is_reserved_and_is_never_priced(self):
         snrc.eth_call = self._chain(0, reserved=2)
-        status, body = snrc.registration("acme.testing")
+        status, body = registration("acme.testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "reserved")
         self.assertEqual(body["reservedReason"], "trademark")
@@ -918,27 +927,27 @@ class RegistrationV2Tests(unittest.TestCase):
         # keccak-256("acme")
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(0)
-        _, by_name = snrc.registration("acme.testing")
-        _, by_hash = snrc.registration(hashed + ".testing")
+        _, by_name = registration("acme.testing")
+        _, by_hash = registration(hashed + ".testing")
         self.assertEqual(by_name, by_hash)
 
     def test_an_unconfigured_tld_is_refused_not_answered(self):
         snrc.REGISTRIES = {"testing": ""}
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
-        status, body = snrc.registration("acme.testing")
+        status, body = registration("acme.testing")
         self.assertEqual(status, 400)
         self.assertEqual(body["error"], "tldNotConfigured")
 
     def test_no_price_oracle_is_an_error_not_a_free_name(self):
         snrc.eth_call = self._chain(0, oracle=snrc.ZERO_ADDR)
-        status, body = snrc.registration("acme.testing")
+        status, body = registration("acme.testing")
         self.assertEqual(status, 502)
         self.assertEqual(body["error"], "noPriceOracle")
 
     def test_a_status_it_cannot_read_is_an_error_not_a_registration(self):
         snrc.REGISTRARS = {"testing": ""}
         snrc.eth_call = self._chain(0)
-        status, body = snrc.registration("acme.testing")
+        status, body = registration("acme.testing")
         self.assertEqual(status, 502)
         self.assertEqual(body["error"], "unknown")
 
@@ -953,7 +962,7 @@ class RegistrationV2Tests(unittest.TestCase):
         for expected_type, (chain, keys) in cases.items():
             with self.subTest(type=expected_type):
                 snrc.eth_call = chain
-                _, body = snrc.registration("acme.testing")
+                _, body = registration("acme.testing")
                 self.assertEqual(body["type"], expected_type)
                 self.assertEqual(set(body), keys)
     def test_a_hashed_query_the_registrar_cannot_name_is_refused(self):
@@ -961,16 +970,31 @@ class RegistrationV2Tests(unittest.TestCase):
         with a record the registrar could not name would only fail there."""
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(self.now + 3600, label=b"")
-        status, body = snrc.registration(hashed + ".testing")
+        status, body = registration(hashed + ".testing")
         self.assertEqual(status, 502)
         self.assertEqual(body["error"], "labelNotRecorded")
 
     def test_a_hashed_query_is_answered_with_the_name_the_registrar_recorded(self):
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(self.now + 3600)
-        status, body = snrc.registration(hashed + ".testing")
+        status, body = registration(hashed + ".testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["nameRecord"]["name"], "acme.testing")
+    def test_the_answer_says_which_block_it_was_read_at(self):
+        """The resolver is only as current as its node. Without this a client
+        cannot tell an answer that predates its own registration."""
+        snrc.eth_call = self._chain(self.now + 3600)
+        _, res = snrc.registration("acme.testing")
+        self.assertEqual(res["readAt"], self.now)
+        self.assertEqual(res["registration"]["type"], "registered")
+
+    def test_an_available_name_says_so_too(self):
+        """This is the path that reads no block otherwise, and the one where
+        staleness matters most: the name may already be taken."""
+        snrc.eth_call = self._chain(0)
+        _, res = snrc.registration("acme.testing")
+        self.assertEqual(res["readAt"], self.now)
+        self.assertEqual(res["registration"]["type"], "available")
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@
 
 module Simplex.Messaging.Names.Record
   ( NameRecord (..),
+    NameResolution (..),
     NameRegistration (..),
     NamePricing (..),
     USDCents (..),
@@ -62,6 +63,17 @@ $( JQ.deriveJSON
 newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
   deriving newtype (ToJSON, FromJSON)
+
+-- | What the registry holds for a name, and the chain state it was read at, so
+-- a client can tell an answer that predates its own transaction from a current
+-- one. The resolver is only as current as the node behind it.
+data NameResolution = NameResolution
+  { -- | block timestamp the registry was read at; absent only from a v20/v21
+    --   router, which sent the record alone
+    readAt :: Maybe SystemSeconds,
+    registration :: NameRegistration
+  }
+  deriving (Eq, Show)
 
 -- | What the registry holds for a name.
 data NameRegistration
@@ -131,3 +143,5 @@ $(JQ.deriveJSON defaultJSON ''NamePricing)
 -- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
 -- resolver contract, so it must not vary with the swift build flag.
 $(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NR") ''NameRegistration)
+
+$(JQ.deriveJSON defaultJSON ''NameResolution)

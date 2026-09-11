@@ -62,8 +62,13 @@ curl -s -X POST http://127.0.0.1:8545 \
 **2. resolver is healthy:**
 ```sh
 curl -s http://127.0.0.1:8000/health | jq
-# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": ""}}
+# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": ""},
+#    "blockNumber": 23400000, "readAt": 1780000000, "lagSeconds": 12}
 ```
+
+`lagSeconds` is the node's latest block against the wall clock. A resolver that
+is reachable and answering can still be hours behind, and every name it reports
+is that stale; `null` means the node could not be reached at all.
 
 **3. resolver resolves a live name** (`foobar.testing` is a populated test name):
 ```sh
@@ -129,8 +134,10 @@ its own shape does:
 
 ### v2: `/v2/resolve/<query>`
 
-The body is the SMP protocol's `NameRegistration`, which the router decodes as
-is and forwards; translating the registry's model to it is this resolver's job.
+The body is the SMP protocol's `NameResolution`, which the router decodes as is
+and forwards; translating the registry's model to it is this resolver's job. It
+is the registration below, plus `readAt`, the timestamp of the block it was read
+at: a node that lags answers with names it has not seen registered yet.
 Its `type` is `registered`, `available` or `reserved`, and the fields each one
 carries are specified once, in the **Name response** section of
 [`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md). It is

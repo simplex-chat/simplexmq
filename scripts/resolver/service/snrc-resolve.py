@@ -67,6 +67,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -302,6 +303,8 @@ def name_status(name: str):
     if not registrar or len(labels) < 2:
         return {
             "status": "unknown",
+            # nothing was read, so there is no block to report
+            "readAt": None,
             "expires": None,
             "graceEnds": None,
             "reasonCode": None,
@@ -315,12 +318,9 @@ def name_status(name: str):
     expires = decode_uint(
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
     )
-    if expires == 0:
-        status, grace, now = "unregistered", 0, 0
-    else:
-        grace = grace_period(registrar)
-        now = chain_now()
-        status = expiry_status(expires, grace, now)
+    grace = grace_period(registrar) if expires else 0
+    now = chain_now()
+    status = expiry_status(expires, grace, now)
 
     # A reservation is orthogonal to the registration: a registered name can be
     # held back too.
@@ -329,6 +329,8 @@ def name_status(name: str):
 
     out = {
         "status": status,
+        # the block this was read at: the resolver is only as current as its node
+        "readAt": now,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
         "reasonCode": reason[0] if reason else None,
@@ -708,6 +710,12 @@ def name_record(name: str):
     return rec
 
 
+def resolution(reg, registration_body):
+    """The SMP protocol's NameResolution: the registration and the block it was
+    read at, so a client can tell an answer that predates its own transaction."""
+    return 200, {"readAt": reg["readAt"], "registration": registration_body}
+
+
 def registration(name: str):
     """The SMP protocol's NameRegistration, which the relay decodes as is.
     Translating the contract's model to it is this resolver's job."""
@@ -722,26 +730,26 @@ def registration(name: str):
         # hashed query the registrar cannot name is refused rather than answered
         if rec["name"] is None:
             return 502, {"name": name, "error": "labelNotRecorded"}
-        return 200, {
+        return resolution(reg, {
             "type": "registered",
             "expires": reg["expires"],
             "graceUntil": reg["graceEnds"],
             "reservedReason_": reg["reasonCode"],
             "nameRecord": rec,
-        }
+        })
     if reg["reasonCode"]:
-        return 200, {"type": "reserved", "reservedReason": reg["reasonCode"]}
+        return resolution(reg, {"type": "reserved", "reservedReason": reg["reasonCode"]})
     if status in ("unregistered", "expired"):
         if "basePrice" not in reg:
             return 502, {"name": name, "error": "noPriceOracle"}
-        return 200, {
+        return resolution(reg, {
             "type": "available",
             "pricing": {
                 "registrationPrices": reg["registrationPrices"],
                 "basePrice": reg["basePrice"],
                 "minLabelLength": reg["minLabelLength"],
             },
-        }
+        })
     return 502, {"name": name, "error": status}
 
 
@@ -845,9 +853,18 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
+            try:
+                block = rpc("eth_getBlockByNumber", ["latest", False])
+                head = {
+                    "blockNumber": decode_uint(block["number"]),
+                    "readAt": decode_uint(block["timestamp"]),
+                    "lagSeconds": int(time.time()) - decode_uint(block["timestamp"]),
+                }
+            except Exception:  # unreachable node: say so rather than omit it
+                head = {"blockNumber": None, "readAt": None, "lagSeconds": None}
             self._respond(
                 200,
-                {"ok": True, "rpc": RPC, "registries": REGISTRIES},
+                {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head},
             )
             return
 

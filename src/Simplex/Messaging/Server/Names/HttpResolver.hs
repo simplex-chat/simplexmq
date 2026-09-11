@@ -59,7 +59,7 @@ import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
-import Simplex.Messaging.Names.Record (NameRegistration)
+import Simplex.Messaging.Names.Record (NameResolution)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -112,7 +112,7 @@ authHeader = \case
 
 -- | The query is a name or a bracketed label hash, percent-encoded (every
 -- non-unreserved byte per RFC 3986) so it cannot alter the path.
-resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRegistration)
+resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameResolution)
 resolveHttp env q =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
     <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
