@@ -843,11 +843,13 @@ class RegistrationV2Tests(unittest.TestCase):
         return ("0x" + snrc.encode_uint(0x20) + snrc.encode_uint(len(value))
                 + (value + b"\x00" * pad).hex())
 
-    def _chain(self, expires, reserved=0, oracle=None, label=b"acme"):
+    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None):
         """The registry answers a zero resolver, so name_record returns the
         empty record a registered name still has. `label` is what the registrar
-        recorded for the 2LD; b"" means it recorded none."""
+        recorded for the 2LD; b"" means it recorded none. `owner` is the owner of
+        the queried node; ZERO_ADDR means that node was never created."""
         oracle = self.ORACLE if oracle is None else oracle
+        owner = self.OWNER if owner is None else owner
 
         def eth_call(to, data):
             if data.startswith(snrc.selector("labelOf(uint256)")):
@@ -867,7 +869,7 @@ class RegistrationV2Tests(unittest.TestCase):
             if data.startswith(snrc.selector("resolver(bytes32)")):
                 return "0x" + snrc.encode_uint(0)
             if data.startswith(snrc.selector("owner(bytes32)")):
-                return "0x" + snrc.encode_uint(int(self.OWNER, 16))
+                return "0x" + snrc.encode_uint(int(owner, 16))
             return self.fail("unexpected call " + data[:10])
 
         return eth_call
@@ -980,6 +982,43 @@ class RegistrationV2Tests(unittest.TestCase):
         status, body = registration(hashed + ".testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["nameRecord"]["name"], "acme.testing")
+    def test_a_subname_that_exists_is_registered_with_its_parents_dates(self):
+        expires = self.now + 3600
+        snrc.eth_call = self._chain(expires)
+        status, body = registration("sub.acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["type"], "registered")
+        self.assertEqual(body["expires"], expires)
+        self.assertEqual(body["nameRecord"]["name"], "sub.acme.testing")
+
+    def test_a_subname_nobody_created_is_not_registered(self):
+        """The registrar only tracks 2LDs, so the parent's registration says
+        nothing about a child that was never created: its node has no owner."""
+        snrc.eth_call = self._chain(self.now + 3600, owner=snrc.ZERO_ADDR)
+        status, body = registration("sub.acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["type"], "available")
+
+    def test_a_2ld_is_not_subject_to_the_owner_check(self):
+        """Only a subname can be absent under a registered parent."""
+        snrc.eth_call = self._chain(self.now + 3600, owner=snrc.ZERO_ADDR)
+        _, body = registration("acme.testing")
+        self.assertEqual(body["type"], "registered")
+
+    def test_v1_does_not_report_an_uncreated_subname_as_registered(self):
+        """v1 has no availability, so the only honest answer is not-found. The
+        2LD case is untouched: a registered name with no resolver still resolves."""
+        snrc.eth_call = self._chain(self.now + 3600, owner=snrc.ZERO_ADDR)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "unregistered")
+
+    def test_v1_still_resolves_a_2ld_with_no_resolver_set(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=snrc.ZERO_ADDR)
+        status, body = snrc.resolve("acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["resolver"], snrc.ZERO_ADDR)
+
     def test_the_answer_says_which_block_it_was_read_at(self):
         """The resolver is only as current as its node. Without this a client
         cannot tell an answer that predates its own registration."""
