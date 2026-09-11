@@ -67,7 +67,6 @@ import hashlib
 import json
 import os
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -190,26 +189,9 @@ def chain_now() -> int:
     return decode_uint(block["timestamp"])
 
 
-# The grace period, the oracle and its curve change only when a contract is
-# retuned, so they are read once per TTL rather than on every query. Per-name
-# values are never cached.
-CONSTANTS_TTL = 300
-_constants: dict = {}
-
-
-def cached(key, read):
-    """`read()` at most once per CONSTANTS_TTL for `key`."""
-    hit = _constants.get(key)
-    if hit and time.time() - hit[0] < CONSTANTS_TTL:
-        return hit[1]
-    value = read()
-    _constants[key] = (time.time(), value)
-    return value
-
-
 def grace_period(registrar: str) -> int:
     """A deployment can configure a different window, so it is read on chain."""
-    return cached(("grace", registrar), lambda: decode_uint(eth_call(registrar, selector("GRACE_PERIOD()"))))
+    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
 
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
@@ -236,10 +218,6 @@ def reservation_reason(tld: str, token: int) -> int:
 def pricing_params(tld: str):
     """What it costs to register a name under this TLD, in US cents, or None
     when no controller or price oracle is configured."""
-    return cached(("pricing", tld), lambda: read_pricing_params(tld))
-
-
-def read_pricing_params(tld: str):
     controller = CONTROLLERS.get(tld)
     if not controller:
         return None
