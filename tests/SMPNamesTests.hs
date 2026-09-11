@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, resolutionBody, resolved) where
+module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, responseBody, resolved) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -18,7 +18,7 @@ import Network.HTTP.Types (status200, status400, status404, status500, status502
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
-import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameResolution (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
+import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameResponse (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
   ( NamesConfig (..),
@@ -54,23 +54,23 @@ testNameRecord =
 -- from the Haskell value: the literal JSON is the contract with the resolver.
 registeredBody :: NameRecord -> LB.ByteString
 registeredBody nameRec =
-  resolutionBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
 
 availableBody :: LB.ByteString
-availableBody = resolutionBody "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
+availableBody = responseBody "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
 
 reservedBody :: LB.ByteString
-reservedBody = resolutionBody "{\"type\":\"reserved\",\"reservedReason\":\"trademark\"}"
+reservedBody = responseBody "{\"type\":\"reserved\",\"reservedReason\":\"trademark\"}"
 
 -- | The registration, and the block the resolver read it at.
-resolutionBody :: LB.ByteString -> LB.ByteString
-resolutionBody reg = "{\"readAt\":" <> testReadAt <> ",\"registration\":" <> reg <> "}"
+responseBody :: LB.ByteString -> LB.ByteString
+responseBody reg = "{\"lastBlockTs\":" <> testReadAt <> ",\"registration\":" <> reg <> "}"
 
 testReadAt :: LB.ByteString
 testReadAt = "1813000000"
 
-resolved :: NameRegistration -> NameResolution
-resolved registration = NameResolution {readAt = Just (RoundedSystemTime 1813000000), registration}
+resolved :: NameRegistration -> NameResponse
+resolved registration = NameResponse {lastBlockTs = Just (RoundedSystemTime 1813000000), registration}
 
 -- | What `registeredBody testNameRecord` resolves to.
 registeredAlice :: NameRegistration
@@ -168,7 +168,7 @@ availabilitySpec = do
     answers reservedBody (resolved $ NRReserved NRRTrademark)
   -- losing the reservation would offer a name that cannot be registered
   it "a reason from a later version still reserves the name" $
-    answers (resolutionBody "{\"type\":\"reserved\",\"reservedReason\":\"seasonal\"}") (resolved $ NRReserved (NRRUnknown "seasonal"))
+    answers (responseBody "{\"type\":\"reserved\",\"reservedReason\":\"seasonal\"}") (resolved $ NRReserved (NRRUnknown "seasonal"))
   -- RNAME carries the registration as JSON, so that is the encoding to hold
   it "every registration survives the wire" $
     mapM_
@@ -187,7 +187,7 @@ availabilitySpec = do
     J.encode NRRTrademark `shouldBe` "\"trademark\""
   where
     heldBackBody =
-      resolutionBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
+      responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
     answers body a =
       withResolverServer (resolveResp status200 body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)

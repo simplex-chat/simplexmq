@@ -81,7 +81,7 @@ module Simplex.Messaging.Protocol
     CommandError (..),
     ProxyError (..),
     NameQuery (..),
-    NameResolution (..),
+    NameResponse (..),
     NameRegistration (..),
     NamePricing (..),
     USDCents (..),
@@ -746,7 +746,7 @@ data BrokerMsg where
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
   -- What the router knows about a SimpleX name.
-  RNAME :: NameResolution -> BrokerMsg
+  RNAME :: NameResponse -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -2048,10 +2048,10 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PONG_ -> pure PONG
     RNAME_
       | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
-      | otherwise -> fmap (RNAME . oldResolution) . J.eitherDecodeStrict . unTail <$?> _smpP
+      | otherwise -> fmap (RNAME . oldResponse) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
-      oldResolution nameRecord =
-        NameResolution {readAt = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
+      oldResponse nameRecord =
+        NameResponse {lastBlockTs = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty

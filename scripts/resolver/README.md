@@ -134,9 +134,9 @@ its own shape does:
 
 ### v2: `/v2/resolve/<query>`
 
-The body is the SMP protocol's `NameResolution`, which the router decodes as is
+The body is the SMP protocol's `NameResponse`, which the router decodes as is
 and forwards; translating the registry's model to it is this resolver's job. It
-is the registration below, plus `readAt`, the timestamp of the block it was read
+is the registration below, plus `lastBlockTs`, the timestamp of the block it was read
 at: a node that lags answers with names it has not seen registered yet.
 Its `type` is `registered`, `available` or `reserved`, and the fields each one
 carries are specified once, in the **Name response** section of

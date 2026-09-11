@@ -21,7 +21,7 @@ _SPEC.loader.exec_module(snrc)
 
 
 def registration(name):
-    """registration() answers a NameResolution; most tests assert what is in it."""
+    """registration() answers a NameResponse; most tests assert what is in it."""
     status, body = snrc.registration(name)
     return status, (body["registration"] if status == 200 else body)
 
@@ -201,7 +201,7 @@ class NameStatusTests(unittest.TestCase):
         """Every branch answers with the same keys; only some carry values."""
         return {
             "status": status,
-            "readAt": self.now if read_at == -1 else read_at,
+            "lastBlockTs": self.now if read_at == -1 else read_at,
             "expires": expires,
             "graceEnds": grace_ends,
             "reasonCode": None,
@@ -329,7 +329,7 @@ class NameStatusTests(unittest.TestCase):
     def test_every_branch_returns_the_same_keys(self):
         keys = {
             "status",
-            "readAt",
+            "lastBlockTs",
             "expires",
             "graceEnds",
             "reasonCode",
@@ -1024,7 +1024,7 @@ class RegistrationV2Tests(unittest.TestCase):
         cannot tell an answer that predates its own registration."""
         snrc.eth_call = self._chain(self.now + 3600)
         _, res = snrc.registration("acme.testing")
-        self.assertEqual(res["readAt"], self.now)
+        self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "registered")
 
     def test_an_available_name_says_so_too(self):
@@ -1032,7 +1032,7 @@ class RegistrationV2Tests(unittest.TestCase):
         staleness matters most: the name may already be taken."""
         snrc.eth_call = self._chain(0)
         _, res = snrc.registration("acme.testing")
-        self.assertEqual(res["readAt"], self.now)
+        self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "available")
 
 if __name__ == "__main__":

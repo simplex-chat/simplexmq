@@ -317,7 +317,7 @@ def name_status(name: str):
         return {
             "status": "unknown",
             # nothing was read, so there is no block to report
-            "readAt": None,
+            "lastBlockTs": None,
             "expires": None,
             "graceEnds": None,
             "reasonCode": None,
@@ -343,7 +343,7 @@ def name_status(name: str):
     out = {
         "status": status,
         # the block this was read at
-        "readAt": now,
+        "lastBlockTs": now,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
         "reasonCode": reason[0] if reason else None,
@@ -723,9 +723,9 @@ def name_record(name: str):
     return rec
 
 
-def resolution(reg, registration_body):
-    """The SMP protocol's NameResolution: the registration and the block read at."""
-    return 200, {"readAt": reg["readAt"], "registration": registration_body}
+def name_response(reg, registration_body):
+    """The SMP protocol's NameResponse: the registration and the block read at."""
+    return 200, {"lastBlockTs": reg["lastBlockTs"], "registration": registration_body}
 
 
 def registration(name: str):
@@ -752,7 +752,7 @@ def registration(name: str):
             if pricing:
                 reg.update({k: v for k, v in pricing.items() if not k.startswith("_")})
         else:
-            return resolution(reg, {
+            return name_response(reg, {
                 "type": "registered",
                 "expires": reg["expires"],
                 "graceUntil": reg["graceEnds"],
@@ -760,11 +760,11 @@ def registration(name: str):
                 "nameRecord": rec,
             })
     if reg["reasonCode"]:
-        return resolution(reg, {"type": "reserved", "reservedReason": reg["reasonCode"]})
+        return name_response(reg, {"type": "reserved", "reservedReason": reg["reasonCode"]})
     if status in ("unregistered", "expired"):
         if "basePrice" not in reg:
             return 502, {"name": name, "error": "noPriceOracle"}
-        return resolution(reg, {
+        return name_response(reg, {
             "type": "available",
             "pricing": {
                 "registrationPrices": reg["registrationPrices"],

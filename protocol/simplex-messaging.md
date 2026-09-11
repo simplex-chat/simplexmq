@@ -1526,21 +1526,21 @@ fact that this router cannot resolve, so iterating past it is safe.
 `RNAME` answers both what a name resolves to and whether it can be registered.
 
 ```abnf
-rname = %s"RNAME" SP resolution
+rname = %s"RNAME" SP nameResponse
 ```
 
-`resolution` is a UTF-8 JSON object consuming the remainder of the transmission:
-the `registration` below, and `readAt`, the block timestamp the registry was read
-at. Money is US cents, times are seconds since the Unix epoch, and lengths are
+`nameResponse` is a UTF-8 JSON object consuming the remainder of the
+transmission: the `registration` below, and `lastBlockTs`, the block timestamp the
+registry was read at. Money is US cents, times are seconds since the Unix epoch, and lengths are
 characters.
 
 | Field | JSON type | Constraints |
 |---|---|---|
-| `readAt` | number | block timestamp the answer was read at. Absent only from a v20/v21 router, which sent the record alone |
+| `lastBlockTs` | number | block timestamp the answer was read at. Absent only from a v20/v21 router, which sent the record alone |
 | `registration` | object | below |
 
 A router reads the registry through a node of its own, which can lag. A name
-registered or changed after `readAt` still reads as it did before, so a client
+registered or changed after `lastBlockTs` still reads as it did before, so a client
 MUST NOT treat an answer as current without checking it.
 
 `registration`'s `type` selects which of the three answers it is.

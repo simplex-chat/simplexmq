@@ -22,7 +22,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Protocol (NameErrorType (..), NameQuery, NameResolution)
+import Simplex.Messaging.Protocol (NameErrorType (..), NameQuery, NameResponse)
 import Simplex.Messaging.Server.Names.HttpResolver
   ( ResolverEnv,
     ResolverError (..),
@@ -59,7 +59,7 @@ pingEndpoint :: NamesEnv -> IO (Either ResolverError ())
 pingEndpoint NamesEnv {resolverEnv, config} =
   fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
-resolveName :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResolution)
+resolveName :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
 resolveName env q = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env q))
   case r of
@@ -70,7 +70,7 @@ resolveName env q = do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
           pure (Left (RESOLVER "resolver error"))
 
-fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResolution)
+fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
 fetch NamesEnv {resolverEnv} q =
   first mapResolverError <$> resolveHttp resolverEnv (decodeLatin1 $ smpEncode q)
 
