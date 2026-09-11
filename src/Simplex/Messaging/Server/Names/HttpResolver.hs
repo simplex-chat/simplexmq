@@ -8,10 +8,12 @@
 --
 -- The Python REST resolver (see scripts/resolver/snrc-resolve.py) exposes
 --
---   GET /resolve/<name>   -> 200 with a NameRecord JSON document
---                            404 / 400 for unknown names / TLDs
---                            502 for upstream RPC failures
---   GET /health           -> 200 when the resolver process is ready
+--   GET /v2/resolve/<query> -> 200 with a NameRegistration JSON document, for
+--                              all three registration shapes; 400 for unknown
+--                              TLDs, 502 for upstream RPC failures
+--   GET /v1/resolve/<name>  -> 200 with a NameRecord, what relays before SMP
+--                              v22 call as /resolve
+--   GET /health             -> 200 when the resolver process is ready
 --
 -- Boundary properties:
 --   * Response body read with `brReadSome maxResponseBytes` — adversarial
@@ -57,7 +59,7 @@ import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
-import Simplex.Messaging.Names.Record (NameRecord)
+import Simplex.Messaging.Names.Record (NameRegistration)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -108,14 +110,12 @@ authHeader = \case
     let encoded = BAE.convertToBase BAE.Base64 (encodeUtf8 u <> ":" <> encodeUtf8 p) :: ByteString
      in ("Authorization", "Basic " <> encoded)
 
--- | GET <baseUrl>/resolve/<percent-encoded name>, decoding the 200 body
--- directly into a NameRecord in one pass (no intermediate Aeson Value). The
--- name is percent-encoded (every non-unreserved byte per RFC 3986): the
--- resolver expects raw labels, so slashes/punctuation must not alter the path.
-resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRecord)
-resolveHttp env name =
+-- | The query is a name or a bracketed label hash, percent-encoded (every
+-- non-unreserved byte per RFC 3986) so it cannot alter the path.
+resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameRegistration)
+resolveHttp env q =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
-    <$> httpGet env ("/resolve/" <> B.unpack (urlEncode True (encodeUtf8 name)))
+    <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.

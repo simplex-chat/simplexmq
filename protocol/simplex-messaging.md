@@ -86,7 +86,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 20. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 22. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -108,6 +108,7 @@ This document describes SMP protocol version 20. Versions 1-5 are discontinued. 
 - v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
 - v20: public namespaces resolver (RSLV command, RNAME response) — direct or forwarded via PFWD
 - v21: server public information in handshake
+- v22: `RNAME` says whether a name can be registered, not only what it resolves to
 
 ## Introduction
 
@@ -1451,53 +1452,138 @@ reads `NameRecord` from. The reference implementation forwards each RSLV to a
 companion REST resolver process (`scripts/resolver/snrc-resolve.py`) that
 queries the SNRC contract on Ethereum; alternative backings (different chains,
 DHT, etc.) are valid as long as they expose the documented HTTP shape (`GET
-/resolve/<name>` returning a `NameRecord` on 200, 404 / 400 for unknown names
-or TLDs, 502 for upstream RPC failures) or substitute a different transport
-while still returning a `NameRecord` matching the encoding below.
+/v2/resolve/<query>` returning a `NameRegistration` on 200 for every
+registration shape, 400 for unknown TLDs, 502 for upstream failures) or
+substitute a different transport returning the same JSON. The resolver API is
+versioned separately from this protocol: `/v1/resolve/<name>` returns a bare
+`NameRecord` and is what relays before v22 call as `/resolve/<name>`.
 
 #### Resolve name command
 
-The `RSLV` command carries the canonical fully-qualified name directly as the
-payload (not JSON):
+The `RSLV` command carries the query as text, not JSON. A client sends the
+hashed form only from v22, and the name itself below it:
 
 ```abnf
-rslv = %s"RSLV" SP domain   ; domain = canonical name as non-space bytes, consuming the remainder of the transmission
+rslv   = %s"RSLV" SP query
+query  = domain / hashed        ; hashed only from v22
+domain = 1*253 OCTET            ; the name as text
+hashed = "[" 64HEXDIG "]" tld   ; keccak-256 of the second-level label
+tld    = %s".simplex" / %s".testing"
 ```
 
 `domain` is the UTF-8 canonical fully-qualified name with the TLD always
 explicit (e.g. `privacy.simplex`, `test.testing`, `example.com`), bounded to
 253 bytes.
 
+**Hashed labels.** The query is a name, or the keccak-256 of a second-level
+label in ENS's bracketed form. A label can only be letters, digits and hyphens,
+so `[` tells the two apart and no tag is needed.
+
+Only a second-level name may be hashed. A name with subnames is sent as text: it
+is resolved rather than priced, and its record names it anyway. A web TLD has no
+registry to key a hash on.
+
+From v22 a client MUST send the hash. Older routers can only read the name, so a
+client on an older session sends the name. A router answering a hashed query
+does not know the label's length, so it cannot check a minimum-length policy
+either: the client does that, from the pricing it is sent.
+
+The same form reaches the backing resolver, which is what its HTTP API takes, so
+the query is one string end to end.
+
+A hashed query still answers with the name. The registrar records the plaintext
+label when a name is registered, keyed by the hash of that label, so a router can
+look up what the hash stands for without ever being told. The router is not
+trusted for it: a client MUST check that the record names the name it asked
+about, and reject the answer otherwise. A registry that does not record the
+label cannot answer a hashed query at all, and the router answers `ERR NAME
+RESOLVER` rather than a record it knows the client will reject. An unregistered
+name has no recorded label, so it cannot be looked up either.
+
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
 to the configured backing resolver, which is the source of truth for which
 on-chain registry maps to each TLD.
 
-The names router responds with either an `RNAME` response carrying the resolved
-record, or an `ERR NAME` error whose subcode a client iterating across several
-configured servers can act on distinctly:
+The names router responds with either an `RNAME` response saying what it knows
+about the name, or an `ERR NAME` error whose subcode a client iterating across
+several configured servers can act on distinctly:
 
 | Response | Condition | Client action |
 |---|---|---|
-| `RNAME` | record resolved | use it |
-| `ERR NAME NOT_FOUND` | name not registered, unknown TLD, or malformed name | authoritative "no such name" — stop |
+| `RNAME` | the router read the registry | use it |
+| `ERR NAME NOT_FOUND` | below v22 only: every name that does not resolve. From v22 a router never sends it | stop, and do not read it as registrable |
 | `ERR NAME NO_RESOLVER` | this router has no resolver (names role not enabled) | skip this server, try the next |
-| `ERR NAME RESOLVER <detail>` | transient failure: backing resolver error (upstream 5xx, transport, timeout, decode) | transient — retry or surface, do not treat as "not found" |
+| `ERR NAME RESOLVER <detail>` | the router cannot state an answer completely: no registrar or price oracle for the TLD, an unreachable chain, a transport failure, a timeout, a registration it could not date or resolve | surface `<detail>`; retry only if it reads as transient |
 
 A client SHOULD NOT broadcast a `name` to further servers after a name-capable
 router has answered (`NOT_FOUND` or `RESOLVER`), since that router has already
 seen the lookup key; `NO_RESOLVER` discloses nothing about the name beyond the
 fact that this router cannot resolve, so iterating past it is safe.
 
-#### Name record response
+#### Name response
 
-The `RNAME` response carries a JSON-encoded record as the payload:
+`RNAME` answers both what a name resolves to and whether it can be registered.
 
 ```abnf
-rname = %s"RNAME" SP json-bytes   ; json-bytes consumes the remainder of the transmission
+rname = %s"RNAME" SP registration
 ```
 
-`json-bytes` MUST be a UTF-8 JSON object with the following schema:
+`registration` is a UTF-8 JSON object consuming the remainder of the
+transmission. Its `type` selects which of the three answers it is. Money is US
+cents, times are seconds since the Unix epoch, and lengths are characters.
+
+| `type` | Meaning |
+|---|---|
+| `registered` | held by someone until `expires`, renewable by its owner alone until `graceUntil`. It always carries `nameRecord`: where the owner set none, every field is unset and the resolver address is zero |
+| `available` | held by nobody and registrable now, at `pricing` |
+| `reserved` | held back by the registry and not registered. It carries no price, and a router MUST NOT quote one |
+
+| Field | On | JSON type | Constraints |
+|---|---|---|---|
+| `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
+| `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
+| `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
+| `nameRecord` | `registered` | object | the record, schema below |
+| `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |
+| `reservedReason` | `reserved` | string | a reason word |
+
+| `pricing` field | JSON type | Constraints |
+|---|---|---|
+| `registrationPrices` | object | label length, as a decimal string, to US cents per year, for the lengths the registry prices specially |
+| `basePrice` | number | US cents per year for every other length |
+| `minLabelLength` | number | characters; the registry refuses shorter labels |
+
+A reason word is `internal`, `trademark`, `community`, or a word a later version
+reserves under, at most 32 printable ASCII characters. A router truncates an
+unknown word to that and otherwise passes it through unchanged. A client MUST
+read a word it does not know as unknown and still treat the name as reserved.
+
+**Computing the price.** In US cents, for a duration in seconds:
+
+```
+price len duration = tier len * duration / 31536000
+tier len = the entry for len in registrationPrices, or basePrice when there is none
+```
+
+The registry's minimum registration is 730 days, a contract constant, so it is
+specified here rather than sent. `registrationPrices` omits any length below
+`minLabelLength`. A client MUST NOT show a quote for a label the registry
+refuses: a hashed query carries no length, so only the client can check it.
+
+Below v22, `RNAME` carries the bare record and nothing else, and every answer
+without one is `ERR NAME NOT_FOUND`. A v22 client reads such an answer as
+`registered` with no expiry, grace or reservation.
+
+From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable": only
+`available` says that.
+
+A router that cannot state an answer completely MUST send `ERR NAME RESOLVER
+<detail>` rather than answer partially or guess. That covers a TLD with no
+registrar or price oracle, an unreachable chain, a timeout, a registration it
+could not date or resolve, and any status word it does not recognise.
+
+`nameRecord` MUST be a UTF-8 JSON object with the following schema:
 
 | Field | JSON type | Constraints |
 |---|---|---|
@@ -1514,34 +1600,16 @@ rname = %s"RNAME" SP json-bytes   ; json-bytes consumes the remainder of the tra
 | `owner` | string | `"0x"` followed by 40 lowercase hex characters (20 raw bytes) |
 | `resolver` | string | `"0x"` followed by 40 lowercase hex characters; the resolver contract address that produced the record |
 
-Text fields (`nickname`, `website`, `location`) use the empty string `""` as
-the "unset" sentinel: a backing resolver with no value for the field MUST emit
-an empty string, not JSON `null` and not an absent key. Link fields
-(`simplexContact`, `simplexChannel`) are arrays, primary link first, and use the
-empty array `[]` when unset. Coin fields (`eth`, `btc`, `xmr`, `dot`) use JSON
-`null` as the "unset" sentinel and MAY also be absent from the object entirely.
+Testnet-vs-mainnet status is derived from the queried TLD, not from the record.
 
-The backing resolver filters records that are expired or otherwise unavailable
-(the names router then returns `ERR NAME NOT_FOUND` to the client), so the wire
-format carries no expiry field. Testnet-vs-mainnet status is derived from the
-queried TLD rather than an in-record flag.
+Receivers MUST tolerate extra unknown fields; adding a required field is a
+breaking change requiring an SMP version bump. Receivers parse by key name, so
+peers MUST NOT rely on a byte-canonical form.
 
-Receivers MUST tolerate extra unknown fields (forward-compatibility for future
-field additions). Adding a required field is a breaking change requiring an
-SMP version bump.
-
-**Field order is not significant.** Receivers parse JSON by key name, so object
-key order, insignificant whitespace, and number formatting carry no meaning;
-records are interpreted by decoded value, never compared byte-for-byte. Peers
-MUST NOT rely on a byte-canonical form — a different resolver or server may emit
-the same record with different key order or spacing. This order-independence is
-what makes the format forward-compatible (see the unknown-field rule above).
-
-**Wire-size budget.** The names router caps the resolver response it will
-accept (`resolver_max_response_bytes`, ≤ 16000 bytes, the default) so the
-re-encoded `RNAME` stays within the SMP proxied transmission budget of 16224
-bytes; a response over the cap is rejected as `ERR NAME RESOLVER`. The link
-arrays are bounded by this overall budget rather than a fixed per-field count.
+The names router caps the resolver response it will accept
+(`resolver_max_response_bytes`, at most 16000 bytes) so the re-encoded `RNAME`
+stays within the SMP proxied transmission budget of 16224 bytes; a response over
+the cap is `ERR NAME RESOLVER`.
 
 ## Transport connection with the SMP router
 

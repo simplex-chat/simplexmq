@@ -71,6 +71,12 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 # → {"name":"foobar.testing","nickname":"Foo","simplexContact":["https://smp16.simplex.im/a#…"], … }
 ```
 
+**4. the route your router will call** (check 3 passes on an older resolver too):
+```sh
+curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
+# → {"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}
+```
+
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
 
@@ -82,7 +88,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 | reth p2p | `:30303` tcp/udp | Ethereum sync (open on firewall) |
 | nimbus p2p | `:9000` tcp/udp | beacon sync (open on firewall) |
 | nimbus REST | `127.0.0.1:5052` | beacon API |
-| **resolver** | `127.0.0.1:8000` | SNRC REST (`/resolve`, `/health`) |
+| **resolver** | `127.0.0.1:8000` | SNRC REST (`/v2/resolve`, `/resolve`, `/health`) |
 
 ## Caveats
 
@@ -110,7 +116,55 @@ standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
 ```
 
-### Response shape
+Three routes, versioned separately from the protocol so each only changes when
+its own shape does:
+
+| Route | Called by | Answers |
+|---|---|---|
+| `/v2/resolve/<query>` | routers from SMP v22 | a `NameRegistration` |
+| `/resolve/<name>` | routers before SMP v22 | a name record, flat |
+| `/health` | anyone | readiness |
+
+`/v1/resolve/<name>` is an alias for `/resolve/<name>`.
+
+### v2: `/v2/resolve/<query>`
+
+The body is the SMP protocol's `NameRegistration`, which the router decodes as
+is and forwards; translating the registry's model to it is this resolver's job.
+Its `type` is `registered`, `available` or `reserved`, and the fields each one
+carries are specified once, in the **Name response** section of
+[`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md). It is
+the wire format, so it is documented with the wire.
+
+Two things follow from that and are worth stating here. Expiry and grace belong
+to the registration, not to the record: `expires` and `graceUntil` sit beside
+`nameRecord`, not inside it. And a name nobody holds is not an error: it
+answers 200 with `type: available` and its price, so no status code from this
+route means "not registered".
+
+| Status | Meaning |
+|---|---|
+| 200 | a registration: `registered`, `available` or `reserved` |
+| 400 | `tldNotConfigured`, `notFullyQualified` |
+| 502 | `noPriceOracle`, `labelNotRecorded`, an unreadable status, or `upstreamError` |
+
+Error bodies carry `name` and a fixed `error` code to branch on. Only
+`upstreamError` adds a `message`; the v1 route always adds one.
+
+`labelNotRecorded` means the registrar holds the name but never recorded its
+label, so a hashed query cannot be answered with a name. See
+[Querying by labelhash](#querying-by-labelhash).
+
+A subname reports the expiry and grace of the 2LD above it, since that is what
+bounds its lifetime. A subname nobody created reports as not registered.
+
+### v1: `/resolve/<name>`
+
+What routers before SMP v22 call. Its shape is unrelated to v2's: the record is
+flat, and `status`, `expires`, `graceEnds`, `reasonCode` and `reason` sit
+alongside its fields.
+
+#### v1 response shape
 
 ```jsonc
 {
@@ -119,28 +173,197 @@ uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + main
   "simplexContact": ["https://smp16.simplex.im/a#…", "https://smp11…"],  // primary first, fallbacks after
   "simplexChannel": [],
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
-  "owner": "0xd83b…", "resolver": "0x80fa…"
+  "owner": "0xd83b…", "resolver": "0x80fa…",
+  "status": "registered",      // registered | grace | expired | unregistered | unknown
+  "expires": 1780000000,       // Unix seconds; when the registration ends
+  "graceEnds": 1787776000,     // expires + GRACE_PERIOD; last moment the owner can renew
+  "reasonCode": null,          // set when the name is held back as well
+  "reason": null               // set when the name is held back as well
 }
 ```
 
 `simplexContact`/`simplexChannel` are arrays (a name can advertise multiple SMP
-servers; clients try them in order). On-chain they're a single comma-separated
+servers; clients try them in order). On-chain they're a single `;`-separated
 text record; the resolver splits/trims/drops-empties. Address encodings are
 canonical per chain (EIP-55 / bech32 / SS58 / Monero-base58). Subnames work
 identically (`bar.foobar.testing`).
 
-### Status codes
+#### v1 registration status and expiry
+
+A response carries `status`, `expires` and `graceEnds` whenever the resolver
+read them, a successful resolve included, so a client that has just resolved a
+name already knows when it expires. Both timestamps are Unix seconds, and
+`null` when they could not be read.
+
+| `status` | Meaning |
+|---|---|
+| `registered` | live; `expires` is when that ends |
+| `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
+| `expired` | lapsed and past grace; anyone may register it |
+| `unregistered` | never registered, and free to take |
+| `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+
+A reservation is orthogonal to the status: a name held back by the registry
+carries `reasonCode` and `reason` whether or not it is registered.
+
+`grace` and `expired` are told apart by the registrar's own `available(id)`
+rule, `expires + GRACE_PERIOD < now`. `GRACE_PERIOD` is read from the contract
+rather than assumed, and `now` is the latest block's timestamp rather than the
+host clock, which the registrar compares against too, so a machine with a wrong
+clock cannot misreport a registration. That rule alone is not enough: it also
+holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
+expiry is what separates *never registered* from *registered and since
+released*.
+
+A subname reports the status of the 2LD above it, which is only as good as the
+name it sits under. A subname nobody created answers 404 `unregistered`.
+
+#### v1 errors
+
+Every non-2xx body carries two fields: `error` is a fixed code to branch on,
+and `message` is a sentence for a human. Match on `error`, never on `message`,
+which is free to change.
+
+```jsonc
+{"name": "nope.testing", "error": "unregistered",
+ "message": "this name has never been registered",
+ "status": "unregistered", "expires": null, "graceEnds": null}
+```
+
+The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
+`expired`, `noSuchRoute` and `upstreamError`. When the registration is what went
+wrong, `error` and `status` hold the same value, so one field is enough to read.
+
+`upstreamError` says only which exception type the RPC call raised. The text
+goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
+and urlopen puts the URL it failed on into the message. It is also the answer
+when a registrar, controller or oracle address has no contract behind it: the
+empty reply is refused rather than read as zero, which would make every name
+look free.
+
+#### v1 status codes
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved |
+| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when no registrar is configured) |
 | 400 | TLD not configured, or not a fully-qualified name |
-| 404 | name has no resolver set on the registry |
+| 404 | `unregistered` |
+| 410 | `expired`: lapsed and past grace, so anyone may take it |
 | 502 | upstream RPC error / reth not synced |
 
-### Configuring registries
+### Querying by labelhash
 
-Defaults to mainnet `.testing` (`0x03f438…`); `.simplex` is unset until
-deployed. Override per TLD via env on the `resolver` service in
-`docker-compose.yml` (`SNRC_REGISTRY_TESTING` / `SNRC_REGISTRY_SIMPLEX`), or as
-env vars for the standalone script.
+A client asking whether a name is free is usually about to register it, and
+whoever runs the resolver could register it first. To avoid that, send the
+keccak hash of the label in ENS's `[<64 hex>]` form instead of the label:
+
+```sh
+# instead of /resolve/acme.testing
+curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' ' -f1)].testing"
+```
+
+namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
+returns the same record. The registrar keys `nameExpires` and `reservedNames` on
+the labelhash too, so the status fields do not need the label either. The
+resolver learns the name only by guessing the label and hashing it.
+
+Only the second-level label is a registry key, and `status` decodes a bracket
+there at any depth. The record does not: a bracket is decoded only in a
+two-label name, so `sub.[<hash>].testing` is not a supported query. Subname
+labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
+from v22 send every 2LD this way, so a registrable name normally never reaches
+this service.
+
+On v2, read `type`: only `available` means the name is free. On v1, read
+`status`: a name is free on `unregistered` (404) and on `expired` (410), every
+other status means somebody holds it, and a `reasonCode` means the registry will
+refuse it whatever the status says.
+
+The hash must be keccak-256. `openssl dgst -sha3-256` and `sha3sum` compute
+SHA3-256, a different function that returns 64 valid-looking hex characters
+pointing at the wrong node.
+
+The resolver lowercases the query before matching, so uppercase hex works too.
+Clients that refuse raw brackets in a path can percent-encode them as `%5B` and
+`%5D`.
+
+Brackets cannot collide with a real name: they are invalid in a normalised ENS
+name, and a `[<64 hex>]` label is 66 bytes against the registrar's
+`maxLabelLength` of 63. A plain `0x…` label is not treated as a hash, since that
+is an ordinary, registrable name.
+
+Only 2LDs can be queried this way, as only a 2LD can be raced for: subnames are
+created by the 2LD's owner. A bracket label in a subname is hashed as written,
+so it points at a node nobody can own. ENS tooling accepts the bracketed form at
+any depth; this resolver does not, on purpose.
+
+This hides interest in a name and nothing else: the registration itself is
+public, and commit-reveal covers that step. A short or well-known label is easy
+to guess by hashing candidates, and the reveal publishes the labelhash, so an
+operator who logged the query can match it to the name afterwards.
+
+### What a name costs
+
+The controller's `prices()` names the price oracle, so no extra configuration is
+needed beyond `SNRC_CONTROLLER_<TLD>`. A `SimplexPriceOracle` exposes its curve
+through `prices()`, in US cents per year, which is the unit this API carries.
+
+An ENS-shaped oracle exposes only `price1Letter()`..`price6Letter()`, in attoUSD
+per second, and charges a premium on a lapsed name that it does not expose. A
+quote from one is therefore only safe for a name that was never registered: an
+`expired` name gets no price rather than one below what the registrar charges.
+
+**Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
+controller there is no oracle, so no name can be priced.
+
+**Upgrade this service before the routers that query it.** Routers from SMP v22
+call `/v2/resolve`, which an older resolver does not serve. Every name then
+answers `ERR NAME RESOLVER "HTTP 404"` until this service is upgraded, while
+`/health` still reports it as ready.
+
+### Why a name is reserved
+
+v2 carries the controller's reason as `reservedReason`. v1 carries the same word
+as `reasonCode`, plus `reason`, an English sentence for a human reading this API.
+Clients should branch on the word and phrase it themselves, in the user's
+language.
+
+| `reasonCode` | Meaning |
+|---|---|
+| `internal` | reserved for SimpleX |
+| `trademark` | reserved to protect a trademark |
+| `community` | reserved for the community |
+| `unknown` | a reason added to the contract after this resolver; still reserved |
+
+These are `SimplexController.Reason`, where 0 means not reserved. A controller
+from before the enum stores a boolean, whose `true` decodes as 1, which is why
+1 reads as `internal`, so nothing needs migrating.
+
+### Configuring addresses
+
+The resolver reads three contracts, each configured per TLD.
+
+The **registry** answers who owns a node, and `/resolve` reads the records from
+it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
+is where every expiry field comes from, and `labelOf`, which is how a hashed
+query is answered with a name. A name registered without recording its label
+cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
+the client will reject. With no registrar for a TLD, `/resolve` still works and
+reports `"status": "unknown"`. The **controller** holds
+`reservedNames`, which is where `reasonCode` comes from. With no controller a
+held-back name reads as not reserved, and no name can be priced.
+
+All three default to the mainnet `.testing` deployment. `.simplex` is unset
+until it is deployed.
+
+The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
+lives in the proxy, so the implementation address answers nothing. The two
+deployment files use different names for that proxy:
+`deployments.mainnet.testing.json` records it under the ENS role name
+`ETHRegistrarController`, and `verification.mainnet.testing.json` calls it
+`SimplexControllerProxy`. Both are the same address, and it is the one used
+here.
+
+To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
+`SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
+as env vars when you run the script directly.

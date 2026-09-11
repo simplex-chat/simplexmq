@@ -228,7 +228,7 @@ import Simplex.Messaging.Protocol
     ErrorType (AUTH),
     MsgBody,
     MsgFlags (..),
-    NameRecord,
+    NameRegistration,
     NtfServer,
     ProtoServerWithAuth (..),
     ProtocolServer (..),
@@ -461,7 +461,7 @@ getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 -- | Resolve a SimpleX name (PFWD RSLV). The agent owns server selection: it
 -- picks a names-capable server (ServerRoles.names) from the user's nameSrvs, so
 -- chat clients just pass the parsed domain.
-resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameRecord
+resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameRegistration
 resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
 
@@ -1270,7 +1270,7 @@ getConnShortLink' c nm userId = \case
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
-resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameRecord
+resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameRegistration
 resolveSimplexName' c nm userId domain = do
   resolverSrv <- getNextNameServer c userId
   resolveName c nm userId resolverSrv domain

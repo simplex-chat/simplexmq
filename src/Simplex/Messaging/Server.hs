@@ -104,7 +104,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
@@ -1494,15 +1493,19 @@ client
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
     -- concurrency is limited by serverResolverConcurrency in forkCmd.
-    resolveNameMsg :: NamesEnv -> SimplexDomain -> M s BrokerMsg
-    resolveNameMsg nenv d = do
+    resolveNameMsg :: VersionSMP -> NamesEnv -> NameQuery -> M s BrokerMsg
+    resolveNameMsg v nenv q = do
       st <- asks (rslvStats . serverStats)
       (selector, msg) <-
-        liftIO (resolveName nenv d) <&> \case
-          Right rec -> (rslvSucc, RNAME rec)
-          Left e@NOT_FOUND -> (rslvNotFound, ERR $ NAME e)
+        liftIO (resolveName nenv q) <&> \case
+          Right reg -> (if answered reg then rslvSucc else rslvNotFound, RNAME reg)
           Left e -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg
+      where
+        -- below v22 the encoder answers anything but a record as NAME NOT_FOUND
+        answered = \case
+          NRRegistered {} -> True
+          _ -> v >= nameAvailSMPVersion
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
@@ -1519,7 +1522,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg nenv d)
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2150,7 +2153,7 @@ client
               Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
                 Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
-                  msg <- resolveNameMsg nenv d
+                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
                   either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
