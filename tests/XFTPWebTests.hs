@@ -20,6 +20,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (intercalate)
@@ -37,6 +38,8 @@ import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
+import Simplex.Messaging.Protocol (XFTPServer, pattern XFTPServer)
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, removeDirectoryRecursive)
 import System.Environment (getEnvironment)
@@ -2844,6 +2847,27 @@ tsAddressTests = describe "protocol/address" $ do
           <> "const s = Addr.parseXFTPServer('xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@host1.com:5000,host2.com');"
           <> jsOut "new TextEncoder().encode(s.host + ':' + s.port)"
     result `shouldBe` "host1.com:5000"
+
+  it "preserves Haskell-produced IPv6 list ports with IPv6 first and last" $ do
+    let base = either error id (strDecode "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@example.com") :: XFTPServer
+        XFTPServer _ _ keyHash = base
+        ipv6Host = either error id (strDecode "2001:db8::1") :: TransportHost
+        vectors =
+          [ (ipv6Host NE.:| ["example.com"], "[2001:db8::1]", "5223"),
+            ("example.com" NE.:| [ipv6Host], "example.com", "5223"),
+            (ipv6Host NE.:| [], "[2001:db8::1]", "443")
+          ]
+    forM_ vectors $ \(hosts, expectedHost, expectedPort) -> do
+      let addressPort = if expectedPort == "443" then "" else expectedPort
+          address = strEncode $ XFTPServer hosts addressPort keyHash
+      result <-
+        callNode $
+          impAddr
+            <> "const address = new TextDecoder().decode("
+            <> jsUint8 address
+            <> ");const s = Addr.parseXFTPServer(address);"
+            <> jsOut "new TextEncoder().encode(s.host + '|' + s.port + '|' + Addr.formatXFTPServer(s))"
+      result `shouldBe` expectedHost <> "|" <> BC.pack expectedPort <> "|xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@" <> expectedHost <> ":" <> BC.pack expectedPort
 
 -- ── integration ───────────────────────────────────────────────────
 

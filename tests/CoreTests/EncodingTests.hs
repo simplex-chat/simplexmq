@@ -16,7 +16,7 @@ import Data.Time.ISO8601 (parseISO8601)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer (..), SMPServer, XFTPServer, legacyStrEncodeServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..), SrvLoc (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Test.Hspec hiding (fit, it)
@@ -74,6 +74,8 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         shouldReject @TransportHost "[simplex.chat]"
         shouldReject @TransportHost "[smp.simplex.im]"
   describe "Encoding service locations" $ do
+    it "should encode and decode bracketed IPv6 host with implicit HTTPS port" $
+      (SSAppServer $ SrvLoc ipv6Host "") #==# "https://[2001:db8::1]"
     it "should parse bracketed IPv6 host with port" $ do
       strDecode @ServiceScheme "https://[2001:db8::1]:8443"
         `shouldBe` Right (SSAppServer $ SrvLoc "2001:db8::1" "8443")
@@ -82,12 +84,38 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
     it "should reject bracketed non-IPv6 host" $
       shouldReject @ServiceScheme "https://[simplex.chat]:8443"
   describe "Encoding protocol servers" $ do
-    it "should parse bracketed IPv6 server host with port" $
-      case strDecode @XFTPServer "xftp://1234-w==@[2001:db8::1]:443" of
-        Left err -> expectationFailure err
-        Right (ProtocolServer _ parsedHost parsedPort _) -> do
-          parsedHost `shouldBe` (ipv6Host :| [])
-          parsedPort `shouldBe` "443"
+    it "should canonically round-trip IPv6 server hosts and ports" $ do
+      let xftp = either error id (strDecode "xftp://1234-w==@example.com:5223") :: XFTPServer
+          ipv6Server = xftp {host = ipv6Host :| [], port = "5223"}
+          defaultPortServer = ipv6Server {port = ""}
+          ipv6First = ipv6Server {host = ipv6Host :| ["example.com"]}
+          ipv6Last = ipv6Server {host = "example.com" :| [ipv6Host]}
+      ipv6Server #==# "xftp://1234-w==@[2001:db8::1]:5223"
+      defaultPortServer #==# "xftp://1234-w==@[2001:db8::1]"
+      ipv6First #==# "xftp://1234-w==@[2001:db8::1],example.com:5223"
+      ipv6Last #==# "xftp://1234-w==@example.com,[2001:db8::1]:5223"
+      ipv6First {port = ""} #==# "xftp://1234-w==@[2001:db8::1],example.com"
+      ipv6Last {port = ""} #==# "xftp://1234-w==@example.com,[2001:db8::1]"
+    it "should bracket IPv6 for each protocol and authenticated and legacy encoders" $ do
+      let smp = (either error id (strDecode "smp://1234-w==@example.com:5223") :: SMPServer) {host = ipv6Host :| []}
+          ntf = (either error id (strDecode "ntf://1234-w==@example.com:5223") :: NtfServer) {host = ipv6Host :| []}
+          xftp = (either error id (strDecode "xftp://1234-w==@example.com:5223") :: XFTPServer) {host = ipv6Host :| ["example.com"]}
+      strEncode smp `shouldBe` "smp://1234-w==@[2001:db8::1]:5223"
+      strDecode (strEncode smp) `shouldBe` Right smp
+      strEncode ntf `shouldBe` "ntf://1234-w==@[2001:db8::1]:5223"
+      strDecode (strEncode ntf) `shouldBe` Right ntf
+      let authenticated = ProtoServerWithAuth xftp (Just "user")
+          legacy = legacyStrEncodeServer xftp
+      strEncode authenticated `shouldBe` "xftp://1234-w==:user@[2001:db8::1],example.com:5223"
+      strDecode (strEncode authenticated) `shouldBe` Right authenticated
+      legacy `shouldBe` "xftp://1234-w==@[2001:db8::1]:5223"
+      strDecode legacy `shouldBe` Right xftp {host = ipv6Host :| []}
+    it "should preserve non-IPv6 server encodings" $ do
+      let xftp = either error id (strDecode "xftp://1234-w==@example.com:5223") :: XFTPServer
+      strEncode xftp {host = THIPv4 (192, 0, 2, 1) :| []} `shouldBe` "xftp://1234-w==@192.0.2.1:5223"
+      strEncode xftp `shouldBe` "xftp://1234-w==@example.com:5223"
+      strEncode xftp {host = "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion" :| []}
+        `shouldBe` "xftp://1234-w==@beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion:5223"
     it "should reject bracketed non-IPv6 server host" $
       shouldReject @XFTPServer "xftp://1234-w==@[simplex.chat]:443"
   where
