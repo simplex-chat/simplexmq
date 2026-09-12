@@ -33,9 +33,13 @@ export function parseXFTPServer(address: string): XFTPServer {
   const keyHash = base64urlDecode(m[1])
   if (keyHash.length !== 32) throw new Error("parseXFTPServer: keyHash must be 32 bytes")
   const hostPart = m[2]
+  const listPort = hostPart.includes(',') && /\[[0-9a-f:]*:[0-9a-f:]*\]/i.test(hostPart)
+    ? hostPart.match(/:(\d+)$/)?.[1]
+    : undefined
   // Take the first host (before any comma), then split port from that
   const firstHost = hostPart.split(',')[0]
-  return {keyHash, ...parseHostPort(firstHost)}
+  const hostPort = parseHostPort(firstHost)
+  return {keyHash, ...hostPort, port: listPort ?? hostPort.port}
 }
 
 function parseHostPort(firstHost: string): Pick<XFTPServer, "host" | "port"> {
