@@ -15,6 +15,7 @@ import Data.Either (isRight)
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks (chunkSize0, chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
+import Simplex.FileTransfer.Client.Main (decodeWebURI, fileWebLink)
 import Simplex.FileTransfer.Crypto (decryptChunks, encryptFile, sha512HashChunks)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
@@ -24,7 +25,7 @@ import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpEncode)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (EntityId (..))
+import Simplex.Messaging.Protocol (EntityId (..), XFTPServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import System.Directory (getFileSize, removeFile)
 import System.IO (IOMode (..), withFile)
@@ -47,6 +48,7 @@ fileDescriptionTests = do
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
+      it "encode IPv6 post-upload web link authority and preserve its fragment" testFileWebLinkIPv6
 
 fileDescPath :: FilePath
 fileDescPath = "tests/fixtures/file_description.yaml"
@@ -282,6 +284,31 @@ testDecryptChunks =
     dstPath = testPath "decrypted"
 
 withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
+testFileWebLinkIPv6 :: IO ()
+testFileWebLinkIPv6 = do
+  let ipv6Server = either error id (strDecode "xftp://abc=@[2001:db8::1]:5223") :: XFTPServer
+      ipv6FileDesc = withPrimaryServer ipv6Server fileDesc
+  case fileWebLink ipv6FileDesc of
+    Nothing -> expectationFailure "expected an IPv6 web link"
+    Just (authority, fragment) -> do
+      let webLink = "https://" <> authority <> "/#" <> fragment
+      authority `shouldBe` "[2001:db8::1]"
+      webLink `shouldBe` "https://[2001:db8::1]/#" <> fragment
+      expected <- either fail pure $ validateFileDescription ipv6FileDesc
+      decodeWebURI fragment `shouldBe` Right expected
+  (fst <$> fileWebLink fileDesc) `shouldBe` Just "example1.com"
+  where
+    withPrimaryServer :: XFTPServer -> FileDescription 'FRecipient -> FileDescription 'FRecipient
+    withPrimaryServer server (FileDescription party fdSize fdDigest key nonce fdChunkSize (chunk : chunks) redirect) =
+      FileDescription party fdSize fdDigest key nonce fdChunkSize (replaceChunk chunk : chunks) redirect
+      where
+        replaceChunk :: FileChunk -> FileChunk
+        replaceChunk (FileChunk chunkNo size digest (FileChunkReplica _ replicaId replicaKey : replicas)) =
+          FileChunk chunkNo size digest (FileChunkReplica server replicaId replicaKey : replicas)
+        replaceChunk c = c
+    withPrimaryServer _ fd = fd
+
+withRemoveTmpFile :: IO () -> IO ()
 withRemoveTmpFile =
   bracket_
     (pure ())
