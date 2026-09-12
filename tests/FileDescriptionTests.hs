@@ -9,11 +9,12 @@ module FileDescriptionTests where
 import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Yaml as Y
+import Simplex.FileTransfer.Client.Main (decodeWebURI, fileWebLink)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (EntityId (..))
+import Simplex.Messaging.Protocol (EntityId (..), XFTPServer)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import System.Directory (removeFile)
 import Test.Hspec hiding (fit, it)
@@ -29,6 +30,7 @@ fileDescriptionTests = do
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
+      it "encode IPv6 post-upload web link authority and preserve its fragment" testFileWebLinkIPv6
 
 fileDescPath :: FilePath
 fileDescPath = "tests/fixtures/file_description.yaml"
@@ -176,6 +178,30 @@ testFileDescriptionURIExtras = do
   vfd <- either fail pure $ validateFileDescription fileDesc
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
+
+testFileWebLinkIPv6 :: IO ()
+testFileWebLinkIPv6 = do
+  let ipv6Server = either error id (strDecode "xftp://abc=@[2001:db8::1]:5223") :: XFTPServer
+      ipv6FileDesc = withPrimaryServer ipv6Server fileDesc
+  case fileWebLink ipv6FileDesc of
+    Nothing -> expectationFailure "expected an IPv6 web link"
+    Just (authority, fragment) -> do
+      let webLink = "https://" <> authority <> "/#" <> fragment
+      authority `shouldBe` "[2001:db8::1]"
+      webLink `shouldBe` "https://[2001:db8::1]/#" <> fragment
+      expected <- either fail pure $ validateFileDescription ipv6FileDesc
+      decodeWebURI fragment `shouldBe` Right expected
+  (fst <$> fileWebLink fileDesc) `shouldBe` Just "example1.com"
+  where
+    withPrimaryServer :: XFTPServer -> FileDescription 'FRecipient -> FileDescription 'FRecipient
+    withPrimaryServer server (FileDescription party fdSize fdDigest key nonce fdChunkSize (chunk : chunks) redirect) =
+      FileDescription party fdSize fdDigest key nonce fdChunkSize (replaceChunk chunk : chunks) redirect
+      where
+        replaceChunk :: FileChunk -> FileChunk
+        replaceChunk (FileChunk chunkNo size digest (FileChunkReplica _ replicaId replicaKey : replicas)) =
+          FileChunk chunkNo size digest (FileChunkReplica server replicaId replicaKey : replicas)
+        replaceChunk c = c
+    withPrimaryServer _ fd = fd
 
 withRemoveTmpFile :: IO () -> IO ()
 withRemoveTmpFile =

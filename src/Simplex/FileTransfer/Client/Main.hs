@@ -70,6 +70,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.ServiceScheme (SrvLoc (..))
 import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitFileName, (</>))
@@ -609,9 +610,9 @@ decodeWebURI fragment = do
   strDecode yaml >>= validateFileDescription
 
 -- | Extract web link host and URI fragment from a file description.
--- Returns (hostname, uriFragment) for https://hostname/#uriFragment.
+-- Returns (authority, uriFragment) for https://authority/#uriFragment.
 fileWebLink :: FileDescription 'FRecipient -> Maybe (B.ByteString, B.ByteString)
 fileWebLink fd@FileDescription {chunks} = case chunks of
   (FileChunk {replicas = FileChunkReplica {server = ProtocolServer {host}} : _} : _) ->
-    Just (strEncode (L.head host), encodeWebURI fd)
+    Just (strEncode (SrvLoc (L.head host) ""), encodeWebURI fd)
   _ -> Nothing

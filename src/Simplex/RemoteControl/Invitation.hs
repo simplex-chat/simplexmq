@@ -26,6 +26,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.ServiceScheme (SrvLoc (..))
 import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.RemoteControl.Types (VersionRangeRCP)
 
@@ -61,7 +62,7 @@ instance StrEncoding RCInvitation where
       [ "xrcp:/",
         strEncode ca,
         "@",
-        strEncode host,
+        strEncode (SrvLoc host ""),
         ":",
         strEncode port,
         "#/?",

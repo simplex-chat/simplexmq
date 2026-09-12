@@ -19,3 +19,19 @@ test('parseXFTPServer uses the default port for bracketed IPv6 hosts', () => {
   expect(server.port).toBe('443')
   expect(serverOrigin(server)).toBe('https://[2001:db8::1]')
 })
+
+test('parseXFTPServer preserves a list-level port with IPv6 first', () => {
+  const server = parseXFTPServer(`xftp://${keyHash}@[2001:db8::1],example.com:5223`)
+
+  expect(server.host).toBe('[2001:db8::1]')
+  expect(server.port).toBe('5223')
+  expect(formatXFTPServer(server)).toBe(`xftp://${keyHash}@[2001:db8::1]:5223`)
+})
+
+test('parseXFTPServer preserves a list-level port with IPv6 last', () => {
+  const server = parseXFTPServer(`xftp://${keyHash}@example.com,[2001:db8::1]:5223`)
+
+  expect(server.host).toBe('example.com')
+  expect(server.port).toBe('5223')
+  expect(formatXFTPServer(server)).toBe(`xftp://${keyHash}@example.com:5223`)
+})

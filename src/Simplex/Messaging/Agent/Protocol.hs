@@ -1608,7 +1608,7 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
         where
           (authority, paramHosts) = case sch of
             SLSSimplex -> ("simplex:", h : hs)
-            SLSServer -> ("https://" <> strEncode h, hs)
+            SLSServer -> ("https://" <> strEncode (SrvLoc h ""), hs)
           lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "/"
           queryStr = if B.null query then "" else "?" <> query
           query =

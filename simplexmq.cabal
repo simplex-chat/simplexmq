@@ -60,6 +60,8 @@ extra-source-files:
     apps/common/Web/static/media/testflight.png
     apps/xftp-server/static/media/xftp-protocol.svg
     apps/xftp-server/static/media/xftp-protocol-dark.svg
+    apps/xftp-server/static/xftp-web-bundle/__vite-browser-external-C6dvzdW7.js
+    apps/xftp-server/static/xftp-web-bundle/__vite-browser-external.js
     apps/xftp-server/static/xftp-web-bundle/crypto.worker.js
     apps/xftp-server/static/xftp-web-bundle/index.css
     apps/xftp-server/static/xftp-web-bundle/index.js

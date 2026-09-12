@@ -1308,7 +1308,7 @@ instance ProtocolTypeI p => Encoding (ProtocolServer p) where
 
 instance ProtocolTypeI p => StrEncoding (ProtocolServer p) where
   strEncode ProtocolServer {scheme, host, port, keyHash} =
-    strEncodeServer scheme (strEncode host) port keyHash Nothing
+    strEncodeServer scheme host port keyHash Nothing
   strP =
     serverStrP >>= \case
       (AProtocolServer _ srv, Nothing) -> either fail pure $ checkProtocolType srv
@@ -1353,7 +1353,7 @@ deriving instance Show AProtoServerWithAuth
 
 instance ProtocolTypeI p => StrEncoding (ProtoServerWithAuth p) where
   strEncode (ProtoServerWithAuth ProtocolServer {scheme, host, port, keyHash} auth_) =
-    strEncodeServer scheme (strEncode host) port keyHash auth_
+    strEncodeServer scheme host port keyHash auth_
   strP = (\(AProtoServerWithAuth _ srv) -> checkProtocolType srv) <$?> strP
 
 instance StrEncoding AProtoServerWithAuth where
@@ -1390,12 +1390,13 @@ legacyServerP = do
 
 legacyStrEncodeServer :: ProtocolTypeI p => ProtocolServer p -> ByteString
 legacyStrEncodeServer ProtocolServer {scheme, host, port, keyHash} =
-  strEncodeServer scheme (strEncode $ L.head host) port keyHash Nothing
+  strEncodeServer scheme [L.head host] port keyHash Nothing
 
-strEncodeServer :: ProtocolTypeI p => SProtocolType p -> ByteString -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
+strEncodeServer :: ProtocolTypeI p => SProtocolType p -> NonEmpty TransportHost -> ServiceName -> C.KeyHash -> Maybe BasicAuth -> ByteString
 strEncodeServer scheme host port keyHash auth_ =
-  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> host <> portStr
+  strEncode scheme <> "://" <> strEncode keyHash <> maybe "" ((":" <>) . strEncode) auth_ <> "@" <> hostStr <> portStr
   where
+    hostStr = B.intercalate "," $ map (strEncode . (`SrvLoc` "")) $ L.toList host
     portStr = B.pack $ if null port then "" else ':' : port
 
 serverStrP :: Parser (AProtocolServer, Maybe BasicAuth)
