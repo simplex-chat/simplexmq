@@ -18,14 +18,17 @@ import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import System.Directory (doesFileExist, removeFile)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (concurrently)
 import UnliftIO.STM
 import Util
 import XFTPClient (testXFTPPostgresCfg)
 
 xftpStoreTests :: Spec
 xftpStoreTests = do
-  describe "STMFileStore operations" $
-    it "should compute committed used storage and file count" testSTMStorageAndCount
+  describe "STMFileStore operations" $ do
+    it "should compute reserved storage and file count" testSTMStorageAndCount
+    it "should return one reservation owner across racing deletes" testSTMDeletionOwnership
+    it "should retain blocked reservations until deletion" testSTMBlockedReservation
   describe "PostgresFileStore operations" $ do
     it "should add and get file by sender" testAddGetFileSender
     it "should add and get file by recipient" testAddGetFileRecipient
@@ -37,7 +40,9 @@ xftpStoreTests = do
     it "should block file and update status" testBlockFile
     it "should ack file reception" testAckFile
     it "should return expired files with limit" testExpiredFiles
-    it "should compute committed used storage and file count" testStorageAndCount
+    it "should compute reserved storage and file count" testStorageAndCount
+    it "should return one reservation owner across racing deletes" testDeletionOwnership
+    it "should retain blocked reservations until deletion" testBlockedReservation
 
 xftpMigrationTests :: Spec
 xftpMigrationTests = describe "XFTP migration round-trip" $ do
@@ -212,6 +217,18 @@ testSTMStorageAndCount = do
   testStorageAndCountForStore st
   closeFileStore st
 
+testSTMDeletionOwnership :: Expectation
+testSTMDeletionOwnership = do
+  st <- newFileStore () :: IO STMFileStore
+  testDeletionOwnershipForStore st
+  closeFileStore st
+
+testSTMBlockedReservation :: Expectation
+testSTMBlockedReservation = do
+  st <- newFileStore () :: IO STMFileStore
+  testBlockedReservationForStore st
+  closeFileStore st
+
 testStorageAndCountForStore :: FileStoreClass s => s -> Expectation
 testStorageAndCountForStore st = do
   g <- C.newRandom
@@ -225,11 +242,54 @@ testStorageAndCountForStore st = do
   addFile st fileA fileInfoA testCreatedAt EntityActive `shouldReturn` Right ()
   addFile st fileB fileInfoB testCreatedAt EntityActive `shouldReturn` Right ()
   getFileCount st `shouldReturn` 2
-  getUsedStorage st `shouldReturn` 0
+  getUsedStorage st `shouldReturn` 192000
   setFilePath st fileA "/tmp/file_a" `shouldReturn` Right ()
-  getUsedStorage st `shouldReturn` 128000
+  getUsedStorage st `shouldReturn` 192000
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
   getUsedStorage st `shouldReturn` 192000
+
+testDeletionOwnership :: Expectation
+testDeletionOwnership = withPgStore testDeletionOwnershipForStore
+
+testDeletionOwnershipForStore :: FileStoreClass s => s -> Expectation
+testDeletionOwnershipForStore st = do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let fileInfo = testFileInfo sndKey
+      bulkFirst = EntityId "bulk_first______"
+      singleFirst = EntityId "single_first____"
+      add sId = addFile st sId fileInfo (RoundedSystemTime 100000) EntityActive `shouldReturn` Right ()
+  add bulkFirst
+  bulkSnapshot <- map (\(sId, _, _) -> sId) <$> expiredFiles st 500000 100
+  deleteFilesSizes st bulkSnapshot `shouldReturn` [128000]
+  deleteFileSize st bulkFirst `shouldReturn` Left AUTH
+  add singleFirst
+  singleSnapshot <- map (\(sId, _, _) -> sId) <$> expiredFiles st 500000 100
+  deleteFileSize st singleFirst `shouldReturn` Right 128000
+  deleteFilesSizes st singleSnapshot `shouldReturn` []
+  add testSenderId
+  (single, bulk) <- concurrently (deleteFileSize st testSenderId) (deleteFilesSizes st [testSenderId])
+  let released = either (const []) pure single <> bulk
+  released `shouldBe` [128000]
+  deleteFileSize st testSenderId `shouldReturn` Left AUTH
+  deleteFilesSizes st [testSenderId] `shouldReturn` []
+
+testBlockedReservation :: Expectation
+testBlockedReservation = withPgStore testBlockedReservationForStore
+
+testBlockedReservationForStore :: FileStoreClass s => s -> Expectation
+testBlockedReservationForStore st = do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  addFile st testSenderId (testFileInfo sndKey) testCreatedAt EntityActive `shouldReturn` Right ()
+  let info = BlockingInfo {reason = BRContent, notice = Nothing}
+  blockFile st testSenderId info True `shouldReturn` Right ()
+  blockFile st testSenderId info True `shouldReturn` Right ()
+  getUsedStorage st `shouldReturn` 128000
+  snapshot <- map (\(sId, _, _) -> sId) <$> expiredFiles st 500000 100
+  (single, bulk) <- concurrently (deleteFileSize st testSenderId) (deleteFilesSizes st snapshot)
+  (either (const []) pure single <> bulk) `shouldBe` [128000]
+  getUsedStorage st `shouldReturn` 0
 
 -- Migration round-trip test
 
@@ -268,6 +328,7 @@ testMigrationRoundTrip = do
   stmStore2 <- newFileStore () :: IO STMFileStore
   sl2 <- readWriteFileStore storeLogPath2 stmStore2
   closeStoreLog sl2
+  getUsedStorage stmStore2 `shouldReturn` 192000
   -- Verify file 1
   result1 <- getFile stmStore2 SFSender sId1
   case result1 of

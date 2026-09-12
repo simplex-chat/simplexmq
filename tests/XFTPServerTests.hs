@@ -21,6 +21,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
+import Data.Either (partitionEithers)
 import Data.List (find, isInfixOf)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
@@ -31,7 +32,8 @@ import ServerTests (logSize)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
-import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
+import Simplex.FileTransfer.Server (checkedStorageRelease)
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), XFTPStoreConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -48,6 +50,7 @@ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCert
 import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (mapConcurrently)
 import UnliftIO.STM
 import Util
 import XFTPClient
@@ -66,7 +69,10 @@ xftpServerTests =
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
-      it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
+      it "should reserve quota when creating chunks and release it on deletion" testFileStorageQuota
+      it "should atomically enforce quota for concurrent chunk creation" testConcurrentFileStorageQuota
+      it "should restore pending reservations from the store log" testPendingFileQuotaRestart
+      it "should reject reservation release underflow" testStorageReleaseUnderflow
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
@@ -271,20 +277,68 @@ testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsTyp
         download rId = do
           downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
           liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+    void (createXFTPChunk c spKey file {size = kb 96} [rcvKey] Nothing)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
     (sId1, [rId1]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+    (sId2, [rId2]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+    void (createXFTPChunk c spKey file [rcvKey] Nothing)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
+
     uploadXFTPChunk c spKey sId1 chunkSpec
     download rId1
-    (sId2, [rId2]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+    void . liftIO $ createTestChunk testChunkPath
+    uploadXFTPChunk c spKey sId2 chunkSpec
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError DIGEST))
+    liftIO $ B.writeFile testChunkPath bytes
+    void (createXFTPChunk c spKey file [rcvKey] Nothing)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
     uploadXFTPChunk c spKey sId2 chunkSpec
     download rId2
 
+    deleteXFTPChunk c spKey sId2
     (sId3, [rId3]) <- createXFTPChunk c spKey file [rcvKey] Nothing
     uploadXFTPChunk c spKey sId3 chunkSpec
-      `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
-
-    deleteXFTPChunk c spKey sId1
-    uploadXFTPChunk c spKey sId3 chunkSpec
     download rId3
+
+testConcurrentFileStorageQuota :: AFStoreType -> Expectation
+testConcurrentFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $ \_ -> do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  digest <- atomically $ C.randomBytes 32 g
+  let file = FileInfo {sndKey, size = chSize, digest}
+  results <- mapConcurrently (const $ testXFTPClient $ \c -> runExceptT $ void $ createXFTPChunk c spKey file [rcvKey] Nothing) [1 .. 8 :: Int]
+  let (errors, admitted) = partitionEithers results
+  length admitted `shouldBe` 2
+  errors `shouldSatisfy` all (== PCEProtocolError QUOTA)
+
+testPendingFileQuotaRestart :: AFStoreType -> Expectation
+testPendingFileQuotaRestart _ = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  digest <- atomically $ C.randomBytes 32 g
+  firstId <- newTVarIO NoEntity
+  let logFile = "tests/tmp/xftp-quota-restart.log"
+      cfg = testXFTPServerConfig {serverStoreCfg = XSCMemory (Just logFile), storeLogFile = Just logFile, fileSizeQuota = Just $ chSize * 2}
+      file = FileInfo {sndKey, size = chSize, digest}
+  withXFTPServerCfg cfg $ \_ -> testXFTPClient $ \c -> runRight_ $ do
+    (sId, _) <- createXFTPChunk c spKey file [rcvKey] Nothing
+    liftIO $ atomically $ writeTVar firstId sId
+    void $ createXFTPChunk c spKey file [rcvKey] Nothing
+  withXFTPServerCfg cfg $ \_ -> testXFTPClient $ \c -> runRight_ $ do
+    void (createXFTPChunk c spKey file [rcvKey] Nothing)
+      `catchError` (liftIO . (`shouldBe` PCEProtocolError QUOTA))
+    deleteXFTPChunk c spKey =<< liftIO (readTVarIO firstId)
+    void $ createXFTPChunk c spKey file [rcvKey] Nothing
+  removeFile logFile
+
+testStorageReleaseUnderflow :: AFStoreType -> Expectation
+testStorageReleaseUnderflow _ = do
+  checkedStorageRelease 0 1 `shouldBe` Nothing
+  checkedStorageRelease 1 2 `shouldBe` Nothing
+  checkedStorageRelease 1 (-1) `shouldBe` Nothing
+  checkedStorageRelease 2 2 `shouldBe` Just 0
 
 testFileLog :: AFStoreType -> Expectation
 testFileLog _ = do
