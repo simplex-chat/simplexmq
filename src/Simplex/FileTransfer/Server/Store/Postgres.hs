@@ -110,15 +110,20 @@ instance FileStoreClass PostgresFileStore where
         >>= either handleDuplicate (pure . Right)
     withLog "addRecipient" st $ \s -> logAddRecipients s senderId (pure $ FileRecipient rId rKey)
 
-  deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "deleteFile" st $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id = ?" (Only sId)
+  deleteFileSize st sId = E.uninterruptibleMask_ $ runExceptT $ do
+    sizes <- withDB' "deleteFile" st $ \db ->
+      DB.query db "DELETE FROM files WHERE sender_id = ? RETURNING file_size" (Only sId)
+    size <- case sizes of
+      [Only (n :: Int32)] -> pure $ fromIntegral n
+      _ -> throwE AUTH
     withLog "deleteFile" st $ \s -> logDeleteFile s sId
+    pure size
 
-  deleteFiles st sIds = E.uninterruptibleMask_ $ do
-    withTransaction (dbStore st) $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id IN ?" (Only (In sIds))
+  deleteFilesSizes st sIds = E.uninterruptibleMask_ $ do
+    sizes <- withTransaction (dbStore st) $ \db ->
+      DB.query db "DELETE FROM files WHERE sender_id IN ? RETURNING file_size" (Only (In sIds)) :: IO [Only Int32]
     withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s) sIds
+    pure $ map (fromIntegral . fromOnly) sizes
 
   blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "blockFile" st $ \db ->
@@ -164,7 +169,7 @@ instance FileStoreClass PostgresFileStore where
 
   getUsedStorage st =
     withTransaction (dbStore st) $ \db -> do
-      [Only total] <- DB.query_ db "SELECT COALESCE(SUM(file_size::BIGINT), 0)::BIGINT FROM files WHERE file_path IS NOT NULL"
+      [Only total] <- DB.query_ db "SELECT COALESCE(SUM(file_size::BIGINT), 0)::BIGINT FROM files"
       pure total
 
   getFileCount st =

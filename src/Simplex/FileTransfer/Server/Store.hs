@@ -26,7 +26,8 @@ import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, isJust)
+import Data.Either (rights)
+import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word32)
@@ -77,9 +78,13 @@ class FileStoreClass s where
   addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
+  deleteFileSize :: s -> SenderId -> IO (Either XFTPErrorType Word32)
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
+  deleteFile s = fmap (fmap $ const ()) . deleteFileSize s
+  deleteFilesSizes :: s -> [SenderId] -> IO [Word32]
+  deleteFilesSizes s = fmap rights . mapM (deleteFileSize s)
   deleteFiles :: s -> [SenderId] -> IO ()
-  deleteFiles s = mapM_ (void . deleteFile s)
+  deleteFiles s = void . deleteFilesSizes s
   blockFile :: s -> SenderId -> BlockingInfo -> Bool -> IO (Either XFTPErrorType ())
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
@@ -135,11 +140,11 @@ instance FileStoreClass STMFileStore where
           TM.insert rId (senderId, rKey) recipients
           pure $ Right ()
 
-  deleteFile STMFileStore {files, recipients} senderId = atomically $ do
+  deleteFileSize STMFileStore {files, recipients} senderId = atomically $ do
     TM.lookupDelete senderId files >>= \case
-      Just FileRec {recipientIds} -> do
+      Just FileRec {fileInfo = FileInfo {size}, recipientIds} -> do
         readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
-        pure $ Right ()
+        pure $ Right size
       _ -> pure $ Left AUTH
 
   blockFile st senderId info _deleted = atomically $
@@ -177,8 +182,7 @@ instance FileStoreClass STMFileStore where
 
   getUsedStorage STMFileStore {files} = foldM addSize 0 =<< readTVarIO files
     where
-      addSize acc FileRec {fileInfo = FileInfo {size}, filePath} =
-        ifM (isJust <$> readTVarIO filePath) (pure $! acc + fromIntegral size) (pure acc)
+      addSize acc FileRec {fileInfo = FileInfo {size}} = pure $! acc + fromIntegral size
 
   getFileCount STMFileStore {files} = M.size <$> readTVarIO files
 

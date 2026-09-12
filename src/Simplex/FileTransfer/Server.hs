@@ -16,6 +16,7 @@
 module Simplex.FileTransfer.Server
   ( runXFTPServer,
     runXFTPServerBlocking,
+    checkedStorageRelease,
   ) where
 
 import Control.Logger.Simple
@@ -491,7 +492,10 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
         unless (size file `elem` sizes) $ throwE SIZE
         ts <- liftIO getFileTime
         -- TODO validate body empty
-        sId <- ExceptT $ addFileRetry st file 3 ts
+        unlessM (lift $ reserveStorage $ fromIntegral $ size file) $ throwE QUOTA
+        sId <- lift (addFileRetry st file 3 ts) >>= \case
+          Left e -> lift (releaseStorage $ fromIntegral $ size file) >> throwE e
+          Right sId -> pure sId
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> do
           logAddFile sl sId file ts EntityActive
@@ -535,7 +539,7 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}, filePath} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> skipCommitted $ ifM reserve receive (pure $ FRErr QUOTA)
+      Just getBody -> skipCommitted receive
         where
           -- having a filePath means the file is already uploaded and committed, must not change anything
           skipCommitted = ifM (isJust <$> readTVarIO filePath) (liftIO $ drain $ fromIntegral size)
@@ -548,11 +552,6 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                   | bs == s -> pure FROk
                   | bs == 0 || bs > s -> pure $ FRErr SIZE
                   | otherwise -> drain (s - bs)
-          reserve = do
-            us <- asks usedStorage
-            quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
-            atomically . stateTVar us $
-              \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive = do
             path <- asks $ filesPath . config
             let fPath = path </> B.unpack (B64.encode $ unEntityId senderId)
@@ -568,13 +567,9 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
                     liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
                     pure FROk
                   Left _e -> do
-                    us <- asks usedStorage
-                    atomically $ modifyTVar' us $ subtract (fromIntegral size)
                     liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
                     pure $ FRErr AUTH
               Left e -> do
-                us <- asks usedStorage
-                atomically $ modifyTVar' us $ subtract (fromIntegral size)
                 liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
                 pure $ FRErr e
           receiveChunk spec = do
@@ -616,24 +611,22 @@ processXFTPRequest HTTP2Body {bodyPart} = \case
 deleteServerFile_ :: FileStoreClass s => FileRec -> M s (Either XFTPErrorType ())
 deleteServerFile_ fr@FileRec {senderId} = do
   withFileLog (`logDeleteFile` senderId)
-  deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
+  deleteOrBlockServerFile_ fr filesDeleted $ \st -> fmap (fmap Just) $ deleteFileSize st senderId
 
 -- this also deletes the file from storage, but doesn't include it in delete statistics
 blockServerFile :: FileStoreClass s => FileRec -> BlockingInfo -> M s (Either XFTPErrorType ())
 blockServerFile fr@FileRec {senderId} info = do
   withFileLog $ \sl -> logBlockFile sl senderId info
-  deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
+  deleteOrBlockServerFile_ fr filesBlocked $ \st -> fmap (fmap $ const Nothing) $ blockFile st senderId info True
 
-deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType ())) -> M s (Either XFTPErrorType ())
+deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType (Maybe Word32))) -> M s (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
   path <- readTVarIO filePath
   stats <- asks serverStats
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
   st <- asks fileStore
-  ExceptT $ liftIO $ storeAction st
-  forM_ path $ \_ -> do
-    us <- asks usedStorage
-    atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
+  released <- ExceptT $ liftIO $ storeAction st
+  forM_ released $ lift . releaseStorage . fromIntegral
   lift $ incFileStat stat
   where
     deletedStats stats = do
@@ -651,26 +644,42 @@ expireServerFiles itemDelay expCfg = do
   old <- liftIO $ expireBeforeEpoch expCfg
   filesCount <- liftIO $ getFileCount st
   logNote $ "Expiration check: " <> tshow filesCount <> " files"
-  expireLoop st us old
+  expireLoop st old
   usedEnd <- readTVarIO us
   logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
-    expireLoop st us old = do
+    expireLoop st old = do
       expired <- liftIO $ expiredFiles st old 10000
-      forM_ expired $ \(sId, filePath_, fileSize) -> do
+      forM_ expired $ \(_sId, filePath_, _fileSize) -> do
         mapM_ threadDelay itemDelay
         forM_ filePath_ $ \fp ->
           whenM (doesFileExist fp) $
             removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
-        forM_ filePath_ $ \_ ->
-          atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
         incFileStat filesExpired
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
-        liftIO $ deleteFiles st sIds
-        expireLoop st us old
+        deletedSizes <- liftIO $ deleteFilesSizes st sIds
+        forM_ deletedSizes $ releaseStorage . fromIntegral
+        expireLoop st old
+
+reserveStorage :: Int64 -> M s Bool
+reserveStorage size = do
+  us <- asks usedStorage
+  quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
+  atomically . stateTVar us $ \used ->
+    if used <= quota && size <= quota - used then (True, used + size) else (False, used)
+
+releaseStorage :: Int64 -> M s ()
+releaseStorage size = do
+  us <- asks usedStorage
+  released <- atomically . stateTVar us $ \used ->
+    maybe (False, used) (True,) $ checkedStorageRelease used size
+  unless released $ logError "File storage reservation underflow"
+
+checkedStorageRelease :: Int64 -> Int64 -> Maybe Int64
+checkedStorageRelease used size = (used - size) <$ guard (0 <= size && size <= used)
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
