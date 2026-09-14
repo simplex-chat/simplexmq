@@ -26,7 +26,7 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
-import SMPNamesTests (availableBody, registeredBody, reservedBody, testNameRecord, testPricing)
+import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -35,6 +35,7 @@ import Simplex.Messaging.Protocol
     ErrorType (..),
     NameQuery (..),
     NameRegistration (..),
+    NameResponse (..),
     NameErrorType (..),
     NameReservedReason (..),
     SParty (..),
@@ -140,7 +141,7 @@ testRslvVersion =
       Left (PCETransportError TEVersion) -> pure ()
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
-forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameRegistration))
+forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
 forwardedResolveAlice = do
   g <- C.newRandom
   ts <- getCurrentTime
@@ -163,7 +164,7 @@ testRslvForwardedSuccess :: IO ()
 testRslvForwardedSuccess =
   withProxyAndResolver (status200, registeredBody testNameRecord) $
     forwardedResolveAlice >>= \r -> case r of
-      Right (Right NRRegistered {nameRecord}) -> nameRecord `shouldBe` testNameRecord
+      Right (Right NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
       _ -> expectationFailure $ "expected Right (Right NRRegistered), got: " <> show r
 
 testRslvSuccess :: IO ()
@@ -173,7 +174,7 @@ testRslvSuccess =
       (corrId, _entId, resp) <- sendRslv h "rs07" (domain "alice.simplex")
       corrId `shouldBe` CorrId "rs07"
       case resp of
-        Right (RNAME NRRegistered {nameRecord}) -> nameRecord `shouldBe` testNameRecord
+        Right (RNAME NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
         _ -> expectationFailure $ "expected Right (RNAME NRRegistered), got: " <> show resp
 
 testRslvAvailable :: IO ()
@@ -182,14 +183,14 @@ testRslvAvailable =
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "na01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "na01"
-      resp `shouldBe` Right (RNAME (NRAvailable testPricing))
+      resp `shouldBe` Right (RNAME (resolved (NRAvailable testPricing)))
 
 testRslvReserved :: IO ()
 testRslvReserved =
   withResolverServer (status200, reservedBody) $
     testSMPClient @TLS $ \h -> do
       (_, _, resp) <- sendRslv h "na03" (domain "acme.simplex")
-      resp `shouldBe` Right (RNAME (NRReserved NRRTrademark))
+      resp `shouldBe` Right (RNAME (resolved (NRReserved NRRTrademark)))
 
 -- | A client that predates v22 must see exactly what it saw before: the record
 -- for a name that resolves, and NOT_FOUND for one that does not.
@@ -209,7 +210,7 @@ testRslvOldClientRecord =
   withResolverServer (status200, registeredBody testNameRecord) $ do
     pc <- oldClient
     r <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
-    r `shouldBe` NRRegistered Nothing Nothing Nothing testNameRecord
+    r `shouldBe` NameResponse Nothing (NRRegistered Nothing Nothing Nothing testNameRecord)
 
 testRslvOldClientNotFound :: IO ()
 testRslvOldClientNotFound =
@@ -224,7 +225,7 @@ testRslvForwardedAvailable :: IO ()
 testRslvForwardedAvailable =
   withProxyAndResolver (status200, availableBody) $
     forwardedResolveAlice >>= \r -> case r of
-      Right (Right (NRAvailable pricing)) -> pricing `shouldBe` testPricing
+      Right (Right NameResponse {registration = NRAvailable {pricing}}) -> pricing `shouldBe` testPricing
       _ -> expectationFailure $ "expected Right (Right NRAvailable), got: " <> show r
 
 -- keccak-256("alice"), the registry key
@@ -253,7 +254,7 @@ testRslvSendsTheHash =
     resolvePaths reqs `shouldReturn` [["v2", "resolve", aliceHash <> ".simplex"]]
     -- the client never sent the name, and the record still names it
     case r of
-      NRRegistered {nameRecord} -> SMP.nrName nameRecord `shouldBe` "alice.simplex"
+      NameResponse {registration = NRRegistered {nameRecord}} -> SMP.nrName nameRecord `shouldBe` "alice.simplex"
       _ -> expectationFailure $ "expected NRRegistered, got: " <> show r
 
 testSubnameKeepsItsLabels :: IO ()

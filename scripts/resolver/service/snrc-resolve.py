@@ -67,6 +67,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -181,6 +182,19 @@ def node_of(name: str) -> bytes:
 
 
 # ---------- Registration status ----------
+
+
+def head_block():
+    """How far behind the node is. Unlike expiry, this is the one thing that has
+    to be measured against the host clock: a node that stops still has a block."""
+    try:
+        block = rpc("eth_getBlockByNumber", ["latest", False])
+        return {
+            "blockNumber": decode_uint(block["number"]),
+            "chainLagSeconds": int(time.time()) - decode_uint(block["timestamp"]),
+        }
+    except Exception:
+        return {"blockNumber": None, "chainLagSeconds": None}
 
 
 def chain_now() -> int:
@@ -302,6 +316,8 @@ def name_status(name: str):
     if not registrar or len(labels) < 2:
         return {
             "status": "unknown",
+            # nothing was read, so there is no block to report
+            "lastBlockTs": None,
             "expires": None,
             "graceEnds": None,
             "reasonCode": None,
@@ -315,12 +331,9 @@ def name_status(name: str):
     expires = decode_uint(
         eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
     )
-    if expires == 0:
-        status, grace, now = "unregistered", 0, 0
-    else:
-        grace = grace_period(registrar)
-        now = chain_now()
-        status = expiry_status(expires, grace, now)
+    grace = grace_period(registrar) if expires else 0
+    now = chain_now()
+    status = expiry_status(expires, grace, now)
 
     # A reservation is orthogonal to the registration: a registered name can be
     # held back too.
@@ -329,6 +342,8 @@ def name_status(name: str):
 
     out = {
         "status": status,
+        # the block this was read at
+        "lastBlockTs": now,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
         "reasonCode": reason[0] if reason else None,
@@ -708,6 +723,11 @@ def name_record(name: str):
     return rec
 
 
+def name_response(reg, registration_body):
+    """The SMP protocol's NameResponse: the registration and the block read at."""
+    return 200, {"lastBlockTs": reg["lastBlockTs"], "registration": registration_body}
+
+
 def registration(name: str):
     """The SMP protocol's NameRegistration, which the relay decodes as is.
     Translating the contract's model to it is this resolver's job."""
@@ -732,26 +752,26 @@ def registration(name: str):
             if pricing:
                 reg.update({k: v for k, v in pricing.items() if not k.startswith("_")})
         else:
-            return 200, {
+            return name_response(reg, {
                 "type": "registered",
                 "expires": reg["expires"],
                 "graceUntil": reg["graceEnds"],
                 "reservedReason_": reg["reasonCode"],
                 "nameRecord": rec,
-            }
+            })
     if reg["reasonCode"]:
-        return 200, {"type": "reserved", "reservedReason": reg["reasonCode"]}
+        return name_response(reg, {"type": "reserved", "reservedReason": reg["reasonCode"]})
     if status in ("unregistered", "expired"):
         if "basePrice" not in reg:
             return 502, {"name": name, "error": "noPriceOracle"}
-        return 200, {
+        return name_response(reg, {
             "type": "available",
             "pricing": {
                 "registrationPrices": reg["registrationPrices"],
                 "basePrice": reg["basePrice"],
                 "minLabelLength": reg["minLabelLength"],
             },
-        }
+        })
     return 502, {"name": name, "error": status}
 
 
@@ -863,10 +883,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
-            self._respond(
-                200,
-                {"ok": True, "rpc": RPC, "registries": REGISTRIES},
-            )
+            self._respond(200, {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head_block()})
             return
 
         if len(parts) == 3 and parts[0] == "v2" and parts[1] == "resolve":
