@@ -63,6 +63,8 @@ smpProxyTests = do
       testProxyRecoversWithoutDisconnect
     it "reconnects to relay after sender disconnects mid-connection" $ \_ ->
       testProxyReconnectAfterRelayRestart
+    xit "must drop a stuck relay session after forward timeouts" $ \_ ->
+      testProxyForwardTimeoutStuckSession
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -493,6 +495,19 @@ testProxyReconnectAfterRelayRestart =
     withStallingServerOn testPort2 $
       race_ (threadDelay 1000000) requestRelaySession
     requireProxyReconnect
+
+testProxyForwardTimeoutStuckSession :: IO ()
+testProxyForwardTimeoutStuckSession =
+  withSmpServerConfigOn (transport @TLS) proxyCfgForwardTimeout testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let srv = SMPServer testHost testPort testKeyHash
+        vr = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion
+    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ())
+    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive srv (Just "correct")
+    sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
+    rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
+    rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
