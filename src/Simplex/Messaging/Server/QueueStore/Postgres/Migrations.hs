@@ -20,7 +20,8 @@ serverSchemaMigrations =
     ("20250320_short_links", m20250320_short_links, Just down_m20250320_short_links),
     ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs),
     ("20250903_store_messages", m20250903_store_messages, Just down_m20250903_store_messages),
-    ("20250915_queue_ids_hash", m20250915_queue_ids_hash, Just down_m20250915_queue_ids_hash)
+    ("20250915_queue_ids_hash", m20250915_queue_ids_hash, Just down_m20250915_queue_ids_hash),
+    ("20260916_prometheus_indexes", m20260916_prometheus_indexes, Just down_m20260916_prometheus_indexes)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -586,5 +587,19 @@ DROP FUNCTION update_all_aggregates;
 ALTER TABLE services
   DROP COLUMN queue_count,
   DROP COLUMN queue_ids_hash;
+    |]
+
+m20260916_prometheus_indexes :: Text
+m20260916_prometheus_indexes =
+  [r|
+CREATE INDEX idx_msg_queues_expire ON msg_queues (recipient_id) WHERE deleted_at IS NULL AND msg_queue_expire;
+CREATE INDEX idx_msg_queues_notifier_active ON msg_queues (notifier_id) WHERE deleted_at IS NULL AND notifier_id IS NOT NULL;
+    |]
+
+down_m20260916_prometheus_indexes :: Text
+down_m20260916_prometheus_indexes =
+  [r|
+DROP INDEX idx_msg_queues_expire;
+DROP INDEX idx_msg_queues_notifier_active;
     |]
     <> dropXorHashFuncs

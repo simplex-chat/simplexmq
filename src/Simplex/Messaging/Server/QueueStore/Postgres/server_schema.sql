@@ -1,5 +1,6 @@
 
 
+
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -494,7 +495,15 @@ CREATE INDEX idx_messages_recipient_id_msg_ts ON smp_server.messages USING btree
 
 
 
+CREATE INDEX idx_msg_queues_expire ON smp_server.msg_queues USING btree (recipient_id) WHERE ((deleted_at IS NULL) AND msg_queue_expire);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON smp_server.msg_queues USING btree (link_id);
+
+
+
+CREATE INDEX idx_msg_queues_notifier_active ON smp_server.msg_queues USING btree (notifier_id) WHERE ((deleted_at IS NULL) AND (notifier_id IS NOT NULL));
 
 
 
@@ -546,6 +555,7 @@ ALTER TABLE ONLY smp_server.msg_queues
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_rcv_service_id_fkey FOREIGN KEY (rcv_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
+
 
 
 
