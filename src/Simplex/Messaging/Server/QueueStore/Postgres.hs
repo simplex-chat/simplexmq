@@ -159,8 +159,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           db
           [sql|
             SELECT
-              -- estimated (pg_class.reltuples) to avoid a full heap scan of msg_queues on every scrape;
-              -- overcounts by soft-deleted queues not yet compacted (bounded by deletedTTL)
+              -- estimate via reltuples to avoid a full heap scan on every scrape
               (SELECT GREATEST(reltuples, 0)::bigint FROM pg_class WHERE oid = 'msg_queues'::regclass) AS queue_count,
               (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL AND notifier_id IS NOT NULL) AS notifier_count,
               (SELECT COUNT(1) FROM services WHERE service_role = ?) AS rcv_service_count,
