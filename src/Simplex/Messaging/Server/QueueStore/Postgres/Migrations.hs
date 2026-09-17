@@ -21,7 +21,8 @@ serverSchemaMigrations =
     ("20250514_service_certs", m20250514_service_certs, Just down_m20250514_service_certs),
     ("20250903_store_messages", m20250903_store_messages, Just down_m20250903_store_messages),
     ("20250915_queue_ids_hash", m20250915_queue_ids_hash, Just down_m20250915_queue_ids_hash),
-    ("20260916_prometheus_indexes", m20260916_prometheus_indexes, Just down_m20260916_prometheus_indexes)
+    ("20260916_prometheus_indexes", m20260916_prometheus_indexes, Just down_m20260916_prometheus_indexes),
+    ("20260917_msg_queues_hot", m20260917_msg_queues_hot, Just down_m20260917_msg_queues_hot)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -588,6 +589,7 @@ ALTER TABLE services
   DROP COLUMN queue_count,
   DROP COLUMN queue_ids_hash;
     |]
+    <> dropXorHashFuncs
 
 m20260916_prometheus_indexes :: Text
 m20260916_prometheus_indexes =
@@ -602,4 +604,133 @@ down_m20260916_prometheus_indexes =
 DROP INDEX idx_msg_queues_expire;
 DROP INDEX idx_msg_queues_notifier_active;
     |]
-    <> dropXorHashFuncs
+
+m20260917_msg_queues_hot :: Text
+m20260917_msg_queues_hot =
+  [r|
+DROP INDEX idx_msg_queues_updated_at_recipient_id;
+
+ALTER TABLE msg_queues SET (
+  fillfactor = 80,
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_analyze_scale_factor = 0.01,
+  autovacuum_vacuum_cost_limit = 1000
+);
+
+ALTER TABLE messages SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_analyze_scale_factor = 0.01,
+  toast.autovacuum_vacuum_scale_factor = 0.02
+);
+
+ALTER TABLE services SET (
+  fillfactor = 70,
+  autovacuum_vacuum_threshold = 1000,
+  autovacuum_vacuum_scale_factor = 0
+);
+
+DROP PROCEDURE expire_old_messages(bigint, bigint, integer);
+
+CREATE PROCEDURE expire_old_messages(IN p_old_ts bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  rids BYTEA[];
+  rid BYTEA;
+  last_rid BYTEA := '\x';
+  del_count BIGINT;
+  total_deleted BIGINT := 0;
+BEGIN
+  LOOP
+    SELECT array_agg(recipient_id)
+    INTO rids
+    FROM (
+      SELECT recipient_id
+      FROM msg_queues
+      WHERE deleted_at IS NULL
+        AND msg_queue_expire = TRUE
+        AND recipient_id > last_rid
+      ORDER BY recipient_id ASC
+      LIMIT batch_size
+    ) qs;
+
+    EXIT WHEN rids IS NULL OR cardinality(rids) = 0;
+
+    FOREACH rid IN ARRAY rids
+    LOOP
+      BEGIN
+        del_count := delete_expired_msgs(rid, p_old_ts);
+        total_deleted := total_deleted + del_count;
+      EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
+        CONTINUE;
+      END;
+      COMMIT;
+    END LOOP;
+    last_rid := rids[cardinality(rids)];
+  END LOOP;
+
+  r_expired_msgs_count := total_deleted;
+  r_stored_msgs_count := (SELECT COUNT(1) FROM messages);
+  r_stored_queues := (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL);
+END;
+$$;
+    |]
+
+down_m20260917_msg_queues_hot :: Text
+down_m20260917_msg_queues_hot =
+  [r|
+DROP PROCEDURE expire_old_messages(bigint, integer);
+
+CREATE PROCEDURE expire_old_messages(IN p_old_queue bigint, IN p_old_ts bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  rids BYTEA[];
+  rid BYTEA;
+  last_rid BYTEA := '\x';
+  del_count BIGINT;
+  total_deleted BIGINT := 0;
+BEGIN
+  LOOP
+    SELECT array_agg(recipient_id)
+    INTO rids
+    FROM (
+      SELECT recipient_id
+      FROM msg_queues
+      WHERE deleted_at IS NULL
+        AND updated_at > p_old_queue
+        AND msg_queue_expire = TRUE
+        AND recipient_id > last_rid
+      ORDER BY recipient_id ASC
+      LIMIT batch_size
+    ) qs;
+
+    EXIT WHEN rids IS NULL OR cardinality(rids) = 0;
+
+    FOREACH rid IN ARRAY rids
+    LOOP
+      BEGIN
+        del_count := delete_expired_msgs(rid, p_old_ts);
+        total_deleted := total_deleted + del_count;
+      EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
+        CONTINUE;
+      END;
+      COMMIT;
+    END LOOP;
+    last_rid := rids[cardinality(rids)];
+  END LOOP;
+
+  r_expired_msgs_count := total_deleted;
+  r_stored_msgs_count := (SELECT COUNT(1) FROM messages);
+  r_stored_queues := (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL);
+END;
+$$;
+
+CREATE INDEX idx_msg_queues_updated_at_recipient_id ON msg_queues (deleted_at, updated_at, msg_queue_expire, recipient_id);
+
+ALTER TABLE msg_queues RESET (fillfactor, autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit);
+ALTER TABLE messages RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, toast.autovacuum_vacuum_scale_factor);
+ALTER TABLE services RESET (fillfactor, autovacuum_vacuum_threshold, autovacuum_vacuum_scale_factor);
+    |]
