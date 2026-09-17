@@ -121,15 +121,40 @@ Verified: both indexes are created and used as index-only scans, the schema-dump
 `smp-server` builds. `queueCount` is consumed only by metrics, logs, and display
 (`Server.hs:528,698,815,2369`), so an estimate is safe.
 
-The migration uses plain `CREATE INDEX` because migrations run inside a transaction. Operators should
-pre-create both indexes with `CREATE INDEX CONCURRENTLY` before deploying to avoid the build lock; the
-migration then no-ops.
-
 Not fixed by new indexes:
 
 - `ntf_service_queues_count` seq-scans only because of index bloat; `idx_msg_queues_ntf_service_id`
   already covers it. `REINDEX` restores the index-only scan, as proven by `rcv_service_queues_count`.
 - `rcv_service_queues_count` and the two `services` counts are already cheap.
+
+## Implemented fixes (batch 2)
+
+Migration `20260917_msg_queues_hot` and `MsgStore/Postgres.hs`.
+
+| change | effect |
+| --- | --- |
+| drop `idx_msg_queues_updated_at_recipient_id`, set `msg_queues` `fillfactor = 80` | `updateQueueTime` updates become HOT, so they rewrite no index entries; removes its index bloat and cuts its WAL |
+| remove the dead `updated_at > p_old_queue` filter and its parameter from `expire_old_messages`, matching the `CALL` (`MsgStore/Postgres.hs:113`) | the sweep query runs as an index-only scan on `idx_msg_queues_expire`; `updated_at` is no longer read on the hot path |
+| autovacuum reloptions on `msg_queues`, `messages` (and its TOAST), and `services` | keeps dead tuples and bloat low per table (see the table below) |
+
+Verified on PostgreSQL 16 with the daily-active pattern (~11% of queues updated per day): `updateQueueTime`
+goes from 0% HOT (indexed `updated_at`) to 100% HOT at `fillfactor = 80` (96.7% at 90), and per-update
+WAL drops about 4x. The HOT ratio depends on how many rows per page change before autovacuum reclaims
+space, so it is workload-dependent; `fillfactor = 80` reached 100% for this fraction, and updating a much
+larger share of queues at once would need a lower value. `fillfactor` applies to pages rewritten after
+the change, so the ratio ramps up as the heap turns over, or immediately after `pg_repack`.
+
+Dropping the index regresses the deprecated journal message store's expiration (`foldRecentQueueRecs`,
+`Journal.hs:434`) to a sequential scan; this is accepted because that store is being retired. The
+Postgres message store does not read `updated_at`.
+
+Autovacuum reloptions applied by the migration:
+
+| table | reloptions | reason |
+| --- | --- | --- |
+| `msg_queues` | `fillfactor 80`, `autovacuum_vacuum_scale_factor 0.02`, `autovacuum_analyze_scale_factor 0.01`, `autovacuum_vacuum_cost_limit 1000` | HOT headroom; vacuum/analyze at ~2%/1% churn instead of 20%/10%; faster vacuum |
+| `messages` (and TOAST) | `autovacuum_vacuum_scale_factor 0.02`, `autovacuum_analyze_scale_factor 0.01`, `toast.autovacuum_vacuum_scale_factor 0.02` | high insert and delete churn; 152 GB, mostly TOASTed message bodies |
+| `services` | `fillfactor 70`, `autovacuum_vacuum_threshold 1000`, `autovacuum_vacuum_scale_factor 0` | tiny, very hot table was autovacuumed tens of thousands of times; make updates HOT and vacuum it far less |
 
 ## Operator actions
 
@@ -143,19 +168,19 @@ Not fixed by new indexes:
    REINDEX INDEX CONCURRENTLY smp_server.idx_msg_queues_link_id;
    ANALYZE smp_server.msg_queues;
    ```
-   Expect `pg_indexes_size('smp_server.msg_queues')` to drop from 104 GB to roughly 15-20 GB. `ANALYZE`
-   restores the index-only scan for `ntf_service_queues_count`.
+   Expect `pg_indexes_size('smp_server.msg_queues')` to drop from 104 GB to roughly 12 GB (measured
+   after reindexing). `ANALYZE` restores the index-only scan for `ntf_service_queues_count`. With the
+   batch-2 `fillfactor` the index bloat no longer rebuilds, so this is a one-time reclaim.
 
-2. Tune per-table autovacuum so dead tuples and bloat do not return, and schedule a monthly
-   `REINDEX TABLE CONCURRENTLY`:
-   ```
-   ALTER TABLE smp_server.msg_queues SET (
-     autovacuum_vacuum_scale_factor  = 0.02,
-     autovacuum_analyze_scale_factor = 0.01,
-     autovacuum_vacuum_cost_limit    = 2000,
-     autovacuum_vacuum_cost_delay    = 2
-   );
-   ```
+2. Autovacuum reloptions are applied by the batch-2 migration (`msg_queues`, `messages` and its TOAST,
+   `services`), so no manual `ALTER TABLE` is needed. Reclaim the current `messages` bloat once with
+   `pg_repack smp_server.messages` (152 GB heap and TOAST, roughly 30-50 GB reclaimable); running
+   `pg_repack` on `msg_queues` also makes `fillfactor = 80` effective immediately rather than as pages
+   turn over. With `fillfactor = 80` the `msg_queues` index bloat no longer rebuilds, so scheduled
+   reindexing is rarely needed. To automate it anyway, run `reindexdb --concurrently` or `pg_repack`
+   from a scheduler; `pg_cron` runs each job inside a transaction and cannot execute
+   `REINDEX ... CONCURRENTLY`, so use `pg_cron` only for `VACUUM`/`ANALYZE` or a non-concurrent
+   maintenance-window `REINDEX`.
 
 3. Cut WAL and checkpoint pressure (all reloadable, no restart):
    ```
@@ -173,15 +198,3 @@ Not fixed by new indexes:
    `pg_stat_wal`.
 
 4. Enable `track_io_timing = on` so disk wait time is measurable in `pg_stat_statements`.
-
-## Proposed follow-up (batch 2)
-
-Drop `idx_msg_queues_updated_at_recipient_id` if it is redundant. The new `idx_msg_queues_expire`
-covers the sweep, and with `oldQueue = 0` the `updated_at` range provides no selectivity. Removing the
-only index on `updated_at`, and setting `fillfactor = 90` on `msg_queues`, makes `updateQueueTime`
-updates HOT-eligible and largely stops index bloat at the source, which also cuts the WAL and
-archive-push load (that update is ~31% of WAL). It reduces how often `REINDEX` is needed. Before
-dropping it, confirm no caller passes a real `updated_at` cutoff; one query filters
-`WHERE deleted_at IS NULL AND updated_at > ? ORDER BY recipient_id ASC` (`QueueStore/Postgres.hs:628`).
-The deeper fix also requires keeping `msg_queue_expire` out of hot-path indexes (it changes on every
-send); a partial index churns only on the empty-to-nonempty flip, not every message.
