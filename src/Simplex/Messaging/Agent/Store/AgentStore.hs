@@ -2450,8 +2450,8 @@ getSubscriptionServers db onlyNeeded =
 
 -- TODO [certs rcv] check index for getting queues with service present
 getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> Int -> Maybe SMP.RecipientId -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService limit cursor_ =
-  map toRcvQueueSub <$> case cursor_ of
+getUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) onlyNeeded hasService limit cursor_ =
+  map (rcvQueueSubSrv srv . toRcvQueueSub) <$> case cursor_ of
     Nothing -> DB.query db (q <> orderLimit) (userId, h, p, kh, limit)
     Just cursor -> DB.query db (q <> " AND q.rcv_id > ? " <> orderLimit) (userId, h, p, kh, cursor, limit)
   where
@@ -2468,7 +2468,7 @@ unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [Rcv
 unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   deleteClientService db userId srv
 #if defined(dbPostgres)
-  map toRcvQueueSub
+  map (rcvQueueSubSrv srv . toRcvQueueSub)
     <$> DB.query
       db
       (removeRcvAssocsQuery <> " " <> returningColumns)
@@ -2481,7 +2481,7 @@ unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
           rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
       |]
 #else
-  qs <- map toRcvQueueSub
+  qs <- map (rcvQueueSubSrv srv . toRcvQueueSub)
     <$> DB.query
       db
       (rcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
@@ -2841,6 +2841,10 @@ rcvQueueSubQuery =
     JOIN servers s ON q.host = s.host AND q.port = s.port
     JOIN connections c ON q.conn_id = c.conn_id
   |]
+
+-- The rows are filtered on this exact server, so this is the value each row would rebuild.
+rcvQueueSubSrv :: SMPServer -> RcvQueueSub -> RcvQueueSub
+rcvQueueSubSrv srv q = q {server = srv}
 
 toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey) :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
 toRcvQueueSub ((userId, connId, host, port, keyHash, rcvId, rcvPrivateKey) :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId)) =
