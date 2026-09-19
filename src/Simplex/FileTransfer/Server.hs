@@ -63,7 +63,7 @@ import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof 
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
+import Simplex.Messaging.Protocol (BlockingInfo, CommandError (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
 import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
@@ -646,11 +646,12 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
 
     ackFileReception :: RecipientId -> FileRec -> M s FileResponse
     ackFileReception rId fr = do
-      withFileLog (`logAckFile` rId)
-      st <- asks fileStore
-      liftIO $ deleteRecipient st rId fr
-      incFileStat fileDownloadAcks
-      pure FROk
+      pure $ FRErr $ CMD PROHIBITED
+      -- withFileLog (`logAckFile` rId)
+      -- st <- asks fileStore
+      -- liftIO $ deleteRecipient st rId fr
+      -- incFileStat fileDownloadAcks
+      -- pure FROk
 
 deleteServerFile_ :: FileStoreClass s => FileRec -> M s (Either XFTPErrorType ())
 deleteServerFile_ fr@FileRec {senderId} = do

@@ -29,6 +29,7 @@ module Simplex.FileTransfer.Description
     YAMLFileDescription (..), -- for tests
     YAMLServerReplicas (..), -- for tests
     validateFileDescription,
+    sharedDescriptionHash,
     groupReplicasByServer,
     fdSeparator,
     kb,
@@ -72,6 +73,7 @@ import Simplex.FileTransfer.Protocol
 import Simplex.Messaging.Agent.QueryString
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
@@ -226,6 +228,13 @@ validateFileDescription fd@FileDescription {size, chunks}
   where
     chunkNos = map (\FileChunk {chunkNo} -> chunkNo) chunks
     chunksSize = foldl' (\(s :: Int64) FileChunk {chunkSize} -> s + fromIntegral (unFileSize chunkSize)) 0
+
+sharedDescriptionHash :: FileDescription p -> ByteString
+sharedDescriptionHash FileDescription {size, digest, key, nonce, chunkSize, chunks} =
+  C.sha512Hash $ smpEncode (unFileSize size, unFileDigest digest, C.unSbKey key, nonce, unFileSize chunkSize) <> foldMap chunkFields chunks
+  where
+    chunkFields FileChunk {chunkNo, chunkSize = cSize, digest = cDigest} =
+      smpEncode (fromIntegral chunkNo :: Int64, unFileSize cSize, unFileDigest cDigest)
 
 encodeFileDescription :: FileDescription p -> YAMLFileDescription
 encodeFileDescription FileDescription {party, size, digest, key, nonce, chunkSize, chunks, redirect} =
