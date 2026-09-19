@@ -327,35 +327,34 @@ testUpdateMessageCounts ms = do
     q <- ExceptT $ addQueue ms rId qr
     let write s = writeMsg ms q True =<< mkMessage s
         hasSize = checkQueueSize ms
-    q `hasSize` (0, True, False)
+    q `hasSize` (0, True)
     Just (Message {msgId = mId1}, True) <- write "message 1"
-    q `hasSize` (1, True, True)
+    q `hasSize` (1, True)
     Just (Message {msgId = mId2}, False) <- write "message 2"
-    q `hasSize` (2, True, True)
+    q `hasSize` (2, True)
     Just (Message {msgId = mId3}, False) <- write "message 3"
-    q `hasSize` (3, True, True)
+    q `hasSize` (3, True)
     Nothing <- write "message 4"
-    q `hasSize` (4, False, True)
+    q `hasSize` (4, False)
     Msg "message 1" <- tryPeekMsg ms q
-    q `hasSize` (4, False, True)
+    q `hasSize` (4, False)
     Msg "message 1" <- tryDelMsg ms q mId1
-    q `hasSize` (3, False, True)
+    q `hasSize` (3, False)
     Msg "message 2" <- tryPeekMsg ms q
     (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
-    q `hasSize` (2, False, True)
+    q `hasSize` (2, False)
     (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
-    q `hasSize` (1, False, True)
+    q `hasSize` (1, False)
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId4
-    q `hasSize` (0, True, False)
+    q `hasSize` (0, True)
 
-checkQueueSize :: PostgresMsgStore -> PostgresQueue -> (Int64, Bool, Bool) -> ExceptT ErrorType IO ()
-checkQueueSize ms q (size, canWrt, expire) = liftIO $ do
-  [(size', canWrt', expire')] <-
+checkQueueSize :: PostgresMsgStore -> PostgresQueue -> (Int64, Bool) -> ExceptT ErrorType IO ()
+checkQueueSize ms q (size, canWrt) = liftIO $ do
+  [(size', canWrt')] <-
     withTransaction (dbStore $ queueStore ms) $ \db ->
-      DB.query db "SELECT msg_queue_size, msg_can_write, msg_queue_expire FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
+      DB.query db "SELECT msg_queue_size, msg_can_write FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
   size' `shouldBe` size
   canWrt' `shouldBe` canWrt
-  expire' `shouldBe` expire
 
 testResetMessageCounts :: PostgresMsgStore -> IO ()
 testResetMessageCounts ms = do
@@ -369,20 +368,20 @@ testResetMessageCounts ms = do
     Just (Message {msgId = mId2}, False) <- write "message 2"
     Just (Message {msgId = mId3}, False) <- write "message 3"
     Nothing <- write "message 4"
-    q `hasSize` (4, False, True)
+    q `hasSize` (4, False)
     liftIO $ setIncorrectSize q (10, True)
     Nothing <- write "message 5"
-    q `hasSize` (11, False, True)
+    q `hasSize` (11, False)
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
-    q `hasSize` (10, False, True)
+    q `hasSize` (10, False)
     (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
-    q `hasSize` (9, False, True)
+    q `hasSize` (9, False)
     (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
-    q `hasSize` (8, False, True)
+    q `hasSize` (8, False)
     (Just MessageQuota {}, Just MessageQuota {msgId = mId5}) <- tryDelPeekMsg ms q mId4
-    q `hasSize` (7, False, True)
+    q `hasSize` (7, False)
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId5
-    q `hasSize` (0, True, False) -- reset
+    q `hasSize` (0, True) -- reset
   where
     setIncorrectSize :: PostgresQueue -> (Int64, Bool) -> IO ()
     setIncorrectSize q (size, canWrt) =
