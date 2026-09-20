@@ -19,7 +19,7 @@
 -- > "TransferName(address from,address to,uint256 tokenId,uint256 nonce,uint256 deadline)"
 module Simplex.Messaging.Eth.EIP712
   ( Eip712Domain (..),
-    Value (..),
+    Eip712Value (..),
     typeHash,
     encodeValue,
     encodeData,
@@ -50,7 +50,7 @@ data Eip712Domain = Eip712Domain
 --
 -- 'VStruct' takes an already-computed 'hashStruct' result, which is how nested
 -- structs are encoded; 'VArray' hashes the concatenation of its members.
-data Value
+data Eip712Value
   = VUint Integer
   | VInt Integer
   | VBool Bool
@@ -61,7 +61,7 @@ data Value
     VBytes ByteString
   | -- | @string@; the caller supplies UTF-8 bytes.
     VString ByteString
-  | VArray [Value]
+  | VArray [Eip712Value]
   | -- | A nested struct, given as its 32-byte @hashStruct@.
     VStruct ByteString
   deriving (Eq, Show)
@@ -71,7 +71,7 @@ typeHash :: ByteString -> ByteString
 typeHash = keccak256
 
 -- | Encode one member as exactly 32 bytes.
-encodeValue :: Value -> Either String ByteString
+encodeValue :: Eip712Value -> Either String ByteString
 encodeValue = \case
   VUint n
     | n < 0 || n >= two256 -> Left $ "eip712: uint256 out of range: " <> show n
@@ -94,11 +94,11 @@ encodeValue = \case
     two256 = 2 ^ (256 :: Int) :: Integer
     two255 = 2 ^ (255 :: Int) :: Integer
 
-encodeData :: [Value] -> Either String ByteString
+encodeData :: [Eip712Value] -> Either String ByteString
 encodeData vs = B.concat <$> traverse encodeValue vs
 
 -- | @keccak256(typeHash ‖ encodeData(members))@.
-hashStruct :: ByteString -> [Value] -> Either String ByteString
+hashStruct :: ByteString -> [Eip712Value] -> Either String ByteString
 hashStruct typeString members = keccak256 . (typeHash typeString <>) <$> encodeData members
 
 domainSeparator :: Eip712Domain -> Either String ByteString
@@ -112,7 +112,7 @@ domainSeparator d =
     ]
 
 -- | The final digest to sign: @keccak256(0x19 ‖ 0x01 ‖ domainSeparator ‖ hashStruct)@.
-hashTypedData :: Eip712Domain -> ByteString -> [Value] -> Either String ByteString
+hashTypedData :: Eip712Domain -> ByteString -> [Eip712Value] -> Either String ByteString
 hashTypedData d typeString members = do
   ds <- domainSeparator d
   hs <- hashStruct typeString members

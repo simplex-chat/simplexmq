@@ -22,8 +22,10 @@ module Simplex.Messaging.Crypto.BIP32
   )
 where
 
+import Control.Applicative (optional, (<|>))
 import qualified Crypto.Hash as H
 import qualified Crypto.MAC.HMAC as HMAC
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteArray as BA
 import Data.Bits (shiftR, (.&.))
 import Data.ByteString (ByteString)
@@ -32,13 +34,14 @@ import qualified Data.ByteString.Char8 as BC
 import Data.List (intercalate)
 import Data.Word (Word32)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Parsers (parseAll)
 
 -- | An extended private key: the key plus its chain code.
 --
 -- 'Show' is redacting — the chain code plus one child key is enough to derive
 -- siblings, so it is secret material too.
 data ExtendedKey = ExtendedKey
-  { xkKey :: S.PrivateKey,
+  { xkKey :: S.Secp256k1PrivateKey,
     xkChainCode :: ByteString
   }
   deriving (Eq)
@@ -88,7 +91,7 @@ deriveChild xk i =
   where
     dat
       | isHardened i = B.singleton 0 <> S.unPrivateKey (xkKey xk) <> ser32 i
-      | otherwise = S.serializePublicKey S.Compressed (S.publicKey (xkKey xk)) <> ser32 i
+      | otherwise = S.serializePublicKey S.Compressed (S.secp256k1PublicKey (xkKey xk)) <> ser32 i
     hm = hmacSHA512 (xkChainCode xk) dat
     il = B.take 32 hm
     ir = B.drop 32 hm
@@ -99,31 +102,19 @@ derivePath = foldl (\acc i -> acc >>= (`deriveChild` i)) . Right
 -- | Parse a path such as @m\/44'\/60'\/0'\/0\/0@. A leading @m@ or @M@ is
 -- optional; both @'@ and @h@ mark a hardened index.
 parsePath :: ByteString -> Either String [Word32]
-parsePath s = case BC.split '/' (BC.filter (/= ' ') s) of
-  [] -> Right []
-  (h : rest)
-    | h == "m" || h == "M" || B.null h -> traverse element rest
-    | otherwise -> traverse element (h : rest)
+parsePath = parseAll pathP
+
+pathP :: A.Parser [Word32]
+pathP =
+  optional (A.satisfy $ \c -> c == 'm' || c == 'M')
+    *> ((A.char '/' *> (indexP `A.sepBy'` A.char '/')) <|> (indexP `A.sepBy1'` A.char '/') <|> pure [])
   where
-    element e
-      | B.null e = Left "path: empty component"
-      | otherwise =
-          let (digits, suffix) = BC.span (`elem` ("0123456789" :: String)) e
-              mark
-                | suffix == "'" || suffix == "h" || suffix == "H" = Right True
-                | B.null suffix = Right False
-                | otherwise = Left $ "path: bad component " <> BC.unpack e
-           in if B.null digits
-                then Left $ "path: bad component " <> BC.unpack e
-                else do
-                  h' <- mark
-                  n <- readIndex digits
-                  if h' then Right (n + hardenedOffset) else Right n
-    readIndex digits =
-      let n = BC.foldl' (\acc c -> acc * 10 + toInteger (fromEnum c - fromEnum '0')) 0 digits
-       in if n >= toInteger hardenedOffset
-            then Left $ "path: index out of range: " <> BC.unpack digits
-            else Right (fromInteger n)
+    indexP = do
+      n <- A.decimal :: A.Parser Integer
+      hard <- (True <$ A.satisfy (\c -> c == '\'' || c == 'h' || c == 'H')) <|> pure False
+      if n >= toInteger hardenedOffset
+        then fail $ "path: index out of range: " <> show n
+        else pure $ fromInteger n + if hard then hardenedOffset else 0
 
 renderPath :: [Word32] -> ByteString
 renderPath is = BC.pack $ intercalate "/" ("m" : map component is)

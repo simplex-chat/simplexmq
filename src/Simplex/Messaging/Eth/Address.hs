@@ -16,6 +16,7 @@ module Simplex.Messaging.Eth.Address
   )
 where
 
+import Control.Applicative (optional, (<|>))
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
@@ -42,9 +43,21 @@ instance Show Address where
 -- Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
 instance StrEncoding Address where
   strEncode = checksumAddress
-  strP = either fail pure . parseAddress =<< A.takeWhile1 isHexOr0x
+  strP = do
+    _ <- optional $ A.string "0x" <|> A.string "0X"
+    body <- A.takeWhile1 isHexDigit
+    if B.length body /= addressSize * 2
+      then fail $ "address: expected 40 hex digits, got " <> show (B.length body)
+      else case fromHex (BC.map toLower body) of
+        Left _ -> fail "address: not hexadecimal"
+        Right bs
+          | mixedCase body && checksumAddress (Address bs) /= "0x" <> body ->
+              fail "address: EIP-55 checksum mismatch"
+          | otherwise -> pure $ Address bs
     where
-      isHexOr0x c = isHexDigit c || c == 'x' || c == 'X'
+      mixedCase body = BC.any isUpper letters && BC.any isLower letters
+        where
+          letters = BC.filter (not . isDigit) body
 
 instance ToJSON Address where
   toEncoding = strToJEncoding
@@ -66,12 +79,12 @@ mkAddress bs
 
 -- | The low 20 bytes of @keccak256@ of the uncompressed public key with its
 -- @0x04@ SEC1 prefix removed.
-addressFromPublicKey :: S.PublicKey -> Address
+addressFromPublicKey :: S.Secp256k1PublicKey -> Address
 addressFromPublicKey pk =
   Address . B.drop 12 . keccak256 . B.drop 1 $ S.serializePublicKey S.Uncompressed pk
 
-addressFromPrivateKey :: S.PrivateKey -> Address
-addressFromPrivateKey = addressFromPublicKey . S.publicKey
+addressFromPrivateKey :: S.Secp256k1PrivateKey -> Address
+addressFromPrivateKey = addressFromPublicKey . S.secp256k1PublicKey
 
 -- | EIP-55: @0x@ followed by 40 hex digits whose case encodes a checksum over
 -- the lowercase hex form.
@@ -94,19 +107,7 @@ checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] lowerHex)
 -- its EIP-55 checksum; an all-lowercase or all-uppercase one carries no
 -- checksum and is accepted as-is, which is what every Ethereum client does.
 parseAddress :: ByteString -> Either String Address
-parseAddress s
-  | B.length body /= 40 = Left $ "address: expected 40 hex digits, got " <> show (B.length body)
-  | otherwise = case fromHex (BC.map toLower body) of
-      Left _ -> Left "address: not hexadecimal"
-      Right bs
-        | mixedCase && checksumAddress (Address bs) /= "0x" <> body ->
-            Left "address: EIP-55 checksum mismatch"
-        | otherwise -> Right (Address bs)
-  where
-    body = if "0x" `B.isPrefixOf` s || "0X" `B.isPrefixOf` s then B.drop 2 s else s
-    bodyC = BC.unpack body
-    letters = filter (not . isDigit) bodyC
-    mixedCase = any isUpper letters && any isLower letters
+parseAddress = strDecode
 
 -- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@.
 -- The account must be below 'hardenedOffset', as 'hardened' returns anything

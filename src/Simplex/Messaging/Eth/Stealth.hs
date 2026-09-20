@@ -52,8 +52,8 @@ import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 
 -- | A recipient's published key pair: spending key, then viewing key.
 data StealthMetaAddress = StealthMetaAddress
-  { smaSpend :: S.PublicKey,
-    smaView :: S.PublicKey
+  { smaSpend :: S.Secp256k1PublicKey,
+    smaView :: S.Secp256k1PublicKey
   }
   deriving (Eq, Show)
 
@@ -74,9 +74,9 @@ data StealthDestination = StealthDestination
   }
   deriving (Eq, Show)
 
-metaAddress :: S.PrivateKey -> S.PrivateKey -> StealthMetaAddress
+metaAddress :: S.Secp256k1PrivateKey -> S.Secp256k1PrivateKey -> StealthMetaAddress
 metaAddress spend view =
-  StealthMetaAddress {smaSpend = S.publicKey spend, smaView = S.publicKey view}
+  StealthMetaAddress {smaSpend = S.secp256k1PublicKey spend, smaView = S.secp256k1PublicKey view}
 
 metaAddressSize :: Int
 metaAddressSize = 2 * S.compressedSize
@@ -97,7 +97,7 @@ parseMetaAddress bs
 
 -- | @keccak256(x || y)@ of @sk * P@ — the value both sides arrive at, the
 -- sender from the ephemeral key and the recipient from the viewing key.
-sharedSecretHash :: S.PrivateKey -> S.PublicKey -> Either String ByteString
+sharedSecretHash :: S.Secp256k1PrivateKey -> S.Secp256k1PublicKey -> Either String ByteString
 sharedSecretHash sk pk =
   case S.publicKeyTweakMul pk (S.unPrivateKey sk) of
     Nothing -> Left "stealth: shared secret is not a valid point"
@@ -106,14 +106,14 @@ sharedSecretHash sk pk =
 -- | Sender side. @ephemeral@ must be freshly random and used once: reusing it
 -- across recipients lets them link the destinations, and reusing it for one
 -- recipient produces the same address twice.
-stealthDestination :: S.PrivateKey -> StealthMetaAddress -> Either String StealthDestination
+stealthDestination :: S.Secp256k1PrivateKey -> StealthMetaAddress -> Either String StealthDestination
 stealthDestination ephemeral ma = do
   sh <- sharedSecretHash ephemeral (smaView ma)
   stealthPub <- tweakSpend (smaSpend ma) sh
   pure
     StealthDestination
       { sdAddress = addressFromPublicKey stealthPub,
-        sdEphemeralPubKey = S.serializePublicKey S.Compressed (S.publicKey ephemeral),
+        sdEphemeralPubKey = S.serializePublicKey S.Compressed (S.secp256k1PublicKey ephemeral),
         sdViewTag = B.head sh
       }
 
@@ -121,7 +121,7 @@ stealthDestination ephemeral ma = do
 --
 -- The view tag is checked before the point addition, which is the whole reason
 -- it exists — a non-match costs one multiplication and one hash.
-stealthMatch :: S.PrivateKey -> S.PublicKey -> ByteString -> ViewTag -> Either String (Maybe Address)
+stealthMatch :: S.Secp256k1PrivateKey -> S.Secp256k1PublicKey -> ByteString -> ViewTag -> Either String (Maybe Address)
 stealthMatch view spend ephemeralPub tag = do
   eph <- S.parsePublicKey ephemeralPub
   sh <- sharedSecretHash view eph
@@ -133,7 +133,7 @@ stealthMatch view spend ephemeralPub tag = do
 --
 -- Needs the spending key, which is why a viewing key can be delegated for
 -- scanning without granting the ability to spend.
-stealthPrivateKey :: S.PrivateKey -> S.PrivateKey -> ByteString -> Either String S.PrivateKey
+stealthPrivateKey :: S.Secp256k1PrivateKey -> S.Secp256k1PrivateKey -> ByteString -> Either String S.Secp256k1PrivateKey
 stealthPrivateKey spend view ephemeralPub = do
   eph <- S.parsePublicKey ephemeralPub
   sh <- sharedSecretHash view eph
@@ -141,7 +141,7 @@ stealthPrivateKey spend view ephemeralPub = do
     Nothing -> Left "stealth: derived key out of range"
     Just sk -> Right sk
 
-tweakSpend :: S.PublicKey -> ByteString -> Either String S.PublicKey
+tweakSpend :: S.Secp256k1PublicKey -> ByteString -> Either String S.Secp256k1PublicKey
 tweakSpend spend sh = case S.publicKeyTweakAdd spend sh of
   Nothing -> Left "stealth: derived point out of range"
   Just p -> Right p
