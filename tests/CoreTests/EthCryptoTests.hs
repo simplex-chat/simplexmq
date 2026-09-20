@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Tests for the Ethereum crypto primitives: secp256k1, BIP-39, BIP-32,
 -- Keccak-256, EIP-55 and EIP-712.
@@ -18,7 +17,8 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (toLower)
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
+import Data.List (nub)
 import Data.Word (Word32)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.BIP32 as B32
@@ -71,8 +71,12 @@ secp256k1Tests :: Spec
 secp256k1Tests = do
   it "derives the known address for a known key" $
     show (addressFromPrivateKey testKey) `shouldBe` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
-  it "signs deterministically (RFC 6979)" $
-    right (S.signRecoverable testKey testDigest) `shouldBe` testSig
+  -- cross-checked against an independent RFC-6979 implementation, so this pins
+  -- interoperability rather than our own output
+  it "signs deterministically (RFC 6979)" $ do
+    toHex (S.rsCompact testSig)
+      `shouldBe` "51a4302323b42bae74eab7dc05d46141492eb44e37d24b5bd1f922225da8fc512bbf35fea4a63077fe5220fcdcadc56016c402462f5021d5b80bacd8b84bbdec"
+    S.rsRecId testSig `shouldBe` 0
   it "produces low-s signatures (EIP-2)" $
     S.isLowS testSig `shouldBe` True
   it "recovers the signing key" $
@@ -117,8 +121,6 @@ bip39Tests = do
         B39.mnemonicPhrase m `shouldBe` phrase
         toHex (B39.mnemonicToEntropy p) `shouldBe` entHex
         toHex (B39.mnemonicToSeed p "TREZOR") `shouldBe` seedHex
-  it "has a 2048-word list" $
-    B39.wordListSize `shouldBe` 2048
   it "embeds the upstream wordlist, unchanged" $
     -- sha256 of bitcoin/bips/bip-0039/english.txt
     C.sha256Hash (BC.unlines englishWordList)
@@ -131,6 +133,11 @@ bip39Tests = do
   it "rejects a word outside the list" $
     B39.parseMnemonic "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon simplex"
       `shouldSatisfy` isLeft
+  it "rejects an empty phrase, counting the words" $
+    B39.parseMnemonic "" `shouldBe` Left "Failed reading: mnemonic: expected 12, 15, 18, 21 or 24 words, got 0"
+  it "rejects a word with trailing punctuation, naming it" $
+    B39.parseMnemonic "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about."
+      `shouldBe` Left "Failed reading: mnemonic: not in wordlist: about."
   it "rejects a wrong word count" $
     B39.parseMnemonic "abandon abandon about" `shouldSatisfy` isLeft
   it "accepts a capitalised phrase and normalises it" $
@@ -185,8 +192,14 @@ bip32Tests = do
       B32.parsePath (B32.renderPath (ethereumPath 7 3)) `shouldBe` Right (ethereumPath 7 3)
     it "rejects a non-numeric component" $
       B32.parsePath "m/44x/60" `shouldSatisfy` isLeft
-    it "rejects an index at the hardened boundary" $
-      B32.parsePath "m/2147483648" `shouldSatisfy` isLeft
+    it "rejects an index at the hardened boundary, saying so" $
+      B32.parsePath "m/2147483648" `shouldBe` Left "Failed reading: path: index out of range: 2147483648"
+    it "rejects a path that ends at the separator" $
+      B32.parsePath "m/" `shouldBe` Left "Failed reading: path: empty component"
+    it "rejects an index glued to the leading m" $
+      B32.parsePath "m44" `shouldBe` Left "Failed reading: path: bad component m44"
+    it "accepts a leading slash" $
+      B32.parsePath "/44'/60" `shouldBe` Right [hardened' 44, 60]
   where
     master1 = right $ B32.masterKey (hx "000102030405060708090a0b0c0d0e0f")
     master2 =
@@ -237,13 +250,12 @@ derivationTests = do
   it "derives account 2" $
     show (addrAt 2) `shouldBe` "0x07B5FdfEB4E11826D233403Fe8Db0611CCF4c231"
   it "gives each chat profile a distinct address" $
-    map addrAt [0 .. 4] `shouldSatisfy` \as -> length as == length (foldr dedup [] as)
+    map addrAt [0 .. 4] `shouldSatisfy` \as -> length as == length (nub as)
   where
     m = right $ B39.parseMnemonic canonicalPhrase
     seed = B39.mnemonicToSeed m ""
     master = right $ B32.masterKey seed
     addrAt i = addressFromPrivateKey . B32.xkKey . right $ B32.derivePath master (ethereumPath i 0)
-    dedup a as = if a `elem` as then as else a : as
 
 eip55Tests :: Spec
 eip55Tests = do
@@ -252,17 +264,18 @@ eip55Tests = do
       it (BC.unpack a) $
         BC.pack (show . right $ parseAddress a) `shouldBe` a
   it "accepts an all-lowercase address" $
-    parseAddress "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight'
+    parseAddress "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
   it "accepts an all-uppercase address" $
-    parseAddress "0x5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED" `shouldSatisfy` isRight'
+    parseAddress "0x5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED" `shouldSatisfy` isRight
   it "accepts an address without the 0x prefix" $
-    parseAddress "5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight'
+    parseAddress "5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
   it "rejects a bad EIP-55 checksum" $
     parseAddress "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed" `shouldSatisfy` isLeft
   it "rejects the wrong length" $
     parseAddress "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe" `shouldSatisfy` isLeft
   it "rejects non-hex characters" $
-    parseAddress "0xZaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed" `shouldSatisfy` isLeft
+    parseAddress "0xZaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+      `shouldBe` Left "Failed reading: address: expected 40 hex digits, got 0"
   it "rejects raw bytes of the wrong length" $
     mkAddress (B.replicate 19 0) `shouldSatisfy` isLeft
   -- Between them these cover every byte value 0x00..0xff going out through the
@@ -275,7 +288,6 @@ eip55Tests = do
     forM_ everyByteAddresses $ \a ->
       parseAddress (BC.map toLower (checksumAddress a)) `shouldBe` Right a
   where
-    isRight' = either (const False) (const True)
     -- 13 x 20 = 260 bytes, so every value 0x00..0xff appears at least once
     everyByteAddresses =
       [ right . mkAddress . B.pack $
@@ -308,7 +320,8 @@ eip712Tests = do
     toHex (right . encodeValue . VAddress . right $ parseAddress "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC")
       `shouldBe` "000000000000000000000000cccccccccccccccccccccccccccccccccccccccc"
   it "hashes an array to a single word" $
-    B.length (right $ encodeValue (VArray [VUint 1, VUint 2])) `shouldBe` 32
+    toHex (right $ encodeValue (VArray [VUint 1, VUint 2]))
+      `shouldBe` "e90b7bceb6e7df5418fb78d8ee546e97c83a08bbccc01a0644d599ccd2a7c2e0"
   it "rejects a uint above 2^256" $
     encodeValue (VUint (2 ^ (256 :: Int))) `shouldSatisfy` isLeft
   it "rejects a negative uint" $

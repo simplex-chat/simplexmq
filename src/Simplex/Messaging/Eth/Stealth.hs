@@ -1,11 +1,9 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 -- | ERC-5564 stealth addresses on secp256k1, scheme id 1 ("with view tags").
 --
 -- A recipient publishes a __meta-address__: two public keys, spending and
 -- viewing. A sender picks a random ephemeral key, derives a one-time address
 -- from it and the meta-address, and publishes the ephemeral public key. Only
--- the recipient — who holds the viewing key — can tell which one-time addresses
+-- the recipient - who holds the viewing key - can tell which one-time addresses
 -- are theirs, and only they can spend from them.
 --
 -- The meta-address is not an address and never appears on chain, so publishing
@@ -20,13 +18,13 @@
 --
 --   * the shared secret point is serialized __uncompressed with no SEC1 prefix__,
 --     as @x || y@, 64 bytes;
---   * it is hashed with __keccak256__, not SHA-256 — which is why this module
+--   * it is hashed with __keccak256__, not SHA-256 - which is why this module
 --     multiplies points directly rather than calling @secp256k1_ecdh@, whose
 --     built-in hash is SHA-256;
 --   * the __view tag is the first byte__ of that hash.
 --
 -- Encoding the point the same way an Ethereum address encodes a public key is
--- not a coincidence, and it means 'Simplex.Messaging.Eth.Address' already
+-- not a coincidence, and it means "Simplex.Messaging.Eth.Address" already
 -- performs the last step unchanged.
 module Simplex.Messaging.Eth.Stealth
   ( StealthMetaAddress (..),
@@ -46,9 +44,9 @@ where
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Word (Word8)
+import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Eth.Address (Address, addressFromPublicKey)
 import Simplex.Messaging.Eth.Keccak (keccak256)
-import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 
 -- | A recipient's published key pair: spending key, then viewing key.
 data StealthMetaAddress = StealthMetaAddress
@@ -95,13 +93,12 @@ parseMetaAddress bs
       let (spend, view) = B.splitAt S.compressedSize bs
       StealthMetaAddress <$> S.parsePublicKey spend <*> S.parsePublicKey view
 
--- | @keccak256(x || y)@ of @sk * P@ — the value both sides arrive at, the
+-- | @keccak256(x || y)@ of @sk * P@ - the value both sides arrive at, the
 -- sender from the ephemeral key and the recipient from the viewing key.
 sharedSecretHash :: S.Secp256k1PrivateKey -> S.Secp256k1PublicKey -> Either String ByteString
 sharedSecretHash sk pk =
-  case S.publicKeyTweakMul pk (S.unPrivateKey sk) of
-    Nothing -> Left "stealth: shared secret is not a valid point"
-    Just p -> Right . keccak256 . B.drop 1 $ S.serializePublicKey S.Uncompressed p
+  maybe (Left "stealth: shared secret is not a valid point") (Right . keccak256 . B.drop 1 . S.serializePublicKey S.Uncompressed) $
+    S.publicKeyTweakMul pk (S.unPrivateKey sk)
 
 -- | Sender side. @ephemeral@ must be freshly random and used once: reusing it
 -- across recipients lets them link the destinations, and reusing it for one
@@ -117,10 +114,13 @@ stealthDestination ephemeral ma = do
         sdViewTag = B.head sh
       }
 
--- | Recipient side. Returns the address when this announcement is ours.
+-- | Recipient side. Returns the address this announcement would pay us at,
+-- when its view tag matches. The tag is one byte, so one announcement in 256
+-- matches by chance: the caller must compare the result with the announced
+-- address to know the announcement is theirs.
 --
 -- The view tag is checked before the point addition, which is the whole reason
--- it exists — a non-match costs one multiplication and one hash.
+-- it exists - a non-match costs one multiplication and one hash.
 stealthMatch :: S.Secp256k1PrivateKey -> S.Secp256k1PublicKey -> ByteString -> ViewTag -> Either String (Maybe Address)
 stealthMatch view spend ephemeralPub tag = do
   eph <- S.parsePublicKey ephemeralPub
@@ -137,11 +137,7 @@ stealthPrivateKey :: S.Secp256k1PrivateKey -> S.Secp256k1PrivateKey -> ByteStrin
 stealthPrivateKey spend view ephemeralPub = do
   eph <- S.parsePublicKey ephemeralPub
   sh <- sharedSecretHash view eph
-  case S.privateKeyTweakAdd spend sh of
-    Nothing -> Left "stealth: derived key out of range"
-    Just sk -> Right sk
+  maybe (Left "stealth: derived key out of range") Right $ S.privateKeyTweakAdd spend sh
 
 tweakSpend :: S.Secp256k1PublicKey -> ByteString -> Either String S.Secp256k1PublicKey
-tweakSpend spend sh = case S.publicKeyTweakAdd spend sh of
-  Nothing -> Left "stealth: derived point out of range"
-  Just p -> Right p
+tweakSpend spend sh = maybe (Left "stealth: derived point out of range") Right $ S.publicKeyTweakAdd spend sh

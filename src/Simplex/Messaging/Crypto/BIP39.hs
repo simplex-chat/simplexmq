@@ -1,6 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | BIP-39 mnemonics over the English wordlist.
 --
@@ -14,7 +13,6 @@
 module Simplex.Messaging.Crypto.BIP39
   ( Mnemonic,
     MnemonicStrength (..),
-    mnemonicIndexes,
     mnemonicWords,
     mnemonicPhrase,
     entropyToMnemonic,
@@ -25,16 +23,15 @@ module Simplex.Messaging.Crypto.BIP39
     strengthBytes,
     strengthWordCount,
     seedSize,
-    wordListSize,
   )
 where
 
 import Control.Concurrent.STM
-import Crypto.Hash (Digest, SHA256, SHA512 (..), hash)
+import Crypto.Hash (SHA512 (..))
 import qualified Crypto.KDF.PBKDF2 as PBKDF2
-import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Crypto.Number.Serialize (i2ospOf_, os2ip)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import qualified Data.ByteArray as BA
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -45,11 +42,11 @@ import qualified Data.IntMap.Strict as IM
 import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import Simplex.Messaging.Parsers (parseAll)
 
--- | A validated BIP-39 mnemonic. Indexes and words are always consistent
--- because the constructor is private and every index is in @[0, 2047]@.
+-- | A BIP-39 mnemonic: the word indexes and the words they name.
 data Mnemonic = Mnemonic
   { mnemonicIndexes :: [Int],
     mnemonicWords :: [ByteString]
@@ -81,9 +78,6 @@ strengthWordCount s = (entBits + entBits `div` 32) `div` 11
 seedSize :: Int
 seedSize = 64
 
-wordListSize :: Int
-wordListSize = 2048
-
 validEntropySizes :: [Int]
 validEntropySizes = [16, 20, 24, 28, 32]
 
@@ -100,7 +94,7 @@ indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
 {-# NOINLINE indexByWord #-}
 
--- | The mnemonic as one space-separated phrase — the exact bytes BIP-39 feeds
+-- | The mnemonic as one space-separated phrase - the exact bytes BIP-39 feeds
 -- to PBKDF2.
 mnemonicPhrase :: Mnemonic -> ByteString
 mnemonicPhrase = BC.unwords . mnemonicWords
@@ -123,13 +117,13 @@ entropyToIndexes ent =
     entBits = B.length ent * 8
     csBits = entBits `div` 32
     -- csBits is at most 8 (256/32), so the first checksum byte always suffices.
-    csByte = B.head (sha256 ent)
-    combined = beToInteger ent `shiftL` csBits .|. fromIntegral (csByte `shiftR` (8 - csBits))
+    csByte = B.head (C.sha256Hash ent)
+    combined = os2ip ent `shiftL` csBits .|. fromIntegral (csByte `shiftR` (8 - csBits))
     n = (entBits + csBits) `div` 11
 
--- | Total: a 'Mnemonic' can only hold a valid word count and valid indexes.
+-- | The entropy the mnemonic encodes.
 mnemonicToEntropy :: Mnemonic -> ByteString
-mnemonicToEntropy m = integerToBE (entBits `div` 8) (combined `shiftR` csBits)
+mnemonicToEntropy m = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
   where
     idxs = mnemonicIndexes m
     totalBits = length idxs * 11
@@ -148,7 +142,7 @@ parseMnemonic = parseAll mnemonicP
 
 mnemonicP :: A.Parser Mnemonic
 mnemonicP = do
-  ws <- A.skipSpace *> (wordP `A.sepBy1'` A.takeWhile1 isSpace) <* A.skipSpace
+  ws <- A.skipWhile isSpace *> (wordP `A.sepBy'` A.takeWhile1 isSpace) <* A.skipWhile isSpace
   let n = length ws
   if n `notElem` validWordCounts
     then fail $ "mnemonic: expected 12, 15, 18, 21 or 24 words, got " <> show n
@@ -161,7 +155,7 @@ mnemonicP = do
         then pure m
         else fail "mnemonic: checksum mismatch"
   where
-    wordP = BC.map toLower <$> A.takeWhile1 A.isAlpha_ascii
+    wordP = BC.map toLower <$> A.takeWhile1 (not . isSpace)
     lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> BC.unpack w) pure $ M.lookup w indexByWord
 
 -- | PBKDF2-HMAC-SHA512, 2048 iterations, salt @\"mnemonic\" <> passphrase@.
@@ -174,12 +168,9 @@ mnemonicToSeed m passphrase =
     (mnemonicPhrase m)
     ("mnemonic" <> passphrase :: ByteString)
 
--- | Generate a fresh mnemonic. Shaped like 'Simplex.Messaging.Crypto.randomBytes'
--- so it composes with the agent's DRG instead of reaching for system entropy.
+-- | Generate a fresh mnemonic from the agent's DRG.
 randomMnemonic :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
-randomMnemonic s gVar = do
-  ent <- stateTVar gVar $ randomBytesGenerate (strengthBytes s)
-  pure $ mnemonicFromIndexes $ entropyToIndexes ent
+randomMnemonic s gVar = mnemonicFromIndexes . entropyToIndexes <$> C.randomBytes (strengthBytes s) gVar
 
 -- Internal
 
@@ -192,12 +183,3 @@ mnemonicFromIndexes idxs =
   Mnemonic {mnemonicIndexes = idxs, mnemonicWords = map wordAt idxs}
   where
     wordAt i = IM.findWithDefault "" i wordByIndex
-
-sha256 :: ByteString -> ByteString
-sha256 bs = BA.convert (hash bs :: Digest SHA256)
-
-beToInteger :: ByteString -> Integer
-beToInteger = B.foldl' (\acc w -> acc `shiftL` 8 .|. fromIntegral w) 0
-
-integerToBE :: Int -> Integer -> ByteString
-integerToBE n x = B.pack [fromIntegral (x `shiftR` (8 * (n - 1 - i))) | i <- [0 .. n - 1]]

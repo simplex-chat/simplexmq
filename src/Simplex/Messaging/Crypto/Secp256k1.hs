@@ -1,22 +1,23 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | FFI bindings to libsecp256k1 (ECDSA over secp256k1 with public key recovery).
 --
 -- Only what Ethereum signing needs: key validation, public key derivation and
--- serialization, scalar addition (for BIP-32 child derivation), recoverable
--- signing and recovery.
+-- serialization, scalar addition (for BIP-32 child derivation), point addition
+-- and multiplication (for ERC-5564 stealth addresses), recoverable signing and
+-- recovery.
 --
 -- Signatures are produced with libsecp256k1's default RFC-6979 deterministic
--- nonce, so signing is a pure function of (key, digest) — which is why this
+-- nonce, so signing is a pure function of (key, digest) - which is why this
 -- module exposes a pure API over 'unsafePerformIO'. libsecp256k1 also always
 -- emits the low-@s@ form, so every signature from 'signRecoverable' is already
 -- EIP-2 compliant; 'isLowS' is provided so callers can assert that rather than
--- trust it. Note there is deliberately no normalization entry point: we never
--- accept a foreign signature, we only produce our own.
+-- trust it. A foreign signature can reach 'recoverPublicKey', which rejects a
+-- malformed one; there is no normalization entry point, as recovery does not
+-- need low-s.
 module Simplex.Messaging.Crypto.Secp256k1
   ( Secp256k1PrivateKey,
     Secp256k1PublicKey,
@@ -41,6 +42,7 @@ module Simplex.Messaging.Crypto.Secp256k1
 where
 
 import Control.Monad (when)
+import Crypto.Number.Serialize (os2ip)
 import Crypto.Random (drgNew, randomBytesGenerate)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
@@ -83,8 +85,9 @@ compactSize = 64
 
 -- | A validated secp256k1 private key: 32 bytes, in @[1, n-1]@.
 --
--- There is no 'Show' instance, so the key cannot reach a log, and 'Eq' is
--- constant-time: this key authorises transfers of assets with monetary value.
+-- There is no 'Show' instance, so the key cannot be logged by accident, and
+-- 'Eq' is constant-time: this key authorises transfers of assets with monetary
+-- value.
 newtype Secp256k1PrivateKey = Secp256k1PrivateKey ByteString
 
 instance Eq Secp256k1PrivateKey where
@@ -139,6 +142,7 @@ foreign import ccall "secp256k1_ec_seckey_tweak_add"
 
 foreign import ccall "secp256k1_ec_pubkey_tweak_mul"
   c_ec_pubkey_tweak_mul :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
+
 foreign import ccall "secp256k1_ec_pubkey_tweak_add"
   c_ec_pubkey_tweak_add :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
 
@@ -157,13 +161,6 @@ foreign import ccall "secp256k1_ecdsa_recover"
 -- SECP256K1_CONTEXT_NONE = SECP256K1_FLAGS_TYPE_CONTEXT
 contextNone :: CUInt
 contextNone = 1
-
--- SECP256K1_EC_COMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION
--- SECP256K1_EC_UNCOMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION
-formatFlag :: PubKeyFormat -> CUInt
-formatFlag = \case
-  Compressed -> 2 .|. 256
-  Uncompressed -> 2
 
 -- | The process-wide context, created and blinded once.
 --
@@ -189,7 +186,7 @@ withBS bs f = BU.unsafeUseAsCString bs $ f . castPtr
 packPtr :: Ptr Word8 -> Int -> IO ByteString
 packPtr p n = B.packCStringLen (castPtr p, n)
 
--- | Marshal a 'PublicKey' back into its opaque C representation.
+-- | Marshal a 'Secp256k1PublicKey' back into its opaque C representation.
 withPubKeyRaw :: Secp256k1PublicKey -> (Ptr PubKeyRaw -> IO a) -> IO a
 withPubKeyRaw (Secp256k1PublicKey bs) f = withBS bs $ f . castPtr
 
@@ -208,7 +205,7 @@ withRecSigRaw (RecoverableSignature compact recId) f
 -- Public API
 
 -- | Validate 32 bytes as a private key. Rejects zero and anything at or above
--- the group order, which is what makes 'publicKey' and 'signRecoverable' total.
+-- the group order, which is what makes 'secp256k1PublicKey' and 'signRecoverable' total.
 mkPrivateKey :: ByteString -> Either String Secp256k1PrivateKey
 mkPrivateKey bs
   | B.length bs /= privateKeySize = Left $ "private key: expected 32 bytes, got " <> show (B.length bs)
@@ -219,7 +216,7 @@ mkPrivateKey bs
 unPrivateKey :: Secp256k1PrivateKey -> ByteString
 unPrivateKey (Secp256k1PrivateKey bs) = bs
 
--- | Derive the public key. Total, because 'PrivateKey' is validated.
+-- | Derive the public key. Total, because 'Secp256k1PrivateKey' is validated.
 secp256k1PublicKey :: Secp256k1PrivateKey -> Secp256k1PublicKey
 secp256k1PublicKey (Secp256k1PrivateKey sk) = unsafePerformIO $
   allocaBytes pubKeyInternalSize $ \pkPtr ->
@@ -250,18 +247,20 @@ serializePublicKey fmt pk = unsafePerformIO $
     alloca $ \lenPtr ->
       withPubKeyRaw pk $ \pkPtr -> do
         poke lenPtr (fromIntegral outLen)
-        rc <- c_ec_pubkey_serialize secp256k1Ctx outPtr lenPtr pkPtr (formatFlag fmt)
+        rc <- c_ec_pubkey_serialize secp256k1Ctx outPtr lenPtr pkPtr flag
         when (rc /= 1) $ ioError (userError "secp256k1_ec_pubkey_serialize failed")
         written <- peek lenPtr
         packPtr outPtr (fromIntegral written)
   where
-    outLen = case fmt of
-      Compressed -> compressedSize
-      Uncompressed -> uncompressedSize
+    -- SECP256K1_EC_COMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION
+    -- SECP256K1_EC_UNCOMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION
+    (flag, outLen) = case fmt of
+      Compressed -> (2 .|. 256, compressedSize)
+      Uncompressed -> (2, uncompressedSize)
 
 -- | @sk + tweak mod n@, as BIP-32 child derivation needs.
 --
--- 'Nothing' when the result is zero or the tweak is out of range — BIP-32
+-- 'Nothing' when the result is zero or the tweak is out of range - BIP-32
 -- requires the caller to skip to the next child index in that case.
 privateKeyTweakAdd :: Secp256k1PrivateKey -> ByteString -> Maybe Secp256k1PrivateKey
 privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
@@ -346,10 +345,7 @@ recoverPublicKey sig digest
 -- tests can assert it rather than assume it.
 isLowS :: RecoverableSignature -> Bool
 isLowS (RecoverableSignature compact _) =
-  B.length compact == compactSize && beToInteger (B.drop 32 compact) <= halfOrder
+  B.length compact == compactSize && os2ip (B.drop privateKeySize compact) <= halfOrder
   where
     halfOrder :: Integer
     halfOrder = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
-
-beToInteger :: ByteString -> Integer
-beToInteger = B.foldl' (\acc w -> acc * 256 + fromIntegral w) 0

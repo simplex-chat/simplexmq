@@ -1,5 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Ethereum addresses: derivation from a public key, and EIP-55 mixed-case
 -- checksum encoding.
@@ -45,7 +44,7 @@ instance StrEncoding Address where
   strEncode = checksumAddress
   strP = do
     _ <- optional $ A.string "0x" <|> A.string "0X"
-    body <- A.takeWhile1 isHexDigit
+    body <- A.takeWhile isHexDigit
     if B.length body /= addressSize * 2
       then fail $ "address: expected 40 hex digits, got " <> show (B.length body)
       else case fromHex (BC.map toLower body) of
@@ -89,10 +88,10 @@ addressFromPrivateKey = addressFromPublicKey . S.secp256k1PublicKey
 -- | EIP-55: @0x@ followed by 40 hex digits whose case encodes a checksum over
 -- the lowercase hex form.
 checksumAddress :: Address -> ByteString
-checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] lowerHex)
+checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] (B.unpack lowerHex))
   where
-    lowerHex = B.unpack (toHex bs)
-    hashed = keccak256 (B.pack lowerHex)
+    lowerHex = toHex bs
+    hashed = keccak256 lowerHex
     adjust :: Int -> Word8 -> Word8
     adjust i c
       | isHexLetter c && nibbleAt i >= 8 = upper c
@@ -110,19 +109,18 @@ parseAddress :: ByteString -> Either String Address
 parseAddress = strDecode
 
 -- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@.
--- The account must be below 'hardenedOffset', as 'hardened' returns anything
+-- The account must be below @hardenedOffset@, as 'hardened' returns anything
 -- at or above it unchanged and the path would be another account's.
 ethereumPath :: Word32 -> Word32 -> [Word32]
 ethereumPath account address = [hardened 44, hardened 60, hardened account, 0, address]
 
--- Hex via memory's Base16, which this package already depends on and which
--- Crypto.Secp256k1 already uses. Base16 emits lowercase, which is what EIP-55
--- needs as its starting point - 'checksumAddress' is what introduces case.
+-- Hex via memory's Base16, which this package already depends on. Base16 emits
+-- lowercase, which is what EIP-55 needs as its starting point - 'checksumAddress'
+-- is what introduces case.
 
 toHex :: ByteString -> ByteString
 toHex = BAE.convertToBase BAE.Base16
 
--- | Decodes and validates: a non-hex or odd-length input is a Left, so callers
--- do not have to scan for hex digits themselves.
+-- | Decodes base16; a non-hex or odd-length input is a Left.
 fromHex :: ByteString -> Either String ByteString
 fromHex = BAE.convertFromBase BAE.Base16

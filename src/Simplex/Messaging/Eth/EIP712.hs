@@ -1,11 +1,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | EIP-712 typed structured data hashing.
 --
--- This implements the hashing half of EIP-712 — @typeHash@, @encodeData@,
--- @hashStruct@ and the final @0x19 0x01@ digest — over an explicit list of
+-- This implements the hashing half of EIP-712 - @typeHash@, @encodeData@,
+-- @hashStruct@ and the final @0x19 0x01@ digest - over an explicit list of
 -- member values. It deliberately does *not* derive the canonical type string
 -- from a schema: the caller supplies it. Our structs are a handful of fixed
 -- shapes agreed with the contracts, and a hand-written type string that is
@@ -29,15 +28,14 @@ module Simplex.Messaging.Eth.EIP712
   )
 where
 
-import Data.Bits (shiftR, (.&.))
+import Crypto.Number.Serialize (i2ospOf_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Simplex.Messaging.Eth.Address (Address, unAddress)
 import Simplex.Messaging.Eth.Keccak (keccak256)
 
--- | The standard EIP-712 domain. All four fields are used; the spec allows
--- omitting any of them, but every contract in this project includes all four,
--- and fixing the shape keeps 'domainSeparator' total.
+-- | The standard EIP-712 domain. The spec allows omitting any of the four
+-- fields, but every contract in this project includes all four.
 data Eip712Domain = Eip712Domain
   { edName :: ByteString,
     edVersion :: ByteString,
@@ -86,7 +84,7 @@ encodeValue = \case
     | otherwise -> Right (bs <> B.replicate (32 - B.length bs) 0)
   VBytes bs -> Right (keccak256 bs)
   VString bs -> Right (keccak256 bs)
-  VArray vs -> keccak256 . B.concat <$> traverse encodeValue vs
+  VArray vs -> keccak256 <$> encodeData vs
   VStruct h
     | B.length h /= 32 -> Left $ "eip712: struct hash must be 32 bytes, got " <> show (B.length h)
     | otherwise -> Right h
@@ -97,7 +95,7 @@ encodeValue = \case
 encodeData :: [Eip712Value] -> Either String ByteString
 encodeData vs = B.concat <$> traverse encodeValue vs
 
--- | @keccak256(typeHash ‖ encodeData(members))@.
+-- | @keccak256(typeHash || encodeData(members))@.
 hashStruct :: ByteString -> [Eip712Value] -> Either String ByteString
 hashStruct typeString members = keccak256 . (typeHash typeString <>) <$> encodeData members
 
@@ -111,7 +109,7 @@ domainSeparator d =
       VAddress (edVerifyingContract d)
     ]
 
--- | The final digest to sign: @keccak256(0x19 ‖ 0x01 ‖ domainSeparator ‖ hashStruct)@.
+-- | The final digest to sign: @keccak256(0x19 || 0x01 || domainSeparator || hashStruct)@.
 hashTypedData :: Eip712Domain -> ByteString -> [Eip712Value] -> Either String ByteString
 hashTypedData d typeString members = do
   ds <- domainSeparator d
@@ -119,4 +117,4 @@ hashTypedData d typeString members = do
   pure $ keccak256 (B.pack [0x19, 0x01] <> ds <> hs)
 
 word256 :: Integer -> ByteString
-word256 x = B.pack [fromIntegral ((x `shiftR` (8 * (31 - i))) .&. 0xFF) | i <- [0 .. 31]]
+word256 = i2ospOf_ 32
