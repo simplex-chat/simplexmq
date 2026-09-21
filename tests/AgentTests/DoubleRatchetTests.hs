@@ -53,6 +53,7 @@ doubleRatchetTests = do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
       it "should agree shared secret using KEM" $ testAlgs testPqX3dhProposeAccept
       it "should reject proposed KEM in reply" $ testAlgs testPqX3dhProposeReject
+      it "should agree different PQ associated data with substituted KEM key" $ testAlgs testPqX3dhSubstitutedKem
       it "should allow second proposal in reply" $ testAlgs testPqX3dhProposeAgain
     describe "hybrid KEM key agreement errors" $ do
       it "should fail if reply contains acceptance without proposal" $ testAlgs testPqX3dhAcceptWithoutProposalError
@@ -362,6 +363,7 @@ testDecodeV2RatchetJSON :: IO ()
 testDecodeV2RatchetJSON = do
   let v2RatchetJSON = "{\"rcVersion\":[2,2],\"rcAD\":\"2GEJrq48TmQse6NR16I-hrI0tSySZQ57E_g46nDceAPRAiF6j0drq26RTE7be6X7uiB4RaGJGf4QRXzcYuVtWw==\",\"rcDHRs\":\"TUM0Q0FRQXdCUVlESzJWdUJDSUVJRkNYbUxtSHQ3SUNfeHpGTi1Qb3ZqTVQ3S2p6XzZlZlBjOG9fRFY2RWxKOQ==\",\"rcRK\":\"BOX2X7YW5qDSp2XknY_lqacSrtDqQNPvS6iJlZIs3G0=\",\"rcNs\":0,\"rcNr\":0,\"rcPN\":0,\"rcNHKs\":\"IMouSkXUvzT_mo0WM-pqEUK09-HTLk9WOTCFQglyQxU=\",\"rcNHKr\":\"g-tus1clYPV0rGlzkf5a959tUqDYQVZ1FpcPeXdKwxI=\"}"
   Right (r :: Ratchet X25519) <- pure $ J.eitherDecodeStrict' v2RatchetJSON
+  rcADPQ r `shouldBe` Nothing
   rcSupportKEM r `shouldBe` PQSupportOff
   rcEnableKEM r `shouldBe` PQEncOff
   rcSndKEM r `shouldBe` PQEncOff
@@ -417,6 +419,20 @@ testPqX3dhProposeAccept _ = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   paramsAlice `compatibleRatchets` paramsBob
 
+-- substituted KEM key: the parties agree on assocData but not on assocDataPQ
+testPqX3dhSubstitutedKem :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testPqX3dhSubstitutedKem _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  (pksAlice@(_, _, Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
+  -- Bob accepts the KEM key of the attacker, not of Alice
+  (_, E2ERatchetParams _ _ _ (Just (RKParamsProposed mallorysKem))) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
+  (pksBob@(_, _, Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSAccepted $ AcceptKEM mallorysKem)
+  Right (paramsBob, _) <- pure $ pqX3dhSnd pksBob e2eAlice
+  Right (paramsAlice, _) <- runExceptT $ pqX3dhRcv pksAlice e2eBob
+  assocData paramsAlice `shouldBe` assocData paramsBob
+  assocDataPQ paramsAlice `shouldNotBe` assocDataPQ paramsBob
+
 testPqX3dhProposeReject :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testPqX3dhProposeReject _ = do
   g <- C.newRandom
@@ -459,9 +475,9 @@ testPqX3dhProposeAgain _ = do
 
 compatibleRatchets :: (RatchetInitParams, x) -> (RatchetInitParams, x) -> Expectation
 compatibleRatchets
-  (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, _)
-  (RatchetInitParams {assocData = ad, ratchetKey = rk, sndHK = shk, rcvNextHK = rnhk, kemAccepted = ka}, _) = do
-    assocData == ad && ratchetKey == rk && sndHK == shk && rcvNextHK == rnhk `shouldBe` True
+  (RatchetInitParams {assocData, assocDataPQ, ratchetKey, sndHK, rcvNextHK, kemAccepted}, _)
+  (RatchetInitParams {assocData = ad, assocDataPQ = adPQ, ratchetKey = rk, sndHK = shk, rcvNextHK = rnhk, kemAccepted = ka}, _) = do
+    assocData == ad && assocDataPQ == adPQ && ratchetKey == rk && sndHK == shk && rcvNextHK == rnhk `shouldBe` True
     case (kemAccepted, ka) of
       (Just RatchetKEMAccepted {rcPQRr, rcPQRss, rcPQRct}, Just RatchetKEMAccepted {rcPQRr = pqk, rcPQRss = pqss, rcPQRct = pqct}) ->
         pqk /= rcPQRr && pqss == rcPQRss && pqct == rcPQRct `shouldBe` True

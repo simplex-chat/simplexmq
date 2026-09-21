@@ -166,6 +166,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnId,
     ConfirmationId,
     InvitationId,
+    ConnAdHash (..),
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
@@ -404,7 +405,7 @@ data AEvent (e :: AEntity) where
   LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
-  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
+  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> ConnAdHash -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
   SREQ :: InvitationId -> Maybe C.PublicKeyEd25519 -> MsgBody -> AEvent AEConn
   SSENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
   RJCT :: ConnInfo -> AEvent AEConn
@@ -1371,6 +1372,9 @@ type ConnId = ByteString
 type ConfirmationId = ByteString
 
 type InvitationId = ByteString
+
+newtype ConnAdHash = ConnAdHash {unConnAdHash :: ByteString}
+  deriving (Eq, Show)
 
 extraSMPServerHosts :: Map TransportHost TransportHost
 extraSMPServerHosts =

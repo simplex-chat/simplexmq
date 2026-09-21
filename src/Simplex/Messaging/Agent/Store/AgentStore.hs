@@ -165,6 +165,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchet,
     deleteRatchet,
     getRatchet,
+    getRatchetADs,
     getRatchetForUpdate,
     getSkippedMsgKeys,
     updateRatchet,
@@ -344,6 +345,8 @@ import Database.PostgreSQL.Simple (In (..), Only (..), Query, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else
+import Data.List (intercalate)
+import Data.String (fromString)
 import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), ToRow (..), field, (:.) (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
@@ -1474,9 +1477,11 @@ createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetPa
     db
     [sql|
       INSERT INTO ratchets
-        (conn_id, ratchet_state, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?)
+        (conn_id, ratchet_state, ratchet_ad, ratchet_ad_pq, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = EXCLUDED.ratchet_state,
+        ratchet_ad = EXCLUDED.ratchet_ad,
+        ratchet_ad_pq = EXCLUDED.ratchet_ad_pq,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = EXCLUDED.x3dh_pub_key_1,
@@ -1484,7 +1489,10 @@ createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetPa
         pq_priv_kem = NULL,
         pq_pub_kem = EXCLUDED.pq_pub_kem
     |]
-    (connId, ratchetState, x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem)
+    ((connId, ratchetState) :. ratchetADs ratchetState :. (x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem))
+
+ratchetADs :: RatchetX448 -> (Binary ByteString, Maybe (Binary ByteString))
+ratchetADs CR.Ratchet {rcAD = Str ad, rcADPQ} = (Binary ad, Binary . unStr <$> rcADPQ)
 
 getSndRatchet :: DB.Connection -> ConnId -> CR.VersionE2E -> IO (Either StoreError (RatchetX448, CR.AE2ERatchetParams 'C.X448))
 getSndRatchet db connId v =
@@ -1505,10 +1513,12 @@ createRatchet db connId rc =
   DB.execute
     db
     [sql|
-      INSERT INTO ratchets (conn_id, ratchet_state)
-      VALUES (?, ?)
+      INSERT INTO ratchets (conn_id, ratchet_state, ratchet_ad, ratchet_ad_pq)
+      VALUES (?, ?, ?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
-        ratchet_state = ?,
+        ratchet_state = EXCLUDED.ratchet_state,
+        ratchet_ad = EXCLUDED.ratchet_ad,
+        ratchet_ad_pq = EXCLUDED.ratchet_ad_pq,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = NULL,
@@ -1516,7 +1526,32 @@ createRatchet db connId rc =
         pq_priv_kem = NULL,
         pq_pub_kem = NULL
     |]
-    (connId, rc, rc)
+    ((connId, rc) :. ratchetADs rc)
+
+getRatchetADs :: DB.Connection -> [ConnId] -> IO (Map ConnId (ByteString, Maybe ByteString))
+getRatchetADs db connIds = do
+  rows <- concat <$> mapM (select . L.toList) (toChunks 500 connIds)
+  let ads = mapMaybe rowADs rows
+      backfill = [(Binary ad, Binary <$> adPQ, connId) | (connId, (ad, adPQ), True) <- ads]
+  unless (null backfill) $
+    DB.executeMany db "UPDATE ratchets SET ratchet_ad = ?, ratchet_ad_pq = ? WHERE conn_id = ?" backfill
+  pure $ M.fromList [(connId, ad) | (connId, ad, _) <- ads]
+  where
+    select :: [ConnId] -> IO [(ConnId, Maybe (Binary ByteString), Maybe (Binary ByteString), Maybe RatchetX448)]
+    select ids =
+#if defined(dbPostgres)
+      DB.query db (ratchetADsQuery <> " IN ?") (Only (In ids))
+#else
+      DB.query db (ratchetADsQuery <> " IN (" <> fromString (intercalate "," (replicate (length ids) "?")) <> ")") ids
+#endif
+    rowADs (connId, ad_, adPQ_, rc_) = case (ad_, rc_) of
+      (Just (Binary ad), _) -> Just (connId, (ad, unBinary <$> adPQ_), False)
+      (Nothing, Just rc) -> let (Binary ad, adPQ) = ratchetADs rc in Just (connId, (ad, unBinary <$> adPQ), True)
+      (Nothing, Nothing) -> Nothing
+    unBinary (Binary b) = b
+
+ratchetADsQuery :: Query
+ratchetADsQuery = "SELECT conn_id, ratchet_ad, ratchet_ad_pq, CASE WHEN ratchet_ad IS NULL THEN ratchet_state END FROM ratchets WHERE conn_id"
 
 deleteRatchet :: DB.Connection -> ConnId -> IO ()
 deleteRatchet db connId =

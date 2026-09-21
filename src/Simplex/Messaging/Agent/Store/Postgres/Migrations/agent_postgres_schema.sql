@@ -448,7 +448,9 @@ CREATE TABLE smp_agent_test_protocol_schema.ratchets (
     x3dh_pub_key_1 bytea,
     x3dh_pub_key_2 bytea,
     pq_priv_kem bytea,
-    pq_pub_kem bytea
+    pq_pub_kem bytea,
+    ratchet_ad bytea,
+    ratchet_ad_pq bytea
 );
 
 
