@@ -1,14 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Tests for the Ethereum crypto primitives: secp256k1, BIP-39, BIP-32,
--- Keccak-256, EIP-55 and EIP-712.
---
--- Everything here is checked against published vectors rather than against our
--- own output: the official BIP-39 English vectors, BIP-32 spec test vectors 1
--- and 2 (expected private keys and chain codes decoded from the published
--- @xprv@ strings), the EIP-55 spec addresses, and the @Mail@ example from the
--- EIP-712 spec.
+-- | Tests for secp256k1, BIP-39, BIP-32, Keccak-256 and EIP-55, checked against published vectors rather than against our own output.
 module CoreTests.EthCryptoTests (ethCryptoTests) where
 
 import Control.Concurrent.STM (atomically)
@@ -241,9 +234,7 @@ eip55Tests = do
   it "rejects non-hex characters" $
     strDecode @Address "0xZaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
       `shouldBe` Left "Failed reading: address: expected 40 hex digits, got 0"
-  -- Between them these cover every byte value 0x00..0xff going out through the
-  -- hex encoder, and every hex digit coming back through the decoder - which
-  -- the four spec vectors above do not.
+  -- between them these cover every byte value out through the hex encoder and every hex digit back through the decoder
   it "round-trips every byte value through the checksummed form" $
     forM_ everyByteAddresses $ \a ->
       strDecode (strEncode a) `shouldBe` Right a

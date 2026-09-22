@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Ethereum addresses: derivation from a public key, and EIP-55 mixed-case
--- checksum encoding.
+-- | Ethereum addresses: derivation from a public key, and EIP-55 mixed-case checksum encoding.
 module Simplex.Messaging.Eth.Address
   ( Address,
     addressFromPrivateKey,
@@ -23,16 +22,14 @@ import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Eth.Keccak (keccak256)
 
--- | A 20-byte Ethereum address. 'Show' renders the EIP-55 checksummed form,
--- which is what a user would paste into a block explorer.
+-- | A 20-byte Ethereum address. 'Show' renders the EIP-55 checksummed form, as pasted into a block explorer.
 newtype Address = Address ByteString
   deriving (Eq, Ord)
 
 instance Show Address where
   show = BC.unpack . checksumAddress
 
--- | EIP-55 checksummed hex, the form shown in explorers and pasted by users.
--- Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
+-- | EIP-55 checksummed hex. Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
 instance StrEncoding Address where
   strEncode = checksumAddress
   strP = do
@@ -54,8 +51,7 @@ instance StrEncoding Address where
 addressSize :: Int
 addressSize = 20
 
--- | The low 20 bytes of @keccak256@ of the uncompressed public key with its
--- @0x04@ SEC1 prefix removed.
+-- | The low 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
 addressFromPublicKey :: S.Secp256k1PublicKey -> Address
 addressFromPublicKey pk =
   Address . B.drop 12 . keccak256 . B.drop 1 $ S.serializePublicKey S.Uncompressed pk
@@ -63,8 +59,7 @@ addressFromPublicKey pk =
 addressFromPrivateKey :: S.Secp256k1PrivateKey -> Address
 addressFromPrivateKey = addressFromPublicKey . S.secp256k1PublicKey
 
--- | EIP-55: @0x@ followed by 40 hex digits whose case encodes a checksum over
--- the lowercase hex form.
+-- | EIP-55: @0x@ and 40 hex digits whose case encodes a checksum over the lowercase hex form.
 checksumAddress :: Address -> ByteString
 checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] (B.unpack lowerHex))
   where
@@ -81,15 +76,11 @@ checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] (B.unpack l
     upper c = c - 0x20
 
 
--- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@.
--- The account must be below @hardenedOffset@, as 'hardened' returns anything
--- at or above it unchanged and the path would be another account's.
+-- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@. The account must be below @hardenedOffset@.
 ethereumPath :: Word32 -> Word32 -> [Word32]
 ethereumPath account address = [hardened 44, hardened 60, hardened account, 0, address]
 
--- Hex via memory's Base16, which this package already depends on. Base16 emits
--- lowercase, which is what EIP-55 needs as its starting point - 'checksumAddress'
--- is what introduces case.
+-- hex via memory's Base16, which emits the lowercase form EIP-55 starts from; 'checksumAddress' is what introduces case
 
 toHex :: ByteString -> ByteString
 toHex = BAE.convertToBase BAE.Base16

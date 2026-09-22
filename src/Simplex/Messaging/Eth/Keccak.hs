@@ -1,10 +1,4 @@
--- | Keccak-256 - the hash Ethereum uses everywhere.
---
--- This is *not* SHA3-256. The two differ only in the padding byte (0x01 vs
--- 0x06) and produce completely different digests, and crypton exposes both as
--- @Keccak_256@ and @SHA3_256@. Confusing them is the classic way to write an
--- Ethereum implementation that is wrong in a way nothing catches until a
--- signature is rejected on-chain.
+-- | Keccak-256, the hash Ethereum uses. Not SHA3-256: they differ in the padding byte and produce entirely different digests.
 module Simplex.Messaging.Eth.Keccak
   ( keccak256,
   )

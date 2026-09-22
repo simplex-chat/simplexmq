@@ -3,11 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | FFI bindings to libsecp256k1.
---
--- Key validation, public key derivation and serialization, and scalar addition
--- for BIP-32 child derivation. The pure API over 'unsafePerformIO' is safe
--- because every operation is a pure function of its arguments.
+-- | FFI bindings to libsecp256k1. Every operation is a pure function of its arguments, hence the pure API over 'unsafePerformIO'.
 module Simplex.Messaging.Crypto.Secp256k1
   ( Secp256k1PrivateKey,
     Secp256k1PublicKey,
@@ -52,18 +48,13 @@ pubKeyInternalSize = 64
 
 -- Types
 
--- | A validated secp256k1 private key: 32 bytes, in @[1, n-1]@.
---
--- There is no 'Show' instance, so the key cannot be logged by accident, and
--- 'Eq' is constant-time: this key authorises transfers of assets with monetary
--- value.
+-- | A validated private key, 32 bytes in @[1, n-1]@: no 'Show', so it cannot be logged by accident, and constant-time 'Eq'.
 newtype Secp256k1PrivateKey = Secp256k1PrivateKey ByteString
 
 instance Eq Secp256k1PrivateKey where
   Secp256k1PrivateKey a == Secp256k1PrivateKey b = BA.constEq a b
 
--- | A parsed public key, held in libsecp256k1's opaque 64-byte internal form.
--- Use 'serializePublicKey' to get the SEC1 bytes.
+-- | A public key in libsecp256k1's opaque 64-byte form; 'serializePublicKey' gives the SEC1 bytes.
 newtype Secp256k1PublicKey = Secp256k1PublicKey ByteString
   deriving newtype (Eq, Show)
 
@@ -99,11 +90,7 @@ foreign import ccall "secp256k1_ec_seckey_tweak_add"
 contextNone :: CUInt
 contextNone = 1
 
--- | The process-wide context, created and blinded once.
---
--- Randomization is a side-channel countermeasure only: it does not affect any
--- output, and signing does not mutate the context, so sharing one context
--- across threads is safe and the pure API below is sound.
+-- | The process-wide context, created and blinded once. Blinding affects no output and nothing mutates it, so sharing it across threads is safe.
 secp256k1Ctx :: Ptr Ctx
 secp256k1Ctx = unsafePerformIO $ do
   ctx <- c_context_create contextNone
@@ -130,8 +117,7 @@ withPubKeyRaw (Secp256k1PublicKey bs) f = withBS bs $ f . castPtr
 
 -- Public API
 
--- | Validate 32 bytes as a private key. Rejects zero and anything at or above
--- the group order, which is what makes 'secp256k1PublicKey' total.
+-- | Reject zero and anything at or above the group order, which is what makes 'secp256k1PublicKey' total.
 mkPrivateKey :: ByteString -> Either String Secp256k1PrivateKey
 mkPrivateKey bs
   | B.length bs /= privateKeySize = Left $ "private key: expected 32 bytes, got " <> show (B.length bs)
@@ -164,16 +150,12 @@ serializePublicKey fmt pk = unsafePerformIO $
         written <- peek lenPtr
         packPtr outPtr (fromIntegral written)
   where
-    -- SECP256K1_EC_COMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION
-    -- SECP256K1_EC_UNCOMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION
+    -- SECP256K1_EC_COMPRESSED = FLAGS_TYPE_COMPRESSION | FLAGS_BIT_COMPRESSION, SECP256K1_EC_UNCOMPRESSED = FLAGS_TYPE_COMPRESSION
     (flag, outLen) = case fmt of
       Compressed -> (2 .|. 256, compressedSize)
       Uncompressed -> (2, uncompressedSize)
 
--- | @sk + tweak mod n@, as BIP-32 child derivation needs.
---
--- 'Nothing' when the result is zero or the tweak is out of range - BIP-32
--- requires the caller to skip to the next child index in that case.
+-- | @sk + tweak mod n@, as BIP-32 child derivation needs. 'Nothing' when the result is zero or the tweak is out of range.
 privateKeyTweakAdd :: Secp256k1PrivateKey -> ByteString -> Maybe Secp256k1PrivateKey
 privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
   | B.length tweak /= privateKeySize = Nothing

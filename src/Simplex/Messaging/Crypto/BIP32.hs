@@ -1,11 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-32 hierarchical deterministic key derivation over secp256k1.
---
--- Private derivation only: we always hold the seed, so the neutered/extended
--- public key half of BIP-32 (CKDpub, xpub serialization, fingerprints) is not
--- implemented. Non-hardened child derivation is supported, because BIP-44 paths
--- end in non-hardened components.
+-- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented.
 module Simplex.Messaging.Crypto.BIP32
   ( ExtendedKey (..),
     masterKey,
@@ -28,10 +23,7 @@ import Data.Word (Word32)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding (smpEncode)
 
--- | An extended private key: the key plus its chain code.
---
--- 'Show' is redacting - the chain code plus one child key is enough to derive
--- siblings, so it is secret material too.
+-- | An extended private key: the key plus its chain code, secret too, as it and one child derive the siblings.
 data ExtendedKey = ExtendedKey
   { xkKey :: S.Secp256k1PrivateKey,
     xkChainCode :: ByteString
@@ -45,8 +37,7 @@ instance Show ExtendedKey where
 hardenedOffset :: Word32
 hardenedOffset = 0x80000000
 
--- | @hardened 44 == 44'@. Indexes at or above 'hardenedOffset' are returned
--- unchanged, so @hardened . hardened@ is idempotent rather than overflowing.
+-- | @hardened 44 == 44'@. An index at or above 'hardenedOffset' is returned unchanged, so this is idempotent rather than overflowing.
 hardened :: Word32 -> Word32
 hardened i
   | isHardened i = i
@@ -69,9 +60,7 @@ masterKey seed
     il = B.take 32 i
     ir = B.drop 32 i
 
--- | CKDpriv. 'Left' only in the negligible case BIP-32 defines as "proceed with
--- the next index"; callers deriving a fixed path should surface it rather than
--- silently skipping, since it never happens for real seeds.
+-- | CKDpriv. 'Left' only in the negligible case BIP-32 calls "proceed with the next index", which no real seed reaches.
 deriveChild :: ExtendedKey -> Word32 -> Either String ExtendedKey
 deriveChild xk i =
   case S.privateKeyTweakAdd (xkKey xk) il of

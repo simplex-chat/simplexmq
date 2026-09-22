@@ -1,15 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-39 mnemonics over the English wordlist.
---
--- Scope is deliberately narrow: English only. Every English word is ASCII, so
--- the Unicode NFKD normalization BIP-39 mandates is a no-op on the mnemonic
--- side and this module needs no normalization dependency. A passphrase, if
--- used, is taken as bytes and is the caller's responsibility to normalize.
---
--- A mnemonic is the root secret for name ownership, so 'Mnemonic' has a
--- redacting 'Show'.
+-- | BIP-39 mnemonics, English only: every word is ASCII, so BIP-39's NFKD normalization is a no-op; a passphrase is bytes the caller normalizes.
 module Simplex.Messaging.Crypto.BIP39
   ( Mnemonic,
     MnemonicStrength (..),
@@ -92,8 +84,7 @@ indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
 {-# NOINLINE indexByWord #-}
 
--- | The mnemonic as one space-separated phrase - the exact bytes BIP-39 feeds
--- to PBKDF2.
+-- | The mnemonic as one space-separated phrase, the exact bytes BIP-39 feeds to PBKDF2.
 mnemonicPhrase :: Mnemonic -> ByteString
 mnemonicPhrase = BC.unwords . mnemonicWords
 
@@ -106,8 +97,7 @@ entropyToMnemonic ent
   where
     entLen = B.length ent
 
--- | Entropy to 11-bit word indexes. Assumes a validated entropy length; every
--- result is masked to 11 bits, so all indexes are in @[0, 2047]@.
+-- | Entropy to 11-bit word indexes: assumes a validated length, and masks every result into @[0, 2047]@.
 entropyToIndexes :: ByteString -> [Int]
 entropyToIndexes ent =
   [fromIntegral ((combined `shiftR` (11 * (n - 1 - i))) .&. 0x7FF) | i <- [0 .. n - 1]]
@@ -129,12 +119,7 @@ mnemonicToEntropy m = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
     csBits = totalBits - entBits
     combined = foldl' (\acc i -> acc `shiftL` 11 .|. fromIntegral i) (0 :: Integer) idxs
 
--- | Parse and fully validate a phrase: word count, wordlist membership, and the
--- BIP-39 checksum. Words may be separated by any whitespace, and input is
--- lower-cased first, so a user retyping their recovery key does not get an
--- unhelpful failure for capitalising a word. This does not change the derived
--- seed: 'mnemonicPhrase' always rebuilds the canonical lowercase sentence from
--- the wordlist, and that is what 'mnemonicToSeed' hashes.
+-- | Parse and fully validate a phrase: word count, wordlist membership, checksum. Any whitespace separates, and lower-casing does not change the seed.
 parseMnemonic :: ByteString -> Either String Mnemonic
 parseMnemonic = parseAll mnemonicP
 
@@ -147,8 +132,7 @@ mnemonicP = do
     else do
       idxs <- traverse lookupWord ws
       let m = mnemonicFromIndexes idxs
-      -- Stripping the checksum bits and recomputing them is the checksum check:
-      -- if the supplied bits were wrong, the round trip cannot reproduce them.
+      -- stripping the checksum bits and recomputing them is the check: wrong bits cannot survive the round trip
       if entropyToIndexes (mnemonicToEntropy m) == idxs
         then pure m
         else fail "mnemonic: checksum mismatch"
@@ -156,8 +140,7 @@ mnemonicP = do
     wordP = BC.map toLower <$> A.takeWhile1 (not . isSpace)
     lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> BC.unpack w) pure $ M.lookup w indexByWord
 
--- | PBKDF2-HMAC-SHA512, 2048 iterations, salt @\"mnemonic\" <> passphrase@.
--- Pass an empty passphrase for the common case.
+-- | PBKDF2-HMAC-SHA512, 2048 iterations, salt @\"mnemonic\" <> passphrase@; pass an empty passphrase for the common case.
 mnemonicToSeed :: Mnemonic -> ByteString -> ByteString
 mnemonicToSeed m passphrase =
   PBKDF2.generate
