@@ -67,6 +67,7 @@ module Simplex.Messaging.Agent
     deleteConnShortLink,
     getConnShortLink,
     resolveSimplexName,
+    ownedSimplexNames,
     getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -222,6 +223,8 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON, parse)
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Protocol
   ( BrokerMsg,
     Cmd (..),
@@ -464,6 +467,12 @@ getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameResponse
 resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
+
+-- | Names an address owns. The relay used is returned so a scan can pass it
+-- back as used and ask the next account elsewhere.
+ownedSimplexNames :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AE (SMPServer, OwnedNames)
+ownedSimplexNames c nm userId used addr offset = withAgentEnv c $ ownedSimplexNames' c nm userId used addr offset
+{-# INLINE ownedSimplexNames #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
@@ -1269,6 +1278,11 @@ getConnShortLink' c nm userId = \case
 
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
+
+ownedSimplexNames' :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AM (SMPServer, OwnedNames)
+ownedSimplexNames' c nm userId used addr offset = do
+  srv <- getNextNameServerAvoiding c userId used
+  (srv,) <$> ownedNames c nm userId srv addr offset
 
 resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
 resolveSimplexName' c nm userId domain = do

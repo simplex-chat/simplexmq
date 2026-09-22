@@ -53,6 +53,7 @@ resolveResp :: Status -> LB.ByteString -> [Text] -> (Status, LB.ByteString)
 resolveResp st body = \case
   ["health"] -> (ok200, "{}")
   ("v2" : "resolve" : _) -> (st, body)
+  ("v2" : "owned-by" : _) -> (st, body)
   _ -> (notFound404, "{}")
 
 testNamesConfig :: Int -> NamesConfig

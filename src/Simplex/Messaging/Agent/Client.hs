@@ -70,6 +70,8 @@ module Simplex.Messaging.Agent.Client
     secureGetQueueLink,
     getQueueLink,
     resolveName,
+    ownedNames,
+    getNextNameServerAvoiding,
     getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
@@ -263,6 +265,8 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse, sumTypeJSON)
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,
@@ -2028,6 +2032,31 @@ resolveName c nm userId server domain =
   where
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
+
+-- | Names an address owns, from one names-capable relay. Mirrors resolveName:
+-- proxied where the network config allows it, direct otherwise.
+ownedNames :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> Address -> Word32 -> AM OwnedNames
+ownedNames c nm userId server addr offset =
+  snd <$> sendOrProxySMPCommand c nm userId server "" "ROWN" NoEntity ownedViaProxy ownedDirectly
+  where
+    ownedViaProxy smp proxySess = proxyOwnedNames smp nm proxySess addr offset
+    ownedDirectly smp = directOwnedNames smp nm addr offset
+
+-- | A names-capable server the caller has not used yet. A scan asks about one
+-- account per relay, because sending the whole list to one relay would tell it
+-- those accounts belong to one wallet. With fewer relays than accounts the
+-- choice wraps onto used ones, which is the best the configured set allows.
+getNextNameServerAvoiding :: AgentClient -> UserId -> [SMPServer] -> AM SMPServer
+getNextNameServerAvoiding c userId used =
+  liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
+    Just UserServers {nameSrvs} ->
+      let unused = filter ((`notElem` used) . protoServer . snd) nameSrvs
+       in case L.nonEmpty unused of
+            Just srvs -> protoServer <$> pickServer srvs
+            Nothing -> case L.nonEmpty nameSrvs of
+              Just srvs -> protoServer <$> pickServer srvs
+              Nothing -> throwE NO_NAME_SERVERS
+    Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
 
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means

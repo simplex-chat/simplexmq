@@ -12,6 +12,7 @@ module Simplex.Messaging.Server.Names
     closeNamesEnv,
     pingEndpoint,
     resolveName,
+    ownedNames,
   )
 where
 
@@ -19,10 +20,14 @@ import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.Bifunctor (first)
 import Data.Maybe (fromMaybe)
+import Data.Word (Word32)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Protocol (NameErrorType (..), NameQuery, NameResponse)
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Server.Names.HttpResolver
   ( ResolverEnv,
     ResolverError (..),
@@ -30,6 +35,7 @@ import Simplex.Messaging.Server.Names.HttpResolver
     closeResolverEnv,
     healthHttp,
     newResolverEnv,
+    ownedByHttp,
     resolveHttp,
   )
 import System.Timeout (timeout)
@@ -73,6 +79,24 @@ resolveName env q = do
 fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
 fetch NamesEnv {resolverEnv} q =
   first mapResolverError <$> resolveHttp resolverEnv (decodeLatin1 $ smpEncode q)
+
+-- | The names an address owns. A resolver without the endpoint answers 404,
+-- which mapResolverError reports as RESOLVER, so a scan cannot read "this
+-- resolver cannot say" as "this address owns nothing".
+ownedNames :: NamesEnv -> Address -> Word32 -> IO (Either NameErrorType OwnedNames)
+ownedNames env addr offset = do
+  r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetchOwned env addr offset))
+  case r of
+    Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
+    Left e
+      | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
+      | otherwise -> do
+          logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
+          pure (Left (RESOLVER "resolver error"))
+
+fetchOwned :: NamesEnv -> Address -> Word32 -> IO (Either NameErrorType OwnedNames)
+fetchOwned NamesEnv {resolverEnv} addr offset =
+  first mapResolverError <$> ownedByHttp resolverEnv (decodeLatin1 $ strEncode addr) (fromIntegral offset)
 
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case

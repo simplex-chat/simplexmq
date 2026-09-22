@@ -13,6 +13,8 @@ module Simplex.Messaging.Names.Record
     NamePricing (..),
     USDCents (..),
     NameReservedReason (..),
+    OwnedNames (..),
+    OwnedName (..),
   )
 where
 
@@ -90,6 +92,29 @@ data NameRegistration
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
+-- | What the registry holds for an address: the names it owns, and whether
+-- the account has been used at all. Holding a name is only one way to be in
+-- use, so a recovery scan that reads only `ownNames` hands out an account its
+-- owner is already using.
+data OwnedNames = OwnedNames
+  { ownNames :: [OwnedName],
+    ownInUse :: Bool,
+    -- | the cursor to resume from, absent when the listing is complete
+    ownNextOffset :: Maybe Int
+  }
+  deriving (Eq, Show)
+
+-- | One name an address holds. Enumeration is not maintained on expiry, so a
+-- lapsed name stays listed; `onStatus` is how a caller tells it apart.
+data OwnedName = OwnedName
+  { -- | absent when the registrar never recorded the label
+    onName :: Maybe Text,
+    onLabelhash :: Text,
+    onExpires :: SystemSeconds,
+    onStatus :: Text
+  }
+  deriving (Eq, Show)
+
 -- | Enough to price the name locally, which the router cannot do behind a hash.
 data NamePricing = NamePricing
   { -- | US cents per year, for the lengths the registry prices specially
@@ -134,6 +159,10 @@ instance ToJSON NameReservedReason where
 
 instance FromJSON NameReservedReason where
   parseJSON = textParseJSON "NameReservedReason"
+
+$(JQ.deriveJSON defaultJSON {J.fieldLabelModifier = dropPrefix "on"} ''OwnedName)
+
+$(JQ.deriveJSON defaultJSON {J.fieldLabelModifier = dropPrefix "own"} ''OwnedNames)
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 

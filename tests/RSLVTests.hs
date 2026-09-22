@@ -27,6 +27,8 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
 import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedName (..), OwnedNames (..))
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -72,6 +74,16 @@ withProxyAndResolver (st, body) runTest =
     withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
       withSmpServerConfigOn (transport @TLS) (withNames port memCfg2) testPort2 (const runTest)
 
+sendRown :: Transport c => THandleSMP c 'TClient -> B.ByteString -> Address -> IO (Transmission (Either ErrorType BrokerMsg))
+sendRown h@THandle {params} corrId addr = do
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (ROWN addr 0))
+  [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
+  r :| _ <- tGetClient h
+  pure r
+
+testAddr :: Address
+testAddr = either error id $ strDecode "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+
 sendRslv :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexDomain -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRslv h@THandle {params} corrId d = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (RSLV (NQDomain d)))
@@ -84,6 +96,8 @@ rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
     it "resolver without the v2 route (404) -> NAME RESOLVER, not NOT_FOUND" testRslvBackendNotFound
     it "resolver replies 502 -> NAME (RESOLVER ..)" testRslvBackendHttpErr
+    it "ROWN returns the names an address owns" testRownOwned
+    it "ROWN on a resolver without the endpoint is a resolver error, not an empty answer" testRownUnsupported
     it "no names config -> NAME NO_RESOLVER" testRslvDisabled
     it "refuses to send RSLV on a session below namesSMPVersion" testRslvVersion
   describe "RSLV forwarded (PFWD)" $ do
@@ -105,6 +119,32 @@ rslvTests = do
 
 -- | /v2/resolve answers 200, 400 or 502, so a 404 is a resolver that predates
 -- the route, not a name that does not exist.
+-- The scan reads inUse, so an account in use with no names must not arrive
+-- looking the same as one that owns nothing.
+testRownOwned :: IO ()
+testRownOwned =
+  withResolverServer (status200, ownedBody) $
+    testSMPClient @TLS $ \h -> do
+      (corrId, _entId, resp) <- sendRown h "ro01" testAddr
+      corrId `shouldBe` CorrId "ro01"
+      case resp of
+        Right (ROWND owned) -> do
+          map onName (ownNames owned) `shouldBe` [Just "alice.testing"]
+          ownInUse owned `shouldBe` True
+        r -> expectationFailure $ "unexpected " <> show r
+
+-- A resolver that does not serve owned-by answers 404, which must reach the
+-- client as a resolver error: read as "owns nothing" it would end a scan early.
+testRownUnsupported :: IO ()
+testRownUnsupported =
+  withResolverServer (status404, "{}") $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendRown h "ro02" testAddr
+      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
+
+ownedBody :: LB.ByteString
+ownedBody = "{\"address\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"names\":[{\"name\":\"alice.testing\",\"labelhash\":\"0x9c02\",\"expires\":1821603121,\"status\":\"registered\"}],\"inUse\":true,\"nextOffset\":null}"
+
 testRslvBackendNotFound :: IO ()
 testRslvBackendNotFound =
   withResolverServer (status404, "{}") $

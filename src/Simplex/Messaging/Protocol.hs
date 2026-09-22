@@ -261,7 +261,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import Data.Time.Clock.System (SystemTime (..), systemToUTCTime)
 import Data.Type.Equality
-import Data.Word (Word8, Word16)
+import Data.Word (Word8, Word16, Word32)
 import GHC.TypeLits (ErrorMessage (..), TypeError, type (+))
 import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
@@ -271,6 +271,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Names.Record
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
@@ -610,6 +611,8 @@ data Command (p :: Party) where
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Resolve SimpleX name.
   RSLV :: NameQuery -> Command Resolver
+  -- Names an address owns, and whether the account has been used at all.
+  ROWN :: Address -> Word32 -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -747,6 +750,8 @@ data BrokerMsg where
   PONG :: BrokerMsg
   -- What the router knows about a SimpleX name.
   RNAME :: NameResponse -> BrokerMsg
+  -- What the router knows about the names an address owns.
+  ROWND :: OwnedNames -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -958,6 +963,7 @@ data CommandTag (p :: Party) where
   NSUB_ :: CommandTag Notifier
   NSUBS_ :: CommandTag NotifierService
   RSLV_ :: CommandTag Resolver
+  ROWN_ :: CommandTag Resolver
 
 data CmdTag = forall p. PartyI p => CT (SParty p) (CommandTag p)
 
@@ -985,6 +991,7 @@ data BrokerMsgTag
   | ERR_
   | PONG_
   | RNAME_
+  | ROWND_
   deriving (Show)
 
 class ProtocolMsgTag t where
@@ -1022,6 +1029,7 @@ instance PartyI p => Encoding (CommandTag p) where
     NSUB_ -> "NSUB"
     NSUBS_ -> "NSUBS"
     RSLV_ -> "RSLV"
+    ROWN_ -> "ROWN"
   smpP = messageTagP
 
 instance ProtocolMsgTag CmdTag where
@@ -1051,6 +1059,7 @@ instance ProtocolMsgTag CmdTag where
     "NSUB" -> Just $ CT SNotifier NSUB_
     "NSUBS" -> Just $ CT SNotifierService NSUBS_
     "RSLV" -> Just $ CT SResolver RSLV_
+    "ROWN" -> Just $ CT SResolver ROWN_
     _ -> Nothing
 
 instance Encoding CmdTag where
@@ -1081,6 +1090,7 @@ instance Encoding BrokerMsgTag where
     ERR_ -> "ERR"
     PONG_ -> "PONG"
     RNAME_ -> "RNAME"
+    ROWND_ -> "ROWND"
   smpP = messageTagP
 
 instance ProtocolMsgTag BrokerMsgTag where
@@ -1104,6 +1114,7 @@ instance ProtocolMsgTag BrokerMsgTag where
     "ERR" -> Just ERR_
     "PONG" -> Just PONG_
     "RNAME" -> Just RNAME_
+    "ROWND" -> Just ROWND_
     _ -> Nothing
 
 -- | SMP message body format
@@ -1846,6 +1857,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
     RSLV q -> e (RSLV_, ' ', if v >= nameAvailSMPVersion then hashedQuery q else q)
+    ROWN addr offset -> e (ROWN_, ' ', addr, offset)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1871,6 +1883,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PFWD {} -> entityCmd
     RFWD _ -> noAuthCmd
     RSLV _ -> noAuthCmd
+    ROWN _ _ -> noAuthCmd
     SUB -> serviceCmd
     NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
@@ -1953,6 +1966,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
     CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP
+    CT SResolver ROWN_ -> Cmd SResolver <$> (ROWN <$> _smpP <*> smpP)
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1995,6 +2009,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
+    ROWND owned -> e (ROWND_, ' ', Tail $ LB.toStrict $ J.encode owned)
     RNAME res
       | v >= nameAvailSMPVersion -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode res)
       | otherwise -> case registration res of
@@ -2046,6 +2061,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
+    ROWND_ -> fmap ROWND . J.eitherDecodeStrict . unTail <$?> _smpP
     RNAME_
       | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
       | otherwise -> fmap (RNAME . oldResponse) . J.eitherDecodeStrict . unTail <$?> _smpP
@@ -2074,6 +2090,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
     RNAME {} -> noEntityMsg
+    ROWND {} -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY

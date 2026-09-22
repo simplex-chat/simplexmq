@@ -29,6 +29,7 @@ module Simplex.Messaging.Server.Names.HttpResolver
     newResolverEnv,
     closeResolverEnv,
     resolveHttp,
+    ownedByHttp,
     healthHttp,
   )
 where
@@ -59,7 +60,7 @@ import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
-import Simplex.Messaging.Names.Record (NameResponse)
+import Simplex.Messaging.Names.Record (NameResponse, OwnedNames)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -116,6 +117,13 @@ resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameResponse)
 resolveHttp env q =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
     <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
+
+-- | The address is EIP-55 hex, which is already URL-safe, but it is encoded
+-- for the same reason the name is: nothing from a client reaches the path raw.
+ownedByHttp :: ResolverEnv -> Text -> Int -> IO (Either ResolverError OwnedNames)
+ownedByHttp env addr offset =
+  (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
+    <$> httpGet env ("/v2/owned-by/" <> B.unpack (urlEncode True (encodeUtf8 addr)) <> "?offset=" <> show offset)
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.

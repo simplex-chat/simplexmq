@@ -54,6 +54,7 @@ module Simplex.Messaging.Transport
     namesSMPVersion,
     serverInfoSMPVersion,
     nameAvailSMPVersion,
+    nameOwnedSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -218,6 +219,11 @@ serverInfoSMPVersion = VersionSMP 21
 nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
+-- | ROWN lists the names an address owns. A server below this does not answer
+-- it, which a recovery scan must not read as the address owning nothing.
+nameOwnedSMPVersion :: VersionSMP
+nameOwnedSMPVersion = VersionSMP 23
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
 
@@ -225,20 +231,20 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 22
+currentClientSMPRelayVersion = VersionSMP 23
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 22
+currentServerSMPRelayVersion = VersionSMP 23
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (22)
--- for this release because a proxied RSLV only carries availability from
--- nameAvailSMPVersion (22), so the one-version anti-fingerprinting buffer does
--- not apply yet; it reappears once the current version advances past 22.
+-- when clients upgrade at different times. Pinned to the current version (23)
+-- for this release because a proxied ROWN is only answered from
+-- nameOwnedSMPVersion (23), and a scan that cannot proxy exposes its address
+-- to the relay; the buffer reappears once the current version advances past 23.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 22
+proxiedSMPRelayVersion = VersionSMP 23
 
 -- minimal supported protocol version is 14
 supportedClientSMPRelayVRange :: VersionRangeSMP
