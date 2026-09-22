@@ -1035,5 +1035,104 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "available")
 
+class OwnedByTests(unittest.TestCase):
+    """`/v2/owned-by` answers what a recovery scan asks: which names an account
+    holds, and whether the account has been used at all. Enumeration is read
+    off the registrar's ERC-721 index, so a name acquired by transfer counts
+    the same as one registered here."""
+
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    ADDR = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+    GRACE = 90 * 86400
+    # keccak-256("alice")
+    ALICE = 0x9C0257114EB9399A2985F8E75DAD7600C5D89FE3824FFA99EC1C3EB8BF3B0501
+
+    def setUp(self):
+        self._saved = (snrc.REGISTRARS, snrc.eth_call, snrc.rpc)
+        snrc.REGISTRARS = {"testing": self.REGISTRAR, "simplex": ""}
+        snrc.rpc = lambda method, params: "0x0"
+
+    def tearDown(self):
+        snrc.REGISTRARS, snrc.eth_call, snrc.rpc = self._saved
+
+    def _chain(self, held, expires, label=b"alice"):
+        def call(to, data):
+            sel = data[:10]
+            if sel == snrc.selector("GRACE_PERIOD()"):
+                return snrc.encode_uint(self.GRACE)
+            if sel == snrc.selector("balanceOf(address)"):
+                return snrc.encode_uint(held)
+            if sel == snrc.selector("tokenOfOwnerByIndex(address,uint256)"):
+                return snrc.encode_uint(self.ALICE)
+            if sel == snrc.selector("nameExpires(uint256)"):
+                return snrc.encode_uint(expires)
+            if sel == snrc.selector("labelOf(uint256)"):
+                return "0x" + snrc.encode_uint(32) + snrc.encode_uint(len(label)) + label.hex() + "00" * ((-len(label)) % 32)
+            raise AssertionError("unexpected call " + sel)
+        return call
+
+    def test_a_held_name_is_listed_with_its_status(self):
+        snrc.eth_call = self._chain(1, int(time.time()) + 86400)
+        status, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(status, 200)
+        self.assertEqual([n["name"] for n in body["names"]], ["alice.testing"])
+        self.assertEqual(body["names"][0]["status"], "registered")
+
+    def test_a_lapsed_name_is_reported_not_filtered(self):
+        """A scan of a recovered key is exactly the caller who needs to be told
+        a name can still be renewed."""
+        snrc.eth_call = self._chain(1, int(time.time()) - 86400)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"][0]["status"], "grace")
+
+    def test_holding_a_name_is_in_use(self):
+        snrc.eth_call = self._chain(1, int(time.time()) + 86400)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertTrue(body["inUse"])
+
+    def test_an_account_that_sent_a_transaction_is_in_use_with_no_name(self):
+        """The case a names-only scan gets wrong: an account in use, holding
+        nothing, would be handed out again."""
+        snrc.eth_call = self._chain(0, 0)
+        snrc.rpc = lambda method, params: "0x3" if method == "eth_getTransactionCount" else "0x0"
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"], [])
+        self.assertEqual(body["nonce"], 3)
+        self.assertTrue(body["inUse"])
+
+    def test_a_funded_account_is_in_use_with_no_name_and_no_nonce(self):
+        snrc.eth_call = self._chain(0, 0)
+        snrc.rpc = lambda method, params: "0x0" if method == "eth_getTransactionCount" else "0xde0b6b3a7640000"
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["balance"], "1000000000000000000")
+        self.assertTrue(body["inUse"])
+
+    def test_an_untouched_account_is_not_in_use(self):
+        snrc.eth_call = self._chain(0, 0)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertFalse(body["inUse"])
+        self.assertIsNone(body["nextOffset"])
+
+    def test_more_names_than_a_page_carry_the_cursor_to_resume_from(self):
+        snrc.eth_call = self._chain(snrc.MAX_OWNED + 1, int(time.time()) + 86400)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertTrue(body["truncated"])
+        self.assertEqual(body["nextOffset"], snrc.MAX_OWNED)
+        self.assertEqual(len(body["names"]), snrc.MAX_OWNED)
+
+    def test_a_malformed_address_is_refused(self):
+        status, body = snrc.owned_by("0xnothex")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badAddress")
+
+    def test_no_configured_registrar_is_an_error_not_an_empty_answer(self):
+        """An empty list would read as "this key owns nothing", which is the
+        one answer a scan must not invent."""
+        snrc.REGISTRARS = {"testing": "", "simplex": ""}
+        status, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "noRegistrarConfigured")
+
+
 if __name__ == "__main__":
     unittest.main()

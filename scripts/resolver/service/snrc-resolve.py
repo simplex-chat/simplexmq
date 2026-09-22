@@ -69,7 +69,7 @@ import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from eth_hash.auto import keccak
@@ -123,6 +123,9 @@ COIN_XMR = 128
 COIN_DOT = 354
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+
+# Names returned per /owned-by page; a scan follows `nextOffset` for the rest.
+MAX_OWNED = int(os.environ.get("SNRC_MAX_OWNED", "256"))
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
 
@@ -415,6 +418,14 @@ def decode_uint(hex_data: str) -> int:
 
 def encode_uint(value: int) -> str:
     return value.to_bytes(32, "big").hex()
+
+
+def encode_address(address: str) -> str:
+    return (12 * "00") + address[2:].lower()
+
+
+def is_address(address: str) -> bool:
+    return len(address) == 42 and address.startswith("0x") and all(c in "0123456789abcdef" for c in address[2:].lower())
 
 
 def encode_text_call(node: bytes, key: str) -> str:
@@ -875,12 +886,98 @@ def resolve(name: str):
     }
 
 
+def owned_by(address: str, offset: int = 0):
+    """Every name an address holds, across every configured TLD, with the
+    account's on-chain footprint.
+
+    Read off the ERC-721 registrar rather than from logs: the token is the
+    name, so `balanceOf` / `tokenOfOwnerByIndex` is the current answer and it
+    includes names acquired by transfer, which a scan of registration events
+    would miss. `labelOf` returns the plaintext label, recorded write-once at
+    registration, so no off-chain index is needed to turn a token id back into
+    a name.
+
+    Enumeration is deliberately not maintained on expiry, so a lapsed name
+    stays in the list until someone re-registers it. That is reported rather
+    than filtered: every entry carries `status`, using the same vocabulary as
+    /resolve, and a caller scanning a recovered key is exactly the caller who
+    needs to be told one of its names can still be renewed.
+
+    `inUse` answers the question a recovery scan actually asks - has this
+    account ever been used - which holding a name is only one way to be. An
+    account that was funded or ever sent a transaction is in use even with no
+    name, so the nonce and balance it is derived from are reported too: a scan
+    that gets this wrong hands out an account its owner is already using.
+    """
+    if not is_address(address):
+        return 400, {
+            "address": address,
+            "error": "badAddress",
+            "message": "expected a 0x-prefixed 20-byte address",
+        }
+
+    configured = {t: r for t, r in REGISTRARS.items() if r}
+    if not configured:
+        return 400, {
+            "address": address,
+            "error": "noRegistrarConfigured",
+            "message": "no registrar is configured on this resolver",
+            "configuredTlds": [],
+        }
+
+    now = int(time.time())
+    names, truncated = [], False
+    for tld, registrar in configured.items():
+        grace = grace_period(registrar)
+        held = decode_uint(eth_call(registrar, selector("balanceOf(address)") + encode_address(address)))
+        first = min(offset, held)
+        last = min(first + MAX_OWNED, held)
+        if last < held:
+            truncated = True
+        for i in range(first, last):
+            token = decode_uint(
+                eth_call(registrar, selector("tokenOfOwnerByIndex(address,uint256)") + encode_address(address) + encode_uint(i))
+            )
+            expires = decode_uint(eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token)))
+            # A label of "" means the token is real but its name is not
+            # recoverable from chain state - registered before labels were
+            # recorded. Reported without a name rather than silently dropped.
+            label = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token))).decode()
+            names.append(
+                {
+                    "name": (label + "." + tld) if label else None,
+                    "tld": tld,
+                    "labelhash": "0x" + format(token, "064x"),
+                    "expires": expires,
+                    "graceEnds": expires + grace if expires else None,
+                    "status": expiry_status(expires, grace, now),
+                }
+            )
+
+    nonce = decode_uint(rpc("eth_getTransactionCount", [address, "latest"]))
+    balance = decode_uint(rpc("eth_getBalance", [address, "latest"]))
+    names.sort(key=lambda n: (n["tld"], n["name"] or n["labelhash"]))
+    return 200, {
+        "address": address,
+        "names": names,
+        "nonce": nonce,
+        "balance": str(balance),
+        "inUse": bool(names) or nonce > 0 or balance > 0,
+        "offset": offset,
+        # `nextOffset` is the cursor to resume from, or null when the listing is
+        # complete, so "there is more" and "how to get it" are one answer.
+        "nextOffset": offset + MAX_OWNED if truncated else None,
+        "truncated": truncated,
+        "checkedTlds": sorted(configured),
+    }
+
+
 # ---------- HTTP layer ----------
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - http.server contract
-        path = urlparse(self.path).path
-        parts = [unquote(p) for p in path.split("/") if p]
+        parsed = urlparse(self.path)
+        parts = [unquote(p) for p in parsed.path.split("/") if p]
 
         if parts == ["health"]:
             self._respond(200, {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head_block()})
@@ -895,6 +992,20 @@ class Handler(BaseHTTPRequestHandler):
                 status, body = registration(name)
             except Exception as e:  # surface upstream errors as 502
                 status, body = 502, upstream_error({"name": name}, e)
+            self._respond(status, body)
+            return
+
+        if len(parts) == 3 and parts[0] == "v2" and parts[1] == "owned-by":
+            address = parts[2].strip().lower()
+            try:
+                offset = int(parse_qs(parsed.query).get("offset", ["0"])[0])
+            except ValueError:
+                self._respond(400, {"address": address, "error": "badOffset"})
+                return
+            try:
+                status, body = owned_by(address, offset)
+            except Exception as e:  # surface upstream errors as 502
+                status, body = 502, upstream_error({"address": address}, e)
             self._respond(status, body)
             return
 
@@ -926,7 +1037,7 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "error": "noSuchRoute",
                 "message": "not found",
-                "routes": ["/health", "/v2/resolve/<query>", "/v1/resolve/<name>", "/resolve/<name>"],
+                "routes": ["/health", "/v2/resolve/<query>", "/v2/owned-by/<address>", "/v1/resolve/<name>", "/resolve/<name>"],
             },
         )
 
