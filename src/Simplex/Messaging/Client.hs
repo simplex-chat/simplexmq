@@ -156,6 +156,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
+import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -164,10 +165,9 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
-import Data.Word (Word32)
 import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Names.Record (OwnedNames)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo

@@ -220,11 +220,11 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON, parse)
-import Simplex.Messaging.Eth.Address (Address)
-import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Protocol
   ( BrokerMsg,
     Cmd (..),

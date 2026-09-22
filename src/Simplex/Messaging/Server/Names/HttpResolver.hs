@@ -11,6 +11,7 @@
 --   GET /v2/resolve/<query> -> 200 with a NameRegistration JSON document, for
 --                              all three registration shapes; 400 for unknown
 --                              TLDs, 502 for upstream RPC failures
+--   GET /v2/owned-by/<addr> -> 200 with an OwnedNames JSON document
 --   GET /v1/resolve/<name>  -> 200 with a NameRecord, what relays before SMP
 --                              v22 call as /resolve
 --   GET /health             -> 200 when the resolver process is ready
@@ -42,6 +43,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
+import Data.Word (Word32)
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
   ( HttpException,
@@ -120,7 +122,7 @@ resolveHttp env q =
 
 -- | The address is EIP-55 hex, which is already URL-safe, but it is encoded
 -- for the same reason the name is: nothing from a client reaches the path raw.
-ownedByHttp :: ResolverEnv -> Text -> Int -> IO (Either ResolverError OwnedNames)
+ownedByHttp :: ResolverEnv -> Text -> Word32 -> IO (Either ResolverError OwnedNames)
 ownedByHttp env addr offset =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
     <$> httpGet env ("/v2/owned-by/" <> B.unpack (urlEncode True (encodeUtf8 addr)) <> "?offset=" <> show offset)

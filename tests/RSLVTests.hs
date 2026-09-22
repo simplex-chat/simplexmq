@@ -119,7 +119,22 @@ rslvTests = do
 
 -- | /v2/resolve answers 200, 400 or 502, so a 404 is a resolver that predates
 -- the route, not a name that does not exist.
--- The scan reads inUse, so an account in use with no names must not arrive
+testRslvBackendNotFound :: IO ()
+testRslvBackendNotFound =
+  withResolverServer (status404, "{}") $
+    testSMPClient @TLS $ \h -> do
+      (corrId, _entId, resp) <- sendRslv h "rs01" (domain "ghost.simplex")
+      corrId `shouldBe` CorrId "rs01"
+      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
+
+testRslvBackendHttpErr :: IO ()
+testRslvBackendHttpErr =
+  withResolverServer (status502, "{}") $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendRslv h "rs05" (domain "alice.simplex")
+      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
+
+-- | The scan reads inUse, so an account in use with no names must not arrive
 -- looking the same as one that owns nothing.
 testRownOwned :: IO ()
 testRownOwned =
@@ -144,21 +159,6 @@ testRownUnsupported =
 
 ownedBody :: LB.ByteString
 ownedBody = "{\"address\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"names\":[{\"name\":\"alice.testing\",\"labelhash\":\"0x9c02\",\"expires\":1821603121,\"status\":\"registered\"}],\"inUse\":true,\"nextOffset\":null}"
-
-testRslvBackendNotFound :: IO ()
-testRslvBackendNotFound =
-  withResolverServer (status404, "{}") $
-    testSMPClient @TLS $ \h -> do
-      (corrId, _entId, resp) <- sendRslv h "rs01" (domain "ghost.simplex")
-      corrId `shouldBe` CorrId "rs01"
-      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
-
-testRslvBackendHttpErr :: IO ()
-testRslvBackendHttpErr =
-  withResolverServer (status502, "{}") $
-    testSMPClient @TLS $ \h -> do
-      (_, _, resp) <- sendRslv h "rs05" (domain "alice.simplex")
-      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
 
 testRslvDisabled :: IO ()
 testRslvDisabled =

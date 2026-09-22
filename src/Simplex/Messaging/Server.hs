@@ -88,6 +88,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
+import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Conc.Signal
@@ -103,14 +104,13 @@ import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Data.Word (Word32)
-import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, ownedNames, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types

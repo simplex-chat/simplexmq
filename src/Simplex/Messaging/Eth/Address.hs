@@ -32,12 +32,6 @@ instance Show Address where
   show = BC.unpack . checksumAddress
 
 -- | EIP-55 checksummed hex. Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
--- | On the wire the address is its EIP-55 hex, length-prefixed, so a field
--- following it is not swallowed by the hex parser.
-instance Encoding Address where
-  smpEncode = smpEncode . strEncode
-  smpP = strDecode <$?> smpP
-
 instance StrEncoding Address where
   strEncode = checksumAddress
   strP = do
@@ -55,6 +49,11 @@ instance StrEncoding Address where
       mixedCase body = BC.any isUpper letters && BC.any isLower letters
         where
           letters = BC.filter (not . isDigit) body
+
+-- | The EIP-55 hex, length-prefixed, so a field following it is not swallowed by the hex parser.
+instance Encoding Address where
+  smpEncode = smpEncode . strEncode
+  smpP = strDecode <$?> smpP
 
 addressSize :: Int
 addressSize = 20

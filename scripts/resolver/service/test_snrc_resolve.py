@@ -1125,6 +1125,12 @@ class OwnedByTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["error"], "badAddress")
 
+    def test_a_negative_offset_is_refused(self):
+        snrc.eth_call = self._chain(1, int(time.time()) + 86400)
+        status, body = snrc.owned_by(self.ADDR, -1)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badOffset")
+
     def test_no_configured_registrar_is_an_error_not_an_empty_answer(self):
         """An empty list would read as "this key owns nothing", which is the
         one answer a scan must not invent."""

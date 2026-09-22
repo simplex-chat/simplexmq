@@ -916,6 +916,13 @@ def owned_by(address: str, offset: int = 0):
             "message": "expected a 0x-prefixed 20-byte address",
         }
 
+    if offset < 0:
+        return 400, {
+            "address": address,
+            "error": "badOffset",
+            "message": "offset is a position in the listing",
+        }
+
     configured = {t: r for t, r in REGISTRARS.items() if r}
     if not configured:
         return 400, {

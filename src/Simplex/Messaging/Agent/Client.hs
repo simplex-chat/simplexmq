@@ -261,12 +261,12 @@ import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, EntitlementP
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Notifications.Client
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parse, sumTypeJSON)
-import Simplex.Messaging.Eth.Address (Address)
-import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Protocol
   ( AProtocolType (..),
     BrokerMsg,

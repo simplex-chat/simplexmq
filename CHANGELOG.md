@@ -7,6 +7,11 @@ Crypto:
   no chain writes; the resolver path remains read-only. See
   `plans/2026-08-05-eth-crypto-bindings.md`.
 
+SMP protocol:
+- `ROWN` command (v23): the names an address owns, and whether the account has
+  been used at all, so a recovered wallet seed can be scanned for the accounts
+  already in use.
+
 # 6.5.1
 
 Version 6.5.1.0
