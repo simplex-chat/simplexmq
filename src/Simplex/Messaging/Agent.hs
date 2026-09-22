@@ -1281,12 +1281,12 @@ deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -
 
 ownedSimplexNames' :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AM (SMPServer, OwnedNames)
 ownedSimplexNames' c nm userId used addr offset = do
-  srv <- getNextNameServerAvoiding c userId used
+  srv <- getNextNameServer c userId used
   (srv,) <$> ownedNames c nm userId srv addr offset
 
 resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
 resolveSimplexName' c nm userId domain = do
-  resolverSrv <- getNextNameServer c userId
+  resolverSrv <- getNextNameServer c userId []
   resolveName c nm userId resolverSrv domain
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()

@@ -890,24 +890,11 @@ def owned_by(address: str, offset: int = 0):
     """Every name an address holds, across every configured TLD, with the
     account's on-chain footprint.
 
-    Read off the ERC-721 registrar rather than from logs: the token is the
-    name, so `balanceOf` / `tokenOfOwnerByIndex` is the current answer and it
-    includes names acquired by transfer, which a scan of registration events
-    would miss. `labelOf` returns the plaintext label, recorded write-once at
-    registration, so no off-chain index is needed to turn a token id back into
-    a name.
-
-    Enumeration is deliberately not maintained on expiry, so a lapsed name
-    stays in the list until someone re-registers it. That is reported rather
-    than filtered: every entry carries `status`, using the same vocabulary as
-    /resolve, and a caller scanning a recovered key is exactly the caller who
-    needs to be told one of its names can still be renewed.
-
-    `inUse` answers the question a recovery scan actually asks - has this
-    account ever been used - which holding a name is only one way to be. An
-    account that was funded or ever sent a transaction is in use even with no
-    name, so the nonce and balance it is derived from are reported too: a scan
-    that gets this wrong hands out an account its owner is already using.
+    Enumeration is read off the ERC-721 registrar, so a name acquired by
+    transfer counts, and a lapsed one stays listed until re-registered - it is
+    reported with its `status`, not filtered. `inUse` is what a recovery scan
+    asks; holding a name is only one way to be in use, so the nonce and balance
+    it is derived from are reported too.
     """
     if not is_address(address):
         return 400, {

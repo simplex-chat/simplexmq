@@ -68,6 +68,17 @@ pingEndpoint NamesEnv {resolverEnv, config} =
 resolveName :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
 resolveName env q = resolverCall env $ fetch env q
 
+-- | Bound the call by the configured timeout, and report a raised exception as an error, leaving async exceptions alone.
+resolverCall :: NamesEnv -> IO (Either NameErrorType a) -> IO (Either NameErrorType a)
+resolverCall env a =
+  E.try (timeout (resolverTimeoutMs (config env) * 1000) a) >>= \case
+    Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
+    Left e
+      | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
+      | otherwise -> do
+          logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
+          pure (Left (RESOLVER "resolver error"))
+
 fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
 fetch NamesEnv {resolverEnv} q =
   first mapResolverError <$> resolveHttp resolverEnv (decodeLatin1 $ smpEncode q)
@@ -79,17 +90,6 @@ ownedNames env addr offset = resolverCall env $ fetchOwned env addr offset
 fetchOwned :: NamesEnv -> Address -> Word32 -> IO (Either NameErrorType OwnedNames)
 fetchOwned NamesEnv {resolverEnv} addr offset =
   first mapResolverError <$> ownedByHttp resolverEnv (decodeLatin1 $ strEncode addr) offset
-
--- | Bound the call by the configured timeout, and report a raised exception as an error, leaving async exceptions alone.
-resolverCall :: NamesEnv -> IO (Either NameErrorType a) -> IO (Either NameErrorType a)
-resolverCall env a =
-  E.try (timeout (resolverTimeoutMs (config env) * 1000) a) >>= \case
-    Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
-    Left e
-      | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
-      | otherwise -> do
-          logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
-          pure (Left (RESOLVER "resolver error"))
 
 mapResolverError :: ResolverError -> NameErrorType
 mapResolverError = \case

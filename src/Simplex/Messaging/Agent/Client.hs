@@ -71,7 +71,6 @@ module Simplex.Messaging.Agent.Client
     getQueueLink,
     resolveName,
     ownedNames,
-    getNextNameServerAvoiding,
     getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
@@ -260,9 +259,9 @@ import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..), BBSPublicKey)
 import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, EntitlementProof, generateEntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Names.Record (OwnedNames)
+import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
 import Simplex.Messaging.Notifications.Types
@@ -2042,32 +2041,20 @@ ownedNames c nm userId server addr offset =
     ownedViaProxy smp proxySess = proxyOwnedNames smp nm proxySess addr offset
     ownedDirectly smp = directOwnedNames smp nm addr offset
 
--- | A names-capable server the caller has not used yet. A scan asks about one
--- account per relay, because sending the whole list to one relay would tell it
--- those accounts belong to one wallet. With fewer relays than accounts the
--- choice wraps onto used ones, which is the best the configured set allows.
-getNextNameServerAvoiding :: AgentClient -> UserId -> [SMPServer] -> AM SMPServer
-getNextNameServerAvoiding c userId used =
-  liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
-    Just UserServers {nameSrvs} ->
-      let unused = filter ((`notElem` used) . protoServer . snd) nameSrvs
-       in case L.nonEmpty unused of
-            Just srvs -> protoServer <$> pickServer srvs
-            Nothing -> case L.nonEmpty nameSrvs of
-              Just srvs -> protoServer <$> pickServer srvs
-              Nothing -> throwE NO_NAME_SERVERS
-    Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
-
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means
 -- no server resolves names - a declared agent error, never a fallback.
-getNextNameServer :: AgentClient -> UserId -> AM SMPServer
-getNextNameServer c userId =
+-- Servers already used are avoided where the set allows: one relay asked about
+-- every account of a scan would learn they belong to one wallet.
+getNextNameServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServer
+getNextNameServer c userId usedSrvs =
   liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
     Just UserServers {nameSrvs} -> case L.nonEmpty nameSrvs of
-      Just srvs -> protoServer <$> pickServer srvs
+      Just srvs -> protoServer <$> pickServer (fromMaybe srvs $ L.nonEmpty $ L.filter (isUnusedServer usedHosts) srvs)
       Nothing -> throwE NO_NAME_SERVERS
     Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
+  where
+    usedHosts = S.unions $ map serverHosts usedSrvs
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =
