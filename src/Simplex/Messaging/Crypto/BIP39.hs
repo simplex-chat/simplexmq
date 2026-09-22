@@ -79,10 +79,10 @@ seedSize :: Int
 seedSize = 64
 
 validEntropySizes :: [Int]
-validEntropySizes = [16, 20, 24, 28, 32]
+validEntropySizes = map strengthBytes [minBound .. maxBound]
 
 validWordCounts :: [Int]
-validWordCounts = [12, 15, 18, 21, 24]
+validWordCounts = map strengthWordCount [minBound .. maxBound]
 
 -- Wordlist indexes
 
@@ -174,12 +174,7 @@ randomMnemonic s gVar = mnemonicFromIndexes . entropyToIndexes <$> C.randomBytes
 
 -- Internal
 
--- | Indexes must be in @[0, 2047]@; both call paths guarantee that (an 11-bit
--- mask, or a lookup in the wordlist itself). The default is the empty word so
--- that a violation would fail loudly downstream rather than silently produce a
--- different valid mnemonic.
+-- | Indexes are in @[0, 2047]@: an 11-bit mask, or a lookup in the wordlist itself.
 mnemonicFromIndexes :: [Int] -> Mnemonic
 mnemonicFromIndexes idxs =
-  Mnemonic {mnemonicIndexes = idxs, mnemonicWords = map wordAt idxs}
-  where
-    wordAt i = IM.findWithDefault "" i wordByIndex
+  Mnemonic {mnemonicIndexes = idxs, mnemonicWords = map (wordByIndex IM.!) idxs}

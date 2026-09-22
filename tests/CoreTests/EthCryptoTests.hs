@@ -190,6 +190,8 @@ bip32Tests = do
       B32.renderPath [hardened' 44, hardened' 60, hardened' 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
     it "round-trips render and parse" $
       B32.parsePath (B32.renderPath (ethereumPath 7 3)) `shouldBe` Right (ethereumPath 7 3)
+    it "renders an Ethereum path for an account and address" $
+      B32.renderPath (ethereumPath 7 3) `shouldBe` "m/44'/60'/7'/0/3"
     it "rejects a non-numeric component" $
       B32.parsePath "m/44x/60" `shouldSatisfy` isLeft
     it "rejects an index at the hardened boundary, saying so" $
