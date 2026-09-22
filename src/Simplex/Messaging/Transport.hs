@@ -178,6 +178,7 @@ smpBlockSize = 16384
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
 -- 22 - RNAME answers name availability as well as the record (7/25/2026)
+-- 23 - ROWN command, the names an address owns (9/22/2026)
 
 data SMPVersion
 

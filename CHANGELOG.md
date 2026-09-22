@@ -10,7 +10,7 @@ Crypto:
 SMP protocol:
 - `ROWN` command (v23): the names an address owns, and whether the account has
   been used at all, so a recovered wallet seed can be scanned for the accounts
-  already in use.
+  already in use. See `plans/2026-09-22-names-owned-by.md`.
 
 # 6.5.1
 
