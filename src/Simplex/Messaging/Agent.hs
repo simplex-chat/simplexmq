@@ -106,8 +106,8 @@ module Simplex.Messaging.Agent
     deleteConnection,
     deleteConnections,
     getConnectionServers,
-    getConnectionRatchetAdHash,
-    getConnectionsRatchetAdHashes,
+    getConnectionVerifyCodes,
+    getConnectionsVerifyCodes,
     setProtocolServers,
     setUserEntitlement,
     checkUserServers,
@@ -485,12 +485,12 @@ changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConne
 -- the caller of joinConnection saves connection ID to the database.
 -- Instead of it we could send confirmation asynchronously, but then it would be harder to report
 -- "link deleted" (SMP AUTH) interactively, so this approach is simpler overall.
-prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE (ConnId, ConnAdHash)
+prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE (ConnId, ConnVerifyCodes)
 prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs Nothing
 {-# INLINE prepareConnectionToJoin #-}
 
 -- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
-prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> InvitationId -> PQSupport -> AE (ConnId, ConnAdHash)
+prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> InvitationId -> PQSupport -> AE (ConnId, ConnVerifyCodes)
 prepareConnectionToAccept c userId enableNtfs = withAgentEnv c .: newConnToAccept c userId "" enableNtfs
 {-# INLINE prepareConnectionToAccept #-}
 
@@ -674,13 +674,13 @@ getConnectionServers c = withAgentEnv c . getConnectionServers' c
 {-# INLINE getConnectionServers #-}
 
 -- | get connection ratchet associated data hash for verification (should match peer AD hash)
-getConnectionRatchetAdHash :: AgentClient -> ConnId -> AE ConnAdHash
-getConnectionRatchetAdHash c = withAgentEnv c . getConnectionRatchetAdHash' c
-{-# INLINE getConnectionRatchetAdHash #-}
+getConnectionVerifyCodes :: AgentClient -> ConnId -> AE ConnVerifyCodes
+getConnectionVerifyCodes c = withAgentEnv c . getConnectionVerifyCodes' c
+{-# INLINE getConnectionVerifyCodes #-}
 
-getConnectionsRatchetAdHashes :: AgentClient -> [ConnId] -> AE (Map ConnId ConnAdHash)
-getConnectionsRatchetAdHashes c = withAgentEnv c . getConnectionsRatchetAdHashes' c
-{-# INLINE getConnectionsRatchetAdHashes #-}
+getConnectionsVerifyCodes :: AgentClient -> [ConnId] -> AE (Map ConnId ConnVerifyCodes)
+getConnectionsVerifyCodes c = withAgentEnv c . getConnectionsVerifyCodes' c
+{-# INLINE getConnectionsVerifyCodes #-}
 
 -- | Test protocol server
 testProtocolServer :: forall p. ProtocolTypeI p => AgentClient -> NetworkRequestMode -> UserId -> ProtoServerWithAuth p -> IO (Either ProtocolTestFailure (Maybe (Either String ServerPublicInfo)))
@@ -1380,7 +1380,7 @@ newQueueNtfSubscription c RcvQueue {userId, connId, server, clientNtfCreds} ntfS
   ns <- asks ntfSupervisor
   liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
 
-newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Maybe UTCTime -> ConnectionRequestUri c -> PQSupport -> AM (ConnId, ConnAdHash)
+newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Maybe UTCTime -> ConnectionRequestUri c -> PQSupport -> AM (ConnId, ConnVerifyCodes)
 newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport = case cReq of
   CRInvitationUri {} ->
     lift (compatibleInvitationUri cReq) >>= \case
@@ -1392,7 +1392,7 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
     lift (compatibleContactUri cReq) >>= \case
       Just (_, ratchet_, aVersion) -> do
         connId' <- create aVersion
-        adHash <- case ratchet_ of
+        codes <- case ratchet_ of
           Just (_, Compatible e2eParams) -> createRatchet e2eParams connId'
           Nothing -> do
             g <- asks random
@@ -1400,8 +1400,8 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
             let pqEnc = CR.initialPQEncryption False $ CR.joinContactInitialKeys pqSupport
             (pks, CR.E2ERatchetParams _ k1 k2 kem_) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
             withStore' c $ \db -> createRatchetX3dhKeys db connId' pks
-            pure $ requestAdHash k1 k2 kem_ senderId
-        pure (connId', adHash)
+            pure $ requestVerifyCodes k1 k2 kem_ senderId
+        pure (connId', codes)
       Nothing -> throwE $ AGENT A_VERSION
   where
     create :: Compatible VersionSMPA -> AM ConnId
@@ -1409,26 +1409,25 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
       g <- asks random
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
-    createRatchet :: CR.RcvE2ERatchetParams 'C.X448 -> ConnId -> AM ConnAdHash
+    createRatchet :: CR.RcvE2ERatchetParams 'C.X448 -> ConnId -> AM ConnVerifyCodes
     createRatchet e2eRcvParams connId' = do
       g <- asks random
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
       rc <- withStore c $ \db -> runExceptT $ fst <$> createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams
-      pure $ ratchetAdHash rc
+      pure $ ratchetVerifyCodes rc
 
-ratchetAdHash :: CR.RatchetX448 -> ConnAdHash
-ratchetAdHash CR.Ratchet {rcAD = Str rcAD} = ConnAdHash $ C.sha256Hash rcAD
+-- request to the address without ratchet keys has no ratchet until the request is accepted,
+-- so its code is computed from the request keys and the address queue ID
+requestVerifyCodes :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ConnVerifyCodes
+requestVerifyCodes k1 k2 kem_ sndId =
+  ConnVerifyCodes {codeAD = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2 <> maybe "" smpEncode kem_ <> SMP.unEntityId sndId, codePQ = Nothing}
 
-requestAdHash :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ConnAdHash
-requestAdHash k1 k2 kem_ sndId =
-  ConnAdHash $ C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2 <> maybe "" smpEncode kem_ <> SMP.unEntityId sndId
-
-newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> PQSupport -> AM (ConnId, ConnAdHash)
+newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> PQSupport -> AM (ConnId, ConnVerifyCodes)
 newConnToAccept c userId connId enableNtfs invId pqSup = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   case connReq of
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs Nothing cReq pqSup
-    CRInvitationDR dr@DRInvitation {ratchetState} -> (\ConnData {connId = connId'} -> (connId', ratchetAdHash ratchetState)) <$> newConnToAcceptDR c userId connId dr enableNtfs
+    CRInvitationDR dr@DRInvitation {ratchetState} -> (\ConnData {connId = connId'} -> (connId', ratchetVerifyCodes ratchetState)) <$> newConnToAcceptDR c userId connId dr enableNtfs
 
 newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnData
 newConnToAcceptDR c userId connId DRInvitation {agentVersion, pqSupport} enableNtfs = do
@@ -3025,13 +3024,12 @@ getConnectionServers' c connId = do
   SomeConn _ conn <- withStore c (`getConn` connId)
   connectionStats c conn
 
-getConnectionRatchetAdHash' :: AgentClient -> ConnId -> AM ConnAdHash
-getConnectionRatchetAdHash' c connId =
-  getConnectionsRatchetAdHashes' c [connId] >>= maybe (throwE $ CONN NOT_FOUND "") pure . M.lookup connId
+getConnectionVerifyCodes' :: AgentClient -> ConnId -> AM ConnVerifyCodes
+getConnectionVerifyCodes' c connId =
+  getConnectionsVerifyCodes' c [connId] >>= maybe (throwE $ CONN NOT_FOUND "") pure . M.lookup connId
 
-getConnectionsRatchetAdHashes' :: AgentClient -> [ConnId] -> AM (Map ConnId ConnAdHash)
-getConnectionsRatchetAdHashes' c connIds =
-  M.map (ConnAdHash . C.sha256Hash . fst) <$> withStore' c (`getRatchetADs` connIds)
+getConnectionsVerifyCodes' :: AgentClient -> [ConnId] -> AM (Map ConnId ConnVerifyCodes)
+getConnectionsVerifyCodes' c connIds = withStore' c (`getRatchetVerifyCodes` connIds)
 
 connectionStats :: AgentClient -> Connection c -> AM ConnectionStats
 connectionStats c = \case
@@ -4086,7 +4084,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 -- show connection request even if invitaion via contact address is not compatible.
                 invId <- storeInvitation (CRInvitation connReq) cInfo False
                 let srvs = L.map qServer $ crSmpQueues crData
-                notify $ REQ invId PQSupportOn srvs cInfo (requestAdHash k1 k2 kem_ sndId) False
+                notify $ REQ invId PQSupportOn srvs cInfo (requestVerifyCodes k1 k2 kem_ sndId) False
               _ -> prohibited "inv: sent to message conn"
 
           storeInvitation :: ContactRequest -> ConnInfo -> Bool -> AM InvitationId
@@ -4113,7 +4111,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                           parseMessage "3" agentMsgBody >>= \case
                             AgentConnInfoReply (replyQueue :| _) cInfo -> do
                               invId <- storeInvitation (CRInvitationDR $ mkDR replyQueue) cInfo False
-                              notify $ REQ invId PQSupportOn (qServer replyQueue :| []) cInfo (ratchetAdHash ratchetState) True
+                              notify $ REQ invId PQSupportOn (qServer replyQueue :| []) cInfo (ratchetVerifyCodes ratchetState) True
                             AgentServiceRequest (replyQueue :| _) sig_ payload ->
                               case verifyServiceReq rc payload sig_ of
                                 Left err -> logError ("service request: " <> T.pack err) >> notify (ERR $ AGENT $ A_SERVICE ASEBadSignature)

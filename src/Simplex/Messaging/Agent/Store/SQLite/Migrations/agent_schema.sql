@@ -183,8 +183,8 @@ CREATE TABLE ratchets(
   x3dh_pub_key_2 BLOB,
   pq_priv_kem BLOB,
   pq_pub_kem BLOB,
-  ratchet_ad BLOB,
-  ratchet_ad_pq BLOB
+  rc_verify_code_ad BLOB,
+  rc_verify_code_pq BLOB
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE skipped_messages(
   skipped_message_id INTEGER PRIMARY KEY,

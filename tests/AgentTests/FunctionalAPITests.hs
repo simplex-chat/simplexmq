@@ -581,9 +581,9 @@ functionalAPITests ps = do
       it "should pass with correct password" $ testSMPServerConnectionTest ps auth (srv auth) `shouldReturn` Right (Just (Right testServerInformation))
       it "should fail without password" $ testSMPServerConnectionTest ps auth (srv Nothing) `shouldReturn` Left authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest ps auth (srv $ Just "wrong") `shouldReturn` Left authErr
-  describe "getRatchetAdHash" $
-    it "should return the same data for both peers" $
-      withSmpServer ps testRatchetAdHash
+  describe "getConnectionVerifyCodes" $
+    it "should return the same codes for both peers" $
+      withSmpServer ps testConnectionVerifyCodes
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
@@ -4023,21 +4023,23 @@ testServerInformation =
       serverCountry = Nothing
     }
 
-testRatchetAdHash :: HasCallStack => IO ()
-testRatchetAdHash =
+testConnectionVerifyCodes :: HasCallStack => IO ()
+testConnectionVerifyCodes =
   withAgentClients2 $ \a b -> runRight_ $ do
     (aId, bId) <- makeConnection a b
-    ad1 <- getConnectionRatchetAdHash a bId
-    ad2 <- getConnectionRatchetAdHash b aId
-    liftIO $ ad1 `shouldBe` ad2
-    -- a ratchet created before the column was added has it computed from the ratchet state and saved
+    codes1 <- getConnectionVerifyCodes a bId
+    codes2 <- getConnectionVerifyCodes b aId
+    liftIO $ do
+      codes1 `shouldBe` codes2
+      codePQ codes1 `shouldNotBe` Nothing
+    -- codes of a ratchet created before the columns were added are computed from the ratchet state and saved
     liftIO $ withTransaction (store $ agentEnv a) $ \db ->
-      DB.execute_ db "UPDATE ratchets SET ratchet_ad = NULL, ratchet_ad_pq = NULL"
-    ad1' <- getConnectionRatchetAdHash a bId
-    liftIO $ ad1' `shouldBe` ad1
-    ads <- liftIO $ withTransaction (store $ agentEnv a) $ \db ->
-      DB.query_ db "SELECT ratchet_ad IS NOT NULL, ratchet_ad_pq IS NOT NULL FROM ratchets"
-    liftIO $ map (bimap DB.unBI DB.unBI) ads `shouldBe` [(True, True)]
+      DB.execute_ db "UPDATE ratchets SET rc_verify_code_ad = NULL, rc_verify_code_pq = NULL"
+    codes1' <- getConnectionVerifyCodes a bId
+    liftIO $ codes1' `shouldBe` codes1
+    saved <- liftIO $ withTransaction (store $ agentEnv a) $ \db ->
+      DB.query_ db "SELECT rc_verify_code_ad IS NOT NULL, rc_verify_code_pq IS NOT NULL FROM ratchets"
+    liftIO $ map (bimap DB.unBI DB.unBI) saved `shouldBe` [(True, True)]
 
 testDeliveryReceipts :: HasCallStack => IO ()
 testDeliveryReceipts =

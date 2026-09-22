@@ -166,7 +166,7 @@ module Simplex.Messaging.Agent.Protocol
     ConnId,
     ConfirmationId,
     InvitationId,
-    ConnAdHash (..),
+    ConnVerifyCodes (..),
     MsgIntegrity (..),
     MsgErrorType (..),
     QueueStatus (..),
@@ -405,7 +405,7 @@ data AEvent (e :: AEntity) where
   LINK :: ConnShortLink 'CMContact -> UserConnLinkData 'CMContact -> AEvent AEConn
   LDATA :: FixedLinkData 'CMContact -> ConnLinkData 'CMContact -> ConnectionRequestUri 'CMContact -> AEvent AEConn
   CONF :: ConfirmationId -> PQSupport -> [SMPServer] -> ConnInfo -> AEvent AEConn -- ConnInfo is from sender, [SMPServer] will be empty only in v1 handshake
-  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> ConnAdHash -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
+  REQ :: InvitationId -> PQSupport -> NonEmpty SMPServer -> ConnInfo -> ConnVerifyCodes -> Bool -> AEvent AEConn -- ConnInfo is from sender; Bool - rejection reason can be sent
   SREQ :: InvitationId -> Maybe C.PublicKeyEd25519 -> MsgBody -> AEvent AEConn
   SSENT :: AgentMsgId -> Maybe SMPServer -> AEvent AEConn
   RJCT :: ConnInfo -> AEvent AEConn
@@ -1373,7 +1373,14 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
-newtype ConnAdHash = ConnAdHash {unConnAdHash :: ByteString}
+-- connection verification codes, compared by the users out-of-band,
+-- also used by the clients to bind presented credentials to the connection.
+-- codeAD is derived from the ratchet associated data (the first handshake key of each party),
+-- codePQ from the same key agreement as the ratchet keys, so it covers all handshake keys
+data ConnVerifyCodes = ConnVerifyCodes
+  { codeAD :: ByteString,
+    codePQ :: Maybe ByteString
+  }
   deriving (Eq, Show)
 
 extraSMPServerHosts :: Map TransportHost TransportHost

@@ -165,7 +165,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchet,
     deleteRatchet,
     getRatchet,
-    getRatchetADs,
+    getRatchetVerifyCodes,
+    ratchetVerifyCodes,
     getRatchetForUpdate,
     getSkippedMsgKeys,
     updateRatchet,
@@ -1477,11 +1478,11 @@ createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetPa
     db
     [sql|
       INSERT INTO ratchets
-        (conn_id, ratchet_state, ratchet_ad, ratchet_ad_pq, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?, ?, ?)
+        (conn_id, ratchet_state, rc_verify_code_ad, rc_verify_code_pq, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = EXCLUDED.ratchet_state,
-        ratchet_ad = EXCLUDED.ratchet_ad,
-        ratchet_ad_pq = EXCLUDED.ratchet_ad_pq,
+        rc_verify_code_ad = EXCLUDED.rc_verify_code_ad,
+        rc_verify_code_pq = EXCLUDED.rc_verify_code_pq,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = EXCLUDED.x3dh_pub_key_1,
@@ -1489,10 +1490,13 @@ createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetPa
         pq_priv_kem = NULL,
         pq_pub_kem = EXCLUDED.pq_pub_kem
     |]
-    ((connId, ratchetState) :. ratchetADs ratchetState :. (x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem))
+    ((connId, ratchetState) :. verifyCodesRow (ratchetVerifyCodes ratchetState) :. (x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem))
 
-ratchetADs :: RatchetX448 -> (Binary ByteString, Maybe (Binary ByteString))
-ratchetADs CR.Ratchet {rcAD = Str ad, rcADPQ} = (Binary ad, Binary . unStr <$> rcADPQ)
+ratchetVerifyCodes :: RatchetX448 -> ConnVerifyCodes
+ratchetVerifyCodes CR.Ratchet {rcAD = Str ad, rcVCPQ} = ConnVerifyCodes {codeAD = C.sha256Hash ad, codePQ = unStr <$> rcVCPQ}
+
+verifyCodesRow :: ConnVerifyCodes -> (Binary ByteString, Maybe (Binary ByteString))
+verifyCodesRow ConnVerifyCodes {codeAD, codePQ} = (Binary codeAD, Binary <$> codePQ)
 
 getSndRatchet :: DB.Connection -> ConnId -> CR.VersionE2E -> IO (Either StoreError (RatchetX448, CR.AE2ERatchetParams 'C.X448))
 getSndRatchet db connId v =
@@ -1513,12 +1517,12 @@ createRatchet db connId rc =
   DB.execute
     db
     [sql|
-      INSERT INTO ratchets (conn_id, ratchet_state, ratchet_ad, ratchet_ad_pq)
+      INSERT INTO ratchets (conn_id, ratchet_state, rc_verify_code_ad, rc_verify_code_pq)
       VALUES (?, ?, ?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = EXCLUDED.ratchet_state,
-        ratchet_ad = EXCLUDED.ratchet_ad,
-        ratchet_ad_pq = EXCLUDED.ratchet_ad_pq,
+        rc_verify_code_ad = EXCLUDED.rc_verify_code_ad,
+        rc_verify_code_pq = EXCLUDED.rc_verify_code_pq,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = NULL,
@@ -1526,32 +1530,33 @@ createRatchet db connId rc =
         pq_priv_kem = NULL,
         pq_pub_kem = NULL
     |]
-    ((connId, rc) :. ratchetADs rc)
+    ((connId, rc) :. verifyCodesRow (ratchetVerifyCodes rc))
 
-getRatchetADs :: DB.Connection -> [ConnId] -> IO (Map ConnId (ByteString, Maybe ByteString))
-getRatchetADs db connIds = do
+-- ratchet state is only read for the connections where the codes were not saved, and they are saved on read
+getRatchetVerifyCodes :: DB.Connection -> [ConnId] -> IO (Map ConnId ConnVerifyCodes)
+getRatchetVerifyCodes db connIds = do
   rows <- concat <$> mapM (select . L.toList) (toChunks 500 connIds)
-  let ads = mapMaybe rowADs rows
-      backfill = [(Binary ad, Binary <$> adPQ, connId) | (connId, (ad, adPQ), True) <- ads]
-  unless (null backfill) $
-    DB.executeMany db "UPDATE ratchets SET ratchet_ad = ?, ratchet_ad_pq = ? WHERE conn_id = ?" backfill
-  pure $ M.fromList [(connId, ad) | (connId, ad, _) <- ads]
+  let codes = mapMaybe rowCodes rows
+      saveCodes = [verifyCodesRow cs :. Only connId | (connId, cs, True) <- codes]
+  unless (null saveCodes) $
+    DB.executeMany db "UPDATE ratchets SET rc_verify_code_ad = ?, rc_verify_code_pq = ? WHERE conn_id = ?" saveCodes
+  pure $ M.fromList [(connId, cs) | (connId, cs, _) <- codes]
   where
     select :: [ConnId] -> IO [(ConnId, Maybe (Binary ByteString), Maybe (Binary ByteString), Maybe RatchetX448)]
     select ids =
 #if defined(dbPostgres)
-      DB.query db (ratchetADsQuery <> " IN ?") (Only (In ids))
+      DB.query db (verifyCodesQuery <> " IN ?") (Only (In ids))
 #else
-      DB.query db (ratchetADsQuery <> " IN (" <> fromString (intercalate "," (replicate (length ids) "?")) <> ")") ids
+      DB.query db (verifyCodesQuery <> " IN (" <> fromString (intercalate "," (replicate (length ids) "?")) <> ")") ids
 #endif
-    rowADs (connId, ad_, adPQ_, rc_) = case (ad_, rc_) of
-      (Just (Binary ad), _) -> Just (connId, (ad, unBinary <$> adPQ_), False)
-      (Nothing, Just rc) -> let (Binary ad, adPQ) = ratchetADs rc in Just (connId, (ad, unBinary <$> adPQ), True)
+    rowCodes (connId, codeAD_, codePQ_, rc_) = case (codeAD_, rc_) of
+      (Just (Binary codeAD), _) -> Just (connId, ConnVerifyCodes {codeAD, codePQ = unBinary <$> codePQ_}, False)
+      (Nothing, Just rc) -> Just (connId, ratchetVerifyCodes rc, True)
       (Nothing, Nothing) -> Nothing
     unBinary (Binary b) = b
 
-ratchetADsQuery :: Query
-ratchetADsQuery = "SELECT conn_id, ratchet_ad, ratchet_ad_pq, CASE WHEN ratchet_ad IS NULL THEN ratchet_state END FROM ratchets WHERE conn_id"
+verifyCodesQuery :: Query
+verifyCodesQuery = "SELECT conn_id, rc_verify_code_ad, rc_verify_code_pq, CASE WHEN rc_verify_code_ad IS NULL THEN ratchet_state END FROM ratchets WHERE conn_id"
 
 deleteRatchet :: DB.Connection -> ConnId -> IO ()
 deleteRatchet db connId =
