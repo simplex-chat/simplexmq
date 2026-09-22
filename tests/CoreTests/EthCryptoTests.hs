@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Tests for the Ethereum crypto primitives: secp256k1, BIP-39, BIP-32,
 -- Keccak-256, EIP-55 and EIP-712.
@@ -26,9 +27,8 @@ import qualified Simplex.Messaging.Crypto.BIP39 as B39
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Eth.Address
-import Simplex.Messaging.Eth.EIP712
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Keccak (keccak256)
-import Simplex.Messaging.Eth.Stealth
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -40,8 +40,6 @@ ethCryptoTests = do
   describe "BIP-32" bip32Tests
   describe "BIP-44 derivation" derivationTests
   describe "EIP-55 addresses" eip55Tests
-  describe "EIP-712 typed data" eip712Tests
-  describe "ERC-5564 stealth addresses" stealthTests
 
 -- helpers
 
@@ -71,45 +69,28 @@ secp256k1Tests :: Spec
 secp256k1Tests = do
   it "derives the known address for a known key" $
     show (addressFromPrivateKey testKey) `shouldBe` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
-  -- cross-checked against an independent RFC-6979 implementation, so this pins
-  -- interoperability rather than our own output
-  it "signs deterministically (RFC 6979)" $ do
-    toHex (S.rsCompact testSig)
-      `shouldBe` "51a4302323b42bae74eab7dc05d46141492eb44e37d24b5bd1f922225da8fc512bbf35fea4a63077fe5220fcdcadc56016c402462f5021d5b80bacd8b84bbdec"
-    S.rsRecId testSig `shouldBe` 0
-  it "produces low-s signatures (EIP-2)" $
-    S.isLowS testSig `shouldBe` True
-  it "recovers the signing key" $
-    right (S.recoverPublicKey testSig testDigest) `shouldBe` S.secp256k1PublicKey testKey
-  it "does not recover the signing key from another digest" $
-    S.recoverPublicKey testSig (keccak256 "SimpleX names ") `shouldNotBe` Right (S.secp256k1PublicKey testKey)
-  it "round-trips a compressed public key" $ do
+  it "serializes a public key in both SEC1 forms" $ do
     let pk = S.secp256k1PublicKey testKey
-        ser = S.serializePublicKey S.Compressed pk
-    B.length ser `shouldBe` 33
-    S.parsePublicKey ser `shouldBe` Right pk
-  it "round-trips an uncompressed public key" $ do
-    let pk = S.secp256k1PublicKey testKey
-        ser = S.serializePublicKey S.Uncompressed pk
-    B.length ser `shouldBe` 65
-    S.parsePublicKey ser `shouldBe` Right pk
+        comp = S.serializePublicKey S.Compressed pk
+        uncomp = S.serializePublicKey S.Uncompressed pk
+    B.length comp `shouldBe` 33
+    B.length uncomp `shouldBe` 65
+    B.head uncomp `shouldBe` 0x04
+    B.head comp `shouldSatisfy` (`elem` [0x02, 0x03])
+    -- both forms carry the same x, and the compressed prefix is y's parity
+    B.take 32 (B.drop 1 uncomp) `shouldBe` B.drop 1 comp
+    B.head comp `shouldBe` (if odd (B.last uncomp) then 0x03 else 0x02)
   it "rejects a zero private key" $
     isLeft (S.mkPrivateKey (B.replicate 32 0)) `shouldBe` True
   it "rejects a private key at the group order" $
     isLeft (S.mkPrivateKey (hx "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")) `shouldBe` True
   it "rejects a short private key" $
     isLeft (S.mkPrivateKey (B.replicate 31 1)) `shouldBe` True
-  it "rejects a digest that is not 32 bytes" $
-    S.signRecoverable testKey (B.replicate 31 0) `shouldSatisfy` isLeft
-  it "rejects a malformed public key" $
-    S.parsePublicKey (B.replicate 33 0) `shouldSatisfy` isLeft
   it "adds a tweak to a private key" $
     (toHex . S.unPrivateKey <$> S.privateKeyTweakAdd testKey (B.replicate 31 0 <> B.singleton 1))
       `shouldBe` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
   where
     testKey = right $ S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
-    testDigest = keccak256 "SimpleX names"
-    testSig = right $ S.signRecoverable testKey testDigest
 
 bip39Tests :: Spec
 bip39Tests = do
@@ -179,29 +160,11 @@ bip32Tests = do
     B32.masterKey (B.replicate 65 1) `shouldSatisfy` isLeft
   it "redacts the extended key in Show" $
     show master2 `shouldBe` "ExtendedKey <redacted>"
-  describe "path parsing" $ do
-    it "parses a BIP-44 path" $
-      B32.parsePath "m/44'/60'/0'/0/0" `shouldBe` Right [hardened' 44, hardened' 60, hardened' 0, 0, 0]
-    it "accepts h as the hardened marker" $
-      B32.parsePath "m/44h/60h/2h/0/1" `shouldBe` Right [hardened' 44, hardened' 60, hardened' 2, 0, 1]
-    it "accepts a path without the leading m" $
-      B32.parsePath "44'/60'" `shouldBe` Right [hardened' 44, hardened' 60]
+  describe "path rendering" $ do
     it "renders a path" $
       B32.renderPath [hardened' 44, hardened' 60, hardened' 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
-    it "round-trips render and parse" $
-      B32.parsePath (B32.renderPath (ethereumPath 7 3)) `shouldBe` Right (ethereumPath 7 3)
     it "renders an Ethereum path for an account and address" $
       B32.renderPath (ethereumPath 7 3) `shouldBe` "m/44'/60'/7'/0/3"
-    it "rejects a non-numeric component" $
-      B32.parsePath "m/44x/60" `shouldSatisfy` isLeft
-    it "rejects an index at the hardened boundary, saying so" $
-      B32.parsePath "m/2147483648" `shouldBe` Left "Failed reading: path: index out of range: 2147483648"
-    it "rejects a path that ends at the separator" $
-      B32.parsePath "m/" `shouldBe` Left "Failed reading: path: empty component"
-    it "rejects an index glued to the leading m" $
-      B32.parsePath "m44" `shouldBe` Left "Failed reading: path: bad component m44"
-    it "accepts a leading slash" $
-      B32.parsePath "/44'/60" `shouldBe` Right [hardened' 44, 60]
   where
     master1 = right $ B32.masterKey (hx "000102030405060708090a0b0c0d0e0f")
     master2 =
@@ -264,35 +227,33 @@ eip55Tests = do
   describe "spec vectors round-trip" $
     forM_ specAddresses $ \a ->
       it (BC.unpack a) $
-        BC.pack (show . right $ parseAddress a) `shouldBe` a
+        BC.pack (show . right $ strDecode @Address a) `shouldBe` a
   it "accepts an all-lowercase address" $
-    parseAddress "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
+    strDecode @Address "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
   it "accepts an all-uppercase address" $
-    parseAddress "0x5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED" `shouldSatisfy` isRight
+    strDecode @Address "0x5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED" `shouldSatisfy` isRight
   it "accepts an address without the 0x prefix" $
-    parseAddress "5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
+    strDecode @Address "5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
   it "rejects a bad EIP-55 checksum" $
-    parseAddress "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed" `shouldSatisfy` isLeft
+    strDecode @Address "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed" `shouldSatisfy` isLeft
   it "rejects the wrong length" $
-    parseAddress "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe" `shouldSatisfy` isLeft
+    strDecode @Address "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe" `shouldSatisfy` isLeft
   it "rejects non-hex characters" $
-    parseAddress "0xZaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
+    strDecode @Address "0xZaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
       `shouldBe` Left "Failed reading: address: expected 40 hex digits, got 0"
-  it "rejects raw bytes of the wrong length" $
-    mkAddress (B.replicate 19 0) `shouldSatisfy` isLeft
   -- Between them these cover every byte value 0x00..0xff going out through the
   -- hex encoder, and every hex digit coming back through the decoder - which
   -- the four spec vectors above do not.
   it "round-trips every byte value through the checksummed form" $
     forM_ everyByteAddresses $ \a ->
-      parseAddress (checksumAddress a) `shouldBe` Right a
+      strDecode (strEncode a) `shouldBe` Right a
   it "round-trips every byte value through the lowercase form" $
     forM_ everyByteAddresses $ \a ->
-      parseAddress (BC.map toLower (checksumAddress a)) `shouldBe` Right a
+      strDecode (BC.map toLower (strEncode a)) `shouldBe` Right a
   where
     -- 13 x 20 = 260 bytes, so every value 0x00..0xff appears at least once
     everyByteAddresses =
-      [ right . mkAddress . B.pack $
+      [ right . strDecode @Address . ("0x" <>) . toHex . B.pack $
           [fromIntegral ((i * 20 + j) `mod` 256) | j <- [0 .. 19 :: Int]]
         | i <- [0 .. 12 :: Int]
       ]
@@ -303,60 +264,6 @@ eip55Tests = do
         "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
       ]
 
-eip712Tests :: Spec
-eip712Tests = do
-  it "computes the spec domain separator" $
-    toHex (right $ domainSeparator domain) `shouldBe` "f2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f"
-  it "computes hashStruct for the Mail example" $
-    toHex mailHash `shouldBe` "c52c0ee5d84264471806290a3f2c4cecfc5490626bf912d01f240d7a274b371e"
-  it "computes the final signing digest" $
-    toHex (right $ hashTypedData domain mailType mailMembers)
-      `shouldBe` "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2"
-  it "encodes a bool" $
-    toHex (right $ encodeValue (VBool True)) `shouldBe` "0000000000000000000000000000000000000000000000000000000000000001"
-  it "encodes a negative int as two's complement" $
-    toHex (right $ encodeValue (VInt (-1))) `shouldBe` "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-  it "left-aligns bytesN" $
-    toHex (right $ encodeValue (VFixedBytes "\x01\x02")) `shouldBe` "0102000000000000000000000000000000000000000000000000000000000000"
-  it "right-aligns an address" $
-    toHex (right . encodeValue . VAddress . right $ parseAddress "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC")
-      `shouldBe` "000000000000000000000000cccccccccccccccccccccccccccccccccccccccc"
-  it "hashes an array to a single word" $
-    toHex (right $ encodeValue (VArray [VUint 1, VUint 2]))
-      `shouldBe` "e90b7bceb6e7df5418fb78d8ee546e97c83a08bbccc01a0644d599ccd2a7c2e0"
-  it "rejects a uint above 2^256" $
-    encodeValue (VUint (2 ^ (256 :: Int))) `shouldSatisfy` isLeft
-  it "rejects a negative uint" $
-    encodeValue (VUint (-1)) `shouldSatisfy` isLeft
-  it "rejects an int outside int256" $
-    encodeValue (VInt (2 ^ (255 :: Int))) `shouldSatisfy` isLeft
-  it "rejects bytesN longer than 32" $
-    encodeValue (VFixedBytes (B.replicate 33 0)) `shouldSatisfy` isLeft
-  it "rejects empty bytesN" $
-    encodeValue (VFixedBytes "") `shouldSatisfy` isLeft
-  it "rejects a struct hash that is not 32 bytes" $
-    encodeValue (VStruct "short") `shouldSatisfy` isLeft
-  where
-    domain =
-      Eip712Domain
-        { edName = "Ether Mail",
-          edVersion = "1",
-          edChainId = 1,
-          edVerifyingContract = right $ parseAddress "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"
-        }
-    personType = "Person(string name,address wallet)"
-    mailType = "Mail(Person from,Person to,string contents)Person(string name,address wallet)"
-    person n w = right $ hashStruct personType [VString n, VAddress (right $ parseAddress w)]
-    mailMembers =
-      [ VStruct $ person "Cow" "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826",
-        VStruct $ person "Bob" "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB",
-        VString "Hello, Bob!"
-      ]
-    mailHash = right $ hashStruct mailType mailMembers
-
--- | Official BIP-39 English test vectors from
--- <https://github.com/trezor/python-mnemonic/blob/master/vectors.json>,
--- all generated with the passphrase @TREZOR@: (entropy, mnemonic, seed).
 bip39Vectors :: [(ByteString, ByteString, ByteString)]
 bip39Vectors =
   [ ( "00000000000000000000000000000000",
@@ -432,105 +339,3 @@ bip39Vectors =
       "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold",
       "01f5bced59dec48e362f2c45b5de68b9fd6c92c6634f44d6d40aab69056506f0e35524a518034ddc1192e1dacd32c1ed3eaa3c3b131c88ed8e7e54c49a5d0998" )
   ]
-
--- ERC-5564 stealth addresses.
---
--- The EIP fixes the algebra but not the serialization or the hash, so the
--- pinned vector below is the interoperability contract: it follows the EIP
--- author's reference implementation (keccak256 over the shared secret point as
--- x||y, view tag = first byte). Anything that changes it breaks compatibility
--- with every other ERC-5564 wallet, which is why it is pinned rather than
--- computed.
-stealthTests :: Spec
-stealthTests = do
-  it "sender and recipient derive the same address" $ do
-    let d = right $ stealthDestination ephemeralKey aliceMeta
-    right (stealthMatch aliceView (smaSpend aliceMeta) (sdEphemeralPubKey d) (sdViewTag d))
-      `shouldBe` Just (sdAddress d)
-
-  it "the recipient's derived key controls that address" $ do
-    let d = right $ stealthDestination ephemeralKey aliceMeta
-        sk = right $ stealthPrivateKey aliceSpend aliceView (sdEphemeralPubKey d)
-    addressFromPrivateKey sk `shouldBe` sdAddress d
-
-  it "the derived key actually signs for it" $ do
-    let d = right $ stealthDestination ephemeralKey aliceMeta
-        sk = right $ stealthPrivateKey aliceSpend aliceView (sdEphemeralPubKey d)
-        digest = keccak256 "transfer"
-        sig = right $ S.signRecoverable sk digest
-    addressFromPublicKey (right $ S.recoverPublicKey sig digest) `shouldBe` sdAddress d
-
-  it "the view tag is the first byte of the hashed shared secret" $ do
-    let d = right $ stealthDestination ephemeralKey aliceMeta
-        sh = right $ sharedSecretHash aliceView (right . S.parsePublicKey $ sdEphemeralPubKey d)
-    sdViewTag d `shouldBe` B.head sh
-
-  it "a different ephemeral key gives an unrelated address" $ do
-    let d1 = right $ stealthDestination ephemeralKey aliceMeta
-        d2 = right $ stealthDestination ephemeralKey2 aliceMeta
-    sdAddress d1 `shouldNotBe` sdAddress d2
-
-  it "the viewing key alone does not spend" $ do
-    -- Using the viewing key where the spending key belongs must not produce the
-    -- address: this is what makes delegated scanning safe.
-    let d = right $ stealthDestination ephemeralKey aliceMeta
-        wrong = right $ stealthPrivateKey aliceView aliceView (sdEphemeralPubKey d)
-    addressFromPrivateKey wrong `shouldNotBe` sdAddress d
-
-  it "another recipient never matches, over a batch of announcements" $ do
-    -- Bob scans 512 announcements addressed to Alice. About two will pass the
-    -- one-byte view tag by chance; none may yield an address Bob controls.
-    let ds = [right $ stealthDestination (ephemeralN i) aliceMeta | i <- [1 .. 512 :: Int]]
-        matches =
-          [ a
-            | d <- ds,
-              Just a <- [right $ stealthMatch bobView (smaSpend bobMeta) (sdEphemeralPubKey d) (sdViewTag d)]
-          ]
-    filter (`elem` map sdAddress ds) matches `shouldBe` []
-
-  it "the recipient finds their own in the same batch" $ do
-    let ds = [right $ stealthDestination (ephemeralN i) aliceMeta | i <- [1 .. 64 :: Int]]
-        found =
-          [ a
-            | d <- ds,
-              Just a <- [right $ stealthMatch aliceView (smaSpend aliceMeta) (sdEphemeralPubKey d) (sdViewTag d)]
-          ]
-    found `shouldBe` map sdAddress ds
-
-  it "agrees with an independent implementation of the scheme" $ do
-    -- Cross-checked against a from-scratch pure-Python secp256k1 implementing
-    -- the reference algorithm directly (scratchpad @stealth_ref.py@), sharing
-    -- no code with libsecp256k1. Agreement here is what makes this an
-    -- interoperability vector rather than a record of our own output.
-    let d = right $ stealthDestination ephemeralKey aliceMeta
-    checksumAddress (sdAddress d) `shouldBe` "0xbC287a4f0345cD7Fea8d523fBa25Aec4f0B29a6c"
-    toHex (sdEphemeralPubKey d) `shouldBe` "029ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b"
-    sdViewTag d `shouldBe` 224
-
-  describe "meta-address encoding" $ do
-    it "round-trips" $
-      parseMetaAddress (metaAddressBytes aliceMeta) `shouldBe` Right aliceMeta
-    it "is 66 bytes, spending key first" $ do
-      let bs = metaAddressBytes aliceMeta
-      B.length bs `shouldBe` 66
-      B.take 33 bs `shouldBe` S.serializePublicKey S.Compressed (smaSpend aliceMeta)
-    it "rejects a wrong length" $
-      parseMetaAddress (B.take 65 $ metaAddressBytes aliceMeta) `shouldSatisfy` isLeft
-    it "rejects points not on the curve" $
-      parseMetaAddress (B.replicate 66 0xAA) `shouldSatisfy` isLeft
-
-aliceSpend, aliceView, bobSpend, bobView, ephemeralKey, ephemeralKey2 :: S.Secp256k1PrivateKey
-aliceSpend = right $ S.mkPrivateKey (hx "1111111111111111111111111111111111111111111111111111111111111111")
-aliceView = right $ S.mkPrivateKey (hx "2222222222222222222222222222222222222222222222222222222222222222")
-bobSpend = right $ S.mkPrivateKey (hx "3333333333333333333333333333333333333333333333333333333333333333")
-bobView = right $ S.mkPrivateKey (hx "4444444444444444444444444444444444444444444444444444444444444444")
-ephemeralKey = right $ S.mkPrivateKey (hx "5555555555555555555555555555555555555555555555555555555555555555")
-ephemeralKey2 = right $ S.mkPrivateKey (hx "6666666666666666666666666666666666666666666666666666666666666666")
-
-aliceMeta, bobMeta :: StealthMetaAddress
-aliceMeta = metaAddress aliceSpend aliceView
-bobMeta = metaAddress bobSpend bobView
-
--- Distinct ephemeral keys for batch tests.
-ephemeralN :: Int -> S.Secp256k1PrivateKey
-ephemeralN i = right . S.mkPrivateKey . keccak256 . BC.pack $ "ephemeral " <> show i

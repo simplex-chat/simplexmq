@@ -20,9 +20,7 @@ module Simplex.Messaging.Crypto.BIP39
     parseMnemonic,
     mnemonicToSeed,
     randomMnemonic,
-    strengthBytes,
     strengthWordCount,
-    seedSize,
   )
 where
 

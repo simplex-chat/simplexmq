@@ -3,46 +3,24 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | FFI bindings to libsecp256k1 (ECDSA over secp256k1 with public key recovery).
+-- | FFI bindings to libsecp256k1.
 --
--- Only what Ethereum signing needs: key validation, public key derivation and
--- serialization, scalar addition (for BIP-32 child derivation), point addition
--- and multiplication (for ERC-5564 stealth addresses), recoverable signing and
--- recovery.
---
--- Signatures are produced with libsecp256k1's default RFC-6979 deterministic
--- nonce, so signing is a pure function of (key, digest) - which is why this
--- module exposes a pure API over 'unsafePerformIO'. libsecp256k1 also always
--- emits the low-@s@ form, so every signature from 'signRecoverable' is already
--- EIP-2 compliant; 'isLowS' is provided so callers can assert that rather than
--- trust it. A foreign signature can reach 'recoverPublicKey', which rejects a
--- malformed one; there is no normalization entry point, as recovery does not
--- need low-s.
+-- Key validation, public key derivation and serialization, and scalar addition
+-- for BIP-32 child derivation. The pure API over 'unsafePerformIO' is safe
+-- because every operation is a pure function of its arguments.
 module Simplex.Messaging.Crypto.Secp256k1
   ( Secp256k1PrivateKey,
     Secp256k1PublicKey,
-    RecoverableSignature (..),
     PubKeyFormat (..),
     mkPrivateKey,
     unPrivateKey,
     secp256k1PublicKey,
-    parsePublicKey,
     serializePublicKey,
     privateKeyTweakAdd,
-    publicKeyTweakMul,
-    publicKeyTweakAdd,
-    signRecoverable,
-    recoverPublicKey,
-    isLowS,
-    privateKeySize,
-    compressedSize,
-    uncompressedSize,
-    digestSize,
   )
 where
 
 import Control.Monad (when)
-import Crypto.Number.Serialize (os2ip)
 import Crypto.Random (drgNew, randomBytesGenerate)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
@@ -66,20 +44,11 @@ compressedSize = 33
 uncompressedSize :: Int
 uncompressedSize = 65
 
--- | ECDSA signs a 32-byte digest, never a message.
-digestSize :: Int
-digestSize = 32
 
 -- | Internal size of @secp256k1_pubkey@ (opaque, not a serialization).
 pubKeyInternalSize :: Int
 pubKeyInternalSize = 64
 
--- | Internal size of @secp256k1_ecdsa_recoverable_signature@.
-recSigInternalSize :: Int
-recSigInternalSize = 65
-
-compactSize :: Int
-compactSize = 64
 
 -- Types
 
@@ -102,22 +71,11 @@ newtype Secp256k1PublicKey = Secp256k1PublicKey ByteString
 data PubKeyFormat = Compressed | Uncompressed
   deriving (Eq, Show)
 
--- | A signature plus the recovery id needed to recover the signing key.
--- @rsCompact@ is @r || s@, 64 bytes big-endian; @rsRecId@ is in @[0, 3]@.
--- Ethereum's @v@ is @rsRecId + 27@ (or @+ 35 + 2 * chainId@ for EIP-155).
-data RecoverableSignature = RecoverableSignature
-  { rsCompact :: ByteString,
-    rsRecId :: Int
-  }
-  deriving (Eq, Show)
-
 -- FFI
 
 data Ctx
 
 data PubKeyRaw
-
-data RecSigRaw
 
 foreign import ccall "secp256k1_context_create"
   c_context_create :: CUInt -> IO (Ptr Ctx)
@@ -131,32 +89,11 @@ foreign import ccall "secp256k1_ec_seckey_verify"
 foreign import ccall "secp256k1_ec_pubkey_create"
   c_ec_pubkey_create :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
 
-foreign import ccall "secp256k1_ec_pubkey_parse"
-  c_ec_pubkey_parse :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> CSize -> IO CInt
-
 foreign import ccall "secp256k1_ec_pubkey_serialize"
   c_ec_pubkey_serialize :: Ptr Ctx -> Ptr Word8 -> Ptr CSize -> Ptr PubKeyRaw -> CUInt -> IO CInt
 
 foreign import ccall "secp256k1_ec_seckey_tweak_add"
   c_ec_seckey_tweak_add :: Ptr Ctx -> Ptr Word8 -> Ptr Word8 -> IO CInt
-
-foreign import ccall "secp256k1_ec_pubkey_tweak_mul"
-  c_ec_pubkey_tweak_mul :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
-
-foreign import ccall "secp256k1_ec_pubkey_tweak_add"
-  c_ec_pubkey_tweak_add :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
-
-foreign import ccall "secp256k1_ecdsa_sign_recoverable"
-  c_ecdsa_sign_recoverable :: Ptr Ctx -> Ptr RecSigRaw -> Ptr Word8 -> Ptr Word8 -> Ptr () -> Ptr () -> IO CInt
-
-foreign import ccall "secp256k1_ecdsa_recoverable_signature_serialize_compact"
-  c_recsig_serialize_compact :: Ptr Ctx -> Ptr Word8 -> Ptr CInt -> Ptr RecSigRaw -> IO CInt
-
-foreign import ccall "secp256k1_ecdsa_recoverable_signature_parse_compact"
-  c_recsig_parse_compact :: Ptr Ctx -> Ptr RecSigRaw -> Ptr Word8 -> CInt -> IO CInt
-
-foreign import ccall "secp256k1_ecdsa_recover"
-  c_ecdsa_recover :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr RecSigRaw -> Ptr Word8 -> IO CInt
 
 -- SECP256K1_CONTEXT_NONE = SECP256K1_FLAGS_TYPE_CONTEXT
 contextNone :: CUInt
@@ -190,22 +127,11 @@ packPtr p n = B.packCStringLen (castPtr p, n)
 withPubKeyRaw :: Secp256k1PublicKey -> (Ptr PubKeyRaw -> IO a) -> IO a
 withPubKeyRaw (Secp256k1PublicKey bs) f = withBS bs $ f . castPtr
 
--- | Marshal a 'RecoverableSignature' into the opaque C representation, failing
--- if libsecp256k1 rejects it.
-withRecSigRaw :: RecoverableSignature -> (Ptr RecSigRaw -> IO (Either String a)) -> IO (Either String a)
-withRecSigRaw (RecoverableSignature compact recId) f
-  | B.length compact /= compactSize = pure $ Left "signature: expected 64 bytes"
-  | recId < 0 || recId > 3 = pure $ Left "signature: recovery id out of range"
-  | otherwise =
-      allocaBytes recSigInternalSize $ \sigPtr ->
-        withBS compact $ \cPtr -> do
-          rc <- c_recsig_parse_compact secp256k1Ctx sigPtr cPtr (fromIntegral recId)
-          if rc /= 1 then pure $ Left "signature: malformed" else f sigPtr
 
 -- Public API
 
 -- | Validate 32 bytes as a private key. Rejects zero and anything at or above
--- the group order, which is what makes 'secp256k1PublicKey' and 'signRecoverable' total.
+-- the group order, which is what makes 'secp256k1PublicKey' total.
 mkPrivateKey :: ByteString -> Either String Secp256k1PrivateKey
 mkPrivateKey bs
   | B.length bs /= privateKeySize = Left $ "private key: expected 32 bytes, got " <> show (B.length bs)
@@ -226,20 +152,6 @@ secp256k1PublicKey (Secp256k1PrivateKey sk) = unsafePerformIO $
       when (rc /= 1) $ ioError (userError "secp256k1_ec_pubkey_create failed on a validated key")
       Secp256k1PublicKey <$> packPtr (castPtr pkPtr) pubKeyInternalSize
 
--- | Parse a SEC1 point, compressed (33 bytes) or uncompressed (65 bytes).
-parsePublicKey :: ByteString -> Either String Secp256k1PublicKey
-parsePublicKey bs
-  | len /= compressedSize && len /= uncompressedSize =
-      Left $ "public key: expected 33 or 65 bytes, got " <> show len
-  | otherwise = unsafePerformIO $
-      allocaBytes pubKeyInternalSize $ \pkPtr ->
-        withBS bs $ \inPtr -> do
-          rc <- c_ec_pubkey_parse secp256k1Ctx pkPtr inPtr (fromIntegral len)
-          if rc == 1
-            then Right . Secp256k1PublicKey <$> packPtr (castPtr pkPtr) pubKeyInternalSize
-            else pure $ Left "public key: not a valid curve point"
-  where
-    len = B.length bs
 
 serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
 serializePublicKey fmt pk = unsafePerformIO $
@@ -274,78 +186,4 @@ privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
             then Just . Secp256k1PrivateKey <$> packPtr skPtr privateKeySize
             else pure Nothing
 
--- | @tweak * P@. The scalar multiplication behind an ECDH shared secret.
---
--- Deliberately exposed instead of @secp256k1_ecdh@: that function hashes the
--- resulting point with SHA-256, while ERC-5564 hashes it with keccak256 over
--- the uncompressed coordinates. Returning the point leaves the hash to the
--- caller.
---
--- 'Nothing' when the tweak is zero or out of range.
-publicKeyTweakMul :: Secp256k1PublicKey -> ByteString -> Maybe Secp256k1PublicKey
-publicKeyTweakMul = tweakPubKey c_ec_pubkey_tweak_mul
 
--- | @P + tweak * G@, the point addition stealth address derivation needs.
---
--- 'Nothing' when the tweak is out of range or the result is the point at
--- infinity.
-publicKeyTweakAdd :: Secp256k1PublicKey -> ByteString -> Maybe Secp256k1PublicKey
-publicKeyTweakAdd = tweakPubKey c_ec_pubkey_tweak_add
-
-tweakPubKey :: (Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt) -> Secp256k1PublicKey -> ByteString -> Maybe Secp256k1PublicKey
-tweakPubKey f pk tweak
-  | B.length tweak /= privateKeySize = Nothing
-  | otherwise = unsafePerformIO $
-      allocaBytes pubKeyInternalSize $ \pkPtr ->
-        withBS tweak $ \twPtr -> do
-          withPubKeyRaw pk $ \src -> copyBytes (castPtr pkPtr) (castPtr src) pubKeyInternalSize
-          rc <- f secp256k1Ctx pkPtr twPtr
-          if rc == 1
-            then Just . Secp256k1PublicKey <$> packPtr (castPtr pkPtr) pubKeyInternalSize
-            else pure Nothing
-
--- | Sign a 32-byte digest. Deterministic (RFC 6979) and always low-@s@.
-signRecoverable :: Secp256k1PrivateKey -> ByteString -> Either String RecoverableSignature
-signRecoverable (Secp256k1PrivateKey sk) digest
-  | B.length digest /= digestSize =
-      Left $ "digest: expected 32 bytes, got " <> show (B.length digest)
-  | otherwise = unsafePerformIO $
-      allocaBytes recSigInternalSize $ \sigPtr ->
-        withBS digest $ \msgPtr ->
-          withBS sk $ \skPtr -> do
-            rc <- c_ecdsa_sign_recoverable secp256k1Ctx sigPtr msgPtr skPtr nullPtr nullPtr
-            if rc /= 1
-              then pure $ Left "secp256k1_ecdsa_sign_recoverable failed"
-              else allocaBytes compactSize $ \outPtr ->
-                alloca $ \recIdPtr -> do
-                  rc' <- c_recsig_serialize_compact secp256k1Ctx outPtr recIdPtr sigPtr
-                  if rc' /= 1
-                    then pure $ Left "secp256k1_ecdsa_recoverable_signature_serialize_compact failed"
-                    else do
-                      compact <- packPtr outPtr compactSize
-                      recId <- peek recIdPtr
-                      pure $ Right RecoverableSignature {rsCompact = compact, rsRecId = fromIntegral recId}
-
--- | Recover the signing public key from a signature and the digest it signed.
-recoverPublicKey :: RecoverableSignature -> ByteString -> Either String Secp256k1PublicKey
-recoverPublicKey sig digest
-  | B.length digest /= digestSize =
-      Left $ "digest: expected 32 bytes, got " <> show (B.length digest)
-  | otherwise = unsafePerformIO $
-      withRecSigRaw sig $ \sigPtr ->
-        allocaBytes pubKeyInternalSize $ \pkPtr ->
-          withBS digest $ \msgPtr -> do
-            rc <- c_ecdsa_recover secp256k1Ctx pkPtr sigPtr msgPtr
-            if rc == 1
-              then Right . Secp256k1PublicKey <$> packPtr (castPtr pkPtr) pubKeyInternalSize
-              else pure $ Left "secp256k1_ecdsa_recover failed"
-
--- | Whether @s <= n/2@, i.e. the signature is in the canonical form EIP-2
--- requires. libsecp256k1 guarantees this for anything it signs; this exists so
--- tests can assert it rather than assume it.
-isLowS :: RecoverableSignature -> Bool
-isLowS (RecoverableSignature compact _) =
-  B.length compact == compactSize && os2ip (B.drop privateKeySize compact) <= halfOrder
-  where
-    halfOrder :: Integer
-    halfOrder = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0

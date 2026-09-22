@@ -4,19 +4,12 @@
 -- checksum encoding.
 module Simplex.Messaging.Eth.Address
   ( Address,
-    unAddress,
-    mkAddress,
-    addressFromPublicKey,
     addressFromPrivateKey,
-    checksumAddress,
-    parseAddress,
-    addressSize,
     ethereumPath,
   )
 where
 
 import Control.Applicative (optional, (<|>))
-import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray.Encoding as BAE
@@ -58,23 +51,8 @@ instance StrEncoding Address where
         where
           letters = BC.filter (not . isDigit) body
 
-instance ToJSON Address where
-  toEncoding = strToJEncoding
-  toJSON = strToJSON
-
-instance FromJSON Address where
-  parseJSON = strParseJSON "Address"
-
 addressSize :: Int
 addressSize = 20
-
-unAddress :: Address -> ByteString
-unAddress (Address bs) = bs
-
-mkAddress :: ByteString -> Either String Address
-mkAddress bs
-  | B.length bs /= addressSize = Left $ "address: expected 20 bytes, got " <> show (B.length bs)
-  | otherwise = Right (Address bs)
 
 -- | The low 20 bytes of @keccak256@ of the uncompressed public key with its
 -- @0x04@ SEC1 prefix removed.
@@ -102,11 +80,6 @@ checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] (B.unpack l
     isHexLetter c = c >= 0x61 && c <= 0x66 -- 'a'..'f'
     upper c = c - 0x20
 
--- | Parse @0x@-prefixed or bare hex. A mixed-case address is checked against
--- its EIP-55 checksum; an all-lowercase or all-uppercase one carries no
--- checksum and is accepted as-is, which is what every Ethereum client does.
-parseAddress :: ByteString -> Either String Address
-parseAddress = strDecode
 
 -- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@.
 -- The account must be below @hardenedOffset@, as 'hardened' returns anything

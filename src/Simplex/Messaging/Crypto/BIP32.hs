@@ -9,21 +9,16 @@
 module Simplex.Messaging.Crypto.BIP32
   ( ExtendedKey (..),
     masterKey,
-    deriveChild,
     derivePath,
-    parsePath,
     renderPath,
     hardenedOffset,
     hardened,
-    isHardened,
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Monad (foldM)
 import qualified Crypto.Hash as H
 import qualified Crypto.MAC.HMAC as HMAC
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -32,7 +27,6 @@ import Data.List (intercalate)
 import Data.Word (Word32)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding (smpEncode)
-import Simplex.Messaging.Parsers (parseAll)
 
 -- | An extended private key: the key plus its chain code.
 --
@@ -94,28 +88,7 @@ deriveChild xk i =
 derivePath :: ExtendedKey -> [Word32] -> Either String ExtendedKey
 derivePath = foldM deriveChild
 
--- | Parse a path such as @m\/44'\/60'\/0'\/0\/0@. A leading @m@ or @M@ is
--- optional, as is a leading @\/@; @'@, @h@ and @H@ all mark a hardened index.
-parsePath :: ByteString -> Either String [Word32]
-parsePath = parseAll pathP
 
-pathP :: A.Parser [Word32]
-pathP = do
-  cs <- BC.split '/' <$> A.takeByteString
-  case cs of
-    c : cs' | c == "m" || c == "M" || B.null c -> traverse indexOf cs'
-    _ -> traverse indexOf cs
-  where
-    -- each component is validated on its own, so a bad one names itself
-    indexOf c
-      | B.null c = fail "path: empty component"
-      | otherwise = case A.parseOnly (indexP <* A.endOfInput) c of
-          Left _ -> fail $ "path: bad component " <> BC.unpack c
-          Right (n, hardenedIx)
-            | n >= toInteger hardenedOffset -> fail $ "path: index out of range: " <> show n
-            | otherwise -> pure $ fromInteger n + if hardenedIx then hardenedOffset else 0
-    indexP = (,) <$> (A.decimal :: A.Parser Integer) <*> hardenedP
-    hardenedP = (True <$ A.satisfy (\c -> c == '\'' || c == 'h' || c == 'H')) <|> pure False
 
 renderPath :: [Word32] -> ByteString
 renderPath is = BC.pack $ intercalate "/" ("m" : map component is)

@@ -152,9 +152,7 @@ library
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Eth.Address
-      Simplex.Messaging.Eth.EIP712
       Simplex.Messaging.Eth.Keccak
-      Simplex.Messaging.Eth.Stealth
       Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
@@ -343,7 +341,7 @@ library
   -- libsecp256k1 is built without its autotools config header: every knob it
   -- needs has an #ifndef default, and the checked-in precomputed tables match
   -- those defaults. Only the recovery module has to be switched on explicitly.
-  cc-options: -D__BLST_PORTABLE__ -DENABLE_MODULE_RECOVERY=1
+  cc-options: -D__BLST_PORTABLE__
   if flag(commoncrypto)
     cc-options: -DBBS_CRYPTO_CC
     frameworks: Security
