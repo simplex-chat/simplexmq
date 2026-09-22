@@ -338,9 +338,7 @@ library
       cbits/libsecp256k1
       cbits/libsecp256k1/include
       cbits/libsecp256k1/src
-  -- libsecp256k1 is built without its autotools config header: every knob it
-  -- needs has an #ifndef default, and the checked-in precomputed tables match
-  -- those defaults. Only the recovery module has to be switched on explicitly.
+  -- libsecp256k1 is built without its autotools config header: every knob has an #ifndef default matching the checked-in tables
   cc-options: -D__BLST_PORTABLE__
   if flag(commoncrypto)
     cc-options: -DBBS_CRYPTO_CC
