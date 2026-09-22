@@ -92,10 +92,11 @@ data NameRegistration
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
--- | What the registry holds for an address: the names it owns, and whether
--- the account has been used at all. Holding a name is only one way to be in
--- use, so a recovery scan that reads only `ownNames` hands out an account its
--- owner is already using.
+-- | What the registry holds for an address: the names it owns, and whether the
+-- account is in use, which holding a name is only one way to be. `ownInUse` is
+-- what the resolver could see on its own chain - the nonce, the balance and the
+-- names - so an account used only for other tokens, or on another chain, reads
+-- as unused.
 data OwnedNames = OwnedNames
   { ownNames :: [OwnedName],
     ownInUse :: Bool,

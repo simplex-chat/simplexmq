@@ -1048,12 +1048,13 @@ class OwnedByTests(unittest.TestCase):
     ALICE = 0x9C0257114EB9399A2985F8E75DAD7600C5D89FE3824FFA99EC1C3EB8BF3B0501
 
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.eth_call, snrc.rpc)
+        self._saved = (snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.chain_now)
         snrc.REGISTRARS = {"testing": self.REGISTRAR, "simplex": ""}
         snrc.rpc = lambda method, params: "0x0"
+        snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.eth_call, snrc.rpc = self._saved
+        snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.chain_now = self._saved
 
     def _chain(self, held, expires, label=b"alice"):
         def call(to, data):
@@ -1124,6 +1125,15 @@ class OwnedByTests(unittest.TestCase):
         status, body = snrc.owned_by("0xnothex")
         self.assertEqual(status, 400)
         self.assertEqual(body["error"], "badAddress")
+
+    def test_status_follows_the_block_clock_not_the_host(self):
+        """A name the host clock still calls registered is in grace once the
+        chain has passed its expiry."""
+        expires = int(time.time()) + 86400
+        snrc.eth_call = self._chain(1, expires)
+        snrc.chain_now = lambda: expires + 1
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"][0]["status"], "grace")
 
     def test_a_negative_offset_is_refused(self):
         snrc.eth_call = self._chain(1, int(time.time()) + 86400)

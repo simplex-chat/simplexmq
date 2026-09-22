@@ -893,8 +893,9 @@ def owned_by(address: str, offset: int = 0):
     Enumeration is read off the ERC-721 registrar, so a name acquired by
     transfer counts, and a lapsed one stays listed until re-registered - it is
     reported with its `status`, not filtered. `inUse` is what a recovery scan
-    asks; holding a name is only one way to be in use, so the nonce and balance
-    it is derived from are reported too.
+    asks, derived from this chain's nonce and balance and the names above: an
+    account holding only other tokens is not seen, and neither is one used on
+    another chain.
     """
     if not is_address(address):
         return 400, {
@@ -919,7 +920,7 @@ def owned_by(address: str, offset: int = 0):
             "configuredTlds": [],
         }
 
-    now = int(time.time())
+    now = chain_now()
     names, truncated = [], False
     for tld, registrar in configured.items():
         grace = grace_period(registrar)
