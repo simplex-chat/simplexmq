@@ -499,9 +499,9 @@ pqX3dh (sk1, rk1) dh1 dh2 dh3 kemAccepted =
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3 <> pq
     pq = maybe "" (\RatchetKEMAccepted {rcPQRss = KEMSharedKey ss} -> BA.convert ss) kemAccepted
-    (hk, nhk, sk, vcPQ) =
-      let salt = B.replicate 64 '\0'
-       in hkdf4 salt dhs "SimpleXX3DH"
+    salt = B.replicate 64 '\0'
+    (hk, nhk, sk) = hkdf3 salt dhs "SimpleXX3DH"
+    vcPQ = hkdf salt dhs "SimpleXVerifyCode" 32
 
 type RatchetX448 = Ratchet 'X448
 
@@ -1148,14 +1148,6 @@ hkdf3 salt ikm info = (s1, s2, s3)
     out = hkdf salt ikm info 96
     (s1, rest) = B.splitAt 32 out
     (s2, s3) = B.splitAt 32 rest
-
-hkdf4 :: ByteString -> ByteString -> ByteString -> (ByteString, ByteString, ByteString, ByteString)
-hkdf4 salt ikm info = (s1, s2, s3, s4)
-  where
-    out = hkdf salt ikm info 128
-    (s1, rest) = B.splitAt 32 out
-    (s2, rest') = B.splitAt 32 rest
-    (s3, s4) = B.splitAt 32 rest'
 
 $(JQ.deriveJSON defaultJSON ''RcvRatchet)
 

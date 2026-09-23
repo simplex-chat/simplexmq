@@ -1534,29 +1534,36 @@ createRatchet db connId rc =
 getRatchetVerifyCodes :: DB.Connection -> [ConnId] -> IO (Map ConnId ConnVerifyCodes)
 getRatchetVerifyCodes db connIds = do
   (saved, computed) <- partitionEithers . mapMaybe rowCodes <$> selectCodes
-  unless (null computed) $
-    DB.executeMany db saveCodesQuery $ map (\(connId, cs) -> verifyCodesRow cs :. Only connId) computed
-  pure $ M.fromList $ saved <> computed
+  stored <- saveCodes computed
+  pure $ M.fromList $ saved <> stored
   where
     rowCodes (connId, codeAD_, codePQ_, rc_) = case codeAD_ of
-      Just (Binary codeAD) -> Just $ Left (connId, ConnVerifyCodes {codeAD, codePQ = fromBinary <$> codePQ_})
+      Just codeAD -> Just $ Left $ toCodes (connId, codeAD, codePQ_)
       Nothing -> Right . (connId,) . ratchetVerifyCodes <$> rc_
+    toCodes (connId, Binary codeAD, codePQ_) = (connId, ConnVerifyCodes {codeAD, codePQ = fromBinary <$> codePQ_})
+    codesRow (connId, cs) = verifyCodesRow cs :. Only connId
     codesQuery :: Query
     codesQuery = "SELECT conn_id, rc_verify_code_ad, rc_verify_code_pq, CASE WHEN rc_verify_code_ad IS NULL THEN ratchet_state END FROM ratchets"
     selectCodes :: IO [(ConnId, Maybe (Binary ByteString), Maybe (Binary ByteString), Maybe RatchetX448)]
-    saveCodesQuery :: Query
+    saveCodes :: [(ConnId, ConnVerifyCodes)] -> IO [(ConnId, ConnVerifyCodes)]
 #if defined(dbPostgres)
     selectCodes = DB.query db (codesQuery <> " WHERE conn_id IN ?") (Only (In connIds))
-    saveCodesQuery =
-      [sql|
-        UPDATE ratchets r
-        SET rc_verify_code_ad = upd.rc_verify_code_ad, rc_verify_code_pq = upd.rc_verify_code_pq
-        FROM (VALUES(?, ?, ?)) AS upd(rc_verify_code_ad, rc_verify_code_pq, conn_id)
-        WHERE r.conn_id = (upd.conn_id :: BYTEA)
-      |]
+    saveCodes cs =
+      map toCodes
+        <$> DB.returning
+          db
+          [sql|
+            UPDATE ratchets r
+            SET rc_verify_code_ad = COALESCE(r.rc_verify_code_ad, (upd.rc_verify_code_ad :: BYTEA)),
+              rc_verify_code_pq = CASE WHEN r.rc_verify_code_ad IS NULL THEN (upd.rc_verify_code_pq :: BYTEA) ELSE r.rc_verify_code_pq END
+            FROM (VALUES(?, ?, ?)) AS upd(rc_verify_code_ad, rc_verify_code_pq, conn_id)
+            WHERE r.conn_id = (upd.conn_id :: BYTEA)
+            RETURNING r.conn_id, r.rc_verify_code_ad, r.rc_verify_code_pq
+          |]
+          (map codesRow cs)
 #else
     selectCodes = concat <$> mapM (DB.query db (codesQuery <> " WHERE conn_id = ?") . Only) connIds
-    saveCodesQuery = "UPDATE ratchets SET rc_verify_code_ad = ?, rc_verify_code_pq = ? WHERE conn_id = ?"
+    saveCodes cs = cs <$ unless (null cs) (DB.executeMany db "UPDATE ratchets SET rc_verify_code_ad = ?, rc_verify_code_pq = ? WHERE conn_id = ?" $ map codesRow cs)
 #endif
 
 deleteRatchet :: DB.Connection -> ConnId -> IO ()

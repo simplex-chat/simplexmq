@@ -1410,8 +1410,7 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
         pure (connId', binding)
 
 requestCode :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ByteString
-requestCode k1 k2 kem_ sndId =
-  C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2 <> maybe "" smpEncode kem_ <> SMP.unEntityId sndId
+requestCode k1 k2 kem_ sndId = C.sha256Hash $ smpEncode (k1, k2, kem_, sndId)
 
 newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> PQSupport -> AM (ConnId, ContactRequestBinding)
 newConnToAccept c userId connId enableNtfs invId pqSup = do
