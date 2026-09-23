@@ -1550,10 +1550,9 @@ getRatchetVerifyCodes db connIds = do
       DB.query db (verifyCodesQuery <> " IN (" <> fromString (intercalate "," (replicate (length ids) "?")) <> ")") ids
 #endif
     rowCodes (connId, codeAD_, codePQ_, rc_) = case (codeAD_, rc_) of
-      (Just (Binary codeAD), _) -> Just (connId, ConnVerifyCodes {codeAD, codePQ = unBinary <$> codePQ_}, False)
+      (Just (Binary codeAD), _) -> Just (connId, ConnVerifyCodes {codeAD, codePQ = fromBinary <$> codePQ_}, False)
       (Nothing, Just rc) -> Just (connId, ratchetVerifyCodes rc, True)
       (Nothing, Nothing) -> Nothing
-    unBinary (Binary b) = b
 
 verifyCodesQuery :: Query
 verifyCodesQuery = "SELECT conn_id, rc_verify_code_ad, rc_verify_code_pq, CASE WHEN rc_verify_code_ad IS NULL THEN ratchet_state END FROM ratchets WHERE conn_id"
