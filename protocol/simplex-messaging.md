@@ -1648,6 +1648,7 @@ rownd = %s"ROWND" SP ownedNames
 
 | Field | JSON type | Constraints |
 |---|---|---|
+| `lastBlockTs` | number | the oldest block any read behind this answer saw |
 | `names` | array | the names the address holds, each the `nameResponse` resolving it answers with |
 | `inUse` | boolean | whether the account has been used at all |
 | `nextOffset` | number | cursor to resume from, absent when the listing is complete |
@@ -1657,6 +1658,12 @@ names and act on them without resolving each one again. Enumeration is not
 maintained on expiry, so the registrar still enumerates a name past its grace;
 it answers as `available` and names nothing the account holds, so it is left out
 of `names` while still counting towards `inUse`.
+
+As with `RNAME`, a router reads through a node of its own, which can lag. Every
+name carries the block it was read at, and `lastBlockTs` is the oldest of those
+and of the enumeration's own block, so a client can tell a badly lagging router
+even from an answer that carries no names — which is the answer a recovery scan
+acts on.
 
 `inUse` is what the registry could see on its own chain — the account's nonce,
 its balance, and every name it holds, which is not only the names listed here:

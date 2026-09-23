@@ -176,7 +176,8 @@ command** section of
 [`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md).
 
 Answering each name in full is what lets a caller list and act on them without a
-second request for each. Enumeration comes off the registrar's ERC-721 index, so
+second request for each. `lastBlockTs` is the oldest block any of the reads saw,
+so an answer with no names still says how far behind the node was. Enumeration comes off the registrar's ERC-721 index, so
 a name acquired by transfer counts; one past its grace is still enumerated but
 answers as available, so it is left out while still counting towards `inUse`.
 

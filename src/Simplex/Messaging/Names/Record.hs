@@ -93,7 +93,9 @@ data NameRegistration
 
 -- | What the registry holds for an address: the names it owns, each as the 'NameResponse' resolving it gives, and whether the account is in use
 data OwnedNames = OwnedNames
-  { ownNames :: [NameResponse],
+  { -- | the oldest block any of the reads behind this answer saw, so a lagging registry shows even where no name does
+    ownLastBlockTs :: Maybe SystemSeconds,
+    ownNames :: [NameResponse],
     ownInUse :: Bool,
     -- | the cursor to resume from, absent when the listing is complete
     ownNextOffset :: Maybe Int

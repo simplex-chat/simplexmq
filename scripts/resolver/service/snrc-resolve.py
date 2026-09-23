@@ -898,6 +898,8 @@ def owned_by(address: str, offset: int = 0):
     Enumeration is read off the ERC-721 registrar, so a name acquired by
     transfer counts. Each name is answered with the NameResponse /v2/resolve
     gives for it, so a caller can list and act on them without asking again.
+    `lastBlockTs` is the oldest block any of those reads saw, so a caller can
+    tell a resolver lagging critically behind even when it holds no names.
     `inUse` is what a recovery scan asks, derived from this chain's nonce and
     balance and every name it holds, not only the page returned: an account
     holding only other tokens is not seen, and neither is one used on another
@@ -926,6 +928,9 @@ def owned_by(address: str, offset: int = 0):
             "configuredTlds": [],
         }
 
+    # the block the enumeration below is read at; each name resolved after it
+    # reports its own, and the oldest of them all is what the answer carries
+    last_block_ts = chain_now()
     names, truncated, total_held = [], False, 0
     for tld, registrar in configured.items():
         held = decode_uint(eth_call(registrar, selector("balanceOf(address)") + encode_address(address)))
@@ -945,12 +950,15 @@ def owned_by(address: str, offset: int = 0):
             # available, which says nothing about the token it is enumerated on
             if status == 200 and body["registration"]["type"] == "registered":
                 names.append(body)
+                if body["lastBlockTs"] is not None:
+                    last_block_ts = min(last_block_ts, body["lastBlockTs"])
 
     nonce = decode_uint(rpc("eth_getTransactionCount", [address, "latest"]))
     balance = decode_uint(rpc("eth_getBalance", [address, "latest"]))
     names.sort(key=lambda n: n["registration"]["nameRecord"]["name"])
     return 200, {
         "address": address,
+        "lastBlockTs": last_block_ts,
         "names": names,
         "nonce": nonce,
         "balance": str(balance),

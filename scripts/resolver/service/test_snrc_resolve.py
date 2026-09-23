@@ -1047,22 +1047,25 @@ class OwnedByTests(unittest.TestCase):
     # keccak-256("alice")
     ALICE = 0x9C0257114EB9399A2985F8E75DAD7600C5D89FE3824FFA99EC1C3EB8BF3B0501
 
+    BLOCK_TS = 1813000000
+
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.registration)
+        self._saved = (snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.registration, snrc.chain_now)
         snrc.REGISTRARS = {"testing": self.REGISTRAR, "simplex": ""}
         snrc.rpc = lambda method, params: "0x0"
+        snrc.chain_now = lambda: self.BLOCK_TS
         # resolving one name is RegistrationV2Tests' subject; what owned-by adds
         # is which names to resolve, so the registration itself is stubbed
         snrc.registration = lambda name: (200, self.response(name, "registered"))
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.registration = self._saved
+        snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.registration, snrc.chain_now = self._saved
 
-    def response(self, name, type_):
+    def response(self, name, type_, block_ts=None):
         reg = {"type": type_}
         if type_ == "registered":
             reg["nameRecord"] = {"name": name}
-        return {"lastBlockTs": 1813000000, "registration": reg}
+        return {"lastBlockTs": self.BLOCK_TS if block_ts is None else block_ts, "registration": reg}
 
     def _chain(self, held, label=b"alice"):
         def call(to, data):
@@ -1152,6 +1155,22 @@ class OwnedByTests(unittest.TestCase):
         status, body = snrc.owned_by(self.ADDR)
         self.assertEqual(status, 200)
         self.assertEqual(len(body["names"]), 1)
+
+    def test_an_account_with_no_names_still_reports_the_block_it_was_read_at(self):
+        """inUse false is the answer a scan acts on, so it has to carry how
+        stale the registry it came from is."""
+        snrc.eth_call = self._chain(0)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"], [])
+        self.assertEqual(body["lastBlockTs"], self.BLOCK_TS)
+
+    def test_the_oldest_block_of_every_read_is_the_one_reported(self):
+        """A name resolved against a node further behind is what the caller
+        has to judge the whole answer by."""
+        snrc.eth_call = self._chain(1)
+        snrc.registration = lambda name: (200, self.response(name, "registered", self.BLOCK_TS - 600))
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["lastBlockTs"], self.BLOCK_TS - 600)
 
     def test_a_negative_offset_is_refused(self):
         snrc.eth_call = self._chain(1)

@@ -160,7 +160,7 @@ testRownUnsupported =
 
 -- | Each owned name is the same NameResponse /v2/resolve answers with.
 ownedBody :: LB.ByteString
-ownedBody = "{\"names\":[" <> registeredBody testNameRecord <> "],\"inUse\":true,\"nextOffset\":null}"
+ownedBody = "{\"lastBlockTs\":1813000000,\"names\":[" <> registeredBody testNameRecord <> "],\"inUse\":true,\"nextOffset\":null}"
 
 ownedName :: NameResponse -> Text
 ownedName = \case
