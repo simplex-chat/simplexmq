@@ -1278,6 +1278,11 @@ getConnShortLink' c nm userId = \case
 deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
+resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
+resolveSimplexName' c nm userId domain = do
+  resolverSrv <- getNextNameServer c userId []
+  resolveName c nm userId resolverSrv domain
+
 ownedSimplexNames' :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AM (SMPServer, OwnedNames)
 ownedSimplexNames' c nm userId used addr offset = tryRelays ownedNamesRelays used
   where
@@ -1293,11 +1298,6 @@ ownedSimplexNames' c nm userId used addr offset = tryRelays ownedNamesRelays use
 -- | Relays one owned-names lookup asks before it gives up: during a version rollout the first one picked may have no ROWN.
 ownedNamesRelays :: Int
 ownedNamesRelays = 3
-
-resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
-resolveSimplexName' c nm userId domain = do
-  resolverSrv <- getNextNameServer c userId []
-  resolveName c nm userId resolverSrv domain
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

@@ -48,10 +48,7 @@ oneSrv :: ServerCfg 'SMP.PSMP -> InitialAgentServers
 oneSrv cfg_ = (initAgentServersProxy_ SPMNever SPFProhibit) {smp = [(1, [cfg_])]}
 
 withDirectResolver :: (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
-withDirectResolver (st, body) k =
-  NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
-    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ \_ ->
-      withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
+withDirectResolver resp k = withDirectResolverReqs resp $ \c _ -> k c
 
 -- | As 'withDirectResolver', with the requests the resolver was asked for.
 withDirectResolverReqs :: (Status, LB.ByteString) -> (AgentClient -> IORef [[Text]] -> IO a) -> IO a
