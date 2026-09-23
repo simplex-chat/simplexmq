@@ -485,12 +485,12 @@ changeConnectionUser c oldUserId connId newUserId = withAgentEnv c $ changeConne
 -- the caller of joinConnection saves connection ID to the database.
 -- Instead of it we could send confirmation asynchronously, but then it would be harder to report
 -- "link deleted" (SMP AUTH) interactively, so this approach is simpler overall.
-prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE (ConnId, ConnVerifyCodes)
+prepareConnectionToJoin :: AgentClient -> UserId -> Bool -> ConnectionRequestUri c -> PQSupport -> AE (ConnId, ContactRequestBinding)
 prepareConnectionToJoin c userId enableNtfs = withAgentEnv c .: newConnToJoin c userId "" enableNtfs Nothing
 {-# INLINE prepareConnectionToJoin #-}
 
 -- | Create SMP agent connection without queue (to be joined with acceptContact passing invitation ID).
-prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> InvitationId -> PQSupport -> AE (ConnId, ConnVerifyCodes)
+prepareConnectionToAccept :: AgentClient -> UserId -> Bool -> InvitationId -> PQSupport -> AE (ConnId, ContactRequestBinding)
 prepareConnectionToAccept c userId enableNtfs = withAgentEnv c .: newConnToAccept c userId "" enableNtfs
 {-# INLINE prepareConnectionToAccept #-}
 
@@ -1380,7 +1380,7 @@ newQueueNtfSubscription c RcvQueue {userId, connId, server, clientNtfCreds} ntfS
   ns <- asks ntfSupervisor
   liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
 
-newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Maybe UTCTime -> ConnectionRequestUri c -> PQSupport -> AM (ConnId, ConnVerifyCodes)
+newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Maybe UTCTime -> ConnectionRequestUri c -> PQSupport -> AM (ConnId, ContactRequestBinding)
 newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport = case cReq of
   CRInvitationUri {} ->
     lift (compatibleInvitationUri cReq) >>= \case
@@ -1394,7 +1394,7 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
           Nothing -> createRequestKeys senderId
       Nothing -> throwE $ AGENT A_VERSION
   where
-    create :: Compatible VersionSMPA -> (TVar ChaChaDRG -> VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ConnVerifyCodes) -> AM (ConnId, ConnVerifyCodes)
+    create :: Compatible VersionSMPA -> (TVar ChaChaDRG -> CR.VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ContactRequestBinding) -> AM (ConnId, ContactRequestBinding)
     create (Compatible connAgentVersion) mkCodes = do
       g <- asks random
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
@@ -1402,27 +1402,27 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
       withStore c $ \db -> runExceptT $ do
         connId' <- ExceptT $ createNewConn db g cData SCMInvitation
         (connId',) <$> mkCodes g maxSupported db connId'
-    createConnRatchet :: CR.RcvE2ERatchetParams 'C.X448 -> TVar ChaChaDRG -> VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ConnVerifyCodes
+    createConnRatchet :: CR.RcvE2ERatchetParams 'C.X448 -> TVar ChaChaDRG -> CR.VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ContactRequestBinding
     createConnRatchet e2eRcvParams g maxSupported db connId' =
-      ratchetVerifyCodes . fst <$> createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams
-    createRequestKeys :: SMP.SenderId -> TVar ChaChaDRG -> VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ConnVerifyCodes
+      CRBRatchet . ratchetVerifyCodes . fst <$> createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams
+    createRequestKeys :: SMP.SenderId -> TVar ChaChaDRG -> CR.VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ContactRequestBinding
     createRequestKeys senderId g maxSupported db connId' = do
       let pqEnc = CR.initialPQEncryption False $ CR.joinContactInitialKeys pqSupport
       (pks, CR.E2ERatchetParams _ k1 k2 kem_) <- liftIO $ CR.generateRcvE2EParams g maxSupported pqEnc
-      liftIO $ requestVerifyCodes k1 k2 kem_ senderId <$ createRatchetX3dhKeys db connId' pks
+      liftIO $ CRBRequest (requestCode k1 k2 kem_ senderId) <$ createRatchetX3dhKeys db connId' pks
 
-requestVerifyCodes :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ConnVerifyCodes
-requestVerifyCodes k1 k2 kem_ sndId =
-  ConnVerifyCodes {codeAD = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2 <> maybe "" smpEncode kem_ <> SMP.unEntityId sndId, codePQ = Nothing}
+requestCode :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ByteString
+requestCode k1 k2 kem_ sndId =
+  C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2 <> maybe "" smpEncode kem_ <> SMP.unEntityId sndId
 
-newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> PQSupport -> AM (ConnId, ConnVerifyCodes)
+newConnToAccept :: AgentClient -> UserId -> ConnId -> Bool -> InvitationId -> PQSupport -> AM (ConnId, ContactRequestBinding)
 newConnToAccept c userId connId enableNtfs invId pqSup = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   case connReq of
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs Nothing cReq pqSup
     CRInvitationDR dr@DRInvitation {ratchetState} -> do
       ConnData {connId = connId'} <- newConnToAcceptDR c userId connId dr enableNtfs
-      pure (connId', ratchetVerifyCodes ratchetState)
+      pure (connId', CRBRatchet $ ratchetVerifyCodes ratchetState)
 
 newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnData
 newConnToAcceptDR c userId connId DRInvitation {agentVersion, pqSupport} enableNtfs = do
@@ -4079,7 +4079,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                 -- show connection request even if invitaion via contact address is not compatible.
                 invId <- storeInvitation (CRInvitation connReq) cInfo False
                 let srvs = L.map qServer $ crSmpQueues crData
-                notify $ REQ invId PQSupportOn srvs cInfo (requestVerifyCodes k1 k2 kem_ sndId) False
+                notify $ REQ invId PQSupportOn srvs cInfo (CRBRequest $ requestCode k1 k2 kem_ sndId) False
               _ -> prohibited "inv: sent to message conn"
 
           storeInvitation :: ContactRequest -> ConnInfo -> Bool -> AM InvitationId
@@ -4106,7 +4106,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                           parseMessage "3" agentMsgBody >>= \case
                             AgentConnInfoReply (replyQueue :| _) cInfo -> do
                               invId <- storeInvitation (CRInvitationDR $ mkDR replyQueue) cInfo False
-                              notify $ REQ invId PQSupportOn (qServer replyQueue :| []) cInfo (ratchetVerifyCodes ratchetState) True
+                              notify $ REQ invId PQSupportOn (qServer replyQueue :| []) cInfo (CRBRatchet $ ratchetVerifyCodes ratchetState) True
                             AgentServiceRequest (replyQueue :| _) sig_ payload ->
                               case verifyServiceReq rc payload sig_ of
                                 Left err -> logError ("service request: " <> T.pack err) >> notify (ERR $ AGENT $ A_SERVICE ASEBadSignature)
