@@ -1648,12 +1648,15 @@ rownd = %s"ROWND" SP ownedNames
 
 | Field | JSON type | Constraints |
 |---|---|---|
-| `names` | array | the names the address holds, each with `name` (absent when the registrar recorded no label), `labelhash`, `expires` and `status` |
+| `names` | array | the names the address holds, each the `nameResponse` resolving it answers with |
 | `inUse` | boolean | whether the account has been used at all |
 | `nextOffset` | number | cursor to resume from, absent when the listing is complete |
 
-Enumeration is not maintained on expiry, so a lapsed name stays listed and is
-told apart by its `status`.
+Each name is answered in full, as `RSLV` answers it, so a client can list the
+names and act on them without resolving each one again. Enumeration is not
+maintained on expiry, so the registrar still enumerates a name past its grace;
+it answers as `available` and names nothing the account holds, so it is left out
+of `names` while still counting towards `inUse`.
 
 `inUse` is what the registry could see on its own chain — the account's nonce,
 its balance, and every name it holds, which is not only the names listed here:

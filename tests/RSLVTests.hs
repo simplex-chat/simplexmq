@@ -28,7 +28,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
 import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
 import Simplex.Messaging.Eth.Address (Address)
-import Simplex.Messaging.Names.Record (OwnedName (..), OwnedNames (..))
+import Simplex.Messaging.Names.Record (OwnedNames (..))
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -145,7 +145,7 @@ testRownOwned =
       corrId `shouldBe` CorrId "ro01"
       case resp of
         Right (ROWND owned) -> do
-          map onName (ownNames owned) `shouldBe` [Just "alice.testing"]
+          map ownedName (ownNames owned) `shouldBe` ["alice.simplex"]
           ownInUse owned `shouldBe` True
         r -> expectationFailure $ "unexpected " <> show r
 
@@ -158,8 +158,14 @@ testRownUnsupported =
       (_, _, resp) <- sendRown h "ro02" testAddr
       resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
 
+-- | Each owned name is the same NameResponse /v2/resolve answers with.
 ownedBody :: LB.ByteString
-ownedBody = "{\"address\":\"0x70997970c51812dc3a010c7d01b50e0d17dc79c8\",\"names\":[{\"name\":\"alice.testing\",\"labelhash\":\"0x9c02\",\"expires\":1821603121,\"status\":\"registered\"}],\"inUse\":true,\"nextOffset\":null}"
+ownedBody = "{\"names\":[" <> registeredBody testNameRecord <> "],\"inUse\":true,\"nextOffset\":null}"
+
+ownedName :: NameResponse -> Text
+ownedName = \case
+  NameResponse {registration = NRRegistered {nameRecord}} -> SMP.nrName nameRecord
+  r -> error $ "expected a registered name, got: " <> show r
 
 testRslvDisabled :: IO ()
 testRslvDisabled =
@@ -218,7 +224,7 @@ testRownForwarded :: IO ()
 testRownForwarded =
   withProxyAndResolver (status200, ownedBody) $
     forwardedToRelay (\pc sess -> proxyOwnedNames pc NRMInteractive sess testAddr 0) >>= \r -> case r of
-      Right (Right owned) -> map onName (ownNames owned) `shouldBe` [Just "alice.testing"]
+      Right (Right owned) -> map ownedName (ownNames owned) `shouldBe` ["alice.simplex"]
       _ -> expectationFailure $ "expected Right (Right OwnedNames), got: " <> show r
 
 testRslvSuccess :: IO ()

@@ -29,11 +29,12 @@ RSLV already does.
 
 Enumeration is read off the ERC-721 registrar (`balanceOf`,
 `tokenOfOwnerByIndex`, `labelOf`), not from registration logs: the token is the
-name, so a name acquired by transfer counts. The registrar does not maintain
-enumeration on expiry — it states this as an invariant, and burns a token only
-when the name is re-registered — so a lapsed name stays listed. It is reported
-with its `status` rather than filtered, because a caller scanning a recovered
-seed is exactly the caller who needs to be told a name can still be renewed.
+name, so a name acquired by transfer counts. Each name is then answered with the
+`NameResponse` resolving it gives, so the client that scans can list the names
+and act on them without asking again — the reason the per-name cost is worth
+paying. The registrar does not maintain enumeration on expiry, so a name past
+its grace is still enumerated; it answers as available, naming nothing the
+account holds, so it is left out while still counting towards `inUse`.
 
 ## What `inUse` actually answers
 
@@ -74,8 +75,8 @@ cannot be enumerated to be dusted.
   `OwnedNames` keeps only the names, the flag and the cursor, so a client cannot
   yet see why an account is in use.
 - **No caching, and no batching.** One owned-by is a `balanceOf` per configured
-  TLD, a grace period for each that lists a name, three `eth_call`s per name
-  listed, and the block, nonce and balance, all issued one at a time, so it is
+  TLD, then for each name the same reads resolving it takes - roughly fifteen
+  `eth_call`s - plus the nonce and balance, all issued one at a time, so it is
   forked on
   the server the same way RSLV is and nothing is memoised. The page size trades
   against both the relay's response cap and its timeout, and it bounds names per

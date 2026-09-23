@@ -14,7 +14,6 @@ module Simplex.Messaging.Names.Record
     USDCents (..),
     NameReservedReason (..),
     OwnedNames (..),
-    OwnedName (..),
   )
 where
 
@@ -92,22 +91,12 @@ data NameRegistration
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
--- | What the registry holds for an address: the names it owns, and whether the account is in use
+-- | What the registry holds for an address: the names it owns, each as the 'NameResponse' resolving it gives, and whether the account is in use
 data OwnedNames = OwnedNames
-  { ownNames :: [OwnedName],
+  { ownNames :: [NameResponse],
     ownInUse :: Bool,
     -- | the cursor to resume from, absent when the listing is complete
     ownNextOffset :: Maybe Int
-  }
-  deriving (Eq, Show)
-
--- | One name an address holds. A lapsed name stays listed; `onStatus` is how a caller tells it apart.
-data OwnedName = OwnedName
-  { -- | absent when the registrar never recorded the label
-    onName :: Maybe Text,
-    onLabelhash :: Text,
-    onExpires :: SystemSeconds,
-    onStatus :: Text
   }
   deriving (Eq, Show)
 
@@ -156,10 +145,6 @@ instance ToJSON NameReservedReason where
 instance FromJSON NameReservedReason where
   parseJSON = textParseJSON "NameReservedReason"
 
-$(JQ.deriveJSON defaultJSON {J.fieldLabelModifier = dropPrefix "on"} ''OwnedName)
-
-$(JQ.deriveJSON defaultJSON {J.fieldLabelModifier = dropPrefix "own"} ''OwnedNames)
-
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 
 -- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
@@ -167,3 +152,5 @@ $(JQ.deriveJSON defaultJSON ''NamePricing)
 $(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NR") ''NameRegistration)
 
 $(JQ.deriveJSON defaultJSON ''NameResponse)
+
+$(JQ.deriveJSON defaultJSON {J.fieldLabelModifier = dropPrefix "own"} ''OwnedNames)

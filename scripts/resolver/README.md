@@ -168,15 +168,17 @@ bounds its lifetime. A subname nobody created reports as not registered.
 
 ### v2: `/v2/owned-by/<address>?offset=N`
 
-The body is the SMP protocol's `OwnedNames`: the names the address holds, and
-`inUse`, whether the account has been used at all. The router decodes it as is
-and forwards it, so the fields are specified with the wire, in the **Names owned
-by an address command** section of
+The body is the SMP protocol's `OwnedNames`: the names the address holds, each
+the same `NameResponse` `/v2/resolve` answers with, and `inUse`, whether the
+account has been used at all. The router decodes it as is and forwards it, so
+the fields are specified with the wire, in the **Names owned by an address
+command** section of
 [`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md).
 
-Enumeration comes off the registrar's ERC-721 index, so a name acquired by
-transfer counts, and a lapsed one stays listed until someone re-registers it:
-every entry carries its `status` rather than being filtered out.
+Answering each name in full is what lets a caller list and act on them without a
+second request for each. Enumeration comes off the registrar's ERC-721 index, so
+a name acquired by transfer counts; one past its grace is still enumerated but
+answers as available, so it is left out while still counting towards `inUse`.
 
 `offset` is the cursor to resume from, and it counts per registrar, so a page
 holds up to `SNRC_MAX_OWNED` names for each configured TLD. `nextOffset` is the

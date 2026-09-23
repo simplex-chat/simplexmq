@@ -127,9 +127,10 @@ COIN_DOT = 354
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 # Names per registrar per /owned-by page, so a page holds this many times the
-# number of configured TLDs. A relay caps the body it reads at 16000 bytes and a
-# client cannot ask for a smaller page, so keep the product well under it.
-MAX_OWNED = max(1, int(os.environ.get("SNRC_MAX_OWNED", "16")))
+# number of configured TLDs. Each carries a full NameResponse, and a relay caps
+# the body it reads at 16000 bytes while a client cannot ask for a smaller page,
+# so keep the product well under it.
+MAX_OWNED = max(1, int(os.environ.get("SNRC_MAX_OWNED", "8")))
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
 
@@ -895,12 +896,12 @@ def owned_by(address: str, offset: int = 0):
     account's on-chain footprint.
 
     Enumeration is read off the ERC-721 registrar, so a name acquired by
-    transfer counts, and a lapsed one stays listed until re-registered - it is
-    reported with its `status`, not filtered. `inUse` is what a recovery scan
-    asks, derived from this chain's nonce and balance and every name it holds,
-    not only the page returned: an
-    account holding only other tokens is not seen, and neither is one used on
-    another chain.
+    transfer counts. Each name is answered with the NameResponse /v2/resolve
+    gives for it, so a caller can list and act on them without asking again.
+    `inUse` is what a recovery scan asks, derived from this chain's nonce and
+    balance and every name it holds, not only the page returned: an account
+    holding only other tokens is not seen, and neither is one used on another
+    chain.
     """
     if not is_address(address):
         return 400, {
@@ -925,7 +926,6 @@ def owned_by(address: str, offset: int = 0):
             "configuredTlds": [],
         }
 
-    now = chain_now()
     names, truncated, total_held = [], False, 0
     for tld, registrar in configured.items():
         held = decode_uint(eth_call(registrar, selector("balanceOf(address)") + encode_address(address)))
@@ -933,30 +933,22 @@ def owned_by(address: str, offset: int = 0):
         last = min(offset + MAX_OWNED, held)
         if last < held:
             truncated = True
-        grace = grace_period(registrar) if last > offset else 0
         for i in range(offset, last):
             token = decode_uint(
                 eth_call(registrar, selector("tokenOfOwnerByIndex(address,uint256)") + encode_address(address) + encode_uint(i))
             )
-            expires = decode_uint(eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token)))
-            # No label means the token is real but its name is not recoverable
-            # from chain state - registered before labels were recorded.
-            # Reported without a name rather than silently dropped.
             label = registered_label(registrar, token)
-            names.append(
-                {
-                    "name": (label + "." + tld) if label else None,
-                    "tld": tld,
-                    "labelhash": "0x" + format(token, "064x"),
-                    "expires": expires,
-                    "graceEnds": expires + grace if expires else None,
-                    "status": expiry_status(expires, grace, now),
-                }
-            )
+            if not label:
+                continue
+            status, body = registration(label + "." + tld)
+            # only a name still held names itself; one past its grace answers as
+            # available, which says nothing about the token it is enumerated on
+            if status == 200 and body["registration"]["type"] == "registered":
+                names.append(body)
 
     nonce = decode_uint(rpc("eth_getTransactionCount", [address, "latest"]))
     balance = decode_uint(rpc("eth_getBalance", [address, "latest"]))
-    names.sort(key=lambda n: (n["tld"], n["name"] or n["labelhash"]))
+    names.sort(key=lambda n: n["registration"]["nameRecord"]["name"])
     return 200, {
         "address": address,
         "names": names,
