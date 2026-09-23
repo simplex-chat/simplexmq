@@ -135,8 +135,7 @@ testRslvBackendHttpErr =
       (_, _, resp) <- sendRslv h "rs05" (domain "alice.simplex")
       resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
 
--- | The scan reads inUse, so an account in use with no names must not arrive
--- looking the same as one that owns nothing.
+-- | The scan reads inUse, so in use with no names must not look like owning nothing.
 testRownOwned :: IO ()
 testRownOwned =
   withResolverServer (status200, ownedBody) $
@@ -149,8 +148,7 @@ testRownOwned =
           ownInUse owned `shouldBe` True
         r -> expectationFailure $ "unexpected " <> show r
 
--- A resolver that does not serve owned-by answers 404, which must reach the
--- client as a resolver error: read as "owns nothing" it would end a scan early.
+-- 404 must reach the client as a resolver error; read as "owns nothing" it would end a scan early.
 testRownUnsupported :: IO ()
 testRownUnsupported =
   withResolverServer (status404, "{}") $
@@ -218,8 +216,7 @@ testRslvForwardedSuccess =
       Right (Right NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
       _ -> expectationFailure $ "expected Right (Right NRRegistered), got: " <> show r
 
--- | Without this the scan has to fall back to a direct session, handing the
--- relay the address together with the client IP.
+-- | Without this a scan falls back to a direct session, handing the relay the address with the IP.
 testRownForwarded :: IO ()
 testRownForwarded =
   withProxyAndResolver (status200, ownedBody) $

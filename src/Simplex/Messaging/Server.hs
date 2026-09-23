@@ -1513,7 +1513,6 @@ client
     resolverMsg v nenv = \case
       RSLV d -> resolveNameMsg v nenv d
       ROWN addr offset -> ownedNamesMsg nenv addr offset
-    -- Forked for the same reason as RSLV: one owned-by is many eth_calls.
     ownedNamesMsg :: NamesEnv -> Address -> Word32 -> M s BrokerMsg
     ownedNamesMsg nenv addr offset = do
       st <- asks (rslvStats . serverStats)

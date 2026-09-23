@@ -126,10 +126,7 @@ COIN_DOT = 354
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
-# Names per registrar per /owned-by page, so a page holds this many times the
-# number of configured TLDs. Each carries a full NameResponse, and a relay caps
-# the body it reads at 16000 bytes while a client cannot ask for a smaller page,
-# so keep the product well under it.
+# Names per registrar per /owned-by page; times the configured TLDs, a full page of NameResponses must fit the 16000 bytes a relay reads.
 MAX_OWNED = max(1, int(os.environ.get("SNRC_MAX_OWNED", "8")))
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
@@ -928,8 +925,7 @@ def owned_by(address: str, offset: int = 0):
             "configuredTlds": [],
         }
 
-    # the block the enumeration below is read at; each name resolved after it
-    # reports its own, and the oldest of them all is what the answer carries
+    # the oldest block behind the answer: this one, or any name's own
     last_block_ts = chain_now()
     names, truncated, total_held = [], False, 0
     for tld, registrar in configured.items():
@@ -946,8 +942,7 @@ def owned_by(address: str, offset: int = 0):
             if not label:
                 continue
             status, body = registration(label + "." + tld)
-            # only a name still held names itself; one past its grace answers as
-            # available, which says nothing about the token it is enumerated on
+            # one past its grace answers as available, naming nothing it holds
             if status == 200 and body["registration"]["type"] == "registered":
                 names.append(body)
                 if body["lastBlockTs"] is not None:
@@ -962,12 +957,9 @@ def owned_by(address: str, offset: int = 0):
         "names": names,
         "nonce": nonce,
         "balance": str(balance),
-        # every name the address holds, not just this page: a later page of a
-        # held name must not read as an account that owns nothing
+        # every name held, not just this page, or page two reads as owning nothing
         "inUse": total_held > 0 or nonce > 0 or balance > 0,
         "offset": offset,
-        # `nextOffset` is the cursor to resume from, or null when the listing is
-        # complete, so "there is more" and "how to get it" are one answer.
         "nextOffset": offset + MAX_OWNED if truncated else None,
         "checkedTlds": sorted(configured),
     }

@@ -1081,9 +1081,7 @@ directResolveName c nm name
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
 
--- | Names an address owns, via PFWD, when the network config selects a proxy. A
--- scan reveals which accounts belong to one wallet, so hiding the client IP
--- matters more here than for one name.
+-- | Names an address owns, via PFWD: a scan links accounts, so hiding the client IP matters more here than for one name.
 proxyOwnedNames :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> Address -> Word32 -> ExceptT SMPClientError IO (Either ProxyClientError OwnedNames)
 proxyOwnedNames c nm proxiedRelay addr offset
   | prVersion proxiedRelay >= nameOwnedSMPVersion =

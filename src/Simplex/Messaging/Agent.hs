@@ -468,8 +468,7 @@ resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDoma
 resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
 
--- | Names an address owns. The relay used is returned so a scan can pass it
--- back as used and ask the next account elsewhere.
+-- | Names an address owns, with the relay used, so a scan can ask the next account elsewhere.
 ownedSimplexNames :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AE (SMPServer, OwnedNames)
 ownedSimplexNames c nm userId used addr offset = withAgentEnv c $ ownedSimplexNames' c nm userId used addr offset
 {-# INLINE ownedSimplexNames #-}
@@ -1286,8 +1285,7 @@ ownedSimplexNames' c nm userId used addr offset = tryRelays ownedNamesRelays use
       srv <- getNextNameServer c userId tried
       ((srv,) <$> ownedNames c nm userId srv addr offset) `catchError` \e ->
         if attempts > 1 && cannotAnswer e then tryRelays (attempts - 1) (srv : tried) else throwE e
-    -- a relay that cannot answer, as against one that answers: too old for ROWN,
-    -- unreachable, or with no resolver of its own behind it
+    -- cannot answer, as against answers: too old for ROWN, unreachable, or with no resolver
     cannotAnswer e = temporaryOrHostError e || case e of
       SMP _ (NAME _) -> True
       _ -> False

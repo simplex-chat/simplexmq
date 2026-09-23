@@ -1054,8 +1054,7 @@ class OwnedByTests(unittest.TestCase):
         snrc.REGISTRARS = {"testing": self.REGISTRAR, "simplex": ""}
         snrc.rpc = lambda method, params: "0x0"
         snrc.chain_now = lambda: self.BLOCK_TS
-        # resolving one name is RegistrationV2Tests' subject; what owned-by adds
-        # is which names to resolve, so the registration itself is stubbed
+        # RegistrationV2Tests covers resolving one; owned-by picks which
         snrc.registration = lambda name: (200, self.response(name, "registered"))
 
     def tearDown(self):

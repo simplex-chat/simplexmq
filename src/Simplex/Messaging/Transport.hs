@@ -220,8 +220,7 @@ serverInfoSMPVersion = VersionSMP 21
 nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
--- | ROWN lists the names an address owns. A server below this does not answer
--- it, which a recovery scan must not read as the address owning nothing.
+-- | ROWN lists the names an address owns; below this a server does not answer it, which is not the same as owning nothing.
 nameOwnedSMPVersion :: VersionSMP
 nameOwnedSMPVersion = VersionSMP 23
 
@@ -240,10 +239,7 @@ currentServerSMPRelayVersion = VersionSMP 23
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (23)
--- for this release because a proxied ROWN is only answered from
--- nameOwnedSMPVersion (23), and a scan that cannot proxy exposes its address
--- to the relay; the buffer reappears once the current version advances past 23.
+-- when clients upgrade at different times. Pinned to the current version (23) because a proxied ROWN needs it, and the buffer returns once current passes 23.
 proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 23
 

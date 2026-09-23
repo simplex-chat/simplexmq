@@ -101,8 +101,7 @@ resolveNameTests = do
   describe "owned names" $
     it "a relay that cannot answer is not the end of the lookup" testOwnedRetriesRelays
 
--- | A relay too old for ROWN, unreachable, or with no resolver behind it must
--- not end a recovery scan at the account it was asked about.
+-- | A relay that cannot answer must not end a scan at the account it was asked about.
 testOwnedRetriesRelays :: HasCallStack => IO ()
 testOwnedRetriesRelays =
   withDirectResolverReqs (status502, "{}") $ \c reqs -> do

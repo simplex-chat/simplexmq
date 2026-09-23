@@ -2032,8 +2032,7 @@ resolveName c nm userId server domain =
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
 
--- | Names an address owns, from one names-capable relay. Mirrors resolveName:
--- proxied where the network config allows it, direct otherwise.
+-- | Names an address owns, from one names-capable relay, proxied as resolveName is.
 ownedNames :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> Address -> Word32 -> AM OwnedNames
 ownedNames c nm userId server addr offset =
   snd <$> sendOrProxySMPCommand c nm userId server "" "ROWN" NoEntity ownedViaProxy ownedDirectly
@@ -2044,8 +2043,7 @@ ownedNames c nm userId server addr offset =
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means
 -- no server resolves names - a declared agent error, never a fallback.
--- Servers already used are avoided where the set allows, operator first: one
--- operator asked about every account of a scan learns they are one wallet.
+-- Used servers are avoided where the set allows, operator first: one operator asked about every account learns the wallet.
 getNextNameServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServer
 getNextNameServer c userId usedSrvs =
   liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case

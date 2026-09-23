@@ -120,8 +120,7 @@ resolveHttp env q =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
     <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
 
--- | The address is EIP-55 hex, which is already URL-safe, but it is encoded
--- for the same reason the name is: nothing from a client reaches the path raw.
+-- | The address is encoded for the same reason the name is: nothing from a client reaches the path raw.
 ownedByHttp :: ResolverEnv -> Text -> Word32 -> IO (Either ResolverError OwnedNames)
 ownedByHttp env addr offset =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
