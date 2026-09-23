@@ -2044,17 +2044,15 @@ ownedNames c nm userId server addr offset =
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means
 -- no server resolves names - a declared agent error, never a fallback.
--- Servers already used are avoided where the set allows: one relay asked about
--- every account of a scan would learn they belong to one wallet.
+-- Servers already used are avoided where the set allows, operator first: one
+-- operator asked about every account of a scan learns they are one wallet.
 getNextNameServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServer
 getNextNameServer c userId usedSrvs =
   liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
     Just UserServers {nameSrvs} -> case L.nonEmpty nameSrvs of
-      Just srvs -> protoServer <$> pickServer (fromMaybe srvs $ L.nonEmpty $ L.filter (isUnusedServer usedHosts) srvs)
+      Just srvs -> protoServer . snd <$> getNextServer_ srvs (usedOperatorsHosts srvs usedSrvs)
       Nothing -> throwE NO_NAME_SERVERS
     Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
-  where
-    usedHosts = S.unions $ map serverHosts usedSrvs
 
 enableQueueNotifications :: AgentClient -> RcvQueue -> SMP.NtfPublicAuthKey -> SMP.RcvNtfPublicDhKey -> AM (SMP.NotifierId, SMP.RcvNtfPublicDhKey)
 enableQueueNotifications c rq@RcvQueue {rcvId, rcvPrivateKey} notifierKey rcvNtfPublicDhKey =

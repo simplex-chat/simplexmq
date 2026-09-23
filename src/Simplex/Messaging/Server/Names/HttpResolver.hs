@@ -43,8 +43,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
-import Data.Word (Word32)
 import Data.Text.Encoding (encodeUtf8)
+import Data.Word (Word32)
 import Network.HTTP.Client
   ( HttpException,
     Manager,

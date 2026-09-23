@@ -47,8 +47,8 @@ withResolverServerDelayed delayMs handler action = do
       let (st, body) = handler (pathInfo req)
       send $ responseLBS st [(hContentType, "application/json")] body
 
--- | The resolver API is versioned on its own: v2 answers with NameRegistration
--- JSON, which is the only shape the server asks for.
+-- | The resolver API is versioned on its own: v2 answers a name with
+-- NameRegistration JSON, and an address with OwnedNames.
 resolveResp :: Status -> LB.ByteString -> [Text] -> (Status, LB.ByteString)
 resolveResp st body = \case
   ["health"] -> (ok200, "{}")

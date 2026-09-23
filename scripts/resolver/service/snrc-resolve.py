@@ -44,6 +44,8 @@ Environment:
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
+  SNRC_MAX_OWNED         Names /v2/owned-by returns per registrar per page
+                         (default: 16)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
 
@@ -124,8 +126,10 @@ COIN_DOT = 354
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
-# Names returned per /owned-by page; a scan follows `nextOffset` for the rest.
-MAX_OWNED = int(os.environ.get("SNRC_MAX_OWNED", "256"))
+# Names per registrar per /owned-by page, so a page holds this many times the
+# number of configured TLDs. A relay caps the body it reads at 16000 bytes and a
+# client cannot ask for a smaller page, so keep the product well under it.
+MAX_OWNED = max(1, int(os.environ.get("SNRC_MAX_OWNED", "16")))
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
 
@@ -893,7 +897,8 @@ def owned_by(address: str, offset: int = 0):
     Enumeration is read off the ERC-721 registrar, so a name acquired by
     transfer counts, and a lapsed one stays listed until re-registered - it is
     reported with its `status`, not filtered. `inUse` is what a recovery scan
-    asks, derived from this chain's nonce and balance and the names above: an
+    asks, derived from this chain's nonce and balance and every name it holds,
+    not only the page returned: an
     account holding only other tokens is not seen, and neither is one used on
     another chain.
     """
@@ -921,23 +926,23 @@ def owned_by(address: str, offset: int = 0):
         }
 
     now = chain_now()
-    names, truncated = [], False
+    names, truncated, total_held = [], False, 0
     for tld, registrar in configured.items():
-        grace = grace_period(registrar)
         held = decode_uint(eth_call(registrar, selector("balanceOf(address)") + encode_address(address)))
-        first = min(offset, held)
-        last = min(first + MAX_OWNED, held)
+        total_held += held
+        last = min(offset + MAX_OWNED, held)
         if last < held:
             truncated = True
-        for i in range(first, last):
+        grace = grace_period(registrar) if last > offset else 0
+        for i in range(offset, last):
             token = decode_uint(
                 eth_call(registrar, selector("tokenOfOwnerByIndex(address,uint256)") + encode_address(address) + encode_uint(i))
             )
             expires = decode_uint(eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token)))
-            # A label of "" means the token is real but its name is not
-            # recoverable from chain state - registered before labels were
-            # recorded. Reported without a name rather than silently dropped.
-            label = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token))).decode()
+            # No label means the token is real but its name is not recoverable
+            # from chain state - registered before labels were recorded.
+            # Reported without a name rather than silently dropped.
+            label = registered_label(registrar, token)
             names.append(
                 {
                     "name": (label + "." + tld) if label else None,
@@ -957,12 +962,13 @@ def owned_by(address: str, offset: int = 0):
         "names": names,
         "nonce": nonce,
         "balance": str(balance),
-        "inUse": bool(names) or nonce > 0 or balance > 0,
+        # every name the address holds, not just this page: a later page of a
+        # held name must not read as an account that owns nothing
+        "inUse": total_held > 0 or nonce > 0 or balance > 0,
         "offset": offset,
         # `nextOffset` is the cursor to resume from, or null when the listing is
         # complete, so "there is more" and "how to get it" are one answer.
         "nextOffset": offset + MAX_OWNED if truncated else None,
-        "truncated": truncated,
         "checkedTlds": sorted(configured),
     }
 
@@ -995,7 +1001,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 offset = int(parse_qs(parsed.query).get("offset", ["0"])[0])
             except ValueError:
-                self._respond(400, {"address": address, "error": "badOffset"})
+                self._respond(400, {"address": address, "error": "badOffset", "message": "offset is a decimal position in the listing"})
                 return
             try:
                 status, body = owned_by(address, offset)
@@ -1058,7 +1064,7 @@ def main():
     )
     for tld, addr in REGISTRIES.items():
         sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
-    sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
+    sys.stderr.write("  GET /v2/resolve/<name>   GET /v2/owned-by/<address>   GET /v1/resolve/<name>   GET /health\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

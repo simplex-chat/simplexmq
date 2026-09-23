@@ -94,9 +94,9 @@ data NameRegistration
 
 -- | What the registry holds for an address: the names it owns, and whether the
 -- account is in use, which holding a name is only one way to be. `ownInUse` is
--- what the resolver could see on its own chain - the nonce, the balance and the
--- names - so an account used only for other tokens, or on another chain, reads
--- as unused.
+-- what the resolver could see on its own chain - the nonce, the balance and
+-- every name the address holds, not only the ones listed here - so an account
+-- used only for other tokens, or on another chain, reads as unused.
 data OwnedNames = OwnedNames
   { ownNames :: [OwnedName],
     ownInUse :: Bool,

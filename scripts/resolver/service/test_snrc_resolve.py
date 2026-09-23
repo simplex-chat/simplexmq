@@ -1117,7 +1117,6 @@ class OwnedByTests(unittest.TestCase):
     def test_more_names_than_a_page_carry_the_cursor_to_resume_from(self):
         snrc.eth_call = self._chain(snrc.MAX_OWNED + 1, int(time.time()) + 86400)
         _, body = snrc.owned_by(self.ADDR)
-        self.assertTrue(body["truncated"])
         self.assertEqual(body["nextOffset"], snrc.MAX_OWNED)
         self.assertEqual(len(body["names"]), snrc.MAX_OWNED)
 
@@ -1134,6 +1133,22 @@ class OwnedByTests(unittest.TestCase):
         snrc.chain_now = lambda: expires + 1
         _, body = snrc.owned_by(self.ADDR)
         self.assertEqual(body["names"][0]["status"], "grace")
+
+    def test_a_page_past_the_end_still_reports_the_account_in_use(self):
+        """inUse is a property of the account, not of the page: an empty later
+        page must not read as an account that owns nothing."""
+        snrc.eth_call = self._chain(1, int(time.time()) + 86400)
+        _, body = snrc.owned_by(self.ADDR, snrc.MAX_OWNED)
+        self.assertEqual(body["names"], [])
+        self.assertTrue(body["inUse"])
+
+    def test_a_label_that_is_not_utf8_is_reported_not_fatal(self):
+        """The registrar stores the label bytes unchecked, so one bad label
+        must not take down the whole listing."""
+        snrc.eth_call = self._chain(1, int(time.time()) + 86400, label=b"\xff\xfe")
+        status, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["names"]), 1)
 
     def test_a_negative_offset_is_refused(self):
         snrc.eth_call = self._chain(1, int(time.time()) + 86400)

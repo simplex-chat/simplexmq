@@ -1509,6 +1509,10 @@ client
         answered = \case
           NRRegistered {} -> True
           _ -> v >= nameAvailSMPVersion
+    resolverMsg :: VersionSMP -> NamesEnv -> Command Resolver -> M s BrokerMsg
+    resolverMsg v nenv = \case
+      RSLV d -> resolveNameMsg v nenv d
+      ROWN addr offset -> ownedNamesMsg nenv addr offset
     -- Forked for the same reason as RSLV: one owned-by is many eth_calls.
     ownedNamesMsg :: NamesEnv -> Address -> Word32 -> M s BrokerMsg
     ownedNamesMsg nenv addr offset = do
@@ -1532,12 +1536,9 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
-      Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
+      Cmd SResolver command -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg (thVersion thParams') nenv d)
-      Cmd SResolver (ROWN addr offset) -> rslvNamesEnv >>= \case
-        Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (ownedNamesMsg nenv addr offset)
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolverMsg (thVersion thParams') nenv command)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2165,10 +2166,10 @@ client
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
             Left r -> pure $ Just r
             Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+              Cmd SResolver command -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
                 Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
+                  msg <- resolverMsg (thVersion clntTHParams) nenv command
                   either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
@@ -2190,6 +2191,7 @@ client
                     Cmd SSenderLink (LKEY _) -> True
                     Cmd SSenderLink LGET -> True
                     Cmd SResolver (RSLV _) -> True
+                    Cmd SResolver (ROWN _ _) -> True
                     _ -> False
                   verified = \case
                     VRVerified q -> Right (q, t'')

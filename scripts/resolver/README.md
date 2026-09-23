@@ -93,7 +93,7 @@ curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
 | reth p2p | `:30303` tcp/udp | Ethereum sync (open on firewall) |
 | nimbus p2p | `:9000` tcp/udp | beacon sync (open on firewall) |
 | nimbus REST | `127.0.0.1:5052` | beacon API |
-| **resolver** | `127.0.0.1:8000` | SNRC REST (`/v2/resolve`, `/resolve`, `/health`) |
+| **resolver** | `127.0.0.1:8000` | SNRC REST (`/v2/resolve`, `/v2/owned-by`, `/resolve`, `/health`) |
 
 ## Caveats
 
@@ -121,12 +121,13 @@ standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
 ```
 
-Three routes, versioned separately from the protocol so each only changes when
+Four routes, versioned separately from the protocol so each only changes when
 its own shape does:
 
 | Route | Called by | Answers |
 |---|---|---|
 | `/v2/resolve/<query>` | routers from SMP v22 | a `NameRegistration` |
+| `/v2/owned-by/<address>` | routers from SMP v23 | the names an address owns |
 | `/resolve/<name>` | routers before SMP v22 | a name record, flat |
 | `/health` | anyone | readiness |
 
@@ -164,6 +165,32 @@ label, so a hashed query cannot be answered with a name. See
 
 A subname reports the expiry and grace of the 2LD above it, since that is what
 bounds its lifetime. A subname nobody created reports as not registered.
+
+### v2: `/v2/owned-by/<address>?offset=N`
+
+The body is the SMP protocol's `OwnedNames`: the names the address holds, and
+`inUse`, whether the account has been used at all. The router decodes it as is
+and forwards it, so the fields are specified with the wire, in the **Names owned
+by an address command** section of
+[`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md).
+
+Enumeration comes off the registrar's ERC-721 index, so a name acquired by
+transfer counts, and a lapsed one stays listed until someone re-registers it:
+every entry carries its `status` rather than being filtered out.
+
+`offset` is the cursor to resume from, and it counts per registrar, so a page
+holds up to `SNRC_MAX_OWNED` names for each configured TLD. `nextOffset` is the
+next cursor, or null when the listing is complete. `inUse` covers every name the
+address holds, not only the page, so a later page reports it true with an empty
+`names`.
+
+| Status | Meaning |
+|---|---|
+| 200 | the names the address holds, with `inUse` |
+| 400 | `badAddress`, `badOffset`, `noRegistrarConfigured` |
+| 502 | `upstreamError` |
+
+Error bodies carry `address`, a fixed `error` code and a `message`.
 
 ### v1: `/resolve/<name>`
 
@@ -374,3 +401,8 @@ here.
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
 as env vars when you run the script directly.
+
+`SNRC_MAX_OWNED` (default 16) caps the names `/v2/owned-by` returns per
+registrar per page. A router will not read a body over 16000 bytes, and a client
+cannot ask for a smaller page, so keep it times the number of configured TLDs
+well under that.

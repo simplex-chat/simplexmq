@@ -103,6 +103,7 @@ rslvTests = do
   describe "RSLV forwarded (PFWD)" $ do
     it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME RESOLVER))" testRslvForwarded
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
+    it "PFWD-wrapped ROWN reaches the resolver, so a scan need not go direct" testRownForwarded
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
   describe "RSLV availability (RNAME response)" $ do
@@ -182,7 +183,11 @@ testRslvVersion =
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
 forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
-forwardedResolveAlice = do
+forwardedResolveAlice = forwardedToRelay $ \pc sess -> proxyResolveName pc NRMInteractive sess (domain "alice.simplex")
+
+-- | Run one proxied resolver command over a PFWD session to the second relay.
+forwardedToRelay :: (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO a) -> IO (Either SMPClientError a)
+forwardedToRelay proxiedCmd = do
   g <- C.newRandom
   ts <- getCurrentTime
   let proxyServ = SMPServer testHost testPort testKeyHash
@@ -191,7 +196,7 @@ forwardedResolveAlice = do
   pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pcE
   sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
-  runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+  runExceptT (proxiedCmd pc sess)
 
 testRslvForwarded :: IO ()
 testRslvForwarded =
@@ -206,6 +211,15 @@ testRslvForwardedSuccess =
     forwardedResolveAlice >>= \r -> case r of
       Right (Right NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
       _ -> expectationFailure $ "expected Right (Right NRRegistered), got: " <> show r
+
+-- | Without this the scan has to fall back to a direct session, handing the
+-- relay the address together with the client IP.
+testRownForwarded :: IO ()
+testRownForwarded =
+  withProxyAndResolver (status200, ownedBody) $
+    forwardedToRelay (\pc sess -> proxyOwnedNames pc NRMInteractive sess testAddr 0) >>= \r -> case r of
+      Right (Right owned) -> map onName (ownNames owned) `shouldBe` [Just "alice.testing"]
+      _ -> expectationFailure $ "expected Right (Right OwnedNames), got: " <> show r
 
 testRslvSuccess :: IO ()
 testRslvSuccess =

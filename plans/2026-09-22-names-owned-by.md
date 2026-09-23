@@ -13,7 +13,7 @@ primitives. The client consumer is the wallet recovery scan in simplex-chat.
 ```
 GET /v2/owned-by/<address>?offset=N   resolver, JSON OwnedNames
 ROWN <address> <offset> -> ROWND      SMP v23 (nameOwnedSMPVersion)
-ownedNames                            server, agent client, agent
+ownedSimplexNames                     agent, over ownedNames in the server
 ```
 
 The agent returns the relay it used alongside the answer, so a caller can pass
@@ -22,7 +22,10 @@ seed to one relay would tell that relay the accounts belong to one wallet; the
 scan therefore asks one account per relay, and `getNextNameServer` avoids the
 hosts already used where the configured set allows. `proxiedSMPRelayVersion` is
 pinned to the current version so ROWN can be proxied at all — a scan that falls
-back to a direct session hands the relay its address with its IP.
+back to a direct session hands the relay its address with its IP. The pin is
+necessary but not sufficient: under the default `SPMUnknown` proxy mode a
+configured names server is a known host, so the scan reaches it directly, as
+RSLV already does.
 
 Enumeration is read off the ERC-721 registrar (`balanceOf`,
 `tokenOfOwnerByIndex`, `labelOf`), not from registration logs: the token is the
@@ -70,8 +73,13 @@ cannot be enumerated to be dusted.
 - **Nonce and balance are not carried over SMP.** The resolver reports them, and
   `OwnedNames` keeps only the names, the flag and the cursor, so a client cannot
   yet see why an account is in use.
-- **No caching.** One owned-by is many `eth_call`s, so it is forked on the
-  server the same way RSLV is, and nothing is memoised.
+- **No caching, and no batching.** One owned-by is a `balanceOf` per configured
+  TLD, a grace period for each that lists a name, three `eth_call`s per name
+  listed, and the block, nonce and balance, all issued one at a time, so it is
+  forked on
+  the server the same way RSLV is and nothing is memoised. The page size trades
+  against both the relay's response cap and its timeout, and it bounds names per
+  registrar rather than per page, so a second TLD doubles a full page.
 - **Enumeration is not atomic.** `balanceOf` and each `tokenOfOwnerByIndex` are
   separate calls at `latest`, so a transfer between them can duplicate or skip an
   entry, and successive pages can straddle blocks. Pinning every call to one
