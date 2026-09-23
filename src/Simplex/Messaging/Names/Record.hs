@@ -92,11 +92,7 @@ data NameRegistration
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
--- | What the registry holds for an address: the names it owns, and whether the
--- account is in use, which holding a name is only one way to be. `ownInUse` is
--- what the resolver could see on its own chain - the nonce, the balance and
--- every name the address holds, not only the ones listed here - so an account
--- used only for other tokens, or on another chain, reads as unused.
+-- | What the registry holds for an address: the names it owns, and whether the account is in use
 data OwnedNames = OwnedNames
   { ownNames :: [OwnedName],
     ownInUse :: Bool,
@@ -105,8 +101,7 @@ data OwnedNames = OwnedNames
   }
   deriving (Eq, Show)
 
--- | One name an address holds. Enumeration is not maintained on expiry, so a
--- lapsed name stays listed; `onStatus` is how a caller tells it apart.
+-- | One name an address holds. A lapsed name stays listed; `onStatus` is how a caller tells it apart.
 data OwnedName = OwnedName
   { -- | absent when the registrar never recorded the label
     onName :: Maybe Text,
