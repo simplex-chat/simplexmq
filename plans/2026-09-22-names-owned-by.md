@@ -17,7 +17,10 @@ ownedSimplexNames                     agent, over ownedNames in the server
 ```
 
 The agent returns the relay it used alongside the answer, so a caller can pass
-it back as used and ask the next account elsewhere. Sending every account of a
+it back as used and ask the next account elsewhere. A relay that cannot answer
+at all - too old for ROWN, unreachable, or with no resolver of its own behind it
+- is not the end of the lookup: it asks another, so a scan does not fail
+wholesale on the one relay it happened to draw during a version rollout. Sending every account of a
 seed to one relay would tell that relay the accounts belong to one wallet; the
 scan therefore asks one account per relay, and `getNextNameServer` avoids the
 hosts already used where the configured set allows. `proxiedSMPRelayVersion` is

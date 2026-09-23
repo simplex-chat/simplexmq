@@ -228,7 +228,7 @@ import Simplex.Messaging.Parsers (defaultJSON, parse)
 import Simplex.Messaging.Protocol
   ( BrokerMsg,
     Cmd (..),
-    ErrorType (AUTH),
+    ErrorType (AUTH, NAME),
     MsgBody,
     MsgFlags (..),
     NameResponse,
@@ -1280,9 +1280,21 @@ deleteLocalInvShortLink' :: AgentClient -> ConnShortLink 'CMInvitation -> AM ()
 deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -> deleteInvShortLink db srv linkId
 
 ownedSimplexNames' :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AM (SMPServer, OwnedNames)
-ownedSimplexNames' c nm userId used addr offset = do
-  srv <- getNextNameServer c userId used
-  (srv,) <$> ownedNames c nm userId srv addr offset
+ownedSimplexNames' c nm userId used addr offset = tryRelays ownedNamesRelays used
+  where
+    tryRelays attempts tried = do
+      srv <- getNextNameServer c userId tried
+      ((srv,) <$> ownedNames c nm userId srv addr offset) `catchError` \e ->
+        if attempts > 1 && cannotAnswer e then tryRelays (attempts - 1) (srv : tried) else throwE e
+    -- a relay that cannot answer, as against one that answers: too old for ROWN,
+    -- unreachable, or with no resolver of its own behind it
+    cannotAnswer e = temporaryOrHostError e || case e of
+      SMP _ (NAME _) -> True
+      _ -> False
+
+-- | Relays one owned-names lookup asks before it gives up: during a version rollout the first one picked may have no ROWN.
+ownedNamesRelays :: Int
+ownedNamesRelays = 3
 
 resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
 resolveSimplexName' c nm userId domain = do

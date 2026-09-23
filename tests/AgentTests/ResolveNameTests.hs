@@ -15,6 +15,7 @@ module AgentTests.ResolveNameTests (resolveNameTests) where
 import AgentTests.FunctionalAPITests (withAgent)
 import Control.Monad.Except (runExceptT)
 import qualified Data.ByteString.Lazy as LB
+import Data.IORef (IORef, readIORef)
 import Data.List (isInfixOf)
 import Network.HTTP.Types (Status, status200, status404, status502)
 import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
@@ -22,7 +23,10 @@ import qualified NamesResolverServer as NRS
 import SMPAgentClient
 import SMPClient
 import SMPNamesTests (availableBody, registeredBody, testNameRecord)
-import Simplex.Messaging.Agent (resolveSimplexName)
+import Data.Text (Text)
+import Simplex.Messaging.Agent (ownedSimplexNames, resolveSimplexName)
+import Simplex.Messaging.Encoding.String (strDecode)
+import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Agent.Client (AgentClient)
 import Simplex.Messaging.Agent.Env.SQLite (InitialAgentServers (..), ServerCfg, ServerRoles (..), presetServerCfg)
 import Simplex.Messaging.Agent.Protocol (AgentErrorType (..))
@@ -48,6 +52,13 @@ withDirectResolver (st, body) k =
   NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
     withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ \_ ->
       withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
+
+-- | As 'withDirectResolver', with the requests the resolver was asked for.
+withDirectResolverReqs :: (Status, LB.ByteString) -> (AgentClient -> IORef [[Text]] -> IO a) -> IO a
+withDirectResolverReqs (st, body) k =
+  NRS.withResolverServer (NRS.resolveResp st body) $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ \_ ->
+      withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB $ \c -> k c reqs
 
 withProxyAndResolver :: (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
 withProxyAndResolver (st, body) k =
@@ -87,6 +98,23 @@ resolveNameTests = do
     it "returns NameRecord" testDirectSuccess
   describe "name availability" $
     it "an unregistered name answers as available" testAvailSuccess
+  describe "owned names" $
+    it "a relay that cannot answer is not the end of the lookup" testOwnedRetriesRelays
+
+-- | A relay too old for ROWN, unreachable, or with no resolver behind it must
+-- not end a recovery scan at the account it was asked about.
+testOwnedRetriesRelays :: HasCallStack => IO ()
+testOwnedRetriesRelays =
+  withDirectResolverReqs (status502, "{}") $ \c reqs -> do
+    r <- runExceptT $ ownedSimplexNames c NRMInteractive 1 [] testAddr 0
+    case r of
+      Left (SMP _ (SMP.NAME _)) -> pure ()
+      _ -> expectationFailure $ "expected Left (SMP _ (NAME ..)), got: " <> show r
+    asked <- readIORef reqs
+    length [q | q@("v2" : "owned-by" : _) <- asked] `shouldBe` 3
+
+testAddr :: Address
+testAddr = either error id $ strDecode "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
 testAvailSuccess :: HasCallStack => IO ()
 testAvailSuccess =
