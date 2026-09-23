@@ -64,7 +64,7 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
-import Data.Bifunctor (bimap, first)
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -4032,14 +4032,14 @@ testConnectionVerifyCodes =
     liftIO $ do
       codes1 `shouldBe` codes2
       codePQ codes1 `shouldNotBe` Nothing
-    -- codes of a ratchet created before the columns were added are computed from the ratchet state and saved
     liftIO $ withTransaction (store $ agentEnv a) $ \db ->
       DB.execute_ db "UPDATE ratchets SET rc_verify_code_ad = NULL, rc_verify_code_pq = NULL"
     codes1' <- getConnectionVerifyCodes a bId
     liftIO $ codes1' `shouldBe` codes1
-    saved <- liftIO $ withTransaction (store $ agentEnv a) $ \db ->
-      DB.query_ db "SELECT rc_verify_code_ad IS NOT NULL, rc_verify_code_pq IS NOT NULL FROM ratchets"
-    liftIO $ map (bimap DB.unBI DB.unBI) saved `shouldBe` [(True, True)]
+    liftIO $ withTransaction (store $ agentEnv a) $ \db ->
+      DB.execute_ db "UPDATE ratchets SET ratchet_state = NULL"
+    codes1'' <- getConnectionVerifyCodes a bId
+    liftIO $ codes1'' `shouldBe` codes1
 
 testDeliveryReceipts :: HasCallStack => IO ()
 testDeliveryReceipts =

@@ -419,13 +419,11 @@ testPqX3dhProposeAccept _ = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   paramsAlice `compatibleRatchets` paramsBob
 
--- substituted KEM key: the parties agree on assocData but not on the PQ verification code
 testPqX3dhSubstitutedKem :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testPqX3dhSubstitutedKem _ = do
   g <- C.newRandom
   let v = currentE2EEncryptVersion
   (pksAlice@(_, _, Just _), e2eAlice) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
-  -- Bob accepts the KEM key of the attacker, not of Alice
   (_, E2ERatchetParams _ _ _ (Just (RKParamsProposed mallorysKem))) <- liftIO $ generateRcvE2EParams @a g v PQSupportOn
   (pksBob@(_, _, Just _), AE2ERatchetParams _ e2eBob) <- liftIO $ generateSndE2EParams @a g v (Just $ AUseKEM SRKSAccepted $ AcceptKEM mallorysKem)
   Right (paramsBob, _) <- pure $ pqX3dhSnd pksBob e2eAlice

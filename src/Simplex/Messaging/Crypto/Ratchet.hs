@@ -510,8 +510,7 @@ data Ratchet a = Ratchet
     rcVersion :: RatchetVersions,
     -- associated data - must be the same in both parties ratchets
     rcAD :: Str,
-    -- second connection verification code, derived from the same key agreement as the ratchet keys,
-    -- so it covers all handshake keys; absent in ratchets created before it was added
+    -- verification code covering all handshake keys, absent in the ratchets created before it was added
     rcVCPQ :: Maybe Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,

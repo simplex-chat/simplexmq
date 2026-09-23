@@ -1316,13 +1316,11 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
         SCMInvitation -> do
           g <- asks random
           let pqEnc = CR.initialPQEncryption (isJust userLinkData_) pqInitKeys
-          e2eRcvParams <-
-            withStore' c (`getRatchetX3dhKeys` connId) >>= \case
-              Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eEncryptVRange) keys
-              Left _ -> do
-                (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
-                withStore' c $ \db -> createRatchetX3dhKeys db connId pks
-                pure e2eRcvParams
+          e2eRcvParams <- withStore' c (`getRatchetX3dhKeys` connId) >>= \case
+            Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eEncryptVRange) keys
+            Left _ -> do
+              (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
+              e2eRcvParams <$ withStore' c (\db -> createRatchetX3dhKeys db connId pks)
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
     setLinkDataRatchetKeys :: Maybe AddressRatchetKeys -> UserConnLinkData c -> UserConnLinkData c
     setLinkDataRatchetKeys ks = \case
@@ -1386,22 +1384,15 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
     lift (compatibleInvitationUri cReq) >>= \case
       Just (_, Compatible e2eRcvParams, aVersion) -> do
         connId' <- create aVersion
-        (connId',) <$> createRatchet e2eRcvParams connId'
+        (connId',) <$> createConnRatchet connId' e2eRcvParams
       Nothing -> throwE $ AGENT A_VERSION
-  CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId} :| _} _ ->
+  CRContactUri {} ->
     lift (compatibleContactUri cReq) >>= \case
-      Just (_, ratchet_, aVersion) -> do
+      Just (Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {senderId}}, ratchet_, aVersion) -> do
         connId' <- create aVersion
-        codes <- case ratchet_ of
-          Just (_, Compatible e2eParams) -> createRatchet e2eParams connId'
-          Nothing -> do
-            g <- asks random
-            e2eVR <- asks $ e2eEncryptVRange . config
-            let pqEnc = CR.initialPQEncryption False $ CR.joinContactInitialKeys pqSupport
-            (pks, CR.E2ERatchetParams _ k1 k2 kem_) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
-            withStore' c $ \db -> createRatchetX3dhKeys db connId' pks
-            pure $ requestVerifyCodes k1 k2 kem_ senderId
-        pure (connId', codes)
+        (connId',) <$> case ratchet_ of
+          Just (_, Compatible e2eRcvParams) -> createConnRatchet connId' e2eRcvParams
+          Nothing -> createRequestKeys connId' senderId
       Nothing -> throwE $ AGENT A_VERSION
   where
     create :: Compatible VersionSMPA -> AM ConnId
@@ -1409,15 +1400,19 @@ newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport 
       g <- asks random
       let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt}
       withStore c $ \db -> createNewConn db g cData SCMInvitation
-    createRatchet :: CR.RcvE2ERatchetParams 'C.X448 -> ConnId -> AM ConnVerifyCodes
-    createRatchet e2eRcvParams connId' = do
+    createConnRatchet :: ConnId -> CR.RcvE2ERatchetParams 'C.X448 -> AM ConnVerifyCodes
+    createConnRatchet connId' e2eRcvParams = do
       g <- asks random
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
-      rc <- withStore c $ \db -> runExceptT $ fst <$> createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams
-      pure $ ratchetVerifyCodes rc
+      ratchetVerifyCodes . fst <$> withStore c (\db -> runExceptT $ createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams)
+    createRequestKeys :: ConnId -> SMP.SenderId -> AM ConnVerifyCodes
+    createRequestKeys connId' senderId = do
+      g <- asks random
+      e2eVR <- asks $ e2eEncryptVRange . config
+      let pqEnc = CR.initialPQEncryption False $ CR.joinContactInitialKeys pqSupport
+      (pks, CR.E2ERatchetParams _ k1 k2 kem_) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
+      requestVerifyCodes k1 k2 kem_ senderId <$ withStore' c (\db -> createRatchetX3dhKeys db connId' pks)
 
--- request to the address without ratchet keys has no ratchet until the request is accepted,
--- so its code is computed from the request keys and the address queue ID
 requestVerifyCodes :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ConnVerifyCodes
 requestVerifyCodes k1 k2 kem_ sndId =
   ConnVerifyCodes {codeAD = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2 <> maybe "" smpEncode kem_ <> SMP.unEntityId sndId, codePQ = Nothing}
@@ -1427,7 +1422,9 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "newConnToAccept" invId
   case connReq of
     CRInvitation cReq -> newConnToJoin c userId connId enableNtfs Nothing cReq pqSup
-    CRInvitationDR dr@DRInvitation {ratchetState} -> (\ConnData {connId = connId'} -> (connId', ratchetVerifyCodes ratchetState)) <$> newConnToAcceptDR c userId connId dr enableNtfs
+    CRInvitationDR dr@DRInvitation {ratchetState} -> do
+      ConnData {connId = connId'} <- newConnToAcceptDR c userId connId dr enableNtfs
+      pure (connId', ratchetVerifyCodes ratchetState)
 
 newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnData
 newConnToAcceptDR c userId connId DRInvitation {agentVersion, pqSupport} enableNtfs = do
@@ -1471,7 +1468,7 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSupport =
           (q, _) <- lift $ newSndQueue userId "" qInfo sndKey_
           withStore c $ \db -> runExceptT $ do
             liftIO $ lockConnForUpdate db connId
-            e2eSndParams <- liftIO (getSndRatchet db connId v) >>= either (const $ snd <$> createRatchet_ db g connId maxSupported pqSupport e2eRcvParams) (pure . snd)
+            (_, e2eSndParams) <- liftIO (getSndRatchet db connId v) >>= either (const $ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams) pure
             sq' <- maybe (ExceptT $ updateNewConnSnd db connId q) pure sq_
             pure ((cData, sq'), (Just e2eSndParams, lnkId_))
     Nothing -> throwE $ AGENT A_VERSION

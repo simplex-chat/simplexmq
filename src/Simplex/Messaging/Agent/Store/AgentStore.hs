@@ -293,6 +293,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortBy)
@@ -346,8 +347,6 @@ import Database.PostgreSQL.Simple (In (..), Only (..), Query, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else
-import Data.List (intercalate)
-import Data.String (fromString)
 import Database.SQLite.Simple (FromRow (..), Only (..), Query (..), ToRow (..), field, (:.) (..))
 import qualified Database.SQLite.Simple as SQL
 import Database.SQLite.Simple.QQ (sql)
@@ -1532,30 +1531,27 @@ createRatchet db connId rc =
     |]
     ((connId, rc) :. verifyCodesRow (ratchetVerifyCodes rc))
 
--- ratchet state is only read for the connections where the codes were not saved, and they are saved on read
 getRatchetVerifyCodes :: DB.Connection -> [ConnId] -> IO (Map ConnId ConnVerifyCodes)
 getRatchetVerifyCodes db connIds = do
-  rows <- concat <$> mapM (select . L.toList) (toChunks 500 connIds)
-  let codes = mapMaybe rowCodes rows
-      saveCodes = [verifyCodesRow cs :. Only connId | (connId, cs, True) <- codes]
-  unless (null saveCodes) $
-    DB.executeMany db "UPDATE ratchets SET rc_verify_code_ad = ?, rc_verify_code_pq = ? WHERE conn_id = ?" saveCodes
-  pure $ M.fromList [(connId, cs) | (connId, cs, _) <- codes]
+  (saved, computed) <- partitionEithers . mapMaybe rowCodes <$> verifyCodeRows db connIds
+  unless (null computed) $
+    DB.executeMany db "UPDATE ratchets SET rc_verify_code_ad = ?, rc_verify_code_pq = ? WHERE conn_id = ?" $
+      map (\(connId, cs) -> verifyCodesRow cs :. Only connId) computed
+  pure $ M.fromList $ saved <> computed
   where
-    select :: [ConnId] -> IO [(ConnId, Maybe (Binary ByteString), Maybe (Binary ByteString), Maybe RatchetX448)]
-    select ids =
+    rowCodes (connId, codeAD_, codePQ_, rc_) = case codeAD_ of
+      Just (Binary codeAD) -> Just $ Left (connId, ConnVerifyCodes {codeAD, codePQ = fromBinary <$> codePQ_})
+      Nothing -> Right . (connId,) . ratchetVerifyCodes <$> rc_
+
+verifyCodeRows :: DB.Connection -> [ConnId] -> IO [(ConnId, Maybe (Binary ByteString), Maybe (Binary ByteString), Maybe RatchetX448)]
 #if defined(dbPostgres)
-      DB.query db (verifyCodesQuery <> " IN ?") (Only (In ids))
+verifyCodeRows db connIds = DB.query db (verifyCodesQuery <> " WHERE conn_id IN ?") (Only (In connIds))
 #else
-      DB.query db (verifyCodesQuery <> " IN (" <> fromString (intercalate "," (replicate (length ids) "?")) <> ")") ids
+verifyCodeRows db connIds = concat <$> mapM (DB.query db (verifyCodesQuery <> " WHERE conn_id = ?") . Only) connIds
 #endif
-    rowCodes (connId, codeAD_, codePQ_, rc_) = case (codeAD_, rc_) of
-      (Just (Binary codeAD), _) -> Just (connId, ConnVerifyCodes {codeAD, codePQ = fromBinary <$> codePQ_}, False)
-      (Nothing, Just rc) -> Just (connId, ratchetVerifyCodes rc, True)
-      (Nothing, Nothing) -> Nothing
 
 verifyCodesQuery :: Query
-verifyCodesQuery = "SELECT conn_id, rc_verify_code_ad, rc_verify_code_pq, CASE WHEN rc_verify_code_ad IS NULL THEN ratchet_state END FROM ratchets WHERE conn_id"
+verifyCodesQuery = "SELECT conn_id, rc_verify_code_ad, rc_verify_code_pq, CASE WHEN rc_verify_code_ad IS NULL THEN ratchet_state END FROM ratchets"
 
 deleteRatchet :: DB.Connection -> ConnId -> IO ()
 deleteRatchet db connId =

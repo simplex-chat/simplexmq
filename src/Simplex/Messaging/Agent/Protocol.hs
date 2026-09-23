@@ -1373,10 +1373,6 @@ type ConfirmationId = ByteString
 
 type InvitationId = ByteString
 
--- connection verification codes, compared by the users out-of-band,
--- also used by the clients to bind presented credentials to the connection.
--- codeAD is derived from the ratchet associated data (the first handshake key of each party),
--- codePQ from the same key agreement as the ratchet keys, so it covers all handshake keys
 data ConnVerifyCodes = ConnVerifyCodes
   { codeAD :: ByteString,
     codePQ :: Maybe ByteString
