@@ -1316,11 +1316,13 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
         SCMInvitation -> do
           g <- asks random
           let pqEnc = CR.initialPQEncryption (isJust userLinkData_) pqInitKeys
-          e2eRcvParams <- withStore' c (`getRatchetX3dhKeys` connId) >>= \case
-            Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eEncryptVRange) keys
-            Left _ -> do
-              (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
-              e2eRcvParams <$ withStore' c (\db -> createRatchetX3dhKeys db connId pks)
+          e2eRcvParams <- withStore' c $ \db -> do
+            lockConnForUpdate db connId
+            getRatchetX3dhKeys db connId >>= \case
+              Right keys -> pure $ CR.mkRcvE2ERatchetParams (maxVersion e2eEncryptVRange) keys
+              Left _ -> do
+                (pks, e2eRcvParams) <- CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqEnc
+                e2eRcvParams <$ createRatchetX3dhKeys db connId pks
           pure $ CRInvitationUri crData $ toVersionRangeT e2eRcvParams e2eEncryptVRange
     setLinkDataRatchetKeys :: Maybe AddressRatchetKeys -> UserConnLinkData c -> UserConnLinkData c
     setLinkDataRatchetKeys ks = \case
@@ -1382,36 +1384,32 @@ newConnToJoin :: forall c. AgentClient -> UserId -> ConnId -> Bool -> Maybe UTCT
 newConnToJoin c userId connId enableNtfs serviceRequestExpiresAt cReq pqSupport = case cReq of
   CRInvitationUri {} ->
     lift (compatibleInvitationUri cReq) >>= \case
-      Just (_, Compatible e2eRcvParams, aVersion) -> do
-        connId' <- create aVersion
-        (connId',) <$> createConnRatchet connId' e2eRcvParams
+      Just (_, Compatible e2eRcvParams, aVersion) -> create aVersion $ createConnRatchet e2eRcvParams
       Nothing -> throwE $ AGENT A_VERSION
   CRContactUri {} ->
     lift (compatibleContactUri cReq) >>= \case
-      Just (Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {senderId}}, ratchet_, aVersion) -> do
-        connId' <- create aVersion
-        (connId',) <$> case ratchet_ of
-          Just (_, Compatible e2eRcvParams) -> createConnRatchet connId' e2eRcvParams
-          Nothing -> createRequestKeys connId' senderId
+      Just (Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {senderId}}, ratchet_, aVersion) ->
+        create aVersion $ case ratchet_ of
+          Just (_, Compatible e2eRcvParams) -> createConnRatchet e2eRcvParams
+          Nothing -> createRequestKeys senderId
       Nothing -> throwE $ AGENT A_VERSION
   where
-    create :: Compatible VersionSMPA -> AM ConnId
-    create (Compatible connAgentVersion) = do
-      g <- asks random
-      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt}
-      withStore c $ \db -> createNewConn db g cData SCMInvitation
-    createConnRatchet :: ConnId -> CR.RcvE2ERatchetParams 'C.X448 -> AM ConnVerifyCodes
-    createConnRatchet connId' e2eRcvParams = do
+    create :: Compatible VersionSMPA -> (TVar ChaChaDRG -> VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ConnVerifyCodes) -> AM (ConnId, ConnVerifyCodes)
+    create (Compatible connAgentVersion) mkCodes = do
       g <- asks random
       maxSupported <- asks $ maxVersion . e2eEncryptVRange . config
-      ratchetVerifyCodes . fst <$> withStore c (\db -> runExceptT $ createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams)
-    createRequestKeys :: ConnId -> SMP.SenderId -> AM ConnVerifyCodes
-    createRequestKeys connId' senderId = do
-      g <- asks random
-      e2eVR <- asks $ e2eEncryptVRange . config
+      let cData = ConnData {userId, connId, connAgentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt}
+      withStore c $ \db -> runExceptT $ do
+        connId' <- ExceptT $ createNewConn db g cData SCMInvitation
+        (connId',) <$> mkCodes g maxSupported db connId'
+    createConnRatchet :: CR.RcvE2ERatchetParams 'C.X448 -> TVar ChaChaDRG -> VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ConnVerifyCodes
+    createConnRatchet e2eRcvParams g maxSupported db connId' =
+      ratchetVerifyCodes . fst <$> createRatchet_ db g connId' maxSupported pqSupport e2eRcvParams
+    createRequestKeys :: SMP.SenderId -> TVar ChaChaDRG -> VersionE2E -> DB.Connection -> ConnId -> ExceptT StoreError IO ConnVerifyCodes
+    createRequestKeys senderId g maxSupported db connId' = do
       let pqEnc = CR.initialPQEncryption False $ CR.joinContactInitialKeys pqSupport
-      (pks, CR.E2ERatchetParams _ k1 k2 kem_) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eVR) pqEnc
-      requestVerifyCodes k1 k2 kem_ senderId <$ withStore' c (\db -> createRatchetX3dhKeys db connId' pks)
+      (pks, CR.E2ERatchetParams _ k1 k2 kem_) <- liftIO $ CR.generateRcvE2EParams g maxSupported pqEnc
+      liftIO $ requestVerifyCodes k1 k2 kem_ senderId <$ createRatchetX3dhKeys db connId' pks
 
 requestVerifyCodes :: C.PublicKeyX448 -> C.PublicKeyX448 -> Maybe (CR.RKEMParams 'CR.RKSProposed) -> SMP.SenderId -> ConnVerifyCodes
 requestVerifyCodes k1 k2 kem_ sndId =
