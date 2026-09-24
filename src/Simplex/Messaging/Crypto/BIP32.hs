@@ -30,9 +30,6 @@ data ExtendedKey = ExtendedKey
   }
   deriving (Eq)
 
-instance Show ExtendedKey where
-  show _ = "ExtendedKey <redacted>"
-
 -- | Child indexes at or above this are hardened.
 hardenedOffset :: Word32
 hardenedOffset = 0x80000000
