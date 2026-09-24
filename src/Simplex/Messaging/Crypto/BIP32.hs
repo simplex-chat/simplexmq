@@ -26,7 +26,7 @@ import Simplex.Messaging.Encoding (smpEncode)
 -- | An extended private key: the key plus its chain code, secret too, as it and one child derive the siblings.
 data ExtendedKey = ExtendedKey
   { xkKey :: S.Secp256k1PrivateKey,
-    xkChainCode :: ByteString
+    xkChainCode :: ScrubbedBytes
   }
   deriving (Eq)
 
