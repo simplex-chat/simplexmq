@@ -48,7 +48,6 @@ pubKeyInternalSize = 64
 
 -- Types
 
--- | A validated private key, 32 bytes in @[1, n-1]@: no 'Show', so it cannot be logged by accident, and constant-time 'Eq'.
 newtype Secp256k1PrivateKey = Secp256k1PrivateKey ScrubbedBytes
   deriving (Eq)
 
