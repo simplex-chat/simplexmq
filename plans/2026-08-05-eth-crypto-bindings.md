@@ -13,15 +13,18 @@ held by the device.
 - **No RLP encoder, and no transaction building.** RLP is only needed to
   construct raw transactions or EIP-7702 authorizations. The client does
   neither, so the `RSLV` resolver path in this repo stays strictly read-only.
-- **No signing and no stealth addresses.** This change derives keys and
-  addresses. Signing, the EIP-712 typed-data hashing it requires, and stealth
+- **No signing and no stealth addresses.** This change adds key and address
+  derivation only. Signing, the EIP-712 typed-data hashing it requires, and stealth
   addresses are added with the first code that uses them.
 - **No BIP-32 public derivation.** We always hold the seed, so CKDpub, xpub
   serialization and fingerprints are not implemented. Non-hardened *private*
   derivation is, because BIP-44 paths end in non-hardened components.
-- **English wordlist only.** Every English BIP-39 word is ASCII, so the NFKD
-  normalization BIP-39 mandates is a no-op on the mnemonic side and no
-  normalization dependency is needed.
+- **English wordlist only, and no full NFKD.** Every English BIP-39 word is
+  ASCII, so NFKD normalization, which BIP-39 mandates, does not change a valid
+  phrase's words. It maps every Unicode space character to a space, so
+  `parseMnemonic` accepts any Unicode whitespace between words. Other characters
+  NFKD would change, such as fullwidth letters, are rejected, so no normalization
+  dependency is needed. A passphrase is bytes the caller normalizes.
 
 ## Modules
 
@@ -68,14 +71,19 @@ privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256
 -- BIP39
 entropyToMnemonic   :: ScrubbedBytes -> Either String Mnemonic
 mnemonicToEntropy   :: Mnemonic -> ScrubbedBytes          -- total
-parseMnemonic       :: ByteString -> Either String Mnemonic
+mnemonicWords       :: Mnemonic -> [ByteString]
+mnemonicPhrase      :: Mnemonic -> ByteString
+parseMnemonic       :: Text -> Either String Mnemonic
 mnemonicToSeed      :: Mnemonic -> ByteString -> ScrubbedBytes
 randomMnemonic      :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
+strengthWordCount   :: MnemonicStrength -> Int
 
 -- BIP32
 masterKey           :: ScrubbedBytes -> IO (Either String ExtendedKey)
 derivePath          :: ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
+hardened            :: Word32 -> Word32
+isHardened          :: Word32 -> Bool
 
 -- Crypto
 keccak256           :: ByteString -> ByteString
@@ -89,11 +97,11 @@ ethereumPath        :: Word32 -> Word32 -> Maybe [Word32] -- m/44'/60'/account'/
 form and `strP` accepts bare or `0x`-prefixed hex, rejecting a bad mixed-case
 checksum.
 
-`randomMnemonic` is shaped like `Simplex.Messaging.Crypto.randomBytes` so it
-composes with the agent's DRG instead of reading system entropy.
+Like `Simplex.Messaging.Crypto.randomBytes`, `randomMnemonic` takes the agent's
+`TVar ChaChaDRG` and runs in `STM`, so it does not read system entropy.
 
-`parseMnemonic` lower-cases and splits on any whitespace, so a recovery phrase
-with a capitalised word is accepted. This does not change
+`parseMnemonic` lower-cases and splits on any Unicode whitespace, so a recovery
+phrase with a capitalised word is accepted. This does not change
 the derived seed: `mnemonicPhrase` always rebuilds the canonical lowercase
 sentence from the wordlist, and that is what `mnemonicToSeed` hashes.
 
@@ -103,7 +111,7 @@ An application defines the derivation path. For SimpleX names, one seed per
 device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
-m    <- either fail pure $ parseMnemonic phrase
+m    <- either fail pure $ parseMnemonic phrase  -- phrase :: Text
 mk   <- either fail pure =<< masterKey (mnemonicToSeed m "")
 path <- maybe (fail "account index too large") pure $ ethereumPath account 0
 xk   <- either fail pure =<< derivePath mk path
@@ -125,9 +133,9 @@ Every function runs in `IO` with its own context, created and blinded with a
 fresh seed for the call and destroyed after it, so no context is shared between
 threads.
 
-`secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 specifies "proceed with
-the next index" (tweak out of range, or a zero result), which is why
-`privateKeyTweakAdd` returns `Maybe` and `derivePath` returns it as a `Left`.
+`secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 says to "proceed
+with the next value for i" (tweak out of range, or a zero result), which is why
+`privateKeyTweakAdd` returns `Maybe` and `derivePath` returns `Left` in that case.
 
 libsecp256k1 never reads OS entropy: the caller supplies the context blinding
 seed. So unlike libbbs it causes no `getentropy` / ITMS-90338 issue on iOS, and
@@ -144,16 +152,18 @@ c-sources:    cbits/libsecp256k1/src/{secp256k1,precomputed_ecmult,precomputed_e
 ```
 
 No `include-dirs` are needed: every libsecp256k1 include is quoted and relative
-to the including file.
+to the including file. The embedded wordlist makes `file-embed` a library
+dependency; before this change only the executables and the test suite used it.
 
-Built **without** its autotools config header, and with no `-D` of our own.
+Built with no `-D` of our own.
 Every setting has an `#ifndef` default in the headers, and the checked-in
 precomputed tables are generated for those defaults. `secp256k1.c` defines
 `SECP256K1_BUILD` itself.
 
 32-bit targets (armv7a-android, i686 musl) are covered by libsecp256k1's own
-fallback: `src/util.h` selects `SECP256K1_WIDEMUL_INT64` with the 10x26 field
-and 8x32 scalar backends when `__SIZEOF_INT128__` is absent.
+fallback: `src/util.h` selects `SECP256K1_WIDEMUL_INT64`, and with it the 10x26
+field and 8x32 scalar backends, when the target has neither a native 128-bit
+integer nor 64-bit pointers.
 
 No `flake.nix` change is needed in simplex-chat: the per-platform overrides
 there only force `packages.simplexmq.components.library.libs` (external
@@ -200,7 +210,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 72 examples, with published vectors:
+`tests/CoreTests/EthCryptoTests.hs`, 73 examples, with published vectors:
 
 - **BIP-39**: all 24 official English vectors from
   `trezor/python-mnemonic/vectors.json`, entropy to mnemonic to entropy and
@@ -212,6 +222,8 @@ the C code independently of the Haskell build.
 - **BIP-44**: the well-known `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` for
   the `abandon ... about` mnemonic at `m/44'/60'/0'/0/0`, plus accounts 1 and 2.
 - Keccak-256 of the empty string and of `abc`.
+- Recovery phrases with capitalised words, extra whitespace, and non-breaking or
+  ideographic spaces between words.
 - Negative cases: zero, short and out-of-range private keys, bad BIP-39
   checksums and word counts, out-of-range seeds, account and address indexes at
   or above 2^31, and bad EIP-55 checksums.

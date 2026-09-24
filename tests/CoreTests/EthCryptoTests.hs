@@ -14,6 +14,8 @@ import Data.Char (toLower)
 import Data.Either (isLeft, isRight)
 import Data.List (nub)
 import Data.Maybe (fromJust)
+import qualified Data.Text as T
+import Data.Text.Encoding (decodeLatin1)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.BIP32 as B32
 import qualified Simplex.Messaging.Crypto.BIP39 as B39
@@ -84,7 +86,7 @@ bip39Tests = do
     forM_ (zip [0 :: Int ..] bip39Vectors) $ \(i, (entHex, phrase, seedHex)) ->
       it ("vector " <> show i) $ do
         let m = right $ B39.entropyToMnemonic (hx entHex)
-            p = right $ B39.parseMnemonic phrase
+            p = right $ B39.parseMnemonic (decodeLatin1 phrase)
         B39.mnemonicPhrase m `shouldBe` phrase
         toHex (B39.mnemonicToEntropy p) `shouldBe` entHex
         toHex (B39.mnemonicToSeed p "TREZOR") `shouldBe` seedHex
@@ -112,7 +114,11 @@ bip39Tests = do
       `shouldBe` Right canonicalPhrase
   it "accepts extra whitespace" $
     B39.parseMnemonic "  abandon\tabandon  abandon abandon abandon abandon abandon abandon abandon abandon abandon about "
-      `shouldBe` B39.parseMnemonic canonicalPhrase
+      `shouldBe` B39.parseMnemonic (decodeLatin1 canonicalPhrase)
+  it "accepts Unicode whitespace between words" $ do
+    let spaced sep = T.intercalate sep . T.words $ decodeLatin1 canonicalPhrase
+    B39.parseMnemonic (spaced "\x00A0") `shouldBe` B39.parseMnemonic (decodeLatin1 canonicalPhrase)
+    B39.parseMnemonic (spaced "\x3000") `shouldBe` B39.parseMnemonic (decodeLatin1 canonicalPhrase)
   it "rejects an invalid entropy size" $
     B39.entropyToMnemonic (BA.replicate 17 0) `shouldSatisfy` isLeft
   it "generates mnemonics that parse back" $ do
@@ -120,7 +126,7 @@ bip39Tests = do
     forM_ [minBound .. maxBound] $ \s -> do
       m <- atomically $ B39.randomMnemonic s g
       length (B39.mnemonicWords m) `shouldBe` B39.strengthWordCount s
-      B39.parseMnemonic (B39.mnemonicPhrase m) `shouldBe` Right m
+      B39.parseMnemonic (decodeLatin1 $ B39.mnemonicPhrase m) `shouldBe` Right m
 
 canonicalPhrase :: ByteString
 canonicalPhrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -197,7 +203,7 @@ derivationTests = do
   it "derives distinct addresses for accounts 0 to 4" $
     mapM addrAt [0 .. 4] >>= (`shouldSatisfy` \as -> length as == length (nub as))
   where
-    m = right $ B39.parseMnemonic canonicalPhrase
+    m = right $ B39.parseMnemonic (decodeLatin1 canonicalPhrase)
     seed = B39.mnemonicToSeed m ""
     addrAt i = do
       master <- right <$> B32.masterKey seed

@@ -21,26 +21,25 @@ import Crypto.Hash (Digest, SHA256, SHA512 (..), hash)
 import qualified Crypto.KDF.PBKDF2 as PBKDF2
 import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import Crypto.Random (ChaChaDRG)
-import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.Attoparsec.Text as A
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC
-import Data.Char (isSpace, toLower)
+import Data.Char (isSpace)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
-import Simplex.Messaging.Parsers (parseAll)
 
-data Mnemonic = Mnemonic
-  { mnemonicIndexes :: [Int],
-    mnemonicWords :: [ByteString]
-  }
+newtype Mnemonic = Mnemonic {mnemonicIndexes :: [Int]}
   deriving (Eq, Show)
 
 data MnemonicStrength = MS128 | MS160 | MS192 | MS224 | MS256
@@ -74,6 +73,10 @@ wordByIndex = IM.fromList $ zip [0 ..] englishWordList
 indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
 
+-- | Indexes are in @[0, 2047]@: an 11-bit mask, or a lookup in the wordlist itself.
+mnemonicWords :: Mnemonic -> [ByteString]
+mnemonicWords = map (wordByIndex IM.!) . mnemonicIndexes
+
 -- | The words joined by single spaces, the PBKDF2 password BIP-39 specifies.
 mnemonicPhrase :: Mnemonic -> ByteString
 mnemonicPhrase = BC.unwords . mnemonicWords
@@ -82,7 +85,7 @@ entropyToMnemonic :: ScrubbedBytes -> Either String Mnemonic
 entropyToMnemonic ent
   | entLen `notElem` validEntropySizes =
       Left $ "entropy: expected 16, 20, 24, 28 or 32 bytes, got " <> show entLen
-  | otherwise = Right $ mnemonicFromIndexes $ entropyToIndexes ent
+  | otherwise = Right $ Mnemonic $ entropyToIndexes ent
   where
     entLen = BA.length ent
 
@@ -106,25 +109,25 @@ mnemonicToEntropy m = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
     csBits = totalBits - entBits
     combined = foldl' (\acc i -> acc `shiftL` 11 .|. fromIntegral i) (0 :: Integer) idxs
 
-parseMnemonic :: ByteString -> Either String Mnemonic
-parseMnemonic = parseAll mnemonicP
+parseMnemonic :: Text -> Either String Mnemonic
+parseMnemonic = A.parseOnly (mnemonicP <* A.endOfInput)
 
 mnemonicP :: A.Parser Mnemonic
 mnemonicP = do
-  ws <- A.skipWhile isSpace *> (wordP `A.sepBy'` A.takeWhile1 isSpace) <* A.skipWhile isSpace
+  ws <- A.skipSpace *> (wordP `A.sepBy'` A.takeWhile1 isSpace) <* A.skipSpace
   let n = length ws
   if n `notElem` validWordCounts
     then fail $ "mnemonic: expected 12, 15, 18, 21 or 24 words, got " <> show n
     else do
       idxs <- traverse lookupWord ws
-      let m = mnemonicFromIndexes idxs
+      let m = Mnemonic idxs
       -- recomputing the checksum bits from the decoded entropy rejects wrong checksum bits
       if entropyToIndexes (mnemonicToEntropy m) == idxs
         then pure m
         else fail "mnemonic: checksum mismatch"
   where
-    wordP = BC.map toLower <$> A.takeWhile1 (not . isSpace)
-    lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> BC.unpack w) pure $ M.lookup w indexByWord
+    wordP = T.toLower <$> A.takeWhile1 (not . isSpace)
+    lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> T.unpack w) pure $ M.lookup (encodeUtf8 w) indexByWord
 
 mnemonicToSeed :: Mnemonic -> ByteString -> ScrubbedBytes
 mnemonicToSeed m passphrase =
@@ -135,9 +138,4 @@ mnemonicToSeed m passphrase =
     ("mnemonic" <> passphrase :: ByteString)
 
 randomMnemonic :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
-randomMnemonic s gVar = mnemonicFromIndexes . entropyToIndexes <$> C.randomBytes (strengthBytes s) gVar
-
--- | Indexes are in @[0, 2047]@: an 11-bit mask, or a lookup in the wordlist itself.
-mnemonicFromIndexes :: [Int] -> Mnemonic
-mnemonicFromIndexes idxs =
-  Mnemonic {mnemonicIndexes = idxs, mnemonicWords = map (wordByIndex IM.!) idxs}
+randomMnemonic s gVar = Mnemonic . entropyToIndexes <$> C.randomBytes (strengthBytes s) gVar
