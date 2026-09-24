@@ -19,8 +19,10 @@ import Data.Char (isDigit, isHexDigit, isLower, isUpper, toLower)
 import Data.Word (Word32, Word8)
 import Simplex.Messaging.Crypto.BIP32 (hardened)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Eth.Keccak (keccak256)
+import Simplex.Messaging.Util ((<$?>))
 
 -- | A 20-byte Ethereum address. 'Show' renders the EIP-55 checksummed form, as pasted into a block explorer.
 newtype Address = Address ByteString
@@ -47,6 +49,11 @@ instance StrEncoding Address where
       mixedCase body = BC.any isUpper letters && BC.any isLower letters
         where
           letters = BC.filter (not . isDigit) body
+
+-- | The EIP-55 hex, length-prefixed, so a field following it is not swallowed by the hex parser.
+instance Encoding Address where
+  smpEncode = smpEncode . strEncode
+  smpP = strDecode <$?> smpP
 
 addressSize :: Int
 addressSize = 20

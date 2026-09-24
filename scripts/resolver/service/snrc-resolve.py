@@ -44,6 +44,8 @@ Environment:
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
+  SNRC_MAX_OWNED         Names /v2/owned-by returns per registrar per page
+                         (default: 16)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
 
@@ -69,7 +71,7 @@ import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
 from eth_hash.auto import keccak
@@ -123,6 +125,9 @@ COIN_XMR = 128
 COIN_DOT = 354
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+
+# Names per registrar per /owned-by page; times the configured TLDs, a full page of NameResponses must fit the 16000 bytes a relay reads.
+MAX_OWNED = max(1, int(os.environ.get("SNRC_MAX_OWNED", "8")))
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
 
@@ -415,6 +420,14 @@ def decode_uint(hex_data: str) -> int:
 
 def encode_uint(value: int) -> str:
     return value.to_bytes(32, "big").hex()
+
+
+def encode_address(address: str) -> str:
+    return (12 * "00") + address[2:].lower()
+
+
+def is_address(address: str) -> bool:
+    return len(address) == 42 and address.startswith("0x") and all(c in "0123456789abcdef" for c in address[2:].lower())
 
 
 def encode_text_call(node: bytes, key: str) -> str:
@@ -875,12 +888,89 @@ def resolve(name: str):
     }
 
 
+def owned_by(address: str, offset: int = 0):
+    """Every name an address holds, across every configured TLD, with the
+    account's on-chain footprint.
+
+    Enumeration is read off the ERC-721 registrar, so a name acquired by
+    transfer counts. Each name is answered with the NameResponse /v2/resolve
+    gives for it, so a caller can list and act on them without asking again.
+    `lastBlockTs` is the oldest block any of those reads saw, so a caller can
+    tell a resolver lagging critically behind even when it holds no names.
+    `inUse` is what a recovery scan asks, derived from this chain's nonce and
+    balance and every name it holds, not only the page returned: an account
+    holding only other tokens is not seen, and neither is one used on another
+    chain.
+    """
+    if not is_address(address):
+        return 400, {
+            "address": address,
+            "error": "badAddress",
+            "message": "expected a 0x-prefixed 20-byte address",
+        }
+
+    if offset < 0:
+        return 400, {
+            "address": address,
+            "error": "badOffset",
+            "message": "offset is a position in the listing",
+        }
+
+    configured = {t: r for t, r in REGISTRARS.items() if r}
+    if not configured:
+        return 400, {
+            "address": address,
+            "error": "noRegistrarConfigured",
+            "message": "no registrar is configured on this resolver",
+            "configuredTlds": [],
+        }
+
+    # the oldest block behind the answer: this one, or any name's own
+    last_block_ts = chain_now()
+    names, truncated, total_held = [], False, 0
+    for tld, registrar in configured.items():
+        held = decode_uint(eth_call(registrar, selector("balanceOf(address)") + encode_address(address)))
+        total_held += held
+        last = min(offset + MAX_OWNED, held)
+        if last < held:
+            truncated = True
+        for i in range(offset, last):
+            token = decode_uint(
+                eth_call(registrar, selector("tokenOfOwnerByIndex(address,uint256)") + encode_address(address) + encode_uint(i))
+            )
+            label = registered_label(registrar, token)
+            if not label:
+                continue
+            status, body = registration(label + "." + tld)
+            # one past its grace answers as available, naming nothing it holds
+            if status == 200 and body["registration"]["type"] == "registered":
+                names.append(body)
+                if body["lastBlockTs"] is not None:
+                    last_block_ts = min(last_block_ts, body["lastBlockTs"])
+
+    nonce = decode_uint(rpc("eth_getTransactionCount", [address, "latest"]))
+    balance = decode_uint(rpc("eth_getBalance", [address, "latest"]))
+    names.sort(key=lambda n: n["registration"]["nameRecord"]["name"])
+    return 200, {
+        "address": address,
+        "lastBlockTs": last_block_ts,
+        "names": names,
+        "nonce": nonce,
+        "balance": str(balance),
+        # every name held, not just this page, or page two reads as owning nothing
+        "inUse": total_held > 0 or nonce > 0 or balance > 0,
+        "offset": offset,
+        "nextOffset": offset + MAX_OWNED if truncated else None,
+        "checkedTlds": sorted(configured),
+    }
+
+
 # ---------- HTTP layer ----------
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - http.server contract
-        path = urlparse(self.path).path
-        parts = [unquote(p) for p in path.split("/") if p]
+        parsed = urlparse(self.path)
+        parts = [unquote(p) for p in parsed.path.split("/") if p]
 
         if parts == ["health"]:
             self._respond(200, {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head_block()})
@@ -895,6 +985,20 @@ class Handler(BaseHTTPRequestHandler):
                 status, body = registration(name)
             except Exception as e:  # surface upstream errors as 502
                 status, body = 502, upstream_error({"name": name}, e)
+            self._respond(status, body)
+            return
+
+        if len(parts) == 3 and parts[0] == "v2" and parts[1] == "owned-by":
+            address = parts[2].strip().lower()
+            try:
+                offset = int(parse_qs(parsed.query).get("offset", ["0"])[0])
+            except ValueError:
+                self._respond(400, {"address": address, "error": "badOffset", "message": "offset is a decimal position in the listing"})
+                return
+            try:
+                status, body = owned_by(address, offset)
+            except Exception as e:  # surface upstream errors as 502
+                status, body = 502, upstream_error({"address": address}, e)
             self._respond(status, body)
             return
 
@@ -926,7 +1030,7 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "error": "noSuchRoute",
                 "message": "not found",
-                "routes": ["/health", "/v2/resolve/<query>", "/v1/resolve/<name>", "/resolve/<name>"],
+                "routes": ["/health", "/v2/resolve/<query>", "/v2/owned-by/<address>", "/v1/resolve/<name>", "/resolve/<name>"],
             },
         )
 
@@ -952,7 +1056,7 @@ def main():
     )
     for tld, addr in REGISTRIES.items():
         sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
-    sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
+    sys.stderr.write("  GET /v2/resolve/<name>   GET /v2/owned-by/<address>   GET /v1/resolve/<name>   GET /health\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

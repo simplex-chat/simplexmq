@@ -67,6 +67,7 @@ module Simplex.Messaging.Agent
     deleteConnShortLink,
     getConnShortLink,
     resolveSimplexName,
+    ownedSimplexNames,
     getConnLinkPrivKey,
     deleteLocalInvShortLink,
     changeConnectionUser,
@@ -220,13 +221,15 @@ import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import qualified Simplex.Messaging.Crypto.ShortLink as SL
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Notifications.Protocol (DeviceToken, NtfRegCode (NtfRegCode), NtfTknStatus (..), NtfTokenId, PNMessageData (..), pnMessagesP)
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Parsers (defaultJSON, parse)
 import Simplex.Messaging.Protocol
   ( BrokerMsg,
     Cmd (..),
-    ErrorType (AUTH),
+    ErrorType (AUTH, NAME),
     MsgBody,
     MsgFlags (..),
     NameResponse,
@@ -465,6 +468,11 @@ getConnShortLink c = withAgentEnv c .:. getConnShortLink' c
 resolveSimplexName :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AE NameResponse
 resolveSimplexName c nm userId domain = withAgentEnv c $ resolveSimplexName' c nm userId domain
 {-# INLINE resolveSimplexName #-}
+
+-- | Names an address owns, with the relay used, so a scan can ask the next account elsewhere.
+ownedSimplexNames :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AE (SMPServer, OwnedNames)
+ownedSimplexNames c nm userId used addr offset = withAgentEnv c $ ownedSimplexNames' c nm userId used addr offset
+{-# INLINE ownedSimplexNames #-}
 
 getConnLinkPrivKey :: AgentClient -> ConnId -> AE (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey c = withAgentEnv c . getConnLinkPrivKey' c
@@ -1277,8 +1285,24 @@ deleteLocalInvShortLink' c (CSLInvitation _ srv linkId _) = withStore' c $ \db -
 
 resolveSimplexName' :: AgentClient -> NetworkRequestMode -> UserId -> SimplexDomain -> AM NameResponse
 resolveSimplexName' c nm userId domain = do
-  resolverSrv <- getNextNameServer c userId
+  resolverSrv <- getNextNameServer c userId []
   resolveName c nm userId resolverSrv domain
+
+ownedSimplexNames' :: AgentClient -> NetworkRequestMode -> UserId -> [SMPServer] -> Address -> Word32 -> AM (SMPServer, OwnedNames)
+ownedSimplexNames' c nm userId used addr offset = tryRelays ownedNamesRelays used
+  where
+    tryRelays attempts tried = do
+      srv <- getNextNameServer c userId tried
+      ((srv,) <$> ownedNames c nm userId srv addr offset) `catchError` \e ->
+        if attempts > 1 && cannotAnswer e then tryRelays (attempts - 1) (srv : tried) else throwE e
+    -- cannot answer, as against answers: too old for ROWN, unreachable, or with no resolver
+    cannotAnswer e = temporaryOrHostError e || case e of
+      SMP _ (NAME _) -> True
+      _ -> False
+
+-- | Relays one owned-names lookup asks before it gives up: during a version rollout the first one picked may have no ROWN.
+ownedNamesRelays :: Int
+ownedNamesRelays = 3
 
 changeConnectionUser' :: AgentClient -> UserId -> ConnId -> UserId -> AM ()
 changeConnectionUser' c oldUserId connId newUserId = do

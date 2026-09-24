@@ -88,6 +88,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
 import Data.Typeable (cast)
+import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Conc.Signal
@@ -103,13 +104,14 @@ import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
 import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
-import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, resolveName)
+import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, ownedNames, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -1276,6 +1278,7 @@ verifyQueueTransmission service thAuth (tAuth, authorized, (corrId, entId, comma
     vc SProxiedClient _ = VRVerified Nothing
     vc SProxyService (RFWD _) = VRVerified Nothing
     vc SResolver (RSLV _) = VRVerified Nothing
+    vc SResolver (ROWN _ _) = VRVerified Nothing
     checkRole = case (service, partyClientRole p) of
       (Just THClientService {serviceRole}, Just role) -> serviceRole == role
       _ -> True
@@ -1506,6 +1509,18 @@ client
         answered = \case
           NRRegistered {} -> True
           _ -> v >= nameAvailSMPVersion
+    resolverMsg :: VersionSMP -> NamesEnv -> Command Resolver -> M s BrokerMsg
+    resolverMsg v nenv = \case
+      RSLV d -> resolveNameMsg v nenv d
+      ROWN addr offset -> ownedNamesMsg nenv addr offset
+    ownedNamesMsg :: NamesEnv -> Address -> Word32 -> M s BrokerMsg
+    ownedNamesMsg nenv addr offset = do
+      st <- asks (rslvStats . serverStats)
+      (selector, msg) <-
+        liftIO (ownedNames nenv addr offset) <&> \case
+          Right owned -> (rslvSucc, ROWND owned)
+          Left e -> (rslvResolverErrs, ERR $ NAME e)
+      incStat (selector st) $> msg
     transportErr :: TransportError -> ErrorType
     transportErr = PROXY . BROKER . TRANSPORT
     mkIncProxyStats :: MonadIO m => ProxyStats -> ProxyStats -> OwnServer -> (ProxyStats -> IORef Int) -> m ()
@@ -1520,9 +1535,9 @@ client
         SEND flags msgBody -> response <$> withQueue_ False err (sendMessage flags msgBody)
       Cmd SIdleClient PING -> pure $ response (corrId, NoEntity, PONG)
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
-      Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
+      Cmd SResolver command -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolverMsg (thVersion thParams') nenv command)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2150,10 +2165,10 @@ client
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
             Left r -> pure $ Just r
             Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+              Cmd SResolver command -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
                 Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
+                  msg <- resolverMsg (thVersion clntTHParams) nenv command
                   either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
@@ -2175,6 +2190,7 @@ client
                     Cmd SSenderLink (LKEY _) -> True
                     Cmd SSenderLink LGET -> True
                     Cmd SResolver (RSLV _) -> True
+                    Cmd SResolver (ROWN _ _) -> True
                     _ -> False
                   verified = \case
                     VRVerified q -> Right (q, t'')

@@ -27,6 +27,8 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
 import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames (..))
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -72,6 +74,16 @@ withProxyAndResolver (st, body) runTest =
     withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
       withSmpServerConfigOn (transport @TLS) (withNames port memCfg2) testPort2 (const runTest)
 
+sendRown :: Transport c => THandleSMP c 'TClient -> B.ByteString -> Address -> IO (Transmission (Either ErrorType BrokerMsg))
+sendRown h@THandle {params} corrId addr = do
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (ROWN addr 0))
+  [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
+  r :| _ <- tGetClient h
+  pure r
+
+testAddr :: Address
+testAddr = either error id $ strDecode "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+
 sendRslv :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexDomain -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRslv h@THandle {params} corrId d = do
   let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (RSLV (NQDomain d)))
@@ -84,11 +96,14 @@ rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
     it "resolver without the v2 route (404) -> NAME RESOLVER, not NOT_FOUND" testRslvBackendNotFound
     it "resolver replies 502 -> NAME (RESOLVER ..)" testRslvBackendHttpErr
+    it "ROWN returns the names an address owns" testRownOwned
+    it "ROWN on a resolver without the endpoint is a resolver error, not an empty answer" testRownUnsupported
     it "no names config -> NAME NO_RESOLVER" testRslvDisabled
     it "refuses to send RSLV on a session below namesSMPVersion" testRslvVersion
   describe "RSLV forwarded (PFWD)" $ do
     it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME RESOLVER))" testRslvForwarded
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
+    it "PFWD-wrapped ROWN reaches the resolver, so a scan need not go direct" testRownForwarded
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
   describe "RSLV availability (RNAME response)" $ do
@@ -120,6 +135,36 @@ testRslvBackendHttpErr =
       (_, _, resp) <- sendRslv h "rs05" (domain "alice.simplex")
       resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
 
+-- | The scan reads inUse, so in use with no names must not look like owning nothing.
+testRownOwned :: IO ()
+testRownOwned =
+  withResolverServer (status200, ownedBody) $
+    testSMPClient @TLS $ \h -> do
+      (corrId, _entId, resp) <- sendRown h "ro01" testAddr
+      corrId `shouldBe` CorrId "ro01"
+      case resp of
+        Right (ROWND owned) -> do
+          map ownedName (ownNames owned) `shouldBe` ["alice.simplex"]
+          ownInUse owned `shouldBe` True
+        r -> expectationFailure $ "unexpected " <> show r
+
+-- 404 must reach the client as a resolver error; read as "owns nothing" it would end a scan early.
+testRownUnsupported :: IO ()
+testRownUnsupported =
+  withResolverServer (status404, "{}") $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendRown h "ro02" testAddr
+      resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
+
+-- | Each owned name is the same NameResponse /v2/resolve answers with.
+ownedBody :: LB.ByteString
+ownedBody = "{\"lastBlockTs\":1813000000,\"names\":[" <> registeredBody testNameRecord <> "],\"inUse\":true,\"nextOffset\":null}"
+
+ownedName :: NameResponse -> Text
+ownedName = \case
+  NameResponse {registration = NRRegistered {nameRecord}} -> SMP.nrName nameRecord
+  r -> error $ "expected a registered name, got: " <> show r
+
 testRslvDisabled :: IO ()
 testRslvDisabled =
   withSmpServerConfigOn (transport @TLS) memCfg testPort $ const $
@@ -142,7 +187,11 @@ testRslvVersion =
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
 forwardedResolveAlice :: IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
-forwardedResolveAlice = do
+forwardedResolveAlice = forwardedToRelay $ \pc sess -> proxyResolveName pc NRMInteractive sess (domain "alice.simplex")
+
+-- | Run one proxied resolver command over a PFWD session to the second relay.
+forwardedToRelay :: (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO a) -> IO (Either SMPClientError a)
+forwardedToRelay proxiedCmd = do
   g <- C.newRandom
   ts <- getCurrentTime
   let proxyServ = SMPServer testHost testPort testKeyHash
@@ -151,7 +200,7 @@ forwardedResolveAlice = do
   pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pcE
   sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
-  runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+  runExceptT (proxiedCmd pc sess)
 
 testRslvForwarded :: IO ()
 testRslvForwarded =
@@ -166,6 +215,14 @@ testRslvForwardedSuccess =
     forwardedResolveAlice >>= \r -> case r of
       Right (Right NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
       _ -> expectationFailure $ "expected Right (Right NRRegistered), got: " <> show r
+
+-- | Without this a scan falls back to a direct session, handing the relay the address with the IP.
+testRownForwarded :: IO ()
+testRownForwarded =
+  withProxyAndResolver (status200, ownedBody) $
+    forwardedToRelay (\pc sess -> proxyOwnedNames pc NRMInteractive sess testAddr 0) >>= \r -> case r of
+      Right (Right owned) -> map ownedName (ownNames owned) `shouldBe` ["alice.simplex"]
+      _ -> expectationFailure $ "expected Right (Right OwnedNames), got: " <> show r
 
 testRslvSuccess :: IO ()
 testRslvSuccess =

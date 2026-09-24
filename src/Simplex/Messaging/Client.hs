@@ -75,6 +75,8 @@ module Simplex.Messaging.Client
     proxySMPMessage,
     proxyResolveName,
     directResolveName,
+    proxyOwnedNames,
+    directOwnedNames,
     forwardSMPTransmission,
     getSMPQueueInfo,
     sendProtocolCommand,
@@ -154,6 +156,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
+import Data.Word (Word32)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -162,6 +165,8 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
@@ -1073,6 +1078,25 @@ directResolveName c nm name
   | thVersion (thParams c) >= namesSMPVersion =
       sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (RSLV (NQDomain name))) >>= \case
         RNAME reg | resolvedNameOrNotFound name reg -> pure reg
+        r -> throwE $ unexpectedResponse r
+  | otherwise = throwE $ PCETransportError TEVersion
+
+-- | Names an address owns, via PFWD: a scan links accounts, so hiding the client IP matters more here than for one name.
+proxyOwnedNames :: SMPClient -> NetworkRequestMode -> ProxiedRelay -> Address -> Word32 -> ExceptT SMPClientError IO (Either ProxyClientError OwnedNames)
+proxyOwnedNames c nm proxiedRelay addr offset
+  | prVersion proxiedRelay >= nameOwnedSMPVersion =
+      proxySMPCommand c nm proxiedRelay Nothing NoEntity (ROWN addr offset) >>= \case
+        Right (ROWND owned) -> pure $ Right owned
+        Right r -> throwE $ unexpectedResponse r
+        Left e -> pure $ Left e
+  | otherwise = throwE $ PCETransportError TEVersion
+
+-- | Direct (non-PFWD) owned-names lookup, exposing the client IP.
+directOwnedNames :: SMPClient -> NetworkRequestMode -> Address -> Word32 -> ExceptT SMPClientError IO OwnedNames
+directOwnedNames c nm addr offset
+  | thVersion (thParams c) >= nameOwnedSMPVersion =
+      sendProtocolCommand c nm Nothing NoEntity (Cmd SResolver (ROWN addr offset)) >>= \case
+        ROWND owned -> pure owned
         r -> throwE $ unexpectedResponse r
   | otherwise = throwE $ PCETransportError TEVersion
 

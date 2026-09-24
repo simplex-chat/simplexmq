@@ -11,6 +11,7 @@
 --   GET /v2/resolve/<query> -> 200 with a NameRegistration JSON document, for
 --                              all three registration shapes; 400 for unknown
 --                              TLDs, 502 for upstream RPC failures
+--   GET /v2/owned-by/<addr> -> 200 with an OwnedNames JSON document
 --   GET /v1/resolve/<name>  -> 200 with a NameRecord, what relays before SMP
 --                              v22 call as /resolve
 --   GET /health             -> 200 when the resolver process is ready
@@ -29,6 +30,7 @@ module Simplex.Messaging.Server.Names.HttpResolver
     newResolverEnv,
     closeResolverEnv,
     resolveHttp,
+    ownedByHttp,
     healthHttp,
   )
 where
@@ -42,6 +44,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
+import Data.Word (Word32)
 import Network.HTTP.Client
   ( HttpException,
     Manager,
@@ -59,7 +62,7 @@ import qualified Network.HTTP.Client as HC
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import qualified Network.HTTP.Types as HT
 import Network.HTTP.Types.URI (urlEncode)
-import Simplex.Messaging.Names.Record (NameResponse)
+import Simplex.Messaging.Names.Record (NameResponse, OwnedNames)
 
 data RpcAuth = AuthBearer Text | AuthBasic Text Text
 
@@ -116,6 +119,12 @@ resolveHttp :: ResolverEnv -> Text -> IO (Either ResolverError NameResponse)
 resolveHttp env q =
   (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
     <$> httpGet env ("/v2/resolve/" <> B.unpack (urlEncode True (encodeUtf8 q)))
+
+-- | The address is encoded for the same reason the name is: nothing from a client reaches the path raw.
+ownedByHttp :: ResolverEnv -> Text -> Word32 -> IO (Either ResolverError OwnedNames)
+ownedByHttp env addr offset =
+  (>>= first InvalidJson . J.eitherDecodeStrict . BL.toStrict)
+    <$> httpGet env ("/v2/owned-by/" <> B.unpack (urlEncode True (encodeUtf8 addr)) <> "?offset=" <> show offset)
 
 -- | GET <baseUrl>/health; success = reachable with status < 400. The body is
 -- size-capped but NOT decoded — the probe only checks reachability.

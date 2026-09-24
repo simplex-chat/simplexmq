@@ -70,6 +70,7 @@ Version 21, 2026-07-05
   - [Resolver commands](#resolver-commands)
     - [Resolve name command](#resolve-name-command)
     - [Name record response](#name-record-response)
+    - [Names owned by an address command](#names-owned-by-an-address-command)
 - [Transport connection with the SMP router](#transport-connection-with-the-SMP-router)
   - [General transport protocol considerations](#general-transport-protocol-considerations)
   - [TLS transport encryption](#tls-transport-encryption)
@@ -86,7 +87,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 22. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 23. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -109,6 +110,7 @@ This document describes SMP protocol version 22. Versions 1-5 are discontinued. 
 - v20: public namespaces resolver (RSLV command, RNAME response) — direct or forwarded via PFWD
 - v21: server public information in handshake
 - v22: `RNAME` says whether a name can be registered, not only what it resolves to
+- v23: the names an address owns (ROWN command, ROWND response) — direct or forwarded via PFWD
 
 ## Introduction
 
@@ -1453,7 +1455,8 @@ companion REST resolver process (`scripts/resolver/snrc-resolve.py`) that
 queries the SNRC contract on Ethereum; alternative backings (different chains,
 DHT, etc.) are valid as long as they expose the documented HTTP shape (`GET
 /v2/resolve/<query>` returning a `NameRegistration` on 200 for every
-registration shape, 400 for unknown TLDs, 502 for upstream failures) or
+registration shape, 400 for unknown TLDs, 502 for upstream failures, and from
+SMP v23 `GET /v2/owned-by/<address>?offset=N` returning an `ownedNames`) or
 substitute a different transport returning the same JSON. The resolver API is
 versioned separately from this protocol: `/v1/resolve/<name>` returns a bare
 `NameRecord` and is what relays before v22 call as `/resolve/<name>`.
@@ -1622,6 +1625,52 @@ The names router caps the resolver response it will accept
 (`resolver_max_response_bytes`, at most 16000 bytes) so the re-encoded `RNAME`
 stays within the SMP proxied transmission budget of 16224 bytes; a response over
 the cap is `ERR NAME RESOLVER`.
+
+#### Names owned by an address command
+
+`ROWN` asks which names an address holds, and whether the account has been used
+at all, so a device restoring a wallet seed can find the accounts already in
+use. It is unauthenticated and accepted direct or forwarded, as `RSLV` is, from
+v23.
+
+```abnf
+rown    = %s"ROWN" SP address offset
+address = length "0x" 40HEXDIG   ; EIP-55 checksummed, length-prefixed
+length  = 1*1 OCTET              ; 42
+offset  = 4*4 OCTET              ; Word32, network byte order: where to resume listing
+```
+
+```abnf
+rownd = %s"ROWND" SP ownedNames
+```
+
+`ownedNames` is a UTF-8 JSON object consuming the remainder of the transmission.
+
+| Field | JSON type | Constraints |
+|---|---|---|
+| `lastBlockTs` | number | the oldest block any read behind this answer saw |
+| `names` | array | the names the address holds, each the `nameResponse` resolving it answers with |
+| `inUse` | boolean | whether the account has been used at all |
+| `nextOffset` | number | cursor to resume from, absent when the listing is complete |
+
+Each name is answered in full, as `RSLV` answers it, so a client can list the
+names and act on them without resolving each one again. Enumeration is not
+maintained on expiry, so the registrar still enumerates a name past its grace;
+it answers as `available` and names nothing the account holds, so it is left out
+of `names` while still counting towards `inUse`.
+
+As with `RNAME`, a router reads through a node of its own, which can lag. Every
+name carries the block it was read at, and `lastBlockTs` is the oldest of those
+and of the enumeration's own block, so a client can tell a badly lagging router
+even from an answer that carries no names — which is the answer a recovery scan
+acts on.
+
+`inUse` is what the registry could see on its own chain — the account's nonce,
+its balance, and every name it holds, which is not only the names listed here:
+a later page of a held account still reports `inUse` true with an empty `names`. Holding a name is only one way for an account
+to be in use, and an account used only for other tokens, or on another chain,
+reads as unused, so a client MUST NOT treat `inUse` as false meaning the account
+has never been used.
 
 ## Transport connection with the SMP router
 

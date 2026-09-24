@@ -1035,5 +1035,156 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "available")
 
+class OwnedByTests(unittest.TestCase):
+    """`/v2/owned-by` answers what a recovery scan asks: which names an account
+    holds, and whether the account has been used at all. Enumeration is read
+    off the registrar's ERC-721 index, so a name acquired by transfer counts
+    the same as one registered here."""
+
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    ADDR = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+    GRACE = 90 * 86400
+    # keccak-256("alice")
+    ALICE = 0x9C0257114EB9399A2985F8E75DAD7600C5D89FE3824FFA99EC1C3EB8BF3B0501
+
+    BLOCK_TS = 1813000000
+
+    def setUp(self):
+        self._saved = (snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.registration, snrc.chain_now)
+        snrc.REGISTRARS = {"testing": self.REGISTRAR, "simplex": ""}
+        snrc.rpc = lambda method, params: "0x0"
+        snrc.chain_now = lambda: self.BLOCK_TS
+        # RegistrationV2Tests covers resolving one; owned-by picks which
+        snrc.registration = lambda name: (200, self.response(name, "registered"))
+
+    def tearDown(self):
+        snrc.REGISTRARS, snrc.eth_call, snrc.rpc, snrc.registration, snrc.chain_now = self._saved
+
+    def response(self, name, type_, block_ts=None):
+        reg = {"type": type_}
+        if type_ == "registered":
+            reg["nameRecord"] = {"name": name}
+        return {"lastBlockTs": self.BLOCK_TS if block_ts is None else block_ts, "registration": reg}
+
+    def _chain(self, held, label=b"alice"):
+        def call(to, data):
+            sel = data[:10]
+            if sel == snrc.selector("balanceOf(address)"):
+                return snrc.encode_uint(held)
+            if sel == snrc.selector("tokenOfOwnerByIndex(address,uint256)"):
+                return snrc.encode_uint(self.ALICE)
+            if sel == snrc.selector("labelOf(uint256)"):
+                return "0x" + snrc.encode_uint(32) + snrc.encode_uint(len(label)) + label.hex() + "00" * ((-len(label)) % 32)
+            raise AssertionError("unexpected call " + sel)
+        return call
+
+    def names(self, body):
+        return [n["registration"]["nameRecord"]["name"] for n in body["names"]]
+
+    def test_a_held_name_is_answered_as_a_full_registration(self):
+        """The caller acts on the names straight away, so each is the same
+        NameResponse resolving it would give."""
+        snrc.eth_call = self._chain(1)
+        status, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.names(body), ["alice.testing"])
+        self.assertEqual(body["names"][0]["registration"]["type"], "registered")
+        self.assertIn("lastBlockTs", body["names"][0])
+
+    def test_a_name_past_its_grace_is_not_listed_as_held(self):
+        """Enumeration keeps it until someone re-registers, but it answers as
+        available, which names nothing the account still holds."""
+        snrc.eth_call = self._chain(1)
+        snrc.registration = lambda name: (200, self.response(name, "available"))
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"], [])
+        self.assertTrue(body["inUse"])
+
+    def test_holding_a_name_is_in_use(self):
+        snrc.eth_call = self._chain(1)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertTrue(body["inUse"])
+
+    def test_an_account_that_sent_a_transaction_is_in_use_with_no_name(self):
+        """The case a names-only scan gets wrong: an account in use, holding
+        nothing, would be handed out again."""
+        snrc.eth_call = self._chain(0)
+        snrc.rpc = lambda method, params: "0x3" if method == "eth_getTransactionCount" else "0x0"
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"], [])
+        self.assertEqual(body["nonce"], 3)
+        self.assertTrue(body["inUse"])
+
+    def test_a_funded_account_is_in_use_with_no_name_and_no_nonce(self):
+        snrc.eth_call = self._chain(0)
+        snrc.rpc = lambda method, params: "0x0" if method == "eth_getTransactionCount" else "0xde0b6b3a7640000"
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["balance"], "1000000000000000000")
+        self.assertTrue(body["inUse"])
+
+    def test_an_untouched_account_is_not_in_use(self):
+        snrc.eth_call = self._chain(0)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertFalse(body["inUse"])
+        self.assertIsNone(body["nextOffset"])
+
+    def test_more_names_than_a_page_carry_the_cursor_to_resume_from(self):
+        snrc.eth_call = self._chain(snrc.MAX_OWNED + 1)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["nextOffset"], snrc.MAX_OWNED)
+        self.assertEqual(len(body["names"]), snrc.MAX_OWNED)
+
+    def test_a_malformed_address_is_refused(self):
+        status, body = snrc.owned_by("0xnothex")
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badAddress")
+
+    def test_a_page_past_the_end_still_reports_the_account_in_use(self):
+        """inUse is a property of the account, not of the page: an empty later
+        page must not read as an account that owns nothing."""
+        snrc.eth_call = self._chain(1)
+        _, body = snrc.owned_by(self.ADDR, snrc.MAX_OWNED)
+        self.assertEqual(body["names"], [])
+        self.assertTrue(body["inUse"])
+
+    def test_a_label_that_is_not_utf8_is_reported_not_fatal(self):
+        """The registrar stores the label bytes unchecked, so one bad label
+        must not take down the whole listing."""
+        snrc.eth_call = self._chain(1, label=b"\xff\xfe")
+        status, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["names"]), 1)
+
+    def test_an_account_with_no_names_still_reports_the_block_it_was_read_at(self):
+        """inUse false is the answer a scan acts on, so it has to carry how
+        stale the registry it came from is."""
+        snrc.eth_call = self._chain(0)
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["names"], [])
+        self.assertEqual(body["lastBlockTs"], self.BLOCK_TS)
+
+    def test_the_oldest_block_of_every_read_is_the_one_reported(self):
+        """A name resolved against a node further behind is what the caller
+        has to judge the whole answer by."""
+        snrc.eth_call = self._chain(1)
+        snrc.registration = lambda name: (200, self.response(name, "registered", self.BLOCK_TS - 600))
+        _, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(body["lastBlockTs"], self.BLOCK_TS - 600)
+
+    def test_a_negative_offset_is_refused(self):
+        snrc.eth_call = self._chain(1)
+        status, body = snrc.owned_by(self.ADDR, -1)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "badOffset")
+
+    def test_no_configured_registrar_is_an_error_not_an_empty_answer(self):
+        """An empty list would read as "this key owns nothing", which is the
+        one answer a scan must not invent."""
+        snrc.REGISTRARS = {"testing": "", "simplex": ""}
+        status, body = snrc.owned_by(self.ADDR)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "noRegistrarConfigured")
+
+
 if __name__ == "__main__":
     unittest.main()

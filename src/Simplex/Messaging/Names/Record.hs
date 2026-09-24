@@ -13,6 +13,7 @@ module Simplex.Messaging.Names.Record
     NamePricing (..),
     USDCents (..),
     NameReservedReason (..),
+    OwnedNames (..),
   )
 where
 
@@ -90,6 +91,17 @@ data NameRegistration
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
 
+-- | What the registry holds for an address: the names it owns, each as the 'NameResponse' resolving it gives, and whether the account is in use
+data OwnedNames = OwnedNames
+  { -- | the oldest block any of the reads behind this answer saw, so a lagging registry shows even where no name does
+    ownLastBlockTs :: Maybe SystemSeconds,
+    ownNames :: [NameResponse],
+    ownInUse :: Bool,
+    -- | the cursor to resume from, absent when the listing is complete
+    ownNextOffset :: Maybe Int
+  }
+  deriving (Eq, Show)
+
 -- | Enough to price the name locally, which the router cannot do behind a hash.
 data NamePricing = NamePricing
   { -- | US cents per year, for the lengths the registry prices specially
@@ -142,3 +154,5 @@ $(JQ.deriveJSON defaultJSON ''NamePricing)
 $(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NR") ''NameRegistration)
 
 $(JQ.deriveJSON defaultJSON ''NameResponse)
+
+$(JQ.deriveJSON defaultJSON {J.fieldLabelModifier = dropPrefix "own"} ''OwnedNames)

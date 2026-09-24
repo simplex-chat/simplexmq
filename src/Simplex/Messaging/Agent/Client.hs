@@ -70,6 +70,7 @@ module Simplex.Messaging.Agent.Client
     secureGetQueueLink,
     getQueueLink,
     resolveName,
+    ownedNames,
     getNextNameServer,
     enableQueueNotifications,
     EnableQueueNtfReq (..),
@@ -258,6 +259,8 @@ import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..), BBSPublicKey)
 import Simplex.Messaging.Crypto.Entitlement (EntitlementCredential, EntitlementProof, generateEntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
+import Simplex.Messaging.Eth.Address (Address)
+import Simplex.Messaging.Names.Record (OwnedNames)
 import Simplex.Messaging.Notifications.Client
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Transport (NTFVersion)
@@ -2029,14 +2032,23 @@ resolveName c nm userId server domain =
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
 
+-- | Names an address owns, from one names-capable relay, proxied as resolveName is.
+ownedNames :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> Address -> Word32 -> AM OwnedNames
+ownedNames c nm userId server addr offset =
+  snd <$> sendOrProxySMPCommand c nm userId server "" "ROWN" NoEntity ownedViaProxy ownedDirectly
+  where
+    ownedViaProxy smp proxySess = proxyOwnedNames smp nm proxySess addr offset
+    ownedDirectly smp = directOwnedNames smp nm addr offset
+
 -- | Pick a names-capable server for the user (the agent owns server selection,
 -- accounting for the names role). nameSrvs is opt-in (a plain list); empty means
 -- no server resolves names - a declared agent error, never a fallback.
-getNextNameServer :: AgentClient -> UserId -> AM SMPServer
-getNextNameServer c userId =
+-- Used servers are avoided where the set allows, operator first: one operator asked about every account learns the wallet.
+getNextNameServer :: AgentClient -> UserId -> [SMPServer] -> AM SMPServer
+getNextNameServer c userId usedSrvs =
   liftIO (TM.lookupIO userId (userServers c :: TMap UserId (UserServers 'PSMP))) >>= \case
     Just UserServers {nameSrvs} -> case L.nonEmpty nameSrvs of
-      Just srvs -> protoServer <$> pickServer srvs
+      Just srvs -> protoServer . snd <$> getNextServer_ srvs (usedOperatorsHosts srvs usedSrvs)
       Nothing -> throwE NO_NAME_SERVERS
     Nothing -> throwE $ INTERNAL "unknown userId - no user servers"
 

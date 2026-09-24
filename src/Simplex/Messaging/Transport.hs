@@ -54,6 +54,7 @@ module Simplex.Messaging.Transport
     namesSMPVersion,
     serverInfoSMPVersion,
     nameAvailSMPVersion,
+    nameOwnedSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -177,6 +178,7 @@ smpBlockSize = 16384
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
 -- 22 - RNAME answers name availability as well as the record (7/25/2026)
+-- 23 - ROWN command, the names an address owns (9/22/2026)
 
 data SMPVersion
 
@@ -218,6 +220,10 @@ serverInfoSMPVersion = VersionSMP 21
 nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
+-- | ROWN lists the names an address owns; below this a server does not answer it, which is not the same as owning nothing.
+nameOwnedSMPVersion :: VersionSMP
+nameOwnedSMPVersion = VersionSMP 23
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
 
@@ -225,20 +231,17 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 22
+currentClientSMPRelayVersion = VersionSMP 23
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 22
+currentServerSMPRelayVersion = VersionSMP 23
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (22)
--- for this release because a proxied RSLV only carries availability from
--- nameAvailSMPVersion (22), so the one-version anti-fingerprinting buffer does
--- not apply yet; it reappears once the current version advances past 22.
+-- when clients upgrade at different times. Pinned to the current version (23) because a proxied ROWN needs it, and the buffer returns once current passes 23.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 22
+proxiedSMPRelayVersion = VersionSMP 23
 
 -- minimal supported protocol version is 14
 supportedClientSMPRelayVRange :: VersionRangeSMP
