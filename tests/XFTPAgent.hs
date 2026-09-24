@@ -283,9 +283,7 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
 testXFTPAgentPrepareReceive :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentPrepareReceive = withXFTPServer $ do
   filePath <- createRandomFile
-  (rfd1, rfd2) <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
-    (_, _, rfd1, rfd2) <- testSend sndr filePath
-    pure (rfd1, rfd2)
+  (_, _, rfd1, rfd2) <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ testSend sndr filePath
   rfId2 <- withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> runRight $ do
     xftpStartWorkers rcp (Just recipientFiles)
     rfId1 <- xftpReceiveFile rcp 1 rfd1 Nothing True
