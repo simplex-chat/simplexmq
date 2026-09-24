@@ -72,7 +72,7 @@ wordByIndex = IM.fromList $ zip [0 ..] englishWordList
 indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
 
--- | Indexes are in @[0, 2047]@: an 11-bit mask, or a lookup in the wordlist itself.
+-- | Indexes are in @[0, 2047]@: they are masked to 11 bits or looked up in the wordlist.
 mnemonicWords :: Mnemonic -> [ByteString]
 mnemonicWords = map (wordByIndex IM.!) . mnemonicIndexes
 

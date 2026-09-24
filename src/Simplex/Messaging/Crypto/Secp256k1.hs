@@ -120,7 +120,7 @@ serializePublicKey fmt (Secp256k1PublicKey pk) = withContext $ \ctx ->
       Compressed -> (2 .|. 256, compressedSize)
       Uncompressed -> (2, uncompressedSize)
 
--- | @sk + tweak mod n@, as BIP-32 child derivation requires. 'Nothing' when the result is zero or the tweak is out of range.
+-- | @sk + tweak mod n@, as BIP-32 child derivation requires. 'Nothing' when the tweak is not 32 bytes or not below n, or when the result is zero.
 privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
   | BA.length tweak /= privateKeySize = pure Nothing

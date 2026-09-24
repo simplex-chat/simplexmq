@@ -99,7 +99,7 @@ ethereumPath        :: Word32 -> Word32 -> Maybe [Word32] -- m/44'/60'/account'/
 form and `strP` accepts bare or `0x`-prefixed hex, rejecting a bad mixed-case
 checksum.
 
-Like `Simplex.Messaging.Crypto.randomBytes`, `randomMnemonic` takes the agent's
+Like `Simplex.Messaging.Crypto.randomBytes`, `randomMnemonic` takes a
 `TVar ChaChaDRG` and runs in `STM`, so it does not read system entropy.
 
 Because `parseMnemonic` lower-cases each word, a recovery phrase with a
