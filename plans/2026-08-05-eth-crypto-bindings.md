@@ -30,9 +30,10 @@ Simplex.Messaging.Crypto.Secp256k1      FFI to libsecp256k1
 Simplex.Messaging.Crypto.BIP39          mnemonics
 Simplex.Messaging.Crypto.BIP39.English  embedded upstream 2048-word list
 Simplex.Messaging.Crypto.BIP32          HD derivation
-Simplex.Messaging.Eth.Keccak            Keccak-256
 Simplex.Messaging.Eth.Address           addresses, EIP-55
 ```
+
+`keccak256` is added to `Simplex.Messaging.Crypto`, next to `sha3_256`.
 
 ## Types
 
@@ -51,7 +52,8 @@ newtype Address                     -- 20 bytes
 
 Private keys, chain codes, BIP-39 entropy and seeds are `ScrubbedBytes`:
 constant-time `Eq`, no readable `Show`, and zeroed when freed. A chain code is
-secret too: together with one child key it yields the sibling keys.
+secret too: with the parent public key and one non-hardened child private key,
+it yields the parent private key.
 
 ## Functions
 
@@ -75,8 +77,10 @@ masterKey           :: ScrubbedBytes -> IO (Either String ExtendedKey)
 derivePath          :: ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 
--- Eth
+-- Crypto
 keccak256           :: ByteString -> ByteString
+
+-- Eth
 addressFromPrivateKey :: Secp256k1PrivateKey -> IO Address
 ethereumPath        :: Word32 -> Word32 -> Maybe [Word32] -- m/44'/60'/account'/0/address, Nothing at or above 2^31
 ```
@@ -88,8 +92,8 @@ checksum.
 `randomMnemonic` is shaped like `Simplex.Messaging.Crypto.randomBytes` so it
 composes with the agent's DRG instead of reading system entropy.
 
-`parseMnemonic` lower-cases and splits on any whitespace, so a user retyping
-their recovery key is not rejected for capitalising a word. This does not change
+`parseMnemonic` lower-cases and splits on any whitespace, so a recovery phrase
+with a capitalised word is accepted. This does not change
 the derived seed: `mnemonicPhrase` always rebuilds the canonical lowercase
 sentence from the wordlist, and that is what `mnemonicToSeed` hashes.
 
@@ -121,9 +125,9 @@ Every function runs in `IO` with its own context, created and blinded with a
 fresh seed for the call and destroyed after it, so no context is shared between
 threads.
 
-`secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 says "proceed with
+`secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 specifies "proceed with
 the next index" (tweak out of range, or a zero result), which is why
-`privateKeyTweakAdd` returns `Maybe` and `derivePath` can surface it.
+`privateKeyTweakAdd` returns `Maybe` and `derivePath` returns it as a `Left`.
 
 libsecp256k1 never reads OS entropy: the caller supplies the context blinding
 seed. So unlike libbbs it causes no `getentropy` / ITMS-90338 issue on iOS, and
@@ -143,7 +147,7 @@ No `include-dirs` are needed: every libsecp256k1 include is quoted and relative
 to the including file.
 
 Built **without** its autotools config header, and with no `-D` of our own.
-Every knob has an `#ifndef` default in the headers, and the checked-in
+Every setting has an `#ifndef` default in the headers, and the checked-in
 precomputed tables are generated for those defaults. `secp256k1.c` defines
 `SECP256K1_BUILD` itself.
 
@@ -154,14 +158,14 @@ and 8x32 scalar backends when `__SIZEOF_INT128__` is absent.
 No `flake.nix` change is needed in simplex-chat: the per-platform overrides
 there only force `packages.simplexmq.components.library.libs` (external
 libraries, i.e. openssl for `extra-libraries: crypto`) and flags. Vendored
-`c-sources` need no nix entry, which is why blst and libbbs have none either.
+`c-sources` require no nix entry, which is why blst and libbbs have none either.
 
 ### Cross-compilation status
 
-Verified by building simplex-chat through its flake, before
-`Simplex.Messaging.Crypto.BIP39.English` embedded its wordlist with Template
-Haskell (`embedFile`), the construct the armv7a build fails on below. These
-results have to be rerun:
+Verified by building simplex-chat through its flake, before the wordlist in
+`Simplex.Messaging.Crypto.BIP39.English` was embedded with Template Haskell
+(`embedFile`), the construct the armv7a build fails on below. These builds have
+to be rerun:
 
 | Target | Result |
 |---|---|
@@ -169,21 +173,21 @@ results have to be rerun:
 | `aarch64-android` | **compiles and links** into the final shared object |
 | `armv7a-android` | libsecp256k1 compiles; final link not reached (see below) |
 | `x86_64-windows` (mingw) | blocked before our code, see below |
-| `aarch64-darwin-ios` | not yet run (needs a darwin host) |
+| `aarch64-darwin-ios` | not yet run (requires a darwin host) |
 
 `aarch64-android` is the meaningful pass: it proves the C both cross-compiles
-and links into the artifact the app actually ships.
+and links into the shared object included in the app.
 
-`armv7a-android` gets far enough to prove the 32-bit path compiles, that is,
-libsecp256k1's `SECP256K1_WIDEMUL_INT64` fallback builds under the NDK, but the
-build then fails in simplex-chat's own `Simplex.Chat.Operators`, on the
+The `armv7a-android` build compiles libsecp256k1, which proves that its
+`SECP256K1_WIDEMUL_INT64` fallback builds under the NDK, but the build then
+fails in simplex-chat's own `Simplex.Chat.Operators`, on the
 `$(embedFile "PRIVACY.md")` splice. Cross-compiled Template Haskell runs the
 splice on the target via `iserv-proxy` under `qemu-arm`, and that interpreter
 fails to resolve `realpath` from `libHSdirectory` and segfaults. So 32-bit
 *linking* remains unproven.
 
-`x86_64-windows` fails while bootstrapping the mingw cross-GHC, long before any
-of our code is considered: haskell.nix applies
+`x86_64-windows` fails while bootstrapping the mingw cross-GHC, before any
+simplexmq code is compiled: haskell.nix applies
 `ghc-9.6-fix-code-symbol-jumps.patch` to `rts/linker/PEi386.c` twice from the
 same store path, and the second application aborts. That is a duplicate entry in
 the patch list of the pinned haskell.nix branch
@@ -191,8 +195,8 @@ the patch list of the pinned haskell.nix branch
 influence.
 
 Both gaps can be closed without GHC by compiling the three C files with the
-cross toolchain directly and linking a program that calls into it, which
-separates the C question from the Haskell build entirely.
+cross toolchain directly and linking a test program against them, which verifies
+the C code independently of the Haskell build.
 
 ## Tests
 
@@ -201,7 +205,7 @@ separates the C question from the Haskell build entirely.
 - **BIP-39**: all 24 official English vectors from
   `trezor/python-mnemonic/vectors.json`, entropy to mnemonic to entropy and
   mnemonic to seed with the `TREZOR` passphrase.
-- **BIP-32**: spec test vectors 1 (all six chains) and 2. Expected private keys
+- **BIP-32**: spec test vector 1 (all six chains) and chain m of vector 2. Expected private keys
   and chain codes were decoded from the published `xprv` base58 strings, since
   we do not implement xprv serialization.
 - **EIP-55**: the four addresses from the EIP-55 spec, round-tripped.
@@ -213,5 +217,5 @@ separates the C question from the Haskell build entirely.
   or above 2^31, and bad EIP-55 checksums.
 
 The BIP-44 expectations were additionally reproduced by an independent
-pure-Python secp256k1 reference written for the purpose, so they are not just
-our implementation agreeing with itself.
+pure-Python secp256k1 reference written for the purpose, so they were not
+computed only by this implementation.

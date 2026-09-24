@@ -17,10 +17,10 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (isHexDigit, isLower, isUpper, toUpper)
 import Data.Word (Word32)
-import Simplex.Messaging.Crypto.BIP32 (hardened, hardenedOffset)
+import Simplex.Messaging.Crypto (keccak256)
+import Simplex.Messaging.Crypto.BIP32 (hardened, isHardened)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Eth.Keccak (keccak256)
 
 newtype Address = Address ByteString
   deriving (Eq, Ord, Show)
@@ -61,5 +61,5 @@ checksumAddress (Address bs) = "0x" <> BC.pack (zipWith adjust [0 ..] (BC.unpack
 
 ethereumPath :: Word32 -> Word32 -> Maybe [Word32]
 ethereumPath account address
-  | account >= hardenedOffset || address >= hardenedOffset = Nothing
+  | isHardened account || isHardened address = Nothing
   | otherwise = Just [hardened 44, hardened 60, hardened account, 0, address]

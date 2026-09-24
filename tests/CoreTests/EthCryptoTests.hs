@@ -21,7 +21,6 @@ import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
-import Simplex.Messaging.Eth.Keccak (keccak256)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -48,9 +47,9 @@ right = either (error . ("unexpected Left: " <>)) id
 keccakTests :: Spec
 keccakTests = do
   it "hashes the empty string" $
-    toHex (keccak256 "") `shouldBe` "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    toHex (C.keccak256 "") `shouldBe` "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
   it "hashes abc" $
-    toHex (keccak256 "abc") `shouldBe` "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"
+    toHex (C.keccak256 "abc") `shouldBe` "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"
 
 secp256k1Tests :: Spec
 secp256k1Tests = do
@@ -147,7 +146,7 @@ bip32Tests = do
       B32.renderPath [B32.hardened 44, B32.hardened 60, B32.hardened 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
     it "renders an Ethereum path for an account and address" $
       B32.renderPath <$> ethereumPath 7 3 `shouldBe` Just "m/44'/60'/7'/0/3"
-    it "refuses an Ethereum account or address index that would be hardened" $ do
+    it "rejects an Ethereum account or address index at or above 2^31" $ do
       ethereumPath 0x80000000 0 `shouldBe` Nothing
       ethereumPath 0 0x80000000 `shouldBe` Nothing
   where

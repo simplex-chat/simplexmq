@@ -152,7 +152,6 @@ library
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Eth.Address
-      Simplex.Messaging.Eth.Keccak
       Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol

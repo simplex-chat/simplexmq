@@ -68,8 +68,6 @@ validEntropySizes = map strengthBytes [minBound .. maxBound]
 validWordCounts :: [Int]
 validWordCounts = map strengthWordCount [minBound .. maxBound]
 
--- Wordlist indexes
-
 wordByIndex :: IntMap ByteString
 wordByIndex = IM.fromList $ zip [0 ..] englishWordList
 
@@ -138,8 +136,6 @@ mnemonicToSeed m passphrase =
 
 randomMnemonic :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
 randomMnemonic s gVar = mnemonicFromIndexes . entropyToIndexes <$> C.randomBytes (strengthBytes s) gVar
-
--- Internal
 
 -- | Indexes are in @[0, 2047]@: an 11-bit mask, or a lookup in the wordlist itself.
 mnemonicFromIndexes :: [Int] -> Mnemonic

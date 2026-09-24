@@ -7,8 +7,8 @@ module Simplex.Messaging.Crypto.BIP32
     masterKey,
     derivePath,
     renderPath,
-    hardenedOffset,
     hardened,
+    isHardened,
   )
 where
 
