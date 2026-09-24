@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-39 mnemonics, English only: every word is ASCII, so BIP-39's NFKD normalization is a no-op; a passphrase is bytes the caller normalizes.
+-- | BIP-39 mnemonics, English only: every word is ASCII, any Unicode whitespace separates words, and full NFKD normalization is not applied; a passphrase is bytes the caller normalizes.
 module Simplex.Messaging.Crypto.BIP39
   ( Mnemonic,
     MnemonicStrength (..),
