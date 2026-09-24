@@ -337,7 +337,7 @@ library
       cbits/blst/src
       cbits/libbbs/include
       cbits/libbbs/src
-  -- libsecp256k1 is built without its autotools config header: every knob has an #ifndef default matching the checked-in tables
+  -- libsecp256k1 is built without its autotools config header: every setting has an #ifndef default that matches the checked-in tables
   cc-options: -D__BLST_PORTABLE__
   if flag(commoncrypto)
     cc-options: -DBBS_CRYPTO_CC

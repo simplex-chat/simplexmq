@@ -63,7 +63,7 @@ secp256k1Tests = do
     B.length comp `shouldBe` 33
     B.length uncomp `shouldBe` 65
     B.head uncomp `shouldBe` 0x04
-    -- both forms carry the same x, and the compressed prefix is y's parity
+    -- both forms contain the same x coordinate, and the compressed prefix encodes the parity of y
     B.take 32 (B.drop 1 uncomp) `shouldBe` B.drop 1 comp
     B.head comp `shouldBe` (if odd (B.last uncomp) then 0x03 else 0x02)
   it "rejects a zero private key" $

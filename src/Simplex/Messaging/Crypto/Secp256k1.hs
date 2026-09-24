@@ -25,15 +25,12 @@ import Foreign.C
 
 -- Sizes
 
--- | A secp256k1 scalar is 32 bytes, big-endian.
 privateKeySize :: Int
 privateKeySize = 32
 
--- | SEC1 compressed point: @0x02@/@0x03@ prefix and the x coordinate.
 compressedSize :: Int
 compressedSize = 33
 
--- | SEC1 uncompressed point: @0x04@ prefix, x, y.
 uncompressedSize :: Int
 uncompressedSize = 65
 
@@ -46,10 +43,9 @@ pubKeyInternalSize = 64
 newtype Secp256k1PrivateKey = Secp256k1PrivateKey ScrubbedBytes
   deriving (Eq)
 
--- | A public key in libsecp256k1's opaque 64-byte form; 'serializePublicKey' gives the SEC1 bytes.
+-- | A public key in libsecp256k1's opaque 64-byte form; 'serializePublicKey' returns the SEC1 bytes.
 newtype Secp256k1PublicKey = Secp256k1PublicKey ByteString
 
--- | SEC1 output format for 'serializePublicKey'.
 data PubKeyFormat = Compressed | Uncompressed
   deriving (Eq, Show)
 
@@ -84,7 +80,6 @@ foreign import ccall "secp256k1_ec_seckey_tweak_add"
 contextNone :: CUInt
 contextNone = 1
 
--- | A context for one call, blinded with a fresh random seed.
 withContext :: (Ptr Ctx -> IO a) -> IO a
 withContext f = bracket (c_context_create contextNone) c_context_destroy $ \ctx -> do
   drg <- drgNew
@@ -125,7 +120,7 @@ serializePublicKey fmt (Secp256k1PublicKey pk) = withContext $ \ctx ->
       Compressed -> (2 .|. 256, compressedSize)
       Uncompressed -> (2, uncompressedSize)
 
--- | @sk + tweak mod n@, as BIP-32 child derivation needs. 'Nothing' when the result is zero or the tweak is out of range.
+-- | @sk + tweak mod n@, as BIP-32 child derivation requires. 'Nothing' when the result is zero or the tweak is out of range.
 privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
   | BA.length tweak /= privateKeySize = pure Nothing

@@ -37,14 +37,12 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import Simplex.Messaging.Parsers (parseAll)
 
--- | A BIP-39 mnemonic: the word indexes and the words they name.
 data Mnemonic = Mnemonic
   { mnemonicIndexes :: [Int],
     mnemonicWords :: [ByteString]
   }
   deriving (Eq, Show)
 
--- | Entropy size, named by bit length as BIP-39 does.
 data MnemonicStrength = MS128 | MS160 | MS192 | MS224 | MS256
   deriving (Eq, Show, Bounded, Enum)
 
@@ -56,13 +54,11 @@ strengthBytes = \case
   MS224 -> 28
   MS256 -> 32
 
--- | 12, 15, 18, 21 or 24.
 strengthWordCount :: MnemonicStrength -> Int
 strengthWordCount s = (entBits + entBits `div` 32) `div` 11
   where
     entBits = strengthBytes s * 8
 
--- | BIP-39 seeds are always 64 bytes, whatever the entropy size.
 seedSize :: Int
 seedSize = 64
 
@@ -80,11 +76,10 @@ wordByIndex = IM.fromList $ zip [0 ..] englishWordList
 indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
 
--- | The mnemonic as one space-separated phrase, the exact bytes BIP-39 feeds to PBKDF2.
+-- | The words joined by single spaces, the PBKDF2 password BIP-39 specifies.
 mnemonicPhrase :: Mnemonic -> ByteString
 mnemonicPhrase = BC.unwords . mnemonicWords
 
--- | Build a mnemonic from raw entropy of 16, 20, 24, 28 or 32 bytes.
 entropyToMnemonic :: ScrubbedBytes -> Either String Mnemonic
 entropyToMnemonic ent
   | entLen `notElem` validEntropySizes =
@@ -113,7 +108,6 @@ mnemonicToEntropy m = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
     csBits = totalBits - entBits
     combined = foldl' (\acc i -> acc `shiftL` 11 .|. fromIntegral i) (0 :: Integer) idxs
 
--- | Parse and fully validate a phrase: word count, wordlist membership, checksum. Any whitespace separates, and lower-casing does not change the seed.
 parseMnemonic :: ByteString -> Either String Mnemonic
 parseMnemonic = parseAll mnemonicP
 
@@ -126,7 +120,7 @@ mnemonicP = do
     else do
       idxs <- traverse lookupWord ws
       let m = mnemonicFromIndexes idxs
-      -- stripping the checksum bits and recomputing them is the check: wrong bits cannot survive the round trip
+      -- recomputing the checksum bits from the decoded entropy rejects wrong checksum bits
       if entropyToIndexes (mnemonicToEntropy m) == idxs
         then pure m
         else fail "mnemonic: checksum mismatch"
@@ -142,7 +136,6 @@ mnemonicToSeed m passphrase =
     (mnemonicPhrase m)
     ("mnemonic" <> passphrase :: ByteString)
 
--- | Generate a fresh mnemonic from the agent's DRG.
 randomMnemonic :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
 randomMnemonic s gVar = mnemonicFromIndexes . entropyToIndexes <$> C.randomBytes (strengthBytes s) gVar
 

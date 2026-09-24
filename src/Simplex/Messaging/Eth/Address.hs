@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Ethereum addresses: derivation from a public key, and EIP-55 mixed-case checksum encoding.
 module Simplex.Messaging.Eth.Address
   ( Address,
     addressFromPrivateKey,
@@ -23,11 +22,9 @@ import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Eth.Keccak (keccak256)
 
--- | A 20-byte Ethereum address.
 newtype Address = Address ByteString
   deriving (Eq, Ord, Show)
 
--- | EIP-55 checksummed hex. Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
 instance StrEncoding Address where
   strEncode = checksumAddress
   strP = do

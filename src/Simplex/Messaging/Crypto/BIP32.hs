@@ -33,7 +33,6 @@ data ExtendedKey = ExtendedKey
   }
   deriving (Eq)
 
--- | Child indexes at or above this are hardened.
 hardenedOffset :: Word32
 hardenedOffset = 0x80000000
 
@@ -43,7 +42,6 @@ hardened = (.|. hardenedOffset)
 isHardened :: Word32 -> Bool
 isHardened i = i >= hardenedOffset
 
--- | Derive the master key from a BIP-39 seed (BIP-32 allows 16 to 64 bytes).
 masterKey :: ScrubbedBytes -> IO (Either String ExtendedKey)
 masterKey seed
   | seedLen < 16 || seedLen > 64 =
