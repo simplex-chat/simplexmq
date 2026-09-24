@@ -263,6 +263,7 @@ import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Names.Record (NameRecord (..))
@@ -1754,7 +1755,7 @@ transmissionP THandleParams {sessionId, implySessId, serviceAuth} = do
 class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncoding v err (ProtoCommand msg), Show err, Show msg) => Protocol v err msg | msg -> v, msg -> err where
   type ProtoCommand msg = cmd | cmd -> msg
   type ProtoType msg = (sch :: ProtocolType) | sch -> msg
-  protocolClientHandshake :: Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle v c 'TClient)
+  protocolClientHandshake :: Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRange v -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> (SessionId -> IO (Maybe EntitlementProof)) -> ExceptT TransportError IO (THandle v c 'TClient)
   useServiceAuth :: ProtoCommand msg -> Bool
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err

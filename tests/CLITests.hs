@@ -193,7 +193,7 @@ smpServerTestStatic = do
         X.Certificate {X.certPubKey = X.PubKeyEd25519 _k} : _ca -> print _ca -- pure ()
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
-      runRight_ . void $ smpClientHandshake tls Nothing caSMP supportedClientSMPRelayVRange False Nothing
+      runRight_ . void $ smpClientHandshake tls Nothing caSMP supportedClientSMPRelayVRange False Nothing (\_ -> pure Nothing)
     logDebug "Combined SMP works"
   where
     getCerts :: TLS 'TClient -> [X.Certificate]

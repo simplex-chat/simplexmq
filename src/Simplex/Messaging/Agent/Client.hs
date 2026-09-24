@@ -41,7 +41,7 @@ module Simplex.Messaging.Agent.Client
     reconnectServerClients,
     reconnectSMPServer,
     closeXFTPServerClient,
-    closeUserXFTPClients,
+    closeUserClients,
     runSMPServerTest,
     runXFTPServerTest,
     runNTFServerTest,
@@ -760,9 +760,10 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
     connectClient :: SMPClientVar -> AM SMPConnectedClient
     connectClient v' = do
       cfg <- lift $ getClientConfig c smpCfg
+      keys <- asks $ entitlementKeys . config
       g <- asks random
       service <- getServiceCredentials c userId srv
-      let cfg' = cfg {serviceCredentials = fst <$> service}
+      let cfg' = cfg {serviceCredentials = fst <$> service, mkEntitlementProof = userEntitlementProof c keys userId $ knownUserServer (smpServers c) userId srv}
       env <- ask
       smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
@@ -863,7 +864,7 @@ notifySub c = notifySub' c ""
 {-# INLINE notifySub #-}
 
 getNtfServerClient :: AgentClient -> NetworkRequestMode -> NtfTransportSession -> AM NtfClient
-getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, presetDomains} nm tSess@(_, srv, _) = do
+getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, presetDomains} nm tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq tSess ntfClients ts (newProtocolClient c tSess ntfClients connectClient) (waitForProtocolClient c nm tSess ntfClients)
@@ -871,10 +872,12 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, pr
     connectClient :: NtfClientVar -> AM NtfClient
     connectClient v = do
       cfg <- lift $ getClientConfig c ntfCfg
+      keys <- asks $ entitlementKeys . config
       g <- asks random
       ts <- readTVarIO proxySessTs
+      let cfg' = cfg {mkEntitlementProof = userEntitlementProof c keys userId $ knownNtfServer c srv}
       liftError' (protocolClientError NTF $ B.unpack $ strEncode srv) $
-        getProtocolClient g nm tSess cfg presetDomains Nothing ts $
+        getProtocolClient g nm tSess cfg' presetDomains Nothing ts $
           clientDisconnected v
 
     clientDisconnected :: NtfClientVar -> NtfClient -> IO ()
@@ -884,7 +887,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, pr
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
 
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
-getXFTPServerClient c@AgentClient {active, xftpClients, userEntitlements, workerSeq, proxySessTs, presetDomains} tSess@(userId, srv, _) = do
+getXFTPServerClient c@AgentClient {active, xftpClients, workerSeq, proxySessTs, presetDomains} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq tSess xftpClients ts (newProtocolClient c tSess xftpClients connectClient) (waitForProtocolClient c NRMBackground tSess xftpClients)
@@ -896,29 +899,37 @@ getXFTPServerClient c@AgentClient {active, xftpClients, userEntitlements, worker
       xftpNetworkConfig <- getNetworkConfig c
       ts <- readTVarIO proxySessTs
       liftError' (protocolClientError XFTP $ B.unpack $ strEncode srv) $
-        X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (mkEntitlementProof keys) $
+        X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (userEntitlementProof c keys userId $ knownUserServer (xftpServers c) userId srv) $
           clientDisconnected v
-
-    mkEntitlementProof :: Map Word16 BBSPublicKey -> SessionId -> IO (Maybe EntitlementProof)
-    mkEntitlementProof keys sessId =
-      ifM knownServer proof (pure Nothing)
-      where
-        -- the entitlement is presented only to the servers of this user, matched by key hash that TLS pins,
-        -- so a file description of the sender cannot direct it to another server
-        knownServer = maybe False (any (sameKeyHash . snd) . storageSrvs) <$> TM.lookupIO userId (xftpServers c)
-        sameKeyHash (ProtoServerWithAuth srv' _) = srvKeyHash srv' == srvKeyHash srv
-        srvKeyHash (ProtocolServer _ _ _ kh) = kh
-        proof =
-          TM.lookupIO userId userEntitlements $>>= \cred ->
-            generateEntitlementProof keys cred (BBSPresHeader sessId) >>= \case
-              Right p -> pure $ Just p
-              Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
 
     clientDisconnected :: XFTPClientVar -> XFTPClient -> IO ()
     clientDisconnected v client = do
       atomically $ removeSessVar v tSess xftpClients
       atomically $ writeTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent DISCONNECT client)
       logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
+
+userEntitlementProof :: AgentClient -> Map Word16 BBSPublicKey -> UserId -> IO Bool -> SessionId -> IO (Maybe EntitlementProof)
+userEntitlementProof AgentClient {userEntitlements} keys userId knownServer sessId =
+  ifM knownServer proof (pure Nothing)
+  where
+    proof =
+      TM.lookupIO userId userEntitlements $>>= \cred ->
+        generateEntitlementProof keys cred (BBSPresHeader sessId) >>= \case
+          Right p -> pure $ Just p
+          Left e -> Nothing <$ logError ("entitlement proof error: " <> tshow e)
+
+-- the entitlement is presented only to the servers of this user, matched by key hash that TLS pins,
+-- so a server address received from another party cannot direct it to another server
+knownUserServer :: TMap UserId (UserServers p) -> UserId -> ProtocolServer p -> IO Bool
+knownUserServer servers userId srv = maybe False (any sameSrvKeyHash . storageSrvs) <$> TM.lookupIO userId servers
+  where
+    sameSrvKeyHash (_, ProtoServerWithAuth srv' _) = sameKeyHash srv srv'
+
+knownNtfServer :: AgentClient -> NtfServer -> IO Bool
+knownNtfServer c srv = any (sameKeyHash srv) <$> readTVarIO (ntfServers c)
+
+sameKeyHash :: ProtocolServer p -> ProtocolServer p -> Bool
+sameKeyHash ProtocolServer {keyHash} ProtocolServer {keyHash = kh} = keyHash == kh
 
 waitForProtocolClient ::
   (ProtocolTypeI (ProtoType msg), ProtocolServerClient v err msg) =>
@@ -1059,9 +1070,15 @@ reconnectSMPServer c userId srv = do
       | userId == userId' && srv == srv' = (v :)
       | otherwise = id
 
-closeUserXFTPClients :: AgentClient -> UserId -> IO ()
-closeUserXFTPClients c userId = do
-  vs <- atomically $ stateTVar (xftpClients c) $ \cs ->
+closeUserClients :: AgentClient -> UserId -> IO ()
+closeUserClients c userId = do
+  closeUserSessions c userId smpClients
+  closeUserSessions c userId ntfClients
+  closeUserSessions c userId xftpClients
+
+closeUserSessions :: ProtocolServerClient v err msg => AgentClient -> UserId -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
+closeUserSessions c userId clientsSel = do
+  vs <- atomically $ stateTVar (clientsSel c) $ \cs ->
     let (userCs, cs') = M.partitionWithKey (\(userId', _, _) _ -> userId == userId') cs
      in (M.elems userCs, cs')
   mapM_ (forkIO . closeClient_ c) vs

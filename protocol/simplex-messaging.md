@@ -86,7 +86,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 20. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 22. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -108,6 +108,7 @@ This document describes SMP protocol version 20. Versions 1-5 are discontinued. 
 - v19: service subscriptions to messages (SUBS, NSUBS, SOKS, ENDS, ALLS commands)
 - v20: public namespaces resolver (RSLV command, RNAME response) — direct or forwarded via PFWD
 - v21: server public information in handshake
+- v22: entitlement proof in client handshake
 
 ## Introduction
 
@@ -1633,7 +1634,7 @@ cert = originalLength x509encoded
 signedRouterKey = originalLength x509encoded ; X25519 key signed by router certificate
 
 paddedClientHello = <padded(clientHello, 16384)>
-clientHello = smpVersion keyHash [clientKey] proxyRouter optClientService ignoredPart
+clientHello = smpVersion keyHash [clientKey] proxyRouter optClientService optEntitlementProof ignoredPart
 ; chosen SMP protocol version - it must be the maximum supported version
 ; within the range offered by the router
 keyHash = shortString ; router identity - CA certificate fingerprint
@@ -1645,7 +1646,21 @@ serviceRole = %s"M" / %s"N" / %s"P" ; Messaging / Notifier / Proxy
 serviceCertKey = certChain signedServiceKey
 signedServiceKey = originalLength x509encoded ; Ed25519 key signed by service certificate
 
+optEntitlementProof = %s"0" / (%s"1" entitlementProof)
+; proof of the user entitlement, encoded from v22, bound to sessionIdentifier
+entitlementProof = issuerKeyIndex bbsProof entitlement
+issuerKeyIndex = 2*2OCTET ; Word16 index of the issuer public key
+bbsProof = largeString
+entitlement = entExpires entName entExtra
+entExpires = shortString ; expiration as an ISO8601 UTC timestamp
+entName = shortString ; e.g. "supporter", "legend"
+entExtra = largeString ; opaque to the router
+
 smpVersion = 2*2OCTET ; Word16 version number
+shortString = length *OCTET
+largeString = length2 *OCTET
+length = 1*1OCTET
+length2 = 2*2OCTET ; Word16, network byte order
 originalLength = 2*2OCTET
 count = 1*1OCTET
 ignoredPart = *OCTET
@@ -1666,6 +1681,8 @@ routerHandshakeResponse = %s"R" serviceId / %s"E" handshakeError
 serviceId = shortString
 handshakeError = transportError
 ```
+
+`entitlementProof` (v22+) presents the entitlement of the user - its name, expiration and an opaque extra string - as the disclosed content of a BBS proof over the presentation header `sessionIdentifier`, so a proof presented on another session does not verify. The holder secret and the issuer signature remain with the client. Clients send it only to their own routers, identified by the key hash pinned in TLS.
 
 `ignoredPart` in handshake allows to add additional parameters in handshake without changing protocol version - the client and routers must ignore any extra bytes within the original block length.
 

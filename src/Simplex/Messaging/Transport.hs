@@ -53,6 +53,7 @@ module Simplex.Messaging.Transport
     rcvServiceSMPVersion,
     namesSMPVersion,
     serverInfoSMPVersion,
+    entitlementSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -135,6 +136,7 @@ import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (dropPrefix, parseRead1, sumTypeJSON)
@@ -175,6 +177,7 @@ smpBlockSize = 16384
 -- 19 - service subscriptions to messages (10/20/2025)
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
+-- 22 - entitlement proof in client handshake (9/11/2026)
 
 data SMPVersion
 
@@ -211,6 +214,9 @@ namesSMPVersion = VersionSMP 20
 serverInfoSMPVersion :: VersionSMP
 serverInfoSMPVersion = VersionSMP 21
 
+entitlementSMPVersion :: VersionSMP
+entitlementSMPVersion = VersionSMP 22
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
 
@@ -218,10 +224,10 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 21
+currentClientSMPRelayVersion = VersionSMP 22
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 21
+currentServerSMPRelayVersion = VersionSMP 22
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
@@ -566,7 +572,9 @@ data SMPClientHandshake = SMPClientHandshake
     -- - notification servers,
     -- - high traffic chat bots,
     -- - high traffic business support clients.
-    clientService :: Maybe SMPClientHandshakeService
+    clientService :: Maybe SMPClientHandshakeService,
+    -- | proof of the user entitlement bound to the session
+    entitlementProof :: Maybe EntitlementProof
   }
 
 data SMPClientHandshakeService = SMPClientHandshakeService
@@ -584,17 +592,19 @@ data ServiceCredentials = ServiceCredentials
 data SMPServiceRole = SRMessaging | SRNotifier | SRProxy deriving (Eq, Show)
 
 instance Encoding SMPClientHandshake where
-  smpEncode SMPClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer, clientService} =
+  smpEncode SMPClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer, clientService, entitlementProof} =
     smpEncode (v, keyHash)
       <> maybe "" smpEncode authPubKey
       <> smpEncode proxyServer
       <> ifHasService v (smpEncode clientService) ""
+      <> ifHasEntitlement v (smpEncode entitlementProof) ""
   smpP = do
     (v, keyHash) <- smpP
     authPubKey <- optional smpP
     proxyServer <- smpP
     clientService <- ifHasService v smpP (pure Nothing)
-    pure SMPClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer, clientService}
+    entitlementProof <- ifHasEntitlement v smpP (pure Nothing)
+    pure SMPClientHandshake {smpVersion = v, keyHash, authPubKey, proxyServer, clientService, entitlementProof}
 
 instance Encoding SMPClientHandshakeService where
   smpEncode SMPClientHandshakeService {serviceRole, serviceCertKey} =
@@ -617,6 +627,9 @@ instance Encoding SMPServiceRole where
 
 ifHasService :: VersionSMP -> a -> a -> a
 ifHasService v a b = if v >= serviceCertsSMPVersion then a else b
+
+ifHasEntitlement :: VersionSMP -> a -> a -> a
+ifHasEntitlement v a b = if v >= entitlementSMPVersion then a else b
 
 ifHasServerInfo :: VersionSMP -> a -> a -> a
 ifHasServerInfo v a b = if v >= serverInfoSMPVersion then a else b
@@ -773,8 +786,8 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfoByt
 -- | Client SMP transport handshake.
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
-smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleSMP c 'TClient)
-smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange proxyServer serviceKeys_ = do
+smpClientHandshake :: forall c. Transport c => c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeSMP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> (SessionId -> IO (Maybe EntitlementProof)) -> ExceptT TransportError IO (THandleSMP c 'TClient)
+smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange proxyServer serviceKeys_ mkEntitlementProof = do
   SMPServerHandshake {sessionId = sessId, smpVersionRange, authPubKey = certKey@(CertChainPubKey chain exact), serverInfoBytes} <- getHandshake th
   when (sessionId /= sessId) $ throwE TEBadSession
   case smpVersionRange `compatibleVRange` smpVRange of
@@ -791,8 +804,8 @@ smpClientHandshake c ks_ keyHash@(C.KeyHash kh) smpVRange proxyServer serviceKey
             Just sks | v >= serviceVersion (fst sks) && certificateSent c -> Just sks
             _ -> Nothing
           clientService = mkClientService <$> serviceKeys
-          hs = SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService}
-      sendHandshake th hs
+      ep <- if v >= entitlementSMPVersion then liftIO (mkEntitlementProof sessionId) else pure Nothing
+      sendHandshake th SMPClientHandshake {smpVersion = v, keyHash, authPubKey = fst <$> ks_, proxyServer, clientService, entitlementProof = ep}
       service <- mapM getClientService serviceKeys
       liftIO $ smpTHandleClient th v vr (snd <$> ks_) ck proxyServer service serverInfoBytes
     Nothing -> throwE TEVersion

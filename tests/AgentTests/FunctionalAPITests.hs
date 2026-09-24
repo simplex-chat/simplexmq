@@ -332,6 +332,8 @@ functionalAPITests ps = do
       withSmpServer ps testServerMultipleIdentities
     it "should connect with two peers" $
       withSmpServer ps testAgentClient3
+    it "should connect with entitlement credential" $
+      withSmpServer ps testAgentEntitlement
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer ps testEnablePQEncryption
   describe "Duplex connection - delivery stress test" $ do
@@ -975,6 +977,15 @@ testAgentClient3 =
     ackMessage c aIdForC 2 Nothing
     get c =##> \case ("", connId, Msg "c5") -> connId == aIdForC; _ -> False
     ackMessage c aIdForC 3 Nothing
+
+testAgentEntitlement :: HasCallStack => IO ()
+testAgentEntitlement = do
+  (keys, credential) <- mkTestEntitlement
+  let aCfg = agentCfg {entitlementKeys = keys}
+      servers = initAgentServers {entitlements = M.fromList [(1, credential)]}
+  withAgentClientsCfgServers2 aCfg aCfg servers $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    exchangeGreetings a bId b aId
 
 runAgentClientContactTest :: HasCallStack => PQSupport -> SndQueueSecured -> Bool -> AgentClient -> AgentClient -> AgentMsgId -> IO ()
 runAgentClientContactTest pqSupport sqSecured viaProxy alice bob baseId =

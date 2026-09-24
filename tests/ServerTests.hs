@@ -81,6 +81,7 @@ serverTests = do
     describe "NEW, OFF and DEL commands, SEND messages" testCreateDelete
     describe "Stress test" stressTest
     describe "allowNewQueues setting" testAllowNewQueues
+    describe "entitlement proof in handshake" testEntitlementProofHandshake
   describe "SMP messages" $ do
     describe "duplex communication over 2 SMP connections" testDuplex
     describe "switch subscription to another TCP connection" testSwitchSub
@@ -462,6 +463,19 @@ testAllowNewQueues =
         (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
         (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
         Resp "abcd" NoEntity (ERR AUTH) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
+        pure ()
+
+testEntitlementProofHandshake :: SpecWith (ASrvTransport, AStoreType)
+testEntitlementProofHandshake =
+  it "should create queue in the session with entitlement proof" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
+    mkProof <- mkTestEntitlementProof
+    withSmpServerConfigOn (ATransport t) (cfgMS msType) testPort $ \_ ->
+      testSMPClientProof @c mkProof $ \h@THandle {params = THandleParams {thVersion}} -> do
+        thVersion `shouldSatisfy` (>= entitlementSMPVersion)
+        g <- C.newRandom
+        (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+        (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+        Resp "abcd" NoEntity (Ids _ _ _) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
         pure ()
 
 testDuplex :: SpecWith (ASrvTransport, AStoreType)

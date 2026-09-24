@@ -2,13 +2,15 @@
 
 ## Summary
 
-A client presents a proof of work when it asks a server to create a resource: an SMP queue, an XFTP file chunk, a notification token. The required effort is the price of the resource. The price rises with the cost of the resource and with server load, and is divided by a configured factor for a client that presented an entitlement proof in the handshake.
+A client presents a proof of work when it asks a server to create a resource: an SMP queue, an XFTP file chunk, a notification token. The required effort is the price of the resource: its cost in units multiplied by the price per unit.
+
+The server sets one price per unit for each tier: sessions without an entitlement, and sessions of each entitlement name. The prices are independent, so a flood in one tier raises the price of that tier alone.
 
 The proof is bound to the transport session, so it is valid on one connection to one server, and single use within it.
 
 ## Interaction
 
-The exchange adds no round trip. The server handshake states the price and the server time, the session id is the challenge input that both sides already hold, and the client attaches a proof to the command that creates the resource.
+The exchange adds no round trip. The server handshake states the prices and the server time, the session id is the challenge input that both sides already hold, and the client attaches a proof to the command that creates the resource.
 
 Nothing is sent back for the price alone: it rides the messages that already exist.
 
@@ -16,7 +18,7 @@ Nothing is sent back for the price alone: it rides the messages that already exi
 
 A proof states the minute it was made for, and expires after a few minutes.
 
-Without an expiry a client mints proofs for as long as a session lasts and spends the stock in one burst. The stock is minted at the idle price, so the rising price reaches the burst after it lands, and an hour of one machine arrives in seconds. The expiry bounds the stock to the work of one window, a few periods of the price estimator.
+Without an expiry a client mints proofs for as long as a session lasts and spends the stock in one burst. The stock is minted at the idle price, so a rising price reaches the burst after it lands, and an hour of one machine arrives in seconds. The expiry bounds the stock to the work of one window.
 
 ```
 powEpoch = 4*4 OCTET    ; Word32, minutes of server time
@@ -24,7 +26,7 @@ powEpoch = 4*4 OCTET    ; Word32, minutes of server time
 
 The server sends its current epoch in the handshake, and the client counts minutes from it with a monotonic clock, so the clock of the device takes no part. A proof verifies while `serverEpoch - powEpoch` is within the advertised window, and one epoch ahead of the server is admitted for rounding.
 
-The window is the burst a client may prepare: a stock of `window * mint rate`. At 5 minutes and unit effort 16, one phone core holds about 900 queue proofs, and one desktop core about 2800.
+The window is the burst a client may prepare: a stock of `window * mint rate`. At 5 minutes and a price of 16, one phone core holds about 900 queue proofs, and one desktop core about 2800.
 
 A price increase cuts the stock a second way. A proof states the effort it was made for, so every proof below the new price is rejected, and the stock of an attacker survives an increase only at the effort it paid for in advance. The two bounds compose: the stock is worth the smaller of one window of minting and the time until the next increase.
 
@@ -49,15 +51,16 @@ Our problem is the price of a stored resource, so the auction is replaced by a p
 1. Threshold, not bidding. The server states the required effort; the client sends exactly that. The priority queue and its trimming are dropped. A faster device gains no priority, so the effort value describes the request rather than the device.
 2. Session binding, not seeds. The challenge includes the hash of the transport session id, which both sides already hold. This removes seed generation, seed rotation, seed publication, and the two-seed overlap.
 3. Single use by a counter, not by a replay cache. Each proof carries a session counter, and the server keeps the highest counter it accepted plus a 64-bit window of the counters below it. Per-session state is 16 bytes, against 16 bytes per accepted proof for a set of nonces. Tor needs the set because one seed spans many connections; a proof here is valid on one connection only.
-4. An expiry of minutes, against the seed window of two hours in Tor. A stock of proofs is worth one window of minting, so the price estimator answers a burst that was prepared under the old price.
-5. Price by resource, not by congestion alone. Effort is the resource cost in units multiplied by the current unit effort. Load moves the unit effort only.
-6. Entitlement as a discount, never an exemption. A verified entitlement divides the unit effort by a factor configured per entitlement name. A credential presents on any number of sessions without linking them, so an exemption would sell an attacker unlimited creation for the price of one badge.
+4. An expiry of minutes, against the seed window of two hours in Tor. A stock of proofs is worth one window of minting, so a price increase reaches a burst that was prepared under the old price.
+5. Prices set by the operator. Effort is the resource cost in units multiplied by the price per unit, and the operator sets the price. The estimator of Tor is deferred.
+6. One price per tier. The server knows the tier of every session, so a flood shows in its tier, and raising that price leaves the other tiers unchanged. An attacker without a badge leaves the price of badge holders where it was; an attacker with a supporter badge leaves the price of legend holders where it was.
+7. An entitlement lowers the price, and neither raises it nor removes it. A credential presents on any number of sessions without linking them, so a free tier would sell an attacker unlimited creation for the price of one badge; and a badge that could cost more than no badge would break the promise it was sold with, the promise the XFTP server keeps for storage time.
 
-Kept from Tor: the Equi-X function, the linear effort scale, the verification formula, and the shape of the adaptation loop.
+Kept from Tor: the Equi-X function, the linear effort scale, and the verification formula.
 
 ## Cost units
 
-Each protocol defines the unit of its own price list. The server advertises the effort per unit; the client computes the effort of its request.
+Each protocol defines the unit of its own price list. The server advertises the price per unit; the client computes the effort of its request.
 
 ```
 SMP:  1 unit per new queue
@@ -67,28 +70,25 @@ XFTP: 1 unit per megabyte-day of requested storage, rounded up
 NTF:  1 unit per token registration
 ```
 
-`effort = unitEffort * units`, capped at 2^32 - 1.
+`effort = price * units`, capped at 2^32 - 1.
 
 ## Handshake parameters
 
 Each protocol adds one optional field to the server handshake, encoded from the version that introduces proof of work.
 
 ```
-powParams = %s"0" / (%s"1" powScheme unitEffort entUnitEffort serverEpoch epochWindow)
-powScheme = 1*1 OCTET      ; 1 = Equi-X and Blake2b
-unitEffort = 4*4 OCTET     ; Word32, effort per unit, 0 = proof not required
-entUnitEffort = 4*4 OCTET  ; Word32, effort per unit for a session with a verified entitlement
-serverEpoch = 4*4 OCTET    ; Word32, current minute of server time
-epochWindow = 1*1 OCTET    ; minutes a proof stays valid
+powParams = %s"0" / (%s"1" powScheme defaultPrice entPrices serverEpoch epochWindow)
+powScheme = 1*1 OCTET        ; 1 = Equi-X and Blake2b
+defaultPrice = 4*4 OCTET     ; Word32, effort per unit without an entitlement, 0 = proof not required
+entPrices = count *entPrice
+entPrice = entName price
+entName = shortString        ; entitlement name, as in the entitlement proof
+price = 4*4 OCTET            ; Word32, effort per unit for a session of this entitlement
+serverEpoch = 4*4 OCTET      ; Word32, current minute of server time
+epochWindow = 1*1 OCTET      ; minutes a proof stays valid
 ```
 
-The server handshake precedes the client handshake that carries the entitlement proof, so both values are sent. The client applies `entUnitEffort` when it presented an entitlement, and `unitEffort` otherwise.
-
-```
-entUnitEffort = ceil(unitEffort / entDiscount)
-```
-
-`entDiscount` is configured per entitlement name. The handshake states the value for the smallest configured discount, so a first command may over-pay, and the response to a priced command states the value for the entitlement of the session. `entUnitEffort` is zero only when `unitEffort` is zero.
+The server handshake precedes the client handshake that carries the entitlement proof, so every price is sent. The client applies the price of its entitlement name, and the default price when it presented no entitlement or when its name is absent from the list.
 
 ## Algorithm
 
@@ -148,6 +148,14 @@ sessionHash = 32*32 OCTET      ; sha256 of the transport session id
 
 The client picks the next counter and a random search value, calls `equix_solve(challenge)`, computes `R = ntohl(blake2b_32(challenge || S))`, and accepts the solution when `R * E <= 2^32 - 1`, computed in 64 bits. Otherwise it increments the search value as a little-endian integer and repeats.
 
+```
+S = packed solution         ; 8 indices, each a little-endian uint16, 16 bytes
+blake2b_32 = BLAKE2b initialised with a 4-byte output length
+R = the 4 bytes of blake2b_32, read big-endian
+```
+
+BLAKE2b with a 4-byte output length differs from the first 4 bytes of BLAKE2b-512, because the length is a parameter of the initial state. Both definitions follow `validate_equix_challenge` and `pack_equix_solution` in `hs_pow.c`.
+
 Counters are assigned in order and spent in order. A client that solves on several cores gives each core its own counter.
 
 A proof verifies only under the protocol letter and the session hash it was made for, so it fails on another protocol, another server, and another connection.
@@ -169,7 +177,7 @@ A batch of transmissions carries one proof per command. Creation commands are se
 
 The server checks, in this order:
 
-1. `powEffort >= required effort for the request` - integer comparison.
+1. `powEffort >= price of the tier of the session * units of the request` - integer comparison.
 2. `powEpoch` within the epoch window of the server, and at most one epoch ahead.
 3. `powCounter` is above the window of the session, or inside it and unused.
 4. `R * powEffort <= 2^32 - 1` - one Blake2b of 88 bytes.
@@ -182,60 +190,97 @@ The window holds the last 64 counters, which admits the commands of one batch in
 
 Steps 1 to 4 cost about a microsecond, so a flood of malformed proofs is rejected before the Equi-X call. A session that fails verification repeatedly is closed, and the number of Equi-X verifications per session per second is capped.
 
+## Entitlement
+
+SMP and NTF servers verify the entitlement proof in the handshake, as the XFTP server does. A name the server prices is verified once per session; a name it does not price is ignored without verification, and the session pays the default price. A proof that fails to verify leaves the session at the default price too.
+
+The tier of the session is fixed at the handshake, so every command in it is priced without further work.
+
+An entitlement lowers the price, and neither raises it nor removes it:
+
+```
+min(1, price) <= price_for_<name> <= price
+```
+
+The server exits at startup when a configured price breaks this rule, and logs each name that breaks it, as the XFTP server does when an entitlement storage time is below the default. An entitlement price equal to the default is allowed, as an equal storage time is on XFTP.
+
+The control port sets the three prices in one command, and refuses a triple that breaks the rule. The triple is checked as a whole, so the order in which prices change plays no part.
+
+This gives the badge a function on SMP and NTF, where it grants nothing today: the holder pays less CPU time, and a flood outside its tier leaves its price where it was.
+
 ## Learning the price
 
 The price reaches the client three ways, and each of them is a message the protocol already sends.
 
-1. The server handshake, at the start of the session. It states both prices, because the entitlement proof arrives in the client handshake that follows.
-2. The response to a priced command. It states the price that applies to this session, so a client that presented an entitlement reads its own discount, and a client that paid the old price learns the new one while its command succeeds.
-3. The error below, when the proof was absent, stale, or below the price.
+1. The server handshake, at the start of the session. It states the price of every tier, because the entitlement proof arrives in the client handshake that follows.
+2. The response to a priced command. It states the price of the tier of the session, so a client that paid the old price learns the new one while its command succeeds.
+3. The error below, when the proof was absent, stale, or below the price. A client whose entitlement failed to verify learns here that it pays the default price.
 
 ```
-powPrice = unitEffort serverEpoch  ; 8 bytes, appended to the response of a priced command
+powPrice = price serverEpoch  ; 8 bytes, appended to the response of a priced command
 ```
 
 An increase costs one rejected command and the proof spent on it. A decrease costs nothing: the client over-pays until its next response, which states the lower price. A client that has been idle for longer than the epoch window solves at the last price it read, and pays one retry when the price moved meanwhile.
 
-The price is public, as it is in Tor, and reading it needs one command without a proof.
+The prices are public, as the suggested effort is in Tor, and the list of priced entitlement names is public with them.
 
 ## Errors and retry
 
 A new error carries the price and the time of the server.
 
 ```
-SMP:  ERR POW effort epoch
-XFTP: FRErr (POW effort epoch)
-NTF:  NRErr (POW effort epoch)
+SMP:  ERR POW price epoch
+XFTP: FRErr (POW price epoch)
+NTF:  NRErr (POW price epoch)
 ```
 
-The client resets its price and epoch from the error, solves at the stated effort, and retries. Two retries are allowed for one command, which covers a price that moves again while the client solves; past that it reports that the server is busy, as it does when the effort exceeds its own maximum. Clients of earlier versions receive `AUTH`, as they do today when the basic auth of the server does not match.
+The client resets its price and epoch from the error, solves at the stated price, and retries. Two retries are allowed for one command, which covers a price that moves again while the client solves; past that it reports that the server is busy, as it does when the effort exceeds its own maximum. Clients of earlier versions receive `AUTH`, as they do today when the basic auth of the server does not match.
 
-A proof made for a higher effort than required is accepted, so a proof that outlives an increase stays usable while its epoch holds.
+A proof made for a higher effort than required is accepted, so a proof that outlives a decrease stays usable while its epoch holds.
 
-## Adaptive effort
+## Setting prices
 
-Every 60 seconds the server updates `unitEffort` from its own pressure signals: resources created in the period against a configured budget, and storage used against the quota.
+The operator sets the prices: the configuration holds the values the server starts with, and the control port reads and changes them while it runs.
 
 ```
-overBudget = created > creationBudget or used > highWater * quota
-underBudget = created < creationBudget / 2 and used < lowWater * quota
-
-overBudget:  unitEffort' = min(maxUnitEffort, max(unitEffort + 1, unitEffort * 2))
-underBudget: unitEffort' = max(minUnitEffort, unitEffort * 2 / 3)
-otherwise:   unitEffort' = unitEffort
+[PROOF_OF_WORK]
+price = 16                  ; effort per unit without an entitlement, 0 = proof not required
+price_for_supporter = 4     ; effort per unit with the supporter entitlement, at least 1 and at most price
+price_for_legend = 2        ; effort per unit with the legend entitlement, at least 1 and at most price
+epoch_window_minutes = 5
 ```
 
-`minUnitEffort` is the configured price of an idle server, and may be zero. Doubling reaches a defensive price within a few periods, and the `2/3` step returns to the idle price slowly. New sessions read the value from the handshake; sessions in progress read it from the error.
+The keys follow `expire_files_hours_for_<name>` of the XFTP server, and on the XFTP server both keys name the same entitlements.
 
-## Entitlement
+Control port commands, on SMP, XFTP and NTF servers:
 
-The entitlement proof is verified once in the handshake and applies to the session, so the discount costs one verification per connection. The server configures the discount per entitlement name, alongside the storage time it already grants on XFTP.
+```
+pow             ; user role: the three prices, epoch window, counts of the current period per tier
+pow p0 p1 p2    ; admin role: set the prices - p0 without an entitlement, p1 supporter, p2 legend
+```
 
-The discount is a ratio, so the entitled price rises and falls with the load multiplier. A flood of creations under one badge raises the price for that badge as for everyone.
+A change reaches new sessions through the handshake, and sessions in progress through their next response or error. It lasts until the server stops; the configuration holds the value for the next start. The XFTP and NTF control ports gain the admin role check that the SMP control port already has; both check the user role today.
 
-The discount is bounded by how a badge can be used. Proofs of one credential are unlinkable, so one badge presents on every session of a botnet at once, and the discount is the factor that badge buys. A discount of 4 to 8 keeps the badge a convenience for a person and a bounded gain for an attacker; the numbers are in the attacker table below. A higher-priced entitlement name may carry a larger discount.
+The estimator of Tor is deferred. If prices set by hand prove too slow, it runs per tier on the creations of that tier, between bounds set on the control port.
 
-This gives the badge a function on SMP and NTF, where it grants nothing today: the holder pays less CPU time, and the price of resources stays above zero for everyone.
+## Statistics
+
+The server counts per tier, so a flood shows in its tier, and the use of each entitlement is accounted for. Sessions without an entitlement are counted under `default`.
+
+```
+sessions            ; sessions of the tier
+entFailed           ; entitlement proofs that failed to verify
+proofsAccepted
+effortAccepted      ; sum of the effort of accepted proofs
+proofsAbsent
+proofsBelowPrice
+proofsStale         ; epoch outside the window
+proofsReused        ; counter below the window or already marked
+proofsInvalid       ; Blake2b target or Equi-X check failed
+created             ; queues, chunks or tokens created
+```
+
+The counts appear in `pow` for the current period, in the stats log, and in the Prometheus metrics. They name a tier, never a session.
 
 ## Costs
 
@@ -249,7 +294,7 @@ effort   desktop core   phone core
   1024          6.8 s       20.5 s
 ```
 
-A queue at unit effort 16 costs a phone about 0.3 seconds. A 4 MB chunk stored for 48 hours is 8 units, so 128 effort, about 2.6 seconds on a phone, while the upload of the same chunk takes longer than that on most connections. A 100 MB file is 25 chunks, about 65 seconds of phone CPU spread across the upload, and about 8 seconds for a badge holder at a discount of 8.
+A queue at a price of 16 costs a phone about 0.3 seconds. A 4 MB chunk stored for 48 hours is 8 units, so 128 effort, about 2.6 seconds on a phone, while the upload of the same chunk takes longer than that on most connections. A 100 MB file is 25 chunks, about 65 seconds of phone CPU spread across the upload, and about 8 seconds for a badge holder at a price of 2.
 
 Verification at 100 microseconds allows about 10000 proofs per second per core, which exceeds the rate at which queues are created and written to the store.
 
@@ -258,25 +303,19 @@ Verification at 100 microseconds allows about 10000 proofs per second per core, 
 The same table read from the other side, at 150 candidate solutions per second per core:
 
 ```
-unit effort   1 core      64 cores    1000 machines
-         16   9 queues/s  600/s       9000/s
-        256   0.6/s       38/s        600/s
-       1024   0.15/s      9/s         150/s
+price    1 core      64 cores    1000 machines
+   16    9 queues/s  600/s       9000/s
+  256    0.6/s       38/s        600/s
+ 1024    0.15/s      9/s         150/s
 ```
 
-The idle price is a speed bump. The defence is the increase: a flood raises `unitEffort` within a few periods, and the price that holds back a botnet also costs a phone 20 seconds per queue. Two things soften that price for ordinary users - it applies while the flood lasts, and a badge holder pays a fraction of it.
+The idle price is a speed bump. The defence is the increase in the tier the flood uses, and the statistics show which tier that is.
 
-The same table for an attacker who bought one badge, presented on every machine:
+An attacker without a badge floods the default tier. Its price rises, and badge holders keep their prices.
 
-```
-unit effort   discount 4, 1000 machines   discount 8, 1000 machines
-         16                 37000/s                    75000/s
-       1024                   600/s                     1200/s
-```
+An attacker who bought a badge presents it on every machine: at a price of 2, one badge on 1000 machines creates 75000 queues per second until the price of that tier is raised. The raise is paid by the holders of that badge while the flood lasts, and by no one else.
 
-A discount of `d` is a botnet `d` times larger, for the price of one badge, and a badge is cheaper than any machine. So `d` is set by the amplification the server tolerates, and the price of the badge sets no bound. What keeps the amplification bounded under attack is that the increase applies to the badge holder as to everyone.
-
-A client influences `unitEffort` only by consuming resources, which costs work, so the estimator is driven by paid-for demand.
+The price of a badge tier rises at most to the default price. A flood in a badge tier that the default price does not hold back needs the default raised too, so users without a badge pay that raise as well; the other badge tiers keep their prices.
 
 ## Client implementation
 
@@ -286,19 +325,26 @@ The agent solves in a worker thread. It holds few proofs ahead, sized by what th
 
 ## Deployment
 
-Proof of work is gated by a new version of each protocol: SMP, XFTP and NTF. Servers start with `unitEffort = 0`, which asks for nothing, and operators raise it. The existing controls - `allowNewQueues`, `allowNewFiles`, the basic auth of the server - stay as they are.
+Proof of work is gated by a new version of each protocol: SMP, XFTP and NTF. Servers start with every price at zero, which asks for nothing, and operators raise them. The existing controls - `allowNewQueues`, `allowNewFiles`, the basic auth of the server - stay as they are.
 
 ## Limits
 
 - Proof of work prices bulk creation; it stops no one who is willing to pay. Tor states the same conclusion: the defence covers a single machine and a small botnet, and a large botnet needs another mechanism.
+- Prices change by hand, so a flood runs at the old price until an operator raises it. The expiry bounds the stock prepared before the flood; the flood that follows is priced at the new value from the next response.
 - Equi-X aims to narrow the gap between a CPU and a GPU, and published GPU measurements are absent. A hash-based puzzle would give an attacker with one GPU a factor of about a thousand over a phone, which is why Equi-X is chosen.
 - Proofs are bound to a session, so a reconnection discards the unspent ones.
 - The cost falls on the device of the user: battery and heat, most visible when a group of many members is created at once.
-- Proof of work replaces no rate limit. A cap on creations per session per minute stays, and rejects the cheap part of a flood before any verification.
+- Proof of work replaces no rate limit, and the servers limit neither creations nor commands per session today. A cap on creations per session per minute would reject the cheap part of a flood before any verification.
 
 ## Open questions
 
-1. The price of an SMP queue against the price of stored bytes. A queue holds up to 128 messages of 16 KB for up to 21 days, and most queues stay near empty.
-2. Whether `LSET` and `NKEY` are priced in the first version, or the queue alone.
-3. Whether a proof is required for the first message to an unknown queue, which prices contact spam rather than storage.
-4. The size of the proof stock the agent keeps, and whether it solves while the device is on battery.
+1. Clients of earlier versions. A price above zero refuses their creation commands with `AUTH`, and admitting them without a proof admits any attacker who speaks the earlier version. When operators may raise prices, against the spread of the client release.
+2. XFTP units without a stated storage time. The client learns the granted time only from `SIDS`, and the agent usually sends no storage time, which asks for the maximum. The client needs the maximum of its tier to compute megabyte-days: in `powParams`, or the price by size alone.
+3. Service sessions. A service signs `NEW` with its service key, and a chat relay creates queues in volume. A service certificate is self-issued, so it cannot exempt a session: the default price, or a price of its own.
+4. The commands priced in the first version. `NEW` and `FNEW` and `TNEW` are; `LSET`, `NKEY`, `FADD` and `SNEW` are open, and so is the first message to an unknown queue.
+5. The version plan. Pricing by entitlement needs the entitlement proof in the SMP and NTF handshakes: one version for both changes, or the handshake first.
+6. The numbers the implementation needs: the client maximum effort before it reports a busy server, the cap on Equi-X verifications per session per second, the failed proofs that close a session, the size of the verifier pool.
+7. The licence: the LGPL code of tevador vendored under `cbits`, or a reimplementation.
+8. A cap on creations per session, in this work or apart from it.
+9. Client behaviour: solving on demand alone or with a small stock, the number of solver threads on a phone, solving on battery, and an agent event for the interface when solving takes longer than a second.
+10. Whether a price set on the control port is written back to the configuration.

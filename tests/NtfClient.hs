@@ -40,6 +40,7 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol (DeviceToken (..), NtfResponse)
 import Simplex.Messaging.Notifications.Server (runNtfServerBlocking)
@@ -117,10 +118,13 @@ ntfTestDBCfg2 :: PostgresStoreCfg
 ntfTestDBCfg2 = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts2, dbStoreLogPath = Just ntfTestStoreLogFile2}
 
 testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
-testNtfClient client = do
+testNtfClient = testNtfClientProof (\_ -> pure Nothing)
+
+testNtfClientProof :: Transport c => (SessionId -> IO (Maybe EntitlementProof)) -> (THandleNTF c 'TClient -> IO a) -> IO a
+testNtfClientProof mkEntitlementProof client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
-    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False Nothing) >>= \case
+    runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False Nothing mkEntitlementProof) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
