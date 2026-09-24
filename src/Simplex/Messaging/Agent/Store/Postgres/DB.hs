@@ -13,6 +13,7 @@ module Simplex.Messaging.Agent.Store.Postgres.DB
     execute,
     execute_,
     executeMany,
+    returning,
     query,
     query_,
     blobFieldDecoder,
@@ -59,6 +60,10 @@ execute_ db q = void $ PSQL.execute_ db q `E.catch` addSql q
 executeMany :: ToRow q => PSQL.Connection -> Query -> [q] -> IO ()
 executeMany db q qs = void $ PSQL.executeMany db q qs `E.catch` addSql q
 {-# INLINE executeMany #-}
+
+returning :: (ToRow q, FromRow r) => PSQL.Connection -> Query -> [q] -> IO [r]
+returning db q qs = PSQL.returning db q qs `E.catch` addSql q
+{-# INLINE returning #-}
 
 query :: (ToRow q, FromRow r) => PSQL.Connection -> Query -> q -> IO [r]
 query db q qs = PSQL.query db q qs `E.catch` addSql q
