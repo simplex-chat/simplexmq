@@ -49,10 +49,8 @@ pubKeyInternalSize = 64
 -- Types
 
 -- | A validated private key, 32 bytes in @[1, n-1]@: no 'Show', so it cannot be logged by accident, and constant-time 'Eq'.
-newtype Secp256k1PrivateKey = Secp256k1PrivateKey ByteString
-
-instance Eq Secp256k1PrivateKey where
-  Secp256k1PrivateKey a == Secp256k1PrivateKey b = BA.constEq a b
+newtype Secp256k1PrivateKey = Secp256k1PrivateKey ScrubbedBytes
+  deriving (Eq)
 
 -- | A public key in libsecp256k1's opaque 64-byte form; 'serializePublicKey' gives the SEC1 bytes.
 newtype Secp256k1PublicKey = Secp256k1PublicKey ByteString
