@@ -80,6 +80,12 @@ module Simplex.Messaging.Protocol
     ErrorType (..),
     CommandError (..),
     ProxyError (..),
+    NameQuery (..),
+    NameResponse (..),
+    NameRegistration (..),
+    NamePricing (..),
+    USDCents (..),
+    NameReservedReason (..),
     NameErrorType (..),
     BrokerErrorType (..),
     NetworkError (..),
@@ -266,12 +272,12 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Names.Record (NameRecord (..))
+import Simplex.Messaging.Names.Record
 import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
-import Simplex.Messaging.SimplexName (SimplexDomain)
+import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -604,7 +610,7 @@ data Command (p :: Party) where
   -- - corrId: unique correlation ID between proxy and relay, also used as a nonce to encrypt forwarded transmission
   RFWD :: EncFwdTransmission -> Command ProxyService -- use CorrId as CbNonce, proxy to relay
   -- Resolve SimpleX name.
-  RSLV :: SimplexDomain -> Command Resolver
+  RSLV :: NameQuery -> Command Resolver
 
 deriving instance Show (Command p)
 
@@ -740,8 +746,8 @@ data BrokerMsg where
   OK :: BrokerMsg
   ERR :: ErrorType -> BrokerMsg
   PONG :: BrokerMsg
-  -- Resolved SimpleX name.
-  RNAME :: NameRecord -> BrokerMsg
+  -- What the router knows about a SimpleX name.
+  RNAME :: NameResponse -> BrokerMsg
   deriving (Eq, Show)
 
 data RcvMessage = RcvMessage
@@ -1590,11 +1596,28 @@ data ErrorType
     DUPLICATE_ -- not part of SMP protocol, used internally
   deriving (Eq, Show)
 
+-- | What RSLV asks about: a name, or the hash of a second-level label.
+data NameQuery = NQDomain SimplexDomain | NQHash LabelHash SimplexTLD
+  deriving (Eq, Show)
+
+instance Encoding NameQuery where
+  smpEncode = \case
+    NQDomain d -> encodeUtf8 $ fullDomainName d
+    NQHash h tld -> strEncode h <> strEncode tld
+  smpP = NQHash <$> strP <*> strP <|> NQDomain <$> strP
+
+-- | Hashed from v22, except a name with subnames or a web TLD.
+hashedQuery :: NameQuery -> NameQuery
+hashedQuery q = case q of
+  NQDomain SimplexDomain {nameTLD, domain, subDomain}
+    | null subDomain && nameTLD /= TLDWeb -> NQHash (labelHash domain) nameTLD
+  _ -> q
+
 -- | Name resolution error
 data NameErrorType
   = -- | the names role / resolver is not configured on this server
     NO_RESOLVER
-  | -- | the name is not registered (resolver returned not-found)
+  | -- | the name does not resolve; sent only to a session below v22
     NOT_FOUND
   | -- | backing resolver/RPC failure - contains the diagnostic detail
     RESOLVER {resolverErr :: Text}
@@ -1823,7 +1846,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     PRXY host auth_ -> e (PRXY_, ' ', host, auth_)
     PFWD fwdV pubKey (EncTransmission s) -> e (PFWD_, ' ', fwdV, pubKey, Tail s)
     RFWD (EncFwdTransmission s) -> e (RFWD_, ' ', Tail s)
-    RSLV d -> e (RSLV_, ' ', d)
+    RSLV q -> e (RSLV_, ' ', if v >= nameAvailSMPVersion then hashedQuery q else q)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -1930,7 +1953,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SNotifierService NSUBS_
       | v >= rcvServiceSMPVersion -> Cmd SNotifierService <$> (NSUBS <$> _smpP <*> smpP)
       | otherwise -> pure $ Cmd SNotifierService $ NSUBS (-1) mempty
-    CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP <* A.takeByteString
+    CT SResolver RSLV_ -> Cmd SResolver . RSLV <$> _smpP
 
   fromProtocolError = fromProtocolError @SMPVersion @ErrorType @BrokerMsg
   {-# INLINE fromProtocolError #-}
@@ -1973,7 +1996,11 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
             | v < clientNoticesSMPVersion -> BLOCKED info {notice = Nothing}
           _ -> err
     PONG -> e PONG_
-    RNAME rec -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode rec)
+    RNAME res
+      | v >= nameAvailSMPVersion -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode res)
+      | otherwise -> case registration res of
+          NRRegistered {nameRecord} -> e (RNAME_, ' ', Tail $ LB.toStrict $ J.encode nameRecord)
+          _ -> e (ERR_, ' ', NAME NOT_FOUND)
     where
       e :: Encoding a => a -> ByteString
       e = smpEncode
@@ -2020,8 +2047,12 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     OK_ -> pure OK
     ERR_ -> ERR <$> _smpP
     PONG_ -> pure PONG
-    RNAME_ -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
+    RNAME_
+      | v >= nameAvailSMPVersion -> fmap RNAME . J.eitherDecodeStrict . unTail <$?> _smpP
+      | otherwise -> fmap (RNAME . oldResponse) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
+      oldResponse nameRecord =
+        NameResponse {lastBlockTs = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
@@ -2043,7 +2074,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     PKEY {} -> noEntityMsg
     RRES _ -> noEntityMsg
     ALLS -> noEntityMsg
-    RNAME _ -> noEntityMsg
+    RNAME {} -> noEntityMsg
     -- other broker responses must have queue ID
     _
       | B.null entId -> Left $ CMD NO_ENTITY
@@ -2413,3 +2444,4 @@ $(J.deriveJSON defaultJSON ''BlockingInfo)
 
 -- run deriveJSON in one TH splice to allow mutual instance
 $(concat <$> mapM @[] (J.deriveJSON (sumTypeJSON id)) [''ProxyError, ''NameErrorType, ''ErrorType])
+

@@ -10,14 +10,21 @@ module Simplex.Messaging.SimplexName
     SimplexTLD (..),
     SimplexNameType (..),
     fullDomainName,
+    LabelHash (..),
+    labelHash,
+    boundedNonSpace,
     shortNameInfoStr,
   )
 where
 
 import Control.Applicative (optional, (<|>))
+import Crypto.Hash (Digest, hash)
+import Crypto.Hash.Algorithms (Keccak_256)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.Attoparsec.Text as AT
+import qualified Data.ByteArray as BA
+import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isDigit)
@@ -70,6 +77,20 @@ nameLabelP = do
     -- (Cyrillic а vs ASCII a hash to different on-chain records).
     isNameLetter c = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 
+-- | The registry's key for a label: 32 bytes, as labelOf takes it.
+newtype LabelHash = LabelHash ByteString
+  deriving (Eq, Show)
+
+-- | keccak-256 of the lowercased label, as the registry keys it.
+labelHash :: Text -> LabelHash
+labelHash label = LabelHash $ BA.convert (hash (encodeUtf8 (T.toLower label)) :: Digest Keccak_256)
+
+instance StrEncoding LabelHash where
+  strEncode (LabelHash h) = '[' `B.cons` (BAE.convertToBase BAE.Base16 h `B.snoc` ']')
+  strP = do
+    h <- BAE.convertFromBase BAE.Base16 <$?> (A.char '[' *> A.takeWhile (/= ']') <* A.char ']')
+    if B.length h == 32 then pure $ LabelHash h else fail "bad LabelHash"
+
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString
 boundedNonSpace = do
@@ -108,12 +129,15 @@ instance Encoding SimplexDomain where
   smpP = strP
 
 fullDomainName :: SimplexDomain -> Text
-fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain] ++ tld')
-  where
-    tld' = case nameTLD of
-      TLDSimplex -> ["simplex"]
-      TLDTesting -> ["testing"]
-      TLDWeb -> []
+fullDomainName SimplexDomain {nameTLD, domain, subDomain} = T.intercalate "." (reverse subDomain ++ [domain]) <> decodeLatin1 (strEncode nameTLD)
+
+instance StrEncoding SimplexTLD where
+  strEncode = \case
+    TLDSimplex -> ".simplex"
+    TLDTesting -> ".testing"
+    TLDWeb -> ""
+  strP =
+    ".simplex" $> TLDSimplex <|> ".testing" $> TLDTesting <|> pure TLDWeb
 
 shortNameInfoStr :: SimplexNameInfo -> Text
 shortNameInfoStr = \case

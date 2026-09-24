@@ -63,8 +63,6 @@ xftpServerTests =
       it "should create, add recipients, upload and receive file chunk" testFileChunkDeliveryAddRecipients
       it "should delete file chunk (1 client)" testFileChunkDelete
       it "should delete file chunk (2 clients)" testFileChunkDelete2
-      it "should acknowledge file chunk reception (1 client)" testFileChunkAck
-      it "should acknowledge file chunk reception (2 clients)" testFileChunkAck2
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
@@ -182,33 +180,6 @@ runTestFileChunkDelete s r = do
   downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId
-    `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-
-testFileChunkAck :: AFStoreType -> Expectation
-testFileChunkAck = xftpTest $ \c -> runRight_ $ runTestFileChunkAck c c
-
-testFileChunkAck2 :: AFStoreType -> Expectation
-testFileChunkAck2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkAck s r
-
-runTestFileChunkAck :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
-runTestFileChunkAck s r = do
-  g <- liftIO C.newRandom
-  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-  bytes <- liftIO $ createTestChunk testChunkPath
-  digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
-  let file = FileInfo {sndKey, size = chSize, digest}
-      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-  (sId, [rId]) <- createXFTPChunk s spKey file [rcvKey] Nothing
-  uploadXFTPChunk s spKey sId chunkSpec
-
-  downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-  liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
-  ackXFTPChunk r rpKey rId
-  liftIO $ readChunk sId `shouldReturn` bytes
-  downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
-    `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-  ackXFTPChunk r rpKey rId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
 testWrongChunkSize :: AFStoreType -> Expectation
@@ -337,31 +308,11 @@ testFileLog _ = do
   threadDelay 100000
 
   withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
-    rId1 <- liftIO $ readTVarIO rIdVar1
-    rId2 <- liftIO $ readTVarIO rIdVar2
-    -- recipient 1 can download, acknowledges - +1 to log
-    download g c rpKey1 rId1 digest bytes
-    ackXFTPChunk c rpKey1 rId1
-    -- recipient 2 can download
-    download g c rpKey2 rId2 digest bytes
-  logSize testXFTPLogFile `shouldReturn` 4
-  logSize testXFTPStatsBackupFile `shouldReturn` 15
-
-  threadDelay 100000
-
-  withXFTPServerStoreLogOn $ \_ -> pure () -- ack is compacted - -1 from log
-  logSize testXFTPLogFile `shouldReturn` 3
-
-  threadDelay 100000
-
-  withXFTPServerStoreLogOn $ \_ -> testXFTPClient $ \c -> runRight_ $ do
     sId <- liftIO $ readTVarIO sIdVar
     rId1 <- liftIO $ readTVarIO rIdVar1
     rId2 <- liftIO $ readTVarIO rIdVar2
-    -- recipient 1 can't download due to previous acknowledgement
+    -- recipients can download
     download g c rpKey1 rId1 digest bytes
-      `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-    -- recipient 2 can download
     download g c rpKey2 rId2 digest bytes
     -- sender can delete - +1 to log
     deleteXFTPChunk c spKey sId

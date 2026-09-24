@@ -53,6 +53,7 @@ module Simplex.Messaging.Transport
     rcvServiceSMPVersion,
     namesSMPVersion,
     serverInfoSMPVersion,
+    nameAvailSMPVersion,
     entitlementSMPVersion,
     simplexMQVersion,
     smpBlockSize,
@@ -177,7 +178,8 @@ smpBlockSize = 16384
 -- 19 - service subscriptions to messages (10/20/2025)
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
--- 22 - entitlement proof in client handshake (9/11/2026)
+-- 22 - RNAME answers name availability as well as the record (7/25/2026)
+-- 23 - entitlement proof in client handshake (9/11/2026)
 
 data SMPVersion
 
@@ -214,8 +216,13 @@ namesSMPVersion = VersionSMP 20
 serverInfoSMPVersion :: VersionSMP
 serverInfoSMPVersion = VersionSMP 21
 
+-- | RNAME carries availability. A server below this answers RSLV with the
+-- record alone, and ERR NAME NOT_FOUND for a name that does not resolve.
+nameAvailSMPVersion :: VersionSMP
+nameAvailSMPVersion = VersionSMP 22
+
 entitlementSMPVersion :: VersionSMP
-entitlementSMPVersion = VersionSMP 22
+entitlementSMPVersion = VersionSMP 23
 
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
@@ -224,20 +231,19 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 22
+currentClientSMPRelayVersion = VersionSMP 23
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 22
+currentServerSMPRelayVersion = VersionSMP 23
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (20)
--- for this release because proxied name resolution is gated on namesSMPVersion
--- (20), so the one-version anti-fingerprinting buffer does not apply yet; it
--- reappears once the current version advances past 20.
+-- when clients upgrade at different times. Set to 22, one below the current
+-- version (23): a proxied RSLV carries availability from nameAvailSMPVersion (22),
+-- and the entitlement proof of version 23 is never sent via proxy.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 20
+proxiedSMPRelayVersion = VersionSMP 22
 
 -- minimal supported protocol version is 14
 supportedClientSMPRelayVRange :: VersionRangeSMP

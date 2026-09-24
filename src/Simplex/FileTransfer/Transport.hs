@@ -108,8 +108,8 @@ supportedFileServerVRange :: VersionRangeXFTP
 supportedFileServerVRange = mkVersionRange initialXFTPVersion currentXFTPVersion
 
 -- XFTP protocol does not use this handshake method
-xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
-xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys = throwE TEVersion
+xftpClientHandshakeStub :: c 'TClient -> Maybe C.KeyPairX25519 -> C.KeyHash -> VersionRangeXFTP -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> (SessionId -> IO (Maybe EntitlementProof)) -> ExceptT TransportError IO (THandle XFTPVersion c 'TClient)
+xftpClientHandshakeStub _c _ks _keyHash _xftpVRange _proxyServer _serviceKeys _mkEntitlementProof = throwE TEVersion
 
 alpnSupportedXFTPhandshakes :: [ALPN]
 alpnSupportedXFTPhandshakes = [xftpALPNv1]
