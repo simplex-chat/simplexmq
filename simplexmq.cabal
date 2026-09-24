@@ -21,7 +21,6 @@ license-file:   LICENSE
 build-type:     Simple
 extra-source-files:
     README.md
-    src/Simplex/Messaging/Crypto/BIP39/english.txt
     CHANGELOG.md
     cbits/sha512.h
     cbits/sntrup761.h
@@ -34,6 +33,7 @@ extra-source-files:
     cbits/libbbs/**/*.h
     cbits/libsecp256k1/**/*.c
     cbits/libsecp256k1/**/*.h
+    src/Simplex/Messaging/Crypto/BIP39/english.txt
     apps/common/Web/static/index.html
     apps/common/Web/static/link.html
     apps/common/Web/static/media/apk_icon.png
@@ -337,9 +337,6 @@ library
       cbits/blst/src
       cbits/libbbs/include
       cbits/libbbs/src
-      cbits/libsecp256k1
-      cbits/libsecp256k1/include
-      cbits/libsecp256k1/src
   -- libsecp256k1 is built without its autotools config header: every knob has an #ifndef default matching the checked-in tables
   cc-options: -D__BLST_PORTABLE__
   if flag(commoncrypto)

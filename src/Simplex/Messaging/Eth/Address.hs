@@ -9,16 +9,16 @@ module Simplex.Messaging.Eth.Address
 where
 
 import Control.Applicative (optional, (<|>))
-import Control.Monad ((<=<))
+import Control.Monad (unless, when, (<=<))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
-import Data.Char (isDigit, isHexDigit, isLower, isUpper, toLower)
-import Data.Word (Word32, Word8)
-import Simplex.Messaging.Crypto.BIP32 (hardened)
+import Data.Char (isHexDigit, isLower, isUpper, toUpper)
+import Data.Word (Word32)
+import Simplex.Messaging.Crypto.BIP32 (hardened, hardenedOffset)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Eth.Keccak (keccak256)
@@ -33,18 +33,12 @@ instance StrEncoding Address where
   strP = do
     _ <- optional $ A.string "0x" <|> A.string "0X"
     body <- A.takeWhile isHexDigit
-    if B.length body /= addressSize * 2
-      then fail $ "address: expected 40 hex digits, got " <> show (B.length body)
-      else case fromHex (BC.map toLower body) of
-        Left _ -> fail "address: not hexadecimal"
-        Right bs
-          | mixedCase body && checksumAddress (Address bs) /= "0x" <> body ->
-              fail "address: EIP-55 checksum mismatch"
-          | otherwise -> pure $ Address bs
+    unless (B.length body == addressSize * 2) $ fail $ "address: expected 40 hex digits, got " <> show (B.length body)
+    a <- Address <$> either fail pure (BAE.convertFromBase BAE.Base16 body)
+    when (mixedCase body && checksumAddress a /= "0x" <> body) $ fail "address: EIP-55 checksum mismatch"
+    pure a
     where
-      mixedCase body = BC.any isUpper letters && BC.any isLower letters
-        where
-          letters = BC.filter (not . isDigit) body
+      mixedCase s = BC.any isUpper s && BC.any isLower s
 
 addressSize :: Int
 addressSize = 20
@@ -59,30 +53,16 @@ addressFromPrivateKey = addressFromPublicKey <=< S.secp256k1PublicKey
 
 -- | EIP-55: @0x@ and 40 hex digits whose case encodes a checksum over the lowercase hex form.
 checksumAddress :: Address -> ByteString
-checksumAddress (Address bs) = "0x" <> B.pack (zipWith adjust [0 ..] (B.unpack lowerHex))
+checksumAddress (Address bs) = "0x" <> BC.pack (zipWith adjust [0 ..] (BC.unpack lowerHex))
   where
-    lowerHex = toHex bs
+    lowerHex = BAE.convertToBase BAE.Base16 bs
     hashed = keccak256 lowerHex
-    adjust :: Int -> Word8 -> Word8
-    adjust i c
-      | isHexLetter c && nibbleAt i >= 8 = upper c
-      | otherwise = c
+    adjust i c = if isLower c && nibbleAt i >= 8 then toUpper c else c
     nibbleAt i =
       let byte = B.index hashed (i `div` 2)
        in if even i then byte `shiftR` 4 else byte .&. 0x0F
-    isHexLetter c = c >= 0x61 && c <= 0x66 -- 'a'..'f'
-    upper c = c - 0x20
 
-
--- | BIP-44 path for Ethereum account @i@, address @k@: @m\/44'\/60'\/i'\/0\/k@. The account must be below @hardenedOffset@.
-ethereumPath :: Word32 -> Word32 -> [Word32]
-ethereumPath account address = [hardened 44, hardened 60, hardened account, 0, address]
-
--- hex via memory's Base16, which emits the lowercase form EIP-55 starts from; 'checksumAddress' is what introduces case
-
-toHex :: ByteString -> ByteString
-toHex = BAE.convertToBase BAE.Base16
-
--- | Decodes base16; a non-hex or odd-length input is a Left.
-fromHex :: ByteString -> Either String ByteString
-fromHex = BAE.convertFromBase BAE.Base16
+ethereumPath :: Word32 -> Word32 -> Maybe [Word32]
+ethereumPath account address
+  | account >= hardenedOffset || address >= hardenedOffset = Nothing
+  | otherwise = Just [hardened 44, hardened 60, hardened account, 0, address]

@@ -17,15 +17,15 @@ module Simplex.Messaging.Crypto.BIP39
 where
 
 import Control.Concurrent.STM
-import Crypto.Hash (SHA512 (..))
+import Crypto.Hash (Digest, SHA256, SHA512 (..), hash)
 import qualified Crypto.KDF.PBKDF2 as PBKDF2
 import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteArray (ScrubbedBytes)
+import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (isSpace, toLower)
 import Data.IntMap.Strict (IntMap)
@@ -76,39 +76,35 @@ validWordCounts = map strengthWordCount [minBound .. maxBound]
 
 wordByIndex :: IntMap ByteString
 wordByIndex = IM.fromList $ zip [0 ..] englishWordList
-{-# NOINLINE wordByIndex #-}
 
 indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
-{-# NOINLINE indexByWord #-}
 
 -- | The mnemonic as one space-separated phrase, the exact bytes BIP-39 feeds to PBKDF2.
 mnemonicPhrase :: Mnemonic -> ByteString
 mnemonicPhrase = BC.unwords . mnemonicWords
 
 -- | Build a mnemonic from raw entropy of 16, 20, 24, 28 or 32 bytes.
-entropyToMnemonic :: ByteString -> Either String Mnemonic
+entropyToMnemonic :: ScrubbedBytes -> Either String Mnemonic
 entropyToMnemonic ent
   | entLen `notElem` validEntropySizes =
       Left $ "entropy: expected 16, 20, 24, 28 or 32 bytes, got " <> show entLen
   | otherwise = Right $ mnemonicFromIndexes $ entropyToIndexes ent
   where
-    entLen = B.length ent
+    entLen = BA.length ent
 
--- | Entropy to 11-bit word indexes: assumes a validated length, and masks every result into @[0, 2047]@.
-entropyToIndexes :: ByteString -> [Int]
+entropyToIndexes :: BA.ByteArrayAccess ba => ba -> [Int]
 entropyToIndexes ent =
   [fromIntegral ((combined `shiftR` (11 * (n - 1 - i))) .&. 0x7FF) | i <- [0 .. n - 1]]
   where
-    entBits = B.length ent * 8
+    entBits = BA.length ent * 8
     csBits = entBits `div` 32
     -- csBits is at most 8 (256/32), so the first checksum byte always suffices.
-    csByte = B.head (C.sha256Hash ent)
+    csByte = BA.index (hash ent :: Digest SHA256) 0
     combined = os2ip ent `shiftL` csBits .|. fromIntegral (csByte `shiftR` (8 - csBits))
     n = (entBits + csBits) `div` 11
 
--- | The entropy the mnemonic encodes.
-mnemonicToEntropy :: Mnemonic -> ByteString
+mnemonicToEntropy :: Mnemonic -> ScrubbedBytes
 mnemonicToEntropy m = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
   where
     idxs = mnemonicIndexes m
@@ -138,7 +134,6 @@ mnemonicP = do
     wordP = BC.map toLower <$> A.takeWhile1 (not . isSpace)
     lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> BC.unpack w) pure $ M.lookup w indexByWord
 
--- | PBKDF2-HMAC-SHA512, 2048 iterations, salt @\"mnemonic\" <> passphrase@; pass an empty passphrase for the common case.
 mnemonicToSeed :: Mnemonic -> ByteString -> ScrubbedBytes
 mnemonicToSeed m passphrase =
   PBKDF2.generate

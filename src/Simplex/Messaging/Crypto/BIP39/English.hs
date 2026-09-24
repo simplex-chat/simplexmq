@@ -9,4 +9,4 @@ import Data.FileEmbed (embedFile)
 
 -- | All 2048 words, in BIP-39 index order (index 0 is @abandon@).
 englishWordList :: [ByteString]
-englishWordList = BC.lines $(embedFile "src/Simplex/Messaging/Crypto/BIP39/english.txt")
+englishWordList = BC.words $(embedFile "src/Simplex/Messaging/Crypto/BIP39/english.txt")
