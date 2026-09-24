@@ -23,6 +23,7 @@ import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
+import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
@@ -41,10 +42,7 @@ data Mnemonic = Mnemonic
   { mnemonicIndexes :: [Int],
     mnemonicWords :: [ByteString]
   }
-  deriving (Eq)
-
-instance Show Mnemonic where
-  show m = "Mnemonic <" <> show (length (mnemonicIndexes m)) <> " words, redacted>"
+  deriving (Eq, Show)
 
 -- | Entropy size, named by bit length as BIP-39 does.
 data MnemonicStrength = MS128 | MS160 | MS192 | MS224 | MS256
@@ -141,7 +139,7 @@ mnemonicP = do
     lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> BC.unpack w) pure $ M.lookup w indexByWord
 
 -- | PBKDF2-HMAC-SHA512, 2048 iterations, salt @\"mnemonic\" <> passphrase@; pass an empty passphrase for the common case.
-mnemonicToSeed :: Mnemonic -> ByteString -> ByteString
+mnemonicToSeed :: Mnemonic -> ByteString -> ScrubbedBytes
 mnemonicToSeed m passphrase =
   PBKDF2.generate
     (PBKDF2.prfHMAC SHA512)

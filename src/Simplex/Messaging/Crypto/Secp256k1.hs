@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | FFI bindings to libsecp256k1. Every operation is a pure function of its arguments, hence the pure API over 'unsafePerformIO'.
+-- | FFI bindings to libsecp256k1.
 module Simplex.Messaging.Crypto.Secp256k1
   ( Secp256k1PrivateKey,
     Secp256k1PublicKey,
@@ -16,15 +16,16 @@ module Simplex.Messaging.Crypto.Secp256k1
   )
 where
 
+import Control.Exception (bracket)
 import Control.Monad (when)
 import Crypto.Random (drgNew, randomBytesGenerate)
+import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as BU
 import Foreign
 import Foreign.C
-import System.IO.Unsafe (unsafePerformIO)
 
 -- Sizes
 
@@ -68,6 +69,9 @@ data PubKeyRaw
 foreign import ccall "secp256k1_context_create"
   c_context_create :: CUInt -> IO (Ptr Ctx)
 
+foreign import ccall "secp256k1_context_destroy"
+  c_context_destroy :: Ptr Ctx -> IO ()
+
 foreign import ccall "secp256k1_context_randomize"
   c_context_randomize :: Ptr Ctx -> Ptr Word8 -> IO CInt
 
@@ -87,17 +91,15 @@ foreign import ccall "secp256k1_ec_seckey_tweak_add"
 contextNone :: CUInt
 contextNone = 1
 
--- | The process-wide context, created and blinded once. Blinding affects no output and nothing mutates it, so sharing it across threads is safe.
-secp256k1Ctx :: Ptr Ctx
-secp256k1Ctx = unsafePerformIO $ do
-  ctx <- c_context_create contextNone
+-- | A context for one call, blinded with a fresh random seed.
+withContext :: (Ptr Ctx -> IO a) -> IO a
+withContext f = bracket (c_context_create contextNone) c_context_destroy $ \ctx -> do
   when (ctx == nullPtr) $ ioError (userError "secp256k1_context_create failed")
   drg <- drgNew
   let (seed :: ByteString, _) = randomBytesGenerate 32 drg
   rc <- BU.unsafeUseAsCString seed $ \p -> c_context_randomize ctx (castPtr p)
   when (rc /= 1) $ ioError (userError "secp256k1_context_randomize failed")
-  pure ctx
-{-# NOINLINE secp256k1Ctx #-}
+  f ctx
 
 -- Helpers
 
@@ -115,34 +117,34 @@ withPubKeyRaw (Secp256k1PublicKey bs) f = withBS bs $ f . castPtr
 -- Public API
 
 -- | Reject zero and anything at or above the group order, which is what makes 'secp256k1PublicKey' total.
-mkPrivateKey :: ByteString -> Either String Secp256k1PrivateKey
+mkPrivateKey :: ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
 mkPrivateKey bs
-  | B.length bs /= privateKeySize = Left $ "private key: expected 32 bytes, got " <> show (B.length bs)
-  | otherwise = unsafePerformIO $ withBS bs $ \p -> do
-      rc <- c_ec_seckey_verify secp256k1Ctx p
+  | BA.length bs /= privateKeySize = pure $ Left $ "private key: expected 32 bytes, got " <> show (BA.length bs)
+  | otherwise = withContext $ \ctx -> BA.withByteArray bs $ \p -> do
+      rc <- c_ec_seckey_verify ctx p
       pure $ if rc == 1 then Right (Secp256k1PrivateKey bs) else Left "private key: not in [1, n-1]"
 
-unPrivateKey :: Secp256k1PrivateKey -> ByteString
+unPrivateKey :: Secp256k1PrivateKey -> ScrubbedBytes
 unPrivateKey (Secp256k1PrivateKey bs) = bs
 
 -- | Derive the public key. Total, because 'Secp256k1PrivateKey' is validated.
-secp256k1PublicKey :: Secp256k1PrivateKey -> Secp256k1PublicKey
-secp256k1PublicKey (Secp256k1PrivateKey sk) = unsafePerformIO $
+secp256k1PublicKey :: Secp256k1PrivateKey -> IO Secp256k1PublicKey
+secp256k1PublicKey (Secp256k1PrivateKey sk) = withContext $ \ctx ->
   allocaBytes pubKeyInternalSize $ \pkPtr ->
-    withBS sk $ \skPtr -> do
-      rc <- c_ec_pubkey_create secp256k1Ctx pkPtr skPtr
+    BA.withByteArray sk $ \skPtr -> do
+      rc <- c_ec_pubkey_create ctx pkPtr skPtr
       -- Cannot fail: the key was verified by mkPrivateKey.
       when (rc /= 1) $ ioError (userError "secp256k1_ec_pubkey_create failed on a validated key")
       Secp256k1PublicKey <$> packPtr (castPtr pkPtr) pubKeyInternalSize
 
 
-serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
-serializePublicKey fmt pk = unsafePerformIO $
+serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
+serializePublicKey fmt pk = withContext $ \ctx ->
   allocaBytes outLen $ \outPtr ->
     alloca $ \lenPtr ->
       withPubKeyRaw pk $ \pkPtr -> do
         poke lenPtr (fromIntegral outLen)
-        rc <- c_ec_pubkey_serialize secp256k1Ctx outPtr lenPtr pkPtr flag
+        rc <- c_ec_pubkey_serialize ctx outPtr lenPtr pkPtr flag
         when (rc /= 1) $ ioError (userError "secp256k1_ec_pubkey_serialize failed")
         written <- peek lenPtr
         packPtr outPtr (fromIntegral written)
@@ -153,16 +155,12 @@ serializePublicKey fmt pk = unsafePerformIO $
       Uncompressed -> (2, uncompressedSize)
 
 -- | @sk + tweak mod n@, as BIP-32 child derivation needs. 'Nothing' when the result is zero or the tweak is out of range.
-privateKeyTweakAdd :: Secp256k1PrivateKey -> ByteString -> Maybe Secp256k1PrivateKey
+privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
-  | B.length tweak /= privateKeySize = Nothing
-  | otherwise = unsafePerformIO $
-      allocaBytes privateKeySize $ \skPtr ->
-        withBS tweak $ \twPtr -> do
-          withBS sk $ \src -> copyBytes skPtr src privateKeySize
-          rc <- c_ec_seckey_tweak_add secp256k1Ctx skPtr twPtr
-          if rc == 1
-            then Just . Secp256k1PrivateKey <$> packPtr skPtr privateKeySize
-            else pure Nothing
+  | BA.length tweak /= privateKeySize = pure Nothing
+  | otherwise = withContext $ \ctx ->
+      BA.withByteArray tweak $ \twPtr -> do
+        (rc, sk') <- BA.copyRet sk $ \skPtr -> c_ec_seckey_tweak_add ctx skPtr twPtr
+        pure $ if rc == 1 then Just (Secp256k1PrivateKey sk') else Nothing
 
 

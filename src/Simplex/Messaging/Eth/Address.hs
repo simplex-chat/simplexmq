@@ -9,6 +9,7 @@ module Simplex.Messaging.Eth.Address
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Monad ((<=<))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray.Encoding as BAE
@@ -22,12 +23,9 @@ import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Eth.Keccak (keccak256)
 
--- | A 20-byte Ethereum address. 'Show' renders the EIP-55 checksummed form, as pasted into a block explorer.
+-- | A 20-byte Ethereum address.
 newtype Address = Address ByteString
-  deriving (Eq, Ord)
-
-instance Show Address where
-  show = BC.unpack . checksumAddress
+  deriving (Eq, Ord, Show)
 
 -- | EIP-55 checksummed hex. Parsing accepts bare or @0x@-prefixed hex and verifies a mixed-case checksum.
 instance StrEncoding Address where
@@ -52,12 +50,12 @@ addressSize :: Int
 addressSize = 20
 
 -- | The low 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
-addressFromPublicKey :: S.Secp256k1PublicKey -> Address
+addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address
 addressFromPublicKey pk =
-  Address . B.drop 12 . keccak256 . B.drop 1 $ S.serializePublicKey S.Uncompressed pk
+  Address . B.drop 12 . keccak256 . B.drop 1 <$> S.serializePublicKey S.Uncompressed pk
 
-addressFromPrivateKey :: S.Secp256k1PrivateKey -> Address
-addressFromPrivateKey = addressFromPublicKey . S.secp256k1PublicKey
+addressFromPrivateKey :: S.Secp256k1PrivateKey -> IO Address
+addressFromPrivateKey = addressFromPublicKey <=< S.secp256k1PublicKey
 
 -- | EIP-55: @0x@ and 40 hex digits whose case encodes a checksum over the lowercase hex form.
 checksumAddress :: Address -> ByteString

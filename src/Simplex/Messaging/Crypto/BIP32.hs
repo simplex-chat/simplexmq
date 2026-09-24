@@ -12,11 +12,12 @@ module Simplex.Messaging.Crypto.BIP32
 where
 
 import Control.Monad (foldM)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
 import qualified Crypto.MAC.HMAC as HMAC
+import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.List (intercalate)
 import Data.Word (Word32)
@@ -44,35 +45,30 @@ isHardened :: Word32 -> Bool
 isHardened i = i >= hardenedOffset
 
 -- | Derive the master key from a BIP-39 seed (BIP-32 allows 16 to 64 bytes).
-masterKey :: ByteString -> Either String ExtendedKey
+masterKey :: ScrubbedBytes -> IO (Either String ExtendedKey)
 masterKey seed
   | seedLen < 16 || seedLen > 64 =
-      Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
-  | otherwise = case S.mkPrivateKey il of
-      Left _ -> Left "seed: invalid master key, use a different seed"
-      Right k -> Right ExtendedKey {xkKey = k, xkChainCode = ir}
+      pure $ Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
+  | otherwise =
+      either (const $ Left "seed: invalid master key, use a different seed") (\k -> Right ExtendedKey {xkKey = k, xkChainCode = ir})
+        <$> S.mkPrivateKey il
   where
-    seedLen = B.length seed
-    i = hmacSHA512 "Bitcoin seed" seed
-    il = B.take 32 i
-    ir = B.drop 32 i
+    seedLen = BA.length seed
+    (il, ir) = BA.splitAt 32 $ hmacSHA512 "Bitcoin seed" seed
 
 -- | CKDpriv. 'Left' only in the negligible case BIP-32 calls "proceed with the next index", which no real seed reaches.
-deriveChild :: ExtendedKey -> Word32 -> Either String ExtendedKey
-deriveChild xk i =
-  case S.privateKeyTweakAdd (xkKey xk) il of
-    Nothing -> Left $ "derivation: invalid child at index " <> show i <> ", use the next index"
-    Just k -> Right ExtendedKey {xkKey = k, xkChainCode = ir}
-  where
-    dat
-      | isHardened i = B.singleton 0 <> S.unPrivateKey (xkKey xk) <> smpEncode i
-      | otherwise = S.serializePublicKey S.Compressed (S.secp256k1PublicKey (xkKey xk)) <> smpEncode i
-    hm = hmacSHA512 (xkChainCode xk) dat
-    il = B.take 32 hm
-    ir = B.drop 32 hm
+deriveChild :: ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
+deriveChild xk i = do
+  dat <-
+    if isHardened i
+      then pure $ BA.cons 0 (S.unPrivateKey (xkKey xk))
+      else BA.convert <$> (S.serializePublicKey S.Compressed =<< S.secp256k1PublicKey (xkKey xk))
+  let (il, ir) = BA.splitAt 32 $ hmacSHA512 (xkChainCode xk) (dat <> BA.convert (smpEncode i))
+  maybe (Left $ "derivation: invalid child at index " <> show i <> ", use the next index") (\k -> Right ExtendedKey {xkKey = k, xkChainCode = ir})
+    <$> S.privateKeyTweakAdd (xkKey xk) il
 
-derivePath :: ExtendedKey -> [Word32] -> Either String ExtendedKey
-derivePath = foldM deriveChild
+derivePath :: ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath xk = runExceptT . foldM (\k -> ExceptT . deriveChild k) xk
 
 
 
@@ -83,5 +79,5 @@ renderPath is = BC.pack $ intercalate "/" ("m" : map component is)
       | isHardened i = show (i - hardenedOffset) <> "'"
       | otherwise = show i
 
-hmacSHA512 :: ByteString -> ByteString -> ByteString
+hmacSHA512 :: ScrubbedBytes -> ScrubbedBytes -> ScrubbedBytes
 hmacSHA512 key msg = BA.convert (HMAC.hmac key msg :: HMAC.HMAC H.SHA512)

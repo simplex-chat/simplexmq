@@ -6,6 +6,7 @@ module CoreTests.EthCryptoTests (ethCryptoTests) where
 
 import Control.Concurrent.STM (atomically)
 import Control.Monad (forM_)
+import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -36,10 +37,10 @@ ethCryptoTests = do
 
 -- helpers
 
-hx :: ByteString -> ByteString
+hx :: BA.ByteArray a => ByteString -> a
 hx s = either (const $ error $ "bad hex literal: " <> BC.unpack s) id $ BAE.convertFromBase BAE.Base16 s
 
-toHex :: ByteString -> ByteString
+toHex :: BA.ByteArrayAccess a => a -> ByteString
 toHex = BAE.convertToBase BAE.Base16
 
 right :: Either String a -> a
@@ -61,11 +62,11 @@ keccakTests = do
 secp256k1Tests :: Spec
 secp256k1Tests = do
   it "derives the known address for a known key" $
-    show (addressFromPrivateKey testKey) `shouldBe` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
+    (strEncode <$> (addressFromPrivateKey =<< testKey)) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
   it "serializes a public key in both SEC1 forms" $ do
-    let pk = S.secp256k1PublicKey testKey
-        comp = S.serializePublicKey S.Compressed pk
-        uncomp = S.serializePublicKey S.Uncompressed pk
+    pk <- S.secp256k1PublicKey =<< testKey
+    comp <- S.serializePublicKey S.Compressed pk
+    uncomp <- S.serializePublicKey S.Uncompressed pk
     B.length comp `shouldBe` 33
     B.length uncomp `shouldBe` 65
     B.head uncomp `shouldBe` 0x04
@@ -74,16 +75,17 @@ secp256k1Tests = do
     B.take 32 (B.drop 1 uncomp) `shouldBe` B.drop 1 comp
     B.head comp `shouldBe` (if odd (B.last uncomp) then 0x03 else 0x02)
   it "rejects a zero private key" $
-    isLeft (S.mkPrivateKey (B.replicate 32 0)) `shouldBe` True
+    (isLeft <$> S.mkPrivateKey (BA.replicate 32 0)) `shouldReturn` True
   it "rejects a private key at the group order" $
-    isLeft (S.mkPrivateKey (hx "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")) `shouldBe` True
+    (isLeft <$> S.mkPrivateKey (hx "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")) `shouldReturn` True
   it "rejects a short private key" $
-    isLeft (S.mkPrivateKey (B.replicate 31 1)) `shouldBe` True
-  it "adds a tweak to a private key" $
-    (toHex . S.unPrivateKey <$> S.privateKeyTweakAdd testKey (B.replicate 31 0 <> B.singleton 1))
-      `shouldBe` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
+    (isLeft <$> S.mkPrivateKey (BA.replicate 31 1)) `shouldReturn` True
+  it "adds a tweak to a private key" $ do
+    k <- testKey
+    (fmap (toHex . S.unPrivateKey) <$> S.privateKeyTweakAdd k (BA.replicate 31 0 <> BA.singleton 1))
+      `shouldReturn` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
   where
-    testKey = right $ S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
+    testKey = right <$> S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
 
 bip39Tests :: Spec
 bip39Tests = do
@@ -128,10 +130,6 @@ bip39Tests = do
       m <- atomically $ B39.randomMnemonic s g
       length (B39.mnemonicWords m) `shouldBe` B39.strengthWordCount s
       B39.parseMnemonic (B39.mnemonicPhrase m) `shouldBe` Right m
-  it "redacts the mnemonic in Show" $ do
-    g <- C.newRandom
-    m <- atomically $ B39.randomMnemonic B39.MS128 g
-    show m `shouldBe` "Mnemonic <12 words, redacted>"
 
 canonicalPhrase :: ByteString
 canonicalPhrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -141,27 +139,26 @@ bip32Tests = do
   describe "spec test vector 1" $
     forM_ vector1 $ \(name, path, keyHex, ccHex) ->
       it name $ do
-        let xk = right $ B32.derivePath master1 path
+        xk <- right <$> (master1 >>= (`B32.derivePath` path))
         toHex (S.unPrivateKey $ B32.xkKey xk) `shouldBe` keyHex
         toHex (B32.xkChainCode xk) `shouldBe` ccHex
   it "spec test vector 2, chain m" $ do
-    toHex (S.unPrivateKey $ B32.xkKey master2) `shouldBe` "4b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e"
-    toHex (B32.xkChainCode master2) `shouldBe` "60499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689"
+    xk <- master2
+    toHex (S.unPrivateKey $ B32.xkKey xk) `shouldBe` "4b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e"
+    toHex (B32.xkChainCode xk) `shouldBe` "60499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689"
   it "rejects a seed shorter than 16 bytes" $
-    B32.masterKey (B.replicate 15 1) `shouldSatisfy` isLeft
+    (isLeft <$> B32.masterKey (BA.replicate 15 1)) `shouldReturn` True
   it "rejects a seed longer than 64 bytes" $
-    B32.masterKey (B.replicate 65 1) `shouldSatisfy` isLeft
-  it "redacts the extended key in Show" $
-    show master2 `shouldBe` "ExtendedKey <redacted>"
+    (isLeft <$> B32.masterKey (BA.replicate 65 1)) `shouldReturn` True
   describe "path rendering" $ do
     it "renders a path" $
       B32.renderPath [hardened' 44, hardened' 60, hardened' 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
     it "renders an Ethereum path for an account and address" $
       B32.renderPath (ethereumPath 7 3) `shouldBe` "m/44'/60'/7'/0/3"
   where
-    master1 = right $ B32.masterKey (hx "000102030405060708090a0b0c0d0e0f")
+    master1 = right <$> B32.masterKey (hx "000102030405060708090a0b0c0d0e0f")
     master2 =
-      right . B32.masterKey $
+      fmap right . B32.masterKey $
         hx "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542"
     vector1 =
       [ ( "chain m",
@@ -202,25 +199,27 @@ derivationTests = do
     toHex seed
       `shouldBe` "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4"
   it "derives the well-known account 0 address" $
-    show (addrAt 0) `shouldBe` "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
+    (strEncode <$> addrAt 0) `shouldReturn` "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
   it "derives account 1" $
-    show (addrAt 1) `shouldBe` "0x78839F6054d7ed13918bAe0473BA31b1Ca9D7265"
+    (strEncode <$> addrAt 1) `shouldReturn` "0x78839F6054d7ed13918bAe0473BA31b1Ca9D7265"
   it "derives account 2" $
-    show (addrAt 2) `shouldBe` "0x07B5FdfEB4E11826D233403Fe8Db0611CCF4c231"
+    (strEncode <$> addrAt 2) `shouldReturn` "0x07B5FdfEB4E11826D233403Fe8Db0611CCF4c231"
   it "gives each chat profile a distinct address" $
-    map addrAt [0 .. 4] `shouldSatisfy` \as -> length as == length (nub as)
+    mapM addrAt [0 .. 4] >>= (`shouldSatisfy` \as -> length as == length (nub as))
   where
     m = right $ B39.parseMnemonic canonicalPhrase
     seed = B39.mnemonicToSeed m ""
-    master = right $ B32.masterKey seed
-    addrAt i = addressFromPrivateKey . B32.xkKey . right $ B32.derivePath master (ethereumPath i 0)
+    addrAt i = do
+      master <- right <$> B32.masterKey seed
+      xk <- right <$> B32.derivePath master (ethereumPath i 0)
+      addressFromPrivateKey (B32.xkKey xk)
 
 eip55Tests :: Spec
 eip55Tests = do
   describe "spec vectors round-trip" $
     forM_ specAddresses $ \a ->
       it (BC.unpack a) $
-        BC.pack (show . right $ strDecode @Address a) `shouldBe` a
+        strEncode (right $ strDecode @Address a) `shouldBe` a
   it "accepts an all-lowercase address" $
     strDecode @Address "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed" `shouldSatisfy` isRight
   it "accepts an all-uppercase address" $

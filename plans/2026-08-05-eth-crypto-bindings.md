@@ -44,42 +44,40 @@ data PubKeyFormat = Compressed | Uncompressed
 data Mnemonic                       -- validated indexes + words, always consistent
 data MnemonicStrength = MS128 | MS160 | MS192 | MS224 | MS256
 
-data ExtendedKey = ExtendedKey {xkKey :: PrivateKey, xkChainCode :: ByteString}
+data ExtendedKey = ExtendedKey {xkKey :: Secp256k1PrivateKey, xkChainCode :: ScrubbedBytes}
 
-newtype Address                     -- 20 bytes; Show renders the EIP-55 form
+newtype Address                     -- 20 bytes
 ```
 
-`PrivateKey`, `Mnemonic` and `ExtendedKey` have **redacting `Show` instances**,
-and `PrivateKey` compares with `constEq`. These keys authorise transfers of
-assets with monetary value: a derived `Show` would put one in a log the first
-time anything is traced. A chain code is secret too — it plus one child key
-derives siblings.
+Private keys, chain codes and BIP-39 seeds are `ScrubbedBytes`: constant-time
+`Eq`, no readable `Show`, and zeroed when freed. A chain code is secret too, as
+it plus one child key derives siblings.
 
 ## Functions
 
 ```haskell
 -- Secp256k1
-mkPrivateKey        :: ByteString -> Either String Secp256k1PrivateKey
-unPrivateKey        :: Secp256k1PrivateKey -> ByteString
-secp256k1PublicKey  :: Secp256k1PrivateKey -> Secp256k1PublicKey  -- total: key is validated
-serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
-privateKeyTweakAdd  :: Secp256k1PrivateKey -> ByteString -> Maybe Secp256k1PrivateKey
+mkPrivateKey        :: ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
+unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
+secp256k1PublicKey  :: Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
+serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
+privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 
 -- BIP39
 entropyToMnemonic   :: ByteString -> Either String Mnemonic
 mnemonicToEntropy   :: Mnemonic -> ByteString             -- total
 parseMnemonic       :: ByteString -> Either String Mnemonic
-mnemonicToSeed      :: Mnemonic -> ByteString -> ByteString
+mnemonicToSeed      :: Mnemonic -> ByteString -> ScrubbedBytes
 randomMnemonic      :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
 
 -- BIP32
-masterKey           :: ByteString -> Either String ExtendedKey
-derivePath          :: ExtendedKey -> [Word32] -> Either String ExtendedKey
+masterKey           :: ScrubbedBytes -> IO (Either String ExtendedKey)
+derivePath          :: ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 
 -- Eth
 keccak256           :: ByteString -> ByteString
-addressFromPrivateKey :: Secp256k1PrivateKey -> Address
+addressFromPrivateKey :: Secp256k1PrivateKey -> IO Address
 ethereumPath        :: Word32 -> Word32 -> [Word32]       -- m/44'/60'/account'/0/address
 ```
 
@@ -102,25 +100,24 @@ device and one account per name — see `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
 m    <- either fail pure $ parseMnemonic phrase
-mk   <- either fail pure $ masterKey (mnemonicToSeed m "")
-xk   <- either fail pure $ derivePath mk (ethereumPath account 0)
-let addr = addressFromPrivateKey (xkKey xk)
+mk   <- either fail pure =<< masterKey (mnemonicToSeed m "")
+xk   <- either fail pure =<< derivePath mk (ethereumPath account 0)
+addr <- addressFromPrivateKey (xkKey xk)
 ```
 
 ## libsecp256k1 C API mapping
 
 ```c
-secp256k1_context_create(SECP256K1_CONTEXT_NONE)   /* once, then _randomize */
+secp256k1_context_create(SECP256K1_CONTEXT_NONE)   /* per call, then _randomize */
+secp256k1_context_destroy(ctx)
 secp256k1_ec_seckey_verify(ctx, seckey)
 secp256k1_ec_pubkey_create(ctx, pubkey, seckey)
 secp256k1_ec_pubkey_serialize(ctx, output, outputlen, pubkey, flags)
 secp256k1_ec_seckey_tweak_add(ctx, seckey, tweak)
 ```
 
-Every call is a pure function of its arguments, which is why the module exposes
-a pure API over `unsafePerformIO`. The context is created and blinded once at
-first use; randomization is a side-channel countermeasure that affects no
-output and mutates nothing afterwards, so one shared context is safe across
+Every function runs in `IO` with its own context, created and blinded with a
+fresh seed for the call and destroyed after it, so no context is shared between
 threads.
 
 `secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 says "proceed with
@@ -203,7 +200,7 @@ entirely.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 75 examples. Everything is checked against
+`tests/CoreTests/EthCryptoTests.hs`, 72 examples. Everything is checked against
 published vectors rather than our own output:
 
 - **BIP-39** — all 24 official English vectors from
