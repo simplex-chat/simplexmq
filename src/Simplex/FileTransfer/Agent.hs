@@ -17,11 +17,16 @@ module Simplex.FileTransfer.Agent
     toFSFilePath,
     -- Receiving files
     xftpReceiveFile',
+    xftpPrepareReceiveFile',
+    xftpStartReceiveFile',
     xftpDeleteRcvFile',
     xftpDeleteRcvFiles',
     -- Sending files
     xftpSendFile',
     xftpSendDescription',
+    xftpPrepareSendFile',
+    xftpPrepareSendDescription',
+    xftpStartSendFile',
     deleteSndFileInternal,
     deleteSndFilesInternal,
     deleteSndFileRemote,
@@ -127,7 +132,12 @@ closeXFTPAgent a = do
     stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
 
 xftpReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AM RcvFileId
-xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redirect}) cfArgs approvedRelays = do
+xftpReceiveFile' c userId vfd cfArgs approvedRelays = do
+  fId <- xftpPrepareReceiveFile' c userId vfd cfArgs approvedRelays
+  fId <$ xftpStartReceiveFile' c fId
+
+xftpPrepareReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AM RcvFileId
+xftpPrepareReceiveFile' c userId (ValidFileDescription fd@FileDescription {redirect}) cfArgs approvedRelays = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "rcv.xftp"
   createDirectory prefixPath
@@ -137,7 +147,7 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
   lift $ createDirectory =<< toFSFilePath relTmpPath
   lift $ createEmptyFile =<< toFSFilePath relSavePath
   let saveFile = CryptoFile relSavePath cfArgs
-  fId <- case redirect of
+  case redirect of
     Nothing -> withStore c $ \db -> createRcvFile db g userId fd relPrefixPath relTmpPath saveFile approvedRelays
     Just _ -> do
       -- prepare description paths
@@ -149,8 +159,11 @@ xftpReceiveFile' c userId (ValidFileDescription fd@FileDescription {chunks, redi
       let saveFileRedirect = CryptoFile relSavePathRedirect $ Just cfArgsRedirect
       -- create download tasks
       withStore c $ \db -> createRcvFileRedirect db g userId fd relPrefixPath relTmpPathRedirect saveFileRedirect relTmpPath saveFile approvedRelays
-  forM_ chunks (downloadChunk c)
-  pure fId
+
+xftpStartReceiveFile' :: AgentClient -> RcvFileId -> AM ()
+xftpStartReceiveFile' c rcvFileEntityId = do
+  srvs <- withStore c (`startPreparedRcvFile` rcvFileEntityId)
+  lift $ forM_ srvs $ void . getXFTPRcvWorker True c . Just
 
 downloadChunk :: AgentClient -> FileChunk -> AM ()
 downloadChunk c FileChunk {replicas = (FileChunkReplica {server} : _)} = do
@@ -353,6 +366,11 @@ notify c entId cmd = atomically $ writeTBQueue (subQ c) ("", entId, AEvt (sAEnti
 
 xftpSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AM SndFileId
 xftpSendFile' c userId file numRecipients storageHours = do
+  fId <- xftpPrepareSendFile' c userId file numRecipients storageHours
+  fId <$ xftpStartSendFile' c fId
+
+xftpPrepareSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AM SndFileId
+xftpPrepareSendFile' c userId file numRecipients storageHours = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "snd.xftp"
   createDirectory prefixPath
@@ -360,12 +378,15 @@ xftpSendFile' c userId file numRecipients storageHours = do
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
   -- saving absolute filePath will not allow to restore file encryption after app update, but it's a short window
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing storageHours
-  lift . void $ getXFTPSndWorker True c Nothing
-  pure fId
+  withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce Nothing storageHours
 
 xftpSendDescription' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AM SndFileId
-xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) numRecipients = do
+xftpSendDescription' c userId vfd numRecipients = do
+  fId <- xftpPrepareSendDescription' c userId vfd numRecipients
+  fId <$ xftpStartSendFile' c fId
+
+xftpPrepareSendDescription' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AM SndFileId
+xftpPrepareSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) numRecipients = do
   g <- asks random
   prefixPath <- lift $ getPrefixPath "snd.xftp"
   createDirectory prefixPath
@@ -376,9 +397,12 @@ xftpSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {si
   liftError (FILE . FILE_IO . show) $ CF.writeFile file (LB.fromStrict $ strEncode fdDirect)
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  fId <- withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce (Just RedirectFileInfo {size, digest}) Nothing
+  withStore c $ \db -> createSndFile db g userId file numRecipients relPrefixPath key nonce (Just RedirectFileInfo {size, digest}) Nothing
+
+xftpStartSendFile' :: AgentClient -> SndFileId -> AM ()
+xftpStartSendFile' c sndFileEntityId = do
+  withStore c (`startPreparedSndFile` sndFileEntityId)
   lift . void $ getXFTPSndWorker True c Nothing
-  pure fId
 
 resumeXFTPSndWork :: AgentClient -> Maybe XFTPServer -> AM' ()
 resumeXFTPSndWork = void .: getXFTPSndWorker False
