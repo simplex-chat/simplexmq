@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-39 mnemonics, English only: every word is ASCII, any Unicode whitespace separates words, and full NFKD normalization is not applied; a passphrase is bytes the caller normalizes.
+-- | BIP-39 mnemonics, English only: every word is ASCII, any Unicode space character separates words, and full NFKD normalization is not applied; a passphrase is bytes the caller normalizes.
 module Simplex.Messaging.Crypto.BIP39
   ( Mnemonic,
     MnemonicStrength (..),
@@ -20,7 +20,7 @@ import Control.Concurrent.STM
 import Crypto.Hash (Digest, SHA256, SHA512 (..), hash)
 import qualified Crypto.KDF.PBKDF2 as PBKDF2
 import Crypto.Number.Serialize (i2ospOf_, os2ip)
-import Crypto.Random (ChaChaDRG)
+import Crypto.Random (ChaChaDRG, randomBytesGenerate)
 import qualified Data.Attoparsec.Text as A
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteArray (ScrubbedBytes)
@@ -36,7 +36,6 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 
 newtype Mnemonic = Mnemonic {mnemonicIndexes :: [Int]}
@@ -89,7 +88,7 @@ entropyToMnemonic ent
   where
     entLen = BA.length ent
 
-entropyToIndexes :: BA.ByteArrayAccess ba => ba -> [Int]
+entropyToIndexes :: ScrubbedBytes -> [Int]
 entropyToIndexes ent =
   [fromIntegral ((combined `shiftR` (11 * (n - 1 - i))) .&. 0x7FF) | i <- [0 .. n - 1]]
   where
@@ -101,9 +100,8 @@ entropyToIndexes ent =
     n = (entBits + csBits) `div` 11
 
 mnemonicToEntropy :: Mnemonic -> ScrubbedBytes
-mnemonicToEntropy m = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
+mnemonicToEntropy (Mnemonic idxs) = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
   where
-    idxs = mnemonicIndexes m
     totalBits = length idxs * 11
     entBits = totalBits * 32 `div` 33
     csBits = totalBits - entBits
@@ -138,4 +136,4 @@ mnemonicToSeed m passphrase =
     ("mnemonic" <> passphrase :: ByteString)
 
 randomMnemonic :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
-randomMnemonic s gVar = Mnemonic . entropyToIndexes <$> C.randomBytes (strengthBytes s) gVar
+randomMnemonic s gVar = Mnemonic . entropyToIndexes <$> stateTVar gVar (randomBytesGenerate $ strengthBytes s)

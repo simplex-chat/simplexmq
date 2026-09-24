@@ -7,7 +7,7 @@ module Simplex.Messaging.Eth.Address
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative (optional)
 import Control.Monad (unless, when, (<=<))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
@@ -23,12 +23,12 @@ import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
 
 newtype Address = Address ByteString
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Show)
 
 instance StrEncoding Address where
   strEncode = checksumAddress
   strP = do
-    _ <- optional $ A.string "0x" <|> A.string "0X"
+    _ <- optional $ A.string "0x"
     body <- A.takeWhile isHexDigit
     unless (B.length body == addressSize * 2) $ fail $ "address: expected 40 hex digits, got " <> show (B.length body)
     a <- Address <$> either fail pure (BAE.convertFromBase BAE.Base16 body)

@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8 as BC
 import Data.Char (toLower)
 import Data.Either (isLeft, isRight)
 import Data.List (nub)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isNothing)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import qualified Simplex.Messaging.Crypto as C
@@ -77,6 +77,13 @@ secp256k1Tests = do
     k <- testKey
     (fmap (toHex . S.unPrivateKey) <$> S.privateKeyTweakAdd k (BA.replicate 31 0 <> BA.singleton 1))
       `shouldReturn` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
+  it "returns Nothing for a tweak that makes the key zero" $ do
+    k <- testKey
+    (isNothing <$> S.privateKeyTweakAdd k (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
+      `shouldReturn` True
+  it "returns Nothing for a tweak that is not 32 bytes" $ do
+    k <- testKey
+    (isNothing <$> S.privateKeyTweakAdd k (BA.replicate 31 1)) `shouldReturn` True
   where
     testKey = right <$> S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
 
@@ -114,11 +121,11 @@ bip39Tests = do
       `shouldBe` Right canonicalPhrase
   it "accepts extra whitespace" $
     B39.parseMnemonic "  abandon\tabandon  abandon abandon abandon abandon abandon abandon abandon abandon abandon about "
-      `shouldBe` B39.parseMnemonic (decodeLatin1 canonicalPhrase)
+      `shouldBe` Right canonicalMnemonic
   it "accepts Unicode whitespace between words" $ do
     let spaced sep = T.intercalate sep . T.words $ decodeLatin1 canonicalPhrase
-    B39.parseMnemonic (spaced "\x00A0") `shouldBe` B39.parseMnemonic (decodeLatin1 canonicalPhrase)
-    B39.parseMnemonic (spaced "\x3000") `shouldBe` B39.parseMnemonic (decodeLatin1 canonicalPhrase)
+    B39.parseMnemonic (spaced "\x00A0") `shouldBe` Right canonicalMnemonic
+    B39.parseMnemonic (spaced "\x3000") `shouldBe` Right canonicalMnemonic
   it "rejects an invalid entropy size" $
     B39.entropyToMnemonic (BA.replicate 17 0) `shouldSatisfy` isLeft
   it "generates mnemonics that parse back" $ do
@@ -130,6 +137,9 @@ bip39Tests = do
 
 canonicalPhrase :: ByteString
 canonicalPhrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+canonicalMnemonic :: B39.Mnemonic
+canonicalMnemonic = right $ B39.parseMnemonic (decodeLatin1 canonicalPhrase)
 
 bip32Tests :: Spec
 bip32Tests = do
@@ -147,14 +157,8 @@ bip32Tests = do
     (isLeft <$> B32.masterKey (BA.replicate 15 1)) `shouldReturn` True
   it "rejects a seed longer than 64 bytes" $
     (isLeft <$> B32.masterKey (BA.replicate 65 1)) `shouldReturn` True
-  describe "path rendering" $ do
-    it "renders a path" $
-      B32.renderPath [B32.hardened 44, B32.hardened 60, B32.hardened 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
-    it "renders an Ethereum path for an account and address" $
-      B32.renderPath <$> ethereumPath 7 3 `shouldBe` Just "m/44'/60'/7'/0/3"
-    it "rejects an Ethereum account or address index at or above 2^31" $ do
-      ethereumPath 0x80000000 0 `shouldBe` Nothing
-      ethereumPath 0 0x80000000 `shouldBe` Nothing
+  it "renders a path" $
+    B32.renderPath [B32.hardened 44, B32.hardened 60, B32.hardened 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
   where
     master1 = right <$> B32.masterKey (hx "000102030405060708090a0b0c0d0e0f")
     master2 =
@@ -202,9 +206,13 @@ derivationTests = do
       (strEncode <$> addrAt i) `shouldReturn` a
   it "derives distinct addresses for accounts 0 to 4" $
     mapM addrAt [0 .. 4] >>= (`shouldSatisfy` \as -> length as == length (nub as))
+  it "renders an Ethereum path for an account and address" $
+    B32.renderPath <$> ethereumPath 7 3 `shouldBe` Just "m/44'/60'/7'/0/3"
+  it "rejects an Ethereum account or address index at or above 2^31" $ do
+    ethereumPath 0x80000000 0 `shouldBe` Nothing
+    ethereumPath 0 0x80000000 `shouldBe` Nothing
   where
-    m = right $ B39.parseMnemonic (decodeLatin1 canonicalPhrase)
-    seed = B39.mnemonicToSeed m ""
+    seed = B39.mnemonicToSeed canonicalMnemonic ""
     addrAt i = do
       master <- right <$> B32.masterKey seed
       xk <- right <$> B32.derivePath master (fromJust $ ethereumPath i 0)
@@ -243,7 +251,11 @@ eip55Tests = do
         | i <- [0 .. 12 :: Int]
       ]
     specAddresses =
-      [ "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      [ "0x52908400098527886E0F7030069857D2E4169EE7",
+        "0x8617E340B3D01FA5F11F306F4090FD50E238070D",
+        "0xde709f2102306220921060314715629080e2fb77",
+        "0x27b1fdb04752bbc536007a920d24acb045561c26",
+        "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
         "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
         "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
         "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"

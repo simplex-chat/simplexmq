@@ -14,7 +14,7 @@ module Simplex.Messaging.Crypto.Secp256k1
   )
 where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, throwIO)
 import Control.Monad (void, when)
 import Crypto.Random (drgNew, randomBytesGenerate)
 import Data.ByteArray (ScrubbedBytes)
@@ -85,7 +85,7 @@ withContext f = bracket (c_context_create contextNone) c_context_destroy $ \ctx 
   drg <- drgNew
   let (seed :: ByteString, _) = randomBytesGenerate 32 drg
   rc <- BA.withByteArray seed $ c_context_randomize ctx
-  when (rc /= 1) $ ioError (userError "secp256k1_context_randomize failed")
+  when (rc /= 1) $ throwIO (userError "secp256k1_context_randomize failed")
   f ctx
 
 -- Public API
@@ -104,7 +104,7 @@ unPrivateKey (Secp256k1PrivateKey bs) = bs
 secp256k1PublicKey :: Secp256k1PrivateKey -> IO Secp256k1PublicKey
 secp256k1PublicKey (Secp256k1PrivateKey sk) = withContext $ \ctx -> do
   (rc, pk) <- BA.allocRet pubKeyInternalSize $ \pkPtr -> BA.withByteArray sk $ c_ec_pubkey_create ctx pkPtr
-  when (rc /= 1) $ ioError (userError "secp256k1_ec_pubkey_create failed on a validated key")
+  when (rc /= 1) $ throwIO (userError "secp256k1_ec_pubkey_create failed on a validated key")
   pure $ Secp256k1PublicKey pk
 
 serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
@@ -115,7 +115,7 @@ serializePublicKey fmt (Secp256k1PublicKey pk) = withContext $ \ctx ->
         poke lenPtr (fromIntegral outLen)
         void $ c_ec_pubkey_serialize ctx outPtr lenPtr pkPtr flag
   where
-    -- SECP256K1_EC_COMPRESSED = FLAGS_TYPE_COMPRESSION | FLAGS_BIT_COMPRESSION, SECP256K1_EC_UNCOMPRESSED = FLAGS_TYPE_COMPRESSION
+    -- SECP256K1_EC_COMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION, SECP256K1_EC_UNCOMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION
     (flag, outLen) = case fmt of
       Compressed -> (2 .|. 256, compressedSize)
       Uncompressed -> (2, uncompressedSize)
