@@ -26,7 +26,7 @@ powEpoch = 4*4 OCTET    ; Word32, minutes of server time
 
 The server sends its current epoch in the handshake, and the client counts minutes from it with a monotonic clock, so the clock of the device takes no part. A proof verifies while `serverEpoch - powEpoch` is within the advertised window, and one epoch ahead of the server is admitted for rounding.
 
-The window is the burst a client may prepare: a stock of `window * mint rate`. At 5 minutes and a price of 16, one phone core holds about 900 queue proofs, and one desktop core about 2800.
+The window is the burst a client may prepare: a stock of `window * mint rate`. At 5 minutes and a price of 16, one desktop core holds about 2800 queue proofs.
 
 A price increase cuts the stock a second way. A proof states the effort it was made for, so every proof below the new price is rejected, and the stock of an attacker survives an increase only at the effort it paid for in advance. The two bounds compose: the stock is worth the smaller of one window of minting and the time until the next increase.
 
@@ -55,8 +55,9 @@ Our problem is the price of a stored resource, so the auction is replaced by a p
 5. Prices set by the operator. Effort is the resource cost in units multiplied by the price per unit, and the operator sets the price. The estimator of Tor is deferred.
 6. One price per tier. The server knows the tier of every session, so a flood shows in its tier, and raising that price leaves the other tiers unchanged. An attacker without a badge leaves the price of badge holders where it was; an attacker with a supporter badge leaves the price of legend holders where it was.
 7. An entitlement lowers the price, and neither raises it nor removes it. A credential presents on any number of sessions without linking them, so a free tier would sell an attacker unlimited creation for the price of one badge; and a badge that could cost more than no badge would break the promise it was sold with, the promise the XFTP server keeps for storage time.
+8. A budget for clients of earlier versions, where Tor serves them at the lowest priority. They cannot pay, so they share a number of creations per minute.
 
-Kept from Tor: the Equi-X function, the linear effort scale, and the verification formula.
+Kept from Tor: the Equi-X function, the linear effort scale, the verification formula, and the exact byte definitions of the target check.
 
 ## Cost units
 
@@ -64,13 +65,16 @@ Each protocol defines the unit of its own price list. The server advertises the 
 
 ```
 SMP:  1 unit per new queue
-      1 unit per queue link data record (in NEW or LSET)
-XFTP: 1 unit per megabyte-day of requested storage, rounded up
-      chunkUnits = ceil(size / 1048576 * storageHours / 24)
+      1 unit per queue link data record (in NEW, or in LSET on a queue without one)
+XFTP: 1 unit per 64 KB stored for 24 hours
+      chunkUnits = ceil(size / 65536 * storageHours / 24)
+      storageHours = min(requested hours, maximum hours of the tier); absent or 0 = the maximum
 NTF:  1 unit per token registration
 ```
 
 `effort = price * units`, capped at 2^32 - 1.
+
+64 KB is the smallest chunk. The server takes chunks of 64 KB, 256 KB, 1 MB and 4 MB, and the test configuration adds 128 KB; each is a whole number of units.
 
 ## Handshake parameters
 
@@ -79,22 +83,30 @@ Each protocol adds one optional field to the server handshake, encoded from the 
 ```
 powParams = %s"0" / (%s"1" powScheme defaultPrice entPrices serverEpoch epochWindow)
 powScheme = 1*1 OCTET        ; 1 = Equi-X and Blake2b
-defaultPrice = 4*4 OCTET     ; Word32, effort per unit without an entitlement, 0 = proof not required
+defaultPrice = tierPrice     ; without an entitlement; price 0 = proof not required
 entPrices = count *entPrice
-entPrice = entName price
+entPrice = entName tierPrice
 entName = shortString        ; entitlement name, as in the entitlement proof
-price = 4*4 OCTET            ; Word32, effort per unit for a session of this entitlement
 serverEpoch = 4*4 OCTET      ; Word32, current minute of server time
 epochWindow = 1*1 OCTET      ; minutes a proof stays valid
+
+SMP, NTF:  tierPrice = price
+XFTP:      tierPrice = price storageHours
+price = 4*4 OCTET            ; Word32, effort per unit
+storageHours = 4*4 OCTET     ; Word32, maximum storage time of the tier
 ```
 
 The server handshake precedes the client handshake that carries the entitlement proof, so every price is sent. The client applies the price of its entitlement name, and the default price when it presented no entitlement or when its name is absent from the list.
+
+The XFTP client learns the maximum storage time of its tier from the same entry, so it computes the units of a chunk that asks for the maximum. The grant in `SIDS` stays as it is.
 
 ## Algorithm
 
 Equi-X, by tevador, is Equihash(60,3) with two changes: the hash is HashX, and the indices are summed modulo 2^60 rather than xored.
 
-HashX takes a seed - here the challenge - and generates a short program of integer instructions over eight 64-bit registers, which maps a 64-bit input to a 64-bit output in about 100 nanoseconds on a superscalar pipeline. The program differs for every seed, so hardware built for one program serves no other. That is where the resistance to an ASIC comes from, and what narrows the distance to a GPU.
+HashX takes a seed - here the challenge - and generates a short program of integer instructions over eight 64-bit registers, which maps a 64-bit input to a 64-bit output. The program differs for every seed, so hardware built for one program serves no other. That is where the resistance to an ASIC comes from, and what narrows the distance to a GPU.
+
+HashX runs the program in one of two modes. Compiled, it writes machine code for x86-64 or arm64 into executable memory, and hashes in under 100 nanoseconds. Interpreted, it hashes in 1-2 microseconds. Our clients take the interpreter on every platform: iOS refuses executable memory to App Store apps, GrapheneOS stops an Android app that loads code at run time, and desktop clients follow the phones. An attacker enables the compiler with one flag, `EQUIX_CTX_COMPILE`, or runs the benchmark of tevador as it is.
 
 Solving finds eight 16-bit indices `i0..i7` with `HX(i0) + ... + HX(i7) = 0 (mod 2^60)`, under the tree conditions of Wagner's algorithm - 15 trailing zero bits on each pair, 30 on each quadruple, 60 on the sum - and an ordering condition that makes the solution canonical. The solver holds tables over 2^16 items, which is the 1.8 MiB. A solution is `8 * uint16`, so 16 bytes, and one call returns about two of them.
 
@@ -105,13 +117,13 @@ The protocol layer above it is the target check: a solution counts when `blake2b
 ## Code
 
 ```
-C, the reference:  https://github.com/tevador/equix   LGPL-3.0
+C, the reference:  https://github.com/tevador/equix   LGPL-3.0, hashx as its submodule
                    https://github.com/tevador/hashx   LGPL-3.0
 Rust, the port:    arti crates equix 0.7.1, hashx 0.9.1, LGPL-3.0-only
 Tor, in use:       src/ext/equix (vendored), src/feature/hs/hs_pow.c and hs_pow.h
 ```
 
-The C API is four calls.
+The library is a git submodule at `cbits/equix`, from a fork under simplex-chat, as `cbits/libbbs` is today; hashx comes in as its nested submodule. The fork starts from tevador's repository, after a comparison with the copy in Tor for fixes. The C sources are listed in `c-sources`, and the Haskell side is a foreign import of the four calls below.
 
 ```c
 equix_ctx* equix_alloc(equix_ctx_flags flags);  /* EQUIX_CTX_SOLVE | EQUIX_CTX_COMPILE, or EQUIX_CTX_VERIFY */
@@ -120,11 +132,11 @@ equix_result equix_verify(equix_ctx* ctx, const void* challenge, size_t size, co
 void equix_free(equix_ctx* ctx);
 ```
 
-A context holds the program generated for the current challenge, so each thread allocates its own: one per solver thread on the client, a small pool on the server.
+A context holds the program generated for the current challenge, so each thread allocates its own: one per solver thread on the client, a small pool on the server. Clients allocate without `EQUIX_CTX_COMPILE`.
 
 `hs_pow.c` is the closest model for our code: `build_equix_challenge` and `validate_equix_challenge` are the two functions we reimplement with our own challenge, `hs_pow_solve` is the search loop, `hs_pow_verify` is the order of checks, and `hs_pow_queue_work` runs solving on the worker pool at low priority.
 
-The licence is LGPL-3.0 for both implementations. Our library is AGPL-3.0, so linking asks nothing new of us, while a closed-source consumer of the library acquires the obligations of the LGPL for that part. Tor, under a BSD licence, answered this with an optional GPL build mode. Writing the solver from the specification removes the question, and costs the work of a careful reimplementation.
+The licence is LGPL-3.0 for both implementations. Our library is AGPL-3.0, so linking asks nothing new of us, while a closed-source consumer of the library acquires the obligations of the LGPL for that part.
 
 ## Proof
 
@@ -166,10 +178,13 @@ The proof is an optional field of the commands that create resources.
 
 ```
 smpNew = %s"NEW " rcvAuthKey rcvDhKey optBasicAuth subMode optQueueReqData optNtfCreds optProofOfWork
+smpLSet = %s"LSET " linkId queueLinkData optProofOfWork
 fnew = %s"FNEW " fileInfo rcvKeys optBasicAuth fileStorageTime optProofOfWork
 tnew = %s"TNEW " newNtfTkn optProofOfWork
 optProofOfWork = %s"0" / (%s"1" proofOfWork)
 ```
+
+`LSET` is priced when the queue holds no link data; on a queue that holds some, it replaces the data and carries no proof. `NKEY`, `FADD` and `SNEW` are not priced. The first message to an unknown queue is out of scope.
 
 A batch of transmissions carries one proof per command. Creation commands are sent to the servers of the user over a direct session, so the proxy carries none of them.
 
@@ -186,9 +201,9 @@ The server checks, in this order:
 
 The counter is marked on every verified proof, including one whose command then fails, so a proof pays for one attempt.
 
-The window holds the last 64 counters, which admits the commands of one batch in any order. A counter below the window is rejected, and the client that skipped ahead loses the proofs it left behind.
+The window holds the last 64 counters, which admits proofs that arrive out of order, from commands sent concurrently on one session. A counter below the window is rejected, and the client that skipped ahead loses the proofs it left behind.
 
-Steps 1 to 4 cost about a microsecond, so a flood of malformed proofs is rejected before the Equi-X call. A session that fails verification repeatedly is closed, and the number of Equi-X verifications per session per second is capped.
+Steps 1 to 3 cost less than a microsecond. Step 4 costs an attacker about `effort` Blake2b calls to pass with a random solution, so the Equi-X call in step 5 is what a forged proof buys. The server closes a session after 3 consecutive proofs that fail step 4 or step 5. An honest client checks its proof before sending it, so it never fails these steps; a stale proof or one below the price fails steps 1 to 3, which can happen to an honest client after a change of price or epoch, and closes nothing.
 
 ## Entitlement
 
@@ -207,6 +222,47 @@ The server exits at startup when a configured price breaks this rule, and logs e
 The control port sets the three prices in one command, and refuses a triple that breaks the rule. The triple is checked as a whole, so the order in which prices change plays no part.
 
 This gives the badge a function on SMP and NTF, where it grants nothing today: the holder pays less CPU time, and a flood outside its tier leaves its price where it was.
+
+## Services
+
+A service session creates resources without a proof when the SMP server records its service as created before a configured date. `serviceCreatedAt` of the service record holds that date, so the services that presented certificates before the release are exempt, and the rule needs no migration.
+
+```
+[PROOF_OF_WORK]
+exempt_services_created_before = 2026-10-15
+```
+
+A service registered after that date pays the default price. Exempt sessions are a tier of their own in the statistics.
+
+The date is a transition. The follow-up work gives services a certificate signed by an operator, an online certificate under an offline one as SMP servers have, issued on a certificate request from each partner; a server recognises the operators in its configuration and exempts their services. It is out of scope here.
+
+## Clients of earlier versions
+
+A session below the version that introduces proof of work cannot present a proof. Its creation commands draw on one budget, shared by all such sessions: a number of creations per minute, set on the control port, unlimited at first.
+
+While an attacker uses a client of the proof-of-work version, the budget goes to clients of earlier versions and none of them notices it. When an attacker uses an earlier client, the damage is the budget. A budget of zero refuses them all; the generic lever against earlier versions stays the version range, set without a release.
+
+A command over the budget receives a new error, `BUSY`:
+
+```
+SMP:  ERR BUSY
+XFTP: FRErr BUSY
+NTF:  NRErr BUSY
+```
+
+The serializer sends `BUSY` to a session of the proof-of-work version as it is, and maps it for a session of an earlier version, as it maps `BLOCKED` for sessions below `clientNoticesSMPVersion` today:
+
+```
+SMP:  BUSY -> STORE busy
+NTF:  BUSY -> STORE busy
+XFTP: BUSY -> TIMEOUT
+```
+
+SMP and NTF share `ErrorType`, which has no `TIMEOUT`. Among the errors an SMP or NTF server sends, the deployed agent retries only `STORE`. An asynchronous `NEW` or `JOIN` retries with a growing interval and takes the next server of the user on each attempt, so a refused client moves to a server that has budget left; the XFTP agent retries `FNEW` on `TIMEOUT`. `TNEW` returns the error to the app that called `registerNtfToken`, and the agent holds no retry loop for it. An interactive command shows the error once, and the deployed apps show `STORE busy` in their generic error alert.
+
+The other errors mislead or stop the client: `QUOTA` is shown as a connection that reached its limit of undelivered messages, `AUTH` as a connection error of authorisation, and both end an asynchronous command. A budget of zero keeps the retries of earlier clients running at the longest interval, and a raised budget lets them through without an update.
+
+A client of the proof-of-work version shows `BUSY` to the user: an interactive command shows it at once, and a background command shows it when its retries expire on the client.
 
 ## Learning the price
 
@@ -234,7 +290,7 @@ XFTP: FRErr (POW price epoch)
 NTF:  NRErr (POW price epoch)
 ```
 
-The client resets its price and epoch from the error, solves at the stated price, and retries. Two retries are allowed for one command, which covers a price that moves again while the client solves; past that it reports that the server is busy, as it does when the effort exceeds its own maximum. Clients of earlier versions receive `AUTH`, as they do today when the basic auth of the server does not match.
+The client resets its price and epoch from the error, solves at the stated price, and retries. Two retries are allowed for one command, which covers a price that moves again while the client solves; past that it reports that the server is busy, as it does when the effort exceeds 4096, its own maximum.
 
 A proof made for a higher effort than required is accepted, so a proof that outlives a decrease stays usable while its epoch holds.
 
@@ -248,6 +304,7 @@ price = 16                  ; effort per unit without an entitlement, 0 = proof 
 price_for_supporter = 4     ; effort per unit with the supporter entitlement, at least 1 and at most price
 price_for_legend = 2        ; effort per unit with the legend entitlement, at least 1 and at most price
 epoch_window_minutes = 5
+exempt_services_created_before = 2026-10-15
 ```
 
 The keys follow `expire_files_hours_for_<name>` of the XFTP server, and on the XFTP server both keys name the same entitlements.
@@ -255,17 +312,23 @@ The keys follow `expire_files_hours_for_<name>` of the XFTP server, and on the X
 Control port commands, on SMP, XFTP and NTF servers:
 
 ```
-pow             ; user role: the three prices, epoch window, counts of the current period per tier
-pow p0 p1 p2    ; admin role: set the prices - p0 without an entitlement, p1 supporter, p2 legend
+pow                    ; user role: prices, budget of earlier versions, epoch window, counts of the current period per tier
+pow p0 p1 p2           ; admin role: set the prices - p0 without an entitlement, p1 supporter, p2 legend
+pow old <n>            ; admin role: set the budget of earlier versions, creations per minute
+pow old unlimited      ; admin role: remove the budget
 ```
 
-A change reaches new sessions through the handshake, and sessions in progress through their next response or error. It lasts until the server stops; the configuration holds the value for the next start. The XFTP and NTF control ports gain the admin role check that the SMP control port already has; both check the user role today.
+A change reaches new sessions through the handshake, and sessions in progress through their next response or error.
+
+Prices and the budget set on the control port are saved with the server state and restored at start, so a change made during an attack survives a restart that the attack outlasts. While they differ from the configuration, the server logs a warning at stop and at start, and `pow` shows both values.
+
+The XFTP and NTF control ports gain the admin role check that the SMP control port already has; both check the user role today.
 
 The estimator of Tor is deferred. If prices set by hand prove too slow, it runs per tier on the creations of that tier, between bounds set on the control port.
 
 ## Statistics
 
-The server counts per tier, so a flood shows in its tier, and the use of each entitlement is accounted for. Sessions without an entitlement are counted under `default`.
+The server counts per tier, so a flood shows in its tier, and the use of each entitlement is accounted for. Sessions without an entitlement are counted under `default`, exempt services under `service`, and sessions of earlier versions under `old`.
 
 ```
 sessions            ; sessions of the tier
@@ -277,6 +340,8 @@ proofsBelowPrice
 proofsStale         ; epoch outside the window
 proofsReused        ; counter below the window or already marked
 proofsInvalid       ; Blake2b target or Equi-X check failed
+sessionsClosed      ; sessions closed after invalid proofs
+overBudget          ; creations of earlier versions refused by the budget
 created             ; queues, chunks or tokens created
 ```
 
@@ -284,30 +349,36 @@ The counts appear in `pow` for the current period, in the stats log, and in the 
 
 ## Costs
 
-Equi-X on a 2017 desktop core produces about 150 candidate solutions per second; a phone core is about three times slower. Expected solving time is `effort / rate`.
+The rates below are estimates to be replaced by measurement on devices.
+
+A solver call hashes 2^16 indices. Compiled, a desktop core makes about 150 candidate solutions per second, measured by tevador. Interpreted at 1-2 microseconds per hash, a call spends about 100 milliseconds hashing, so the same core makes about 15-25, and a phone core, about three times slower, about 5-8.
 
 ```
-effort   desktop core   phone core
-    16          0.1 s        0.3 s
-    64          0.4 s        1.3 s
-   256          1.7 s        5.1 s
-  1024          6.8 s       20.5 s
+effort   desktop, compiled   phone, interpreted
+     4              0.03 s                0.6 s
+    16              0.1 s                 2.5 s
+    64              0.4 s                10 s
+   256              1.7 s                40 s
 ```
 
-A queue at a price of 16 costs a phone about 0.3 seconds. A 4 MB chunk stored for 48 hours is 8 units, so 128 effort, about 2.6 seconds on a phone, while the upload of the same chunk takes longer than that on most connections. A 100 MB file is 25 chunks, about 65 seconds of phone CPU spread across the upload, and about 8 seconds for a badge holder at a price of 2.
+A queue at a price of 4 costs a phone about 0.6 seconds, and a queue at 16 about 2.5 seconds. A 4 MB chunk stored for 48 hours is 128 units; at an XFTP price of 1 it costs a phone about 20 seconds, while the upload of the same chunk takes seconds to minutes. The prices of the configuration examples assume compiled solving, and fall with this table.
+
+The client maximum of 4096 effort is about 10 minutes on a phone.
 
 Verification at 100 microseconds allows about 10000 proofs per second per core, which exceeds the rate at which queues are created and written to the store.
 
 ## Attacker cost
 
-The same table read from the other side, at 150 candidate solutions per second per core:
+An attacker solves on desktops with the compiler, at 150 candidate solutions per second per core:
 
 ```
 price    1 core      64 cores    1000 machines
-   16    9 queues/s  600/s       9000/s
+    4    37/s        2400/s      37000/s
+   16    9/s         600/s       9000/s
   256    0.6/s       38/s        600/s
- 1024    0.15/s      9/s         150/s
 ```
+
+A desktop core of the attacker solves 20-30 times faster than a phone core of a user: three times from the hardware, and the rest from the compiler. The gap sets how high a price can rise before users feel it.
 
 The idle price is a speed bump. The defence is the increase in the tier the flood uses, and the statistics show which tier that is.
 
@@ -319,32 +390,32 @@ The price of a badge tier rises at most to the default price. A flood in a badge
 
 ## Client implementation
 
-The C sources of equix and hashx are vendored under `cbits` and listed in `c-sources`, as libbbs and blst are today, and the Haskell side is a foreign import of the four calls above.
+The agent solves on demand, in one solver ordered by `NetworkRequestMode`: `NRMInteractive` work first, then `NRMBackground`. A solver call takes about 100 milliseconds on a phone, so background work yields between calls when interactive work arrives.
 
-The agent solves in a worker thread. It holds few proofs ahead, sized by what the user does next rather than by the epoch window, and discards them when the epoch passes or the session ends. Solving on demand is the normal path, and the small stock covers the first commands of a burst while the rest are solved.
+Creation outside the actions of the user - connections to the members of a group - is background work, and background solving has a budget of CPU time per hour. Past it, background creations wait, and the asynchronous commands that carry them retry them later. A group of many members cannot turn the device into a miner.
+
+The solver keeps no stock. A proof is discarded when its epoch passes or its session ends.
 
 ## Deployment
 
-Proof of work is gated by a new version of each protocol: SMP, XFTP and NTF. Servers start with every price at zero, which asks for nothing, and operators raise them. The existing controls - `allowNewQueues`, `allowNewFiles`, the basic auth of the server - stay as they are.
+Proof of work comes in the same version as the entitlement proof in the handshake: SMP version 23 and NTF version 4. XFTP carries the entitlement proof from version 4, which is released, so proof of work comes in XFTP version 5. Servers start with every price at zero, which asks for nothing, and operators raise them. The existing controls - `allowNewQueues`, `allowNewFiles`, the basic auth of the server - stay as they are.
 
 ## Limits
 
 - Proof of work prices bulk creation; it stops no one who is willing to pay. Tor states the same conclusion: the defence covers a single machine and a small botnet, and a large botnet needs another mechanism.
 - Prices change by hand, so a flood runs at the old price until an operator raises it. The expiry bounds the stock prepared before the flood; the flood that follows is priced at the new value from the next response.
-- Equi-X aims to narrow the gap between a CPU and a GPU, and published GPU measurements are absent. A hash-based puzzle would give an attacker with one GPU a factor of about a thousand over a phone, which is why Equi-X is chosen.
+- Phones solve with the interpreter and attackers with the compiler, which gives an attacker 20-30 times a phone per core. Equi-X narrows the gap between a CPU and a GPU, which published measurements leave open; a hash-based puzzle would give one GPU a factor of about a thousand over a phone.
 - Proofs are bound to a session, so a reconnection discards the unspent ones.
 - The cost falls on the device of the user: battery and heat, most visible when a group of many members is created at once.
-- Proof of work replaces no rate limit, and the servers limit neither creations nor commands per session today. A cap on creations per session per minute would reject the cheap part of a flood before any verification.
+- Proof of work replaces no rate limit, and the servers limit neither creations nor commands per session today. A cap on creations per session is out of scope.
 
 ## Open questions
 
-1. Clients of earlier versions. A price above zero refuses their creation commands with `AUTH`, and admitting them without a proof admits any attacker who speaks the earlier version. When operators may raise prices, against the spread of the client release.
-2. XFTP units without a stated storage time. The client learns the granted time only from `SIDS`, and the agent usually sends no storage time, which asks for the maximum. The client needs the maximum of its tier to compute megabyte-days: in `powParams`, or the price by size alone.
-3. Service sessions. A service signs `NEW` with its service key, and a chat relay creates queues in volume. A service certificate is self-issued, so it cannot exempt a session: the default price, or a price of its own.
-4. The commands priced in the first version. `NEW` and `FNEW` and `TNEW` are; `LSET`, `NKEY`, `FADD` and `SNEW` are open, and so is the first message to an unknown queue.
-5. The version plan. Pricing by entitlement needs the entitlement proof in the SMP and NTF handshakes: one version for both changes, or the handshake first.
-6. The numbers the implementation needs: the client maximum effort before it reports a busy server, the cap on Equi-X verifications per session per second, the failed proofs that close a session, the size of the verifier pool.
-7. The licence: the LGPL code of tevador vendored under `cbits`, or a reimplementation.
-8. A cap on creations per session, in this work or apart from it.
-9. Client behaviour: solving on demand alone or with a small stock, the number of solver threads on a phone, solving on battery, and an agent event for the interface when solving takes longer than a second.
-10. Whether a price set on the control port is written back to the configuration.
+1. HashX against a fixed hash. Our clients interpret and an attacker compiles, which the estimates put at about 8 times on one core. A fixed hash - Equihash(60,3) over SipHash - removes that factor, and gives a GPU the same program for every challenge, so it runs thousands of instances in step, as the Equihash miners do; that factor is unmeasured. The measurements that decide it: interpreted solving on a mid-range Android phone and an iPhone, compiled against interpreted on one desktop core, and an estimate of a GPU solver for the fixed hash.
+2. The client maximum: 4096 effort is about 10 minutes on a phone. A maximum in seconds, from the rate the device measures, holds the same wait on every device.
+3. The budget of background solving, in CPU seconds per hour.
+4. Whether agents of releases older than the deployed one treat `STORE` and `TIMEOUT` as temporary, as the deployed agent does.
+
+## Follow-up
+
+Certificates for services signed by an operator, with the requests of partners, as described under Services.
