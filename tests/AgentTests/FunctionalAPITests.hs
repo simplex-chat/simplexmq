@@ -2490,7 +2490,7 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort 
 testJoinFullContactAsync :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testJoinFullContactAsync (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
   (contactId, qInfo) <- fillContactAddress
-  withAgent 2 agentCfg {messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB2 $ \bob -> do
+  withAgent 2 agentCfg {commandQuotaRetryInterval = fastRetryInterval} initAgentServers testDB2 $ \bob -> do
     aliceId <- runRight $ do
       (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       A.joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
@@ -2509,7 +2509,7 @@ testJoinFullContactAsync (t, msType) = withSmpServerConfigOn t cfg' testPort $ \
 testJoinFullContactAsyncExpire :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testJoinFullContactAsyncExpire (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
   (_, qInfo) <- fillContactAddress
-  withAgent 2 agentCfg {quotaExceededTimeout = 2, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB2 $ \bob -> do
+  withAgent 2 agentCfg {quotaExceededTimeout = 2, commandQuotaRetryInterval = fastRetryInterval} initAgentServers testDB2 $ \bob -> do
     aliceId <- runRight $ do
       (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       A.joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
