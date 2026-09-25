@@ -1042,6 +1042,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "available")
 
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux drops SYNs on a full accept queue")
 class ListenBacklogTests(unittest.TestCase):
     """The smp-server opens a connection per lookup and gives up after 3 s, so a
@@ -1068,17 +1069,97 @@ class ListenBacklogTests(unittest.TestCase):
             server.server_close()
 
 
+def _word(value: int) -> bytes:
+    return value.to_bytes(32, "big")
+
+
+def _decode_aggregate3_calls(data: str):
+    """Multicall3.aggregate3 calldata back to (to, data) pairs, written apart
+    from the resolver's encoder so the two check each other."""
+    raw = bytes.fromhex(data[len(snrc.AGGREGATE3):])
+
+    def word(at):
+        return int.from_bytes(raw[at:at + 32], "big")
+
+    array = word(0)
+    base = array + 32
+    calls = []
+    for i in range(word(array)):
+        item = base + word(base + 32 * i)
+        call = item + word(item + 64)
+        calls.append(("0x" + raw[item + 12:item + 32].hex(), "0x" + raw[call + 32:call + 32 + word(call)].hex()))
+    return calls
+
+
+def _encode_aggregate3_results(results) -> str:
+    tuples = [
+        _word(int(ok)) + _word(0x40) + _word(len(data)) + data + b"\x00" * ((-len(data)) % 32)
+        for ok, data in results
+    ]
+    offsets, at = b"", 32 * len(tuples)
+    for t in tuples:
+        offsets += _word(at)
+        at += len(t)
+    return "0x" + (_word(0x20) + _word(len(tuples)) + offsets + b"".join(tuples)).hex()
+
+
+class FakeChain:
+    """Contract state for one registered name and one free name. Any other
+    call reverts, as a view function asked for something unset does."""
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
+    OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
+    RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
+    GRACE = 90 * 86400
+    TEXTS = {"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
+
+    def __init__(self):
+        self.now = int(time.time())
+        acme, free = snrc.label_token("acme"), snrc.label_token("free")
+        node = snrc.node_of("acme.testing")
+        abi_bytes = RegistrationV2Tests._abi_bytes
+        prices = RegistrationV2Tests._prices_return(RegistrationV2Tests())
+        self.answers = {
+            snrc.expires_call(self.REGISTRAR, acme): "0x" + snrc.encode_uint(self.now + 3600),
+            snrc.expires_call(self.REGISTRAR, free): "0x" + snrc.encode_uint(0),
+            snrc.grace_call(self.REGISTRAR): "0x" + snrc.encode_uint(self.GRACE),
+            snrc.label_call(self.REGISTRAR, acme): abi_bytes(b"acme"),
+            snrc.reserved_call(self.CONTROLLER, acme): "0x" + snrc.encode_uint(0),
+            snrc.reserved_call(self.CONTROLLER, free): "0x" + snrc.encode_uint(0),
+            snrc.resolver_call(self.REGISTRY, node): "0x" + snrc.encode_uint(int(self.RESOLVER, 16)),
+            snrc.owner_call(self.REGISTRY, node): "0x" + snrc.encode_uint(int(self.OWNER, 16)),
+            snrc.addr_call(self.RESOLVER, node, snrc.COIN_ETH): abi_bytes(bytes.fromhex(self.OWNER[2:])),
+            snrc.prices_call(self.CONTROLLER): "0x" + snrc.encode_uint(int(self.ORACLE, 16)),
+            snrc.prices_call(self.ORACLE): prices,
+            snrc.min_length_call(self.CONTROLLER): "0x" + snrc.encode_uint(3),
+        }
+        for key, value in self.TEXTS.items():
+            self.answers[snrc.text_call(self.RESOLVER, node, key)] = abi_bytes(value.encode())
+
+    def call(self, to, data):
+        answer = self.answers.get((to.lower(), data))
+        if answer is None:
+            raise RuntimeError("execution reverted")
+        return answer
+
+
 class FakeNode(ThreadingHTTPServer):
-    """A JSON-RPC node over HTTP/1.1 keep-alive whose contract calls all revert."""
+    """A JSON-RPC node over HTTP/1.1 keep-alive, serving FakeChain, with
+    batches and Multicall3, each of which a test can take away."""
 
     daemon_threads = True
 
     def __init__(self):
         super().__init__(("127.0.0.1", 0), _FakeNodeHandler)
+        self.chain = FakeChain()
         self.block = 100
         self.requests = 0
         self.connections = 0
         self.batch = True
+        self.multicall = True
         self.status = 200
         self.hang_up = False
         self.drop_after_reply = False
@@ -1094,13 +1175,27 @@ class FakeNode(ThreadingHTTPServer):
 
     def answer(self, req):
         out = {"jsonrpc": "2.0", "id": req.get("id")}
-        method = req["method"]
+        method, params = req["method"], req["params"]
         if method == "eth_blockNumber":
             out["result"] = hex(self.block)
         elif method == "eth_getBlockByNumber":
-            out["result"] = {"number": hex(self.block), "timestamp": hex(int(time.time()))}
+            out["result"] = {"number": hex(self.block), "timestamp": hex(self.chain.now)}
+        elif method == "eth_call" and params[0]["to"].lower() == snrc.MULTICALL.lower():
+            if not self.multicall:
+                out["error"] = {"code": -32000, "message": "no contract code"}
+            else:
+                results = []
+                for to, data in _decode_aggregate3_calls(params[0]["data"]):
+                    try:
+                        results.append((True, bytes.fromhex(self.chain.call(to, data)[2:])))
+                    except RuntimeError:
+                        results.append((False, b""))
+                out["result"] = _encode_aggregate3_results(results)
         elif method == "eth_call":
-            out["error"] = {"code": 3, "message": "execution reverted"}
+            try:
+                out["result"] = self.chain.call(params[0]["to"], params[0]["data"])
+            except RuntimeError:
+                out["error"] = {"code": 3, "message": "execution reverted"}
         else:
             out["error"] = {"code": -32601, "message": "method not found"}
         return out
@@ -1142,18 +1237,22 @@ class _FakeNodeHandler(BaseHTTPRequestHandler):
 
 
 class FakeNodeTestCase(unittest.TestCase):
-    """Points the resolver at a FakeNode."""
+    """Points the resolver at a FakeNode and at FakeChain's contracts."""
 
     def setUp(self):
         self.node = FakeNode()
-        self._saved = (snrc.RPC, snrc.RPC_URL)
+        self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
+        snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
+        snrc._multicall_failed_logged = False
         self._drain_pool()
 
     def tearDown(self):
         self._drain_pool()
-        snrc.RPC, snrc.RPC_URL = self._saved
+        snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS = self._saved
         self.node.stop()
 
     def _drain_pool(self):
@@ -1203,6 +1302,90 @@ class RpcTransportTests(FakeNodeTestCase):
             snrc.eth_call("0x" + "11" * 20, "0xdeadbeef")
         snrc.rpc("eth_blockNumber", [])
         self.assertEqual(self.node.connections, 1)
+
+
+class BatchedReadsTests(FakeNodeTestCase):
+    """Inside a request a round of reads is one round trip, and its contract
+    reads one multicall, because a node runs the calls of a JSON-RPC batch one
+    after another. Answers must be exactly those of reading one call at a time."""
+
+    def batched(self, answer, name):
+        def action():
+            with snrc.request_reads():
+                return answer(name)
+        return self.requests_made(action)
+
+    def assert_same_answer(self, answer, name, round_trips):
+        one_by_one, one_by_one_trips = self.requests_made(lambda: answer(name))
+        batched, batched_trips = self.batched(answer, name)
+        self.assertEqual(batched, one_by_one)
+        self.assertEqual(batched_trips, round_trips)
+        self.assertGreater(one_by_one_trips, round_trips)
+        return batched
+
+    def test_a_registered_name_takes_two_round_trips(self):
+        status, body = self.assert_same_answer(snrc.registration, "acme.testing", 2)
+        record = body["registration"]["nameRecord"]
+        self.assertEqual(record["nickname"], "Acme")
+        self.assertEqual(record["simplexChannel"], ["https://a.example/c#1", "https://b.example/c#2"])
+        self.assertIsNone(record["btc"])
+
+    def test_a_hashed_query_is_named_from_the_same_round_trip(self):
+        hashed = "[" + snrc.keccak(b"acme").hex() + "].testing"
+        status, body = self.assert_same_answer(snrc.registration, hashed, 2)
+        self.assertEqual(body["registration"]["nameRecord"]["name"], "acme.testing")
+
+    def test_an_available_name_is_priced_in_three_round_trips(self):
+        status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
+        self.assertEqual(body["registration"]["type"], "available")
+
+    def test_v1_answers_the_same(self):
+        self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+
+    def test_without_multicall_a_round_is_still_one_batch(self):
+        self.node.multicall = False
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assert_same_answer(snrc.registration, "acme.testing", 4)
+        self.assertIn("batching calls instead", err.getvalue())
+
+    def test_a_node_that_does_not_batch_is_read_one_call_at_a_time(self):
+        self.node.batch = False
+        one_by_one, one_by_one_trips = self.requests_made(lambda: snrc.registration("acme.testing"))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            batched, batched_trips = self.batched(snrc.registration, "acme.testing")
+        self.assertEqual(batched, one_by_one)
+        # one refused batch per round, then the reads the batch would have made
+        self.assertEqual(batched_trips, one_by_one_trips + 2)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_read_reverted_in_the_multicall_is_a_reverted_call(self):
+        with snrc.request_reads():
+            snrc.prefetch([snrc.eth_call_read(*snrc.grace_call(FakeChain.REGISTRAR)), snrc.eth_call_read(FakeChain.REGISTRY, "0xdeadbeef")])
+            _, trips = self.requests_made(lambda: self.assertRaises(RuntimeError, snrc.eth_call, FakeChain.REGISTRY, "0xdeadbeef"))
+        self.assertEqual(trips, 0)
+
+    def test_outside_a_request_nothing_is_prefetched(self):
+        _, trips = self.requests_made(lambda: snrc.prefetch(snrc.lookup_reads("acme.testing")))
+        self.assertEqual(trips, 0)
+
+
+class Aggregate3Tests(unittest.TestCase):
+    def test_calls_are_encoded_as_multicall3_reads_them(self):
+        calls = [(FakeChain.REGISTRY, "0x0178b8bf" + "11" * 32), (FakeChain.RESOLVER, "0x59d1d43c" + "22" * 100)]
+        data = snrc.encode_aggregate3(calls)
+        self.assertTrue(data.startswith(snrc.AGGREGATE3))
+        self.assertEqual(_decode_aggregate3_calls(data), calls)
+
+    def test_results_are_decoded_with_their_success_flags(self):
+        results = [(True, b"\x01" * 40), (False, b""), (True, b"")]
+        self.assertEqual(snrc.decode_aggregate3(_encode_aggregate3_results(results)), results)
+
+    def test_a_truncated_answer_is_refused(self):
+        whole = _encode_aggregate3_results([(True, b"\x01" * 40)])
+        with self.assertRaises(ValueError):
+            snrc.decode_aggregate3(whole[:-64])
+        with self.assertRaises(ValueError):
+            snrc.decode_aggregate3("0x")
 
 
 if __name__ == "__main__":

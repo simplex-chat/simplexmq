@@ -47,6 +47,8 @@ Environment:
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
   SNRC_RPC_TIMEOUT       Seconds to wait for each RPC request (default: 5)
+  SNRC_MULTICALL         Multicall3 contract that runs a round of reads as one call
+                         (default: 0xcA11bde05977b3631167028862bE2a173976CA11)
 
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.
@@ -69,7 +71,10 @@ import json
 import os
 import queue
 import sys
+import threading
 import time
+from contextlib import contextmanager
+from functools import lru_cache
 from http.client import BadStatusLine, HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
@@ -82,6 +87,9 @@ BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
 # The smp-server gives up after 3 s, so a slower call only holds a thread.
 RPC_TIMEOUT_S = float(os.environ.get("SNRC_RPC_TIMEOUT", "") or 5)
+# Multicall3, at this address on mainnet and most chains. A node runs a JSON-RPC
+# batch one call after another, so a round of reads is sent as one eth_call.
+MULTICALL = os.environ.get("SNRC_MULTICALL", "") or "0xcA11bde05977b3631167028862bE2a173976CA11"
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
 # happens on the rightmost label of the queried name. Empty / unset means
@@ -126,6 +134,7 @@ COIN_ETH = 60
 COIN_BTC = 0
 COIN_XMR = 128
 COIN_DOT = 354
+RECORD_COINS = (COIN_ETH, COIN_BTC, COIN_XMR, COIN_DOT)
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
@@ -184,11 +193,140 @@ def _send_rpc(payload) -> object:
         return json.loads(_post_pooled(_new_rpc_connection(), body))
 
 
+# Reads prefetched for the request being answered, keyed by _read_key. Only set
+# inside request_reads(), so code called outside a request reads one call at a time.
+_request = threading.local()
+_UNREAD = object()
+
+
+def _read_key(method, params) -> str:
+    return method + json.dumps(params, sort_keys=True)
+
+
+@contextmanager
+def request_reads():
+    _request.reads = {}
+    try:
+        yield
+    finally:
+        del _request.reads
+
+
 def rpc(method, params):
+    reads = getattr(_request, "reads", None)
+    if reads is not None:
+        read = reads.get(_read_key(method, params), _UNREAD)
+        if isinstance(read, RuntimeError):
+            raise read
+        if read is not _UNREAD:
+            return read
     res = _send_rpc({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
     if "error" in res:
         raise RuntimeError(res["error"])
     return res["result"]
+
+
+def _send_batch(requests):
+    """Answers of a JSON-RPC batch in request order, None for a request left
+    unanswered; all None when the node does not batch."""
+    res = _send_rpc([{"jsonrpc": "2.0", "id": i, "method": m, "params": p} for i, (m, p) in enumerate(requests)])
+    # a node that does not batch answers with a single error object
+    by_id = {r.get("id"): r for r in res if isinstance(r, dict)} if isinstance(res, list) else {}
+    return [by_id.get(i) for i in range(len(requests))]
+
+
+def _is_latest_call(method, params) -> bool:
+    return method == "eth_call" and params[1] == "latest"
+
+
+_multicall_failed_logged = False
+
+
+def _remember(reads, requests, answers):
+    for (m, p), r in zip(requests, answers, strict=True):
+        if r is not None:
+            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r.get("result")
+
+
+def prefetch(requests):
+    """Sends reads the request will make in one round trip, with its contract
+    reads as one multicall. A read left unanswered is made on its own when the
+    code gets to it."""
+    global _multicall_failed_logged
+    reads = getattr(_request, "reads", None)
+    if reads is None:
+        return
+    todo = [(m, p) for m, p in requests if _read_key(m, p) not in reads]
+    if len(todo) < 2:
+        return
+    calls = [(m, p) for m, p in todo if _is_latest_call(m, p)]
+    if len(calls) < 2:
+        _remember(reads, todo, _send_batch(todo))
+        return
+    others = [(m, p) for m, p in todo if not _is_latest_call(m, p)]
+    multicall = eth_call_read(MULTICALL, encode_aggregate3([(p[0]["to"], p[0]["data"]) for _, p in calls]))
+    answers = _send_batch(others + [multicall])
+    if all(r is None for r in answers):
+        return
+    _remember(reads, others, answers[:-1])
+    try:
+        results = decode_aggregate3(answers[-1]["result"])
+        if len(results) != len(calls):
+            raise ValueError("multicall answered a different number of calls")
+    except (KeyError, TypeError, ValueError) as e:
+        if not _multicall_failed_logged:
+            _multicall_failed_logged = True
+            print(f"multicall at {MULTICALL} failed ({e!r}), batching calls instead", file=sys.stderr)
+        _remember(reads, calls, _send_batch(calls))
+        return
+    for (m, p), (success, data) in zip(calls, results, strict=True):
+        reads[_read_key(m, p)] = "0x" + data.hex() if success else RuntimeError("execution reverted")
+
+
+AGGREGATE3 = "0x82ad56cb"  # aggregate3((address,bool,bytes)[])
+
+
+def encode_aggregate3(calls) -> str:
+    """Calldata for Multicall3.aggregate3 with every call allowed to fail."""
+    tuples = []
+    for to, data in calls:
+        b = bytes.fromhex(data[2:])
+        tuples.append(
+            int(to, 16).to_bytes(32, "big")
+            + (1).to_bytes(32, "big")
+            + (0x60).to_bytes(32, "big")
+            + len(b).to_bytes(32, "big")
+            + b
+            + b"\x00" * ((-len(b)) % 32)
+        )
+    offsets, at = [], 32 * len(tuples)
+    for t in tuples:
+        offsets.append(at.to_bytes(32, "big"))
+        at += len(t)
+    body = (0x20).to_bytes(32, "big") + len(tuples).to_bytes(32, "big") + b"".join(offsets) + b"".join(tuples)
+    return AGGREGATE3 + body.hex()
+
+
+def decode_aggregate3(hex_data: str):
+    """Multicall3.aggregate3's (bool success, bytes returnData)[]."""
+    raw = bytes.fromhex(hex_data[2:] if hex_data.startswith("0x") else hex_data)
+
+    def word(at: int) -> int:
+        if at + 32 > len(raw):
+            raise ValueError("multicall answer is truncated")
+        return int.from_bytes(raw[at:at + 32], "big")
+
+    array = word(0)
+    base = array + 32
+    out = []
+    for i in range(word(array)):
+        item = base + word(base + 32 * i)
+        data = item + word(item + 32)
+        length = word(data)
+        if data + 32 + length > len(raw):
+            raise ValueError("multicall answer is truncated")
+        out.append((word(item) != 0, raw[data + 32:data + 32 + length]))
+    return out
 
 
 def namehash(name: str) -> bytes:
@@ -226,11 +364,14 @@ def node_of(name: str) -> bytes:
 # ---------- Registration status ----------
 
 
+BLOCK_READ = ("eth_getBlockByNumber", ["latest", False])
+
+
 def head_block():
     """How far behind the node is. Unlike expiry, this is the one thing that has
     to be measured against the host clock: a node that stops still has a block."""
     try:
-        block = rpc("eth_getBlockByNumber", ["latest", False])
+        block = rpc(*BLOCK_READ)
         return {
             "blockNumber": decode_uint(block["number"]),
             "chainLagSeconds": int(time.time()) - decode_uint(block["timestamp"]),
@@ -241,13 +382,13 @@ def head_block():
 
 def chain_now() -> int:
     """Expiry is compared against the block timestamp, never the host clock."""
-    block = rpc("eth_getBlockByNumber", ["latest", False])
+    block = rpc(*BLOCK_READ)
     return decode_uint(block["timestamp"])
 
 
 def grace_period(registrar: str) -> int:
     """A deployment can configure a different window, so it is read on chain."""
-    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
+    return decode_uint(eth_call(*grace_call(registrar)))
 
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
@@ -267,8 +408,7 @@ def reservation_reason(tld: str, token: int) -> int:
     controller = CONTROLLERS.get(tld)
     if not controller:
         return 0
-    raw = eth_call(controller, selector("reservedNames(bytes32)") + encode_uint(token))
-    return decode_uint(raw)
+    return decode_uint(eth_call(*reserved_call(controller, token)))
 
 
 def pricing_params(tld: str):
@@ -277,7 +417,8 @@ def pricing_params(tld: str):
     controller = CONTROLLERS.get(tld)
     if not controller:
         return None
-    oracle = decode_address(eth_call(controller, selector("prices()")))
+    prefetch([eth_call_read(*prices_call(controller)), eth_call_read(*min_length_call(controller))])
+    oracle = decode_address(eth_call(*prices_call(controller)))
     if oracle == ZERO_ADDR:
         return None
     try:
@@ -289,6 +430,8 @@ def pricing_params(tld: str):
 
 
 SECONDS_PER_YEAR = 31536000
+# an ENS-shaped oracle prices names by length up to six letters
+LETTER_TIERS = range(1, 7)
 ATTO_PER_CENT = 10**16
 
 
@@ -297,13 +440,15 @@ def read_oracle_prices(controller: str, oracle: str):
     protocol carries. An ENS-shaped oracle prices in attoUSD per second and
     charges a premium on lapsed names that it does not expose, so a quote from
     it is only safe for a name that was never registered."""
+    # either oracle shape is answered in the same round trip
+    prefetch([eth_call_read(*prices_call(oracle))] + [eth_call_read(*letter_price_call(oracle, n)) for n in LETTER_TIERS])
     try:
-        base, tiers = decode_prices(eth_call(oracle, selector("prices()")))
+        base, tiers = decode_prices(eth_call(*prices_call(oracle)))
         premium_unknown = False
     except RuntimeError:
         base, tiers = decode_letter_prices(oracle)
         premium_unknown = True
-    min_len = decode_uint(eth_call(controller, selector("minCharLength()")))
+    min_len = decode_uint(eth_call(*min_length_call(controller)))
     return {
         # lengths the registry refuses are left out rather than priced at zero
         "registrationPrices": {n: c for n, c in tiers.items() if n >= min_len},
@@ -319,9 +464,9 @@ def decode_letter_prices(oracle: str):
     the six-letter tier stops at five, and charges its highest tier for anything
     longer, which is what basePrice means here."""
     tiers = {}
-    for n in range(1, 7):
+    for n in LETTER_TIERS:
         try:
-            rate = decode_uint(eth_call(oracle, selector(f"price{n}Letter()")))
+            rate = decode_uint(eth_call(*letter_price_call(oracle, n)))
         except RuntimeError:
             if n <= 5:
                 raise
@@ -370,9 +515,7 @@ def name_status(name: str):
     # The 2LD's label is that key at any depth. node_of decodes a bracket only
     # in a two-label name, so a bracket subname gets a status but no record.
     token = label_token(labels[-2])
-    expires = decode_uint(
-        eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
-    )
+    expires = decode_uint(eth_call(*expires_call(registrar, token)))
     grace = grace_period(registrar) if expires else 0
     now = chain_now()
     status = expiry_status(expires, grace, now)
@@ -400,12 +543,17 @@ def name_status(name: str):
     return out
 
 
+@lru_cache(maxsize=None)
 def selector(signature: str) -> str:
     return "0x" + keccak(signature.encode())[:4].hex()
 
 
+def eth_call_read(to: str, data: str):
+    return "eth_call", [{"to": to, "data": data}, "latest"]
+
+
 def eth_call(to: str, data: str) -> str:
-    result = rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    result = rpc(*eth_call_read(to, data))
     if result == "0x":
         raise RuntimeError(f"empty return from {to}: no contract at that address?")
     return result
@@ -427,7 +575,7 @@ def registered_label(registrar: str, token: int):
     """The plaintext label the registrar recorded at registration, keyed by the
     hash of that label. None when the name was registered without
     registerWithLabel, so the registrar cannot name it."""
-    raw = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token)))
+    raw = decode_bytes(eth_call(*label_call(registrar, token)))
     return raw.decode("utf-8", errors="replace") if raw else None
 
 
@@ -469,7 +617,7 @@ def encode_text_call(node: bytes, key: str) -> str:
 
 
 def text(resolver: str, node: bytes, key: str) -> str:
-    raw = decode_bytes(eth_call(resolver, encode_text_call(node, key)))
+    raw = decode_bytes(eth_call(*text_call(resolver, node, key)))
     return raw.decode("utf-8", errors="replace") if raw else ""
 
 
@@ -488,7 +636,7 @@ def addr_multicoin(resolver: str, node: bytes, coin_type: int):
     payload doesn't match any recognised on-chain shape. Returns None when
     the record is unset."""
     try:
-        raw = decode_bytes(eth_call(resolver, encode_addr_multicoin_call(node, coin_type)))
+        raw = decode_bytes(eth_call(*addr_call(resolver, node, coin_type)))
     except RuntimeError:
         return None
     if not raw:
@@ -505,6 +653,81 @@ def addr_multicoin(resolver: str, node: bytes, coin_type: int):
         return encoder(raw) or ("0x" + raw.hex())
     except Exception:
         return "0x" + raw.hex()
+
+
+# ---------- Contract calls, as (to, data) ----------
+# Shared by the reads and prefetch, so a prefetched read is found by the code that makes it.
+
+
+def expires_call(registrar: str, token: int):
+    return registrar, selector("nameExpires(uint256)") + encode_uint(token)
+
+
+def grace_call(registrar: str):
+    return registrar, selector("GRACE_PERIOD()")
+
+
+def label_call(registrar: str, token: int):
+    return registrar, selector("labelOf(uint256)") + encode_uint(token)
+
+
+def reserved_call(controller: str, token: int):
+    return controller, selector("reservedNames(bytes32)") + encode_uint(token)
+
+
+def prices_call(contract: str):
+    return contract, selector("prices()")
+
+
+def letter_price_call(oracle: str, letters: int):
+    return oracle, selector(f"price{letters}Letter()")
+
+
+def min_length_call(controller: str):
+    return controller, selector("minCharLength()")
+
+
+def resolver_call(registry: str, node: bytes):
+    return registry, selector("resolver(bytes32)") + node.hex()
+
+
+def owner_call(registry: str, node: bytes):
+    return registry, selector("owner(bytes32)") + node.hex()
+
+
+def text_call(resolver: str, node: bytes, key: str):
+    return resolver, encode_text_call(node, key)
+
+
+def addr_call(resolver: str, node: bytes, coin_type: int):
+    return resolver, encode_addr_multicoin_call(node, coin_type)
+
+
+def lookup_reads(name: str):
+    """The reads a lookup makes before it knows the name's resolver."""
+    labels = name.split(".")
+    tld = labels[-1]
+    reads = []
+    registrar = REGISTRARS.get(tld)
+    if registrar and len(labels) >= 2:
+        token = label_token(labels[-2])
+        reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
+        if len(labels) == 2 and is_encoded_labelhash(labels[0]):
+            reads.append(eth_call_read(*label_call(registrar, token)))
+        if CONTROLLERS.get(tld):
+            reads.append(eth_call_read(*reserved_call(CONTROLLERS[tld], token)))
+    registry = REGISTRIES.get(tld)
+    if registry:
+        node = node_of(name)
+        reads += [eth_call_read(*resolver_call(registry, node)), eth_call_read(*owner_call(registry, node))]
+    return reads
+
+
+def record_reads(resolver: str, node: bytes):
+    """The reads of a name's record from its resolver."""
+    return [eth_call_read(*text_call(resolver, node, k)) for k in TEXT_KEYS] + [
+        eth_call_read(*addr_call(resolver, node, coin)) for coin in RECORD_COINS
+    ]
 
 
 # ---------- Coin-specific address encoders ----------
@@ -722,9 +945,8 @@ def name_record(name: str):
     has one, with every field unset."""
     registry = REGISTRIES[name.rsplit(".", 1)[-1]]
     node = node_of(name)
-    node_hex = node.hex()
-    resolver_addr = decode_address(eth_call(registry, selector("resolver(bytes32)") + node_hex))
-    owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+    resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
+    owner = decode_address(eth_call(*owner_call(registry, node)))
     rec = {
         "name": canonical_name(name),
         "nickname": "",
@@ -741,6 +963,7 @@ def name_record(name: str):
     }
     if resolver_addr == ZERO_ADDR:
         return rec
+    prefetch(record_reads(resolver_addr, node))
     texts = {}
     for k in TEXT_KEYS:
         try:
@@ -776,6 +999,7 @@ def registration(name: str):
     tld = name.rsplit(".", 1)[-1]
     if not REGISTRIES.get(tld):
         return 400, {"name": name, "error": "tldNotConfigured"}
+    prefetch(lookup_reads(name))
     reg = name_status(name)
     status = reg["status"]
     if status in ("registered", "grace"):
@@ -830,7 +1054,7 @@ def resolve(name: str):
         }
 
     node = node_of(name)
-    node_hex = node.hex()
+    prefetch(lookup_reads(name))
 
     # Before the resolver lookup, so a lapsed name is not reported as noResolver.
     reg = name_status(name)
@@ -848,13 +1072,12 @@ def resolve(name: str):
         }
         return (404 if reg["status"] == "unregistered" else 410), body
 
-    resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
-    resolver_addr = decode_address(resolver_raw)
+    resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
         # answerable. For a subname, no owner means nobody created it.
-        owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+        owner = decode_address(eth_call(*owner_call(registry, node)))
         if len(name.split(".")) > 2 and owner == ZERO_ADDR:
             return 404, {
                 "name": name,
@@ -879,9 +1102,9 @@ def resolve(name: str):
             **reg,
         }
 
-    owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
-    owner = decode_address(owner_raw)
+    owner = decode_address(eth_call(*owner_call(registry, node)))
 
+    prefetch(record_reads(resolver_addr, node))
     texts = {}
     for k in TEXT_KEYS:
         try:
@@ -934,7 +1157,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(400, {"name": name, "error": "notFullyQualified"})
                 return
             try:
-                status, body = registration(name)
+                with request_reads():
+                    status, body = registration(name)
             except Exception as e:  # surface upstream errors as 502
                 status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
@@ -957,7 +1181,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                status, body = resolve(name)
+                with request_reads():
+                    status, body = resolve(name)
             except Exception as e:  # surface upstream errors as 502
                 status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
