@@ -110,9 +110,8 @@ secp256k1PublicKey (Secp256k1PrivateKey sk) = withContext $ \ctx -> do
 serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
 serializePublicKey fmt (Secp256k1PublicKey pk) = withContext $ \ctx ->
   BA.alloc outLen $ \outPtr ->
-    alloca $ \lenPtr ->
-      BA.withByteArray pk $ \pkPtr -> do
-        poke lenPtr (fromIntegral outLen)
+    with (fromIntegral outLen) $ \lenPtr ->
+      BA.withByteArray pk $ \pkPtr ->
         void $ c_ec_pubkey_serialize ctx outPtr lenPtr pkPtr flag
   where
     -- SECP256K1_EC_COMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION, SECP256K1_EC_UNCOMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION

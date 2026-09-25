@@ -202,7 +202,7 @@ derivationTests = do
     toHex seed
       `shouldBe` "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4"
   forM_ [(0, "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"), (1, "0x78839F6054d7ed13918bAe0473BA31b1Ca9D7265"), (2, "0x07B5FdfEB4E11826D233403Fe8Db0611CCF4c231")] $ \(i, a) ->
-    it ("derives the well-known account " <> show i <> " address") $
+    it ("derives the account " <> show i <> " address") $
       (strEncode <$> addrAt i) `shouldReturn` a
   it "derives distinct addresses for accounts 0 to 4" $
     mapM addrAt [0 .. 4] >>= (`shouldSatisfy` \as -> length as == length (nub as))

@@ -40,7 +40,7 @@ instance StrEncoding Address where
 addressSize :: Int
 addressSize = 20
 
--- | The low 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
+-- | The last 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
 addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address
 addressFromPublicKey pk =
   Address . B.drop 12 . keccak256 . B.drop 1 <$> S.serializePublicKey S.Uncompressed pk

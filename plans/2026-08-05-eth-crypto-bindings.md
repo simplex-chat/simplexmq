@@ -158,9 +158,11 @@ No `include-dirs` are needed: every libsecp256k1 include is quoted and relative
 to the including file. The embedded wordlist makes `file-embed` a library
 dependency; before this change only the executables and the test suite used it.
 
-Built with no `-D` of our own. Every setting has an `#ifndef` default in the
-headers, and the checked-in precomputed tables are generated for those
-defaults. `secp256k1.c` defines `SECP256K1_BUILD` itself.
+Built with no `-D` of our own. The table-size settings (`ECMULT_WINDOW_SIZE`,
+`COMB_BLOCKS`, `COMB_TEETH`) have `#ifndef` defaults in the headers, and the
+checked-in precomputed tables are generated for those defaults; every other
+option, such as the optional modules and x86-64 assembly, is off unless a `-D`
+enables it. `secp256k1.c` defines `SECP256K1_BUILD` itself.
 
 32-bit targets (armv7a-android, i686 musl) are covered by libsecp256k1's own
 fallback: `src/util.h` selects `SECP256K1_WIDEMUL_INT64`, and with it the 10x26

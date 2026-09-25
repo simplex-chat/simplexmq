@@ -133,7 +133,7 @@ mnemonicToSeed m passphrase =
     (PBKDF2.prfHMAC SHA512)
     PBKDF2.Parameters {PBKDF2.iterCounts = 2048, PBKDF2.outputLength = seedSize}
     (mnemonicPhrase m)
-    ("mnemonic" <> passphrase :: ByteString)
+    ("mnemonic" <> passphrase)
 
 randomMnemonic :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
 randomMnemonic s gVar = Mnemonic . entropyToIndexes <$> stateTVar gVar (randomBytesGenerate $ strengthBytes s)
