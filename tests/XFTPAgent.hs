@@ -34,7 +34,7 @@ import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defa
 import Simplex.FileTransfer.Server.Store (STMFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
-import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpReceiveFile, xftpSendDescription, xftpStartWorkers)
+import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpPrepareReceiveFile, xftpPrepareSendFile, xftpReceiveFile, xftpSendDescription, xftpStartReceiveFile, xftpStartSendFile, xftpStartWorkers)
 import qualified Simplex.Messaging.Agent as XA
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
@@ -84,6 +84,8 @@ xftpAgentTests =
       it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
       it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
       it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
+      it "should receive prepared file only after it is started" testXFTPAgentPrepareReceive
+      it "should send prepared file only after it is started" testXFTPAgentPrepareSend
       it "should extend storage time with an entitlement proof and report the granted expiry" $ \_ -> testXFTPAgentEntitlement
       describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
@@ -277,6 +279,56 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
 
       inBytes <- B.readFile filePathIn
       B.readFile out `shouldReturn` inBytes
+
+testXFTPAgentPrepareReceive :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentPrepareReceive = withXFTPServer $ do
+  filePath <- createRandomFile
+  (_, _, rfd1, rfd2) <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ testSend sndr filePath
+  rfId2 <- withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> runRight $ do
+    xftpStartWorkers rcp (Just recipientFiles)
+    rfId1 <- xftpReceiveFile rcp 1 rfd1 Nothing True
+    rfId2 <- xftpPrepareReceiveFile rcp 1 rfd2 Nothing True
+    rfProgress rcp $ mb 18
+    ("", rfId1', RFDONE _) <- rfGet rcp
+    liftIO $ do
+      rfId1' `shouldBe` rfId1
+      timeout 300000 (rfGet rcp) `shouldReturn` Nothing
+    pure rfId2
+  withAgent 3 agentCfg initAgentServers testDB2 $ \rcp' -> runRight_ $ do
+    xftpStartWorkers rcp' (Just recipientFiles)
+    liftIO $ timeout 300000 (rfGet rcp') `shouldReturn` Nothing
+    xftpStartReceiveFile rcp' rfId2
+    rfProgress rcp' $ mb 18
+    ("", rfId2', RFDONE path) <- rfGet rcp'
+    liftIO $ do
+      rfId2' `shouldBe` rfId2
+      file <- B.readFile filePath
+      B.readFile path `shouldReturn` file
+
+testXFTPAgentPrepareSend :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentPrepareSend = withXFTPServer $ do
+  filePath1 <- createRandomFile' "testfile1"
+  filePath2 <- createRandomFile' "testfile2"
+  sfId2 <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
+    xftpStartWorkers sndr (Just senderFiles)
+    sfId1 <- xftpSendFile sndr 1 (CF.plain filePath1) 1
+    sfId2 <- xftpPrepareSendFile sndr 1 (CF.plain filePath2) 1 Nothing
+    sfProgress sndr $ mb 18
+    ("", sfId1', SFDONE _ _) <- sfGet sndr
+    liftIO $ do
+      sfId1' `shouldBe` sfId1
+      timeout 300000 (sfGet sndr) `shouldReturn` Nothing
+    pure sfId2
+  rfd <- withAgent 2 agentCfg initAgentServers testDB $ \sndr' -> runRight $ do
+    xftpStartWorkers sndr' (Just senderFiles)
+    liftIO $ timeout 300000 (sfGet sndr') `shouldReturn` Nothing
+    xftpStartSendFile sndr' sfId2
+    sfProgress sndr' $ mb 18
+    ("", sfId2', SFDONE _ [rfd]) <- sfGet sndr'
+    liftIO $ sfId2' `shouldBe` sfId2
+    pure rfd
+  withAgent 3 agentCfg initAgentServers testDB2 $ \rcp ->
+    runRight_ . void $ testReceive rcp rfd filePath2
 
 testXFTPAgentSendReceiveMatrix :: Spec
 testXFTPAgentSendReceiveMatrix = do
