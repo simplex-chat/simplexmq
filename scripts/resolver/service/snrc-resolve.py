@@ -46,6 +46,7 @@ Environment:
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
+  SNRC_WORKERS           Worker processes sharing the port (default: CPU count, at most 4)
   SNRC_RPC_TIMEOUT       Seconds to wait for each RPC request (default: 5)
   SNRC_MULTICALL         Multicall3 contract that runs a round of reads as one call
                          (default: 0xcA11bde05977b3631167028862bE2a173976CA11)
@@ -70,9 +71,11 @@ import hashlib
 import json
 import os
 import queue
+import signal
 import sys
 import threading
 import time
+import traceback
 from contextlib import contextmanager
 from functools import lru_cache
 from http.client import BadStatusLine, HTTPConnection, HTTPSConnection
@@ -87,6 +90,9 @@ BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
 # The smp-server gives up after 3 s, so a slower call only holds a thread.
 RPC_TIMEOUT_S = float(os.environ.get("SNRC_RPC_TIMEOUT", "") or 5)
+# The node and the beacon client usually share the host, so not every core.
+MAX_DEFAULT_WORKERS = 4
+WORKERS = int(os.environ.get("SNRC_WORKERS", "") or min(MAX_DEFAULT_WORKERS, os.cpu_count() or 1))
 # Multicall3, at this address on mainnet and most chains. A node runs a JSON-RPC
 # batch one call after another, so a round of reads is sent as one eth_call.
 MULTICALL = os.environ.get("SNRC_MULTICALL", "") or "0xcA11bde05977b3631167028862bE2a173976CA11"
@@ -1144,6 +1150,7 @@ def resolve(name: str):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - http.server contract
+        self._started = time.monotonic()
         path = urlparse(self.path).path
         parts = [unquote(p) for p in path.split("/") if p]
 
@@ -1205,6 +1212,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def log_request(self, code="-", size="-"):
+        started = getattr(self, "_started", None)
+        took = f" {(time.monotonic() - started) * 1000:.0f}ms" if started else ""
+        self.log_message('"%s" %s %s%s', self.requestline, getattr(code, "value", code), size, took)
+
     def log_message(self, fmt, *args):
         # Quiet the default per-request access log; route to stderr in one line.
         sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
@@ -1216,21 +1228,70 @@ class ResolverServer(ThreadingHTTPServer):
     request_queue_size = 128
 
 
+def serve(reuse_port: bool):
+    server = ResolverServer((BIND, PORT), Handler, bind_and_activate=False)
+    server.allow_reuse_port = reuse_port
+    try:
+        server.server_bind()
+        server.server_activate()
+        server.serve_forever()
+    except KeyboardInterrupt:
+        sys.stderr.write("\nshutting down\n")
+    finally:
+        server.server_close()
+
+
+def supervise(workers: int):
+    """Runs the workers, each with its own socket on the shared port. One worker
+    exiting stops the others, so the container restarts instead of running short."""
+    children = []
+
+    def stop(*_):
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    def stop_and_exit(*_):
+        stop()
+        sys.exit(0)
+
+    # before forking, so a signal during startup cannot orphan the workers
+    signal.signal(signal.SIGTERM, stop_and_exit)
+    signal.signal(signal.SIGINT, stop_and_exit)
+    for _ in range(workers):
+        pid = os.fork()
+        if pid == 0:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            code = 0
+            try:
+                serve(reuse_port=True)
+            except BaseException:
+                traceback.print_exc()
+                code = 1
+            os._exit(code)
+        children.append(pid)
+    pid, status = os.wait()
+    sys.stderr.write(f"worker {pid} exited with status {status}, stopping\n")
+    stop()
+    sys.exit(1)
+
+
 def main():
-    server = ResolverServer((BIND, PORT), Handler)
     sys.stderr.write(
-        f"snrc-resolve listening on {BIND}:{PORT}\n"
+        f"snrc-resolve listening on {BIND}:{PORT} with {WORKERS} worker(s)\n"
         f"  RPC = {RPC}\n"
         f"  Registries:\n"
     )
     for tld, addr in REGISTRIES.items():
         sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
     sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        sys.stderr.write("\nshutting down\n")
-        server.server_close()
+    if WORKERS > 1:
+        supervise(WORKERS)
+    else:
+        serve(reuse_port=False)
 
 
 if __name__ == "__main__":

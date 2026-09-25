@@ -156,6 +156,10 @@ services:
       # SNRC_REGISTRAR_SIMPLEX: 0x...
       # SNRC_CONTROLLER_TESTING: 0x...
       # SNRC_CONTROLLER_SIMPLEX: 0x...
+      # Worker processes sharing the port (default: CPU count, at most 4), and
+      # seconds to wait for each request to reth (default: 5). See README.
+      # SNRC_WORKERS: "4"
+      # SNRC_RPC_TIMEOUT: "5"
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped
