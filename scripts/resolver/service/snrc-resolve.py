@@ -943,8 +943,14 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
 
 
+class ResolverServer(ThreadingHTTPServer):
+    # socketserver's default of 5 drops simultaneous connections, each retried by
+    # TCP after 1 s, and the smp-server gives up after 3 s. The kernel caps it at somaxconn.
+    request_queue_size = 128
+
+
 def main():
-    server = ThreadingHTTPServer((BIND, PORT), Handler)
+    server = ResolverServer((BIND, PORT), Handler)
     sys.stderr.write(
         f"snrc-resolve listening on {BIND}:{PORT}\n"
         f"  RPC = {RPC}\n"
