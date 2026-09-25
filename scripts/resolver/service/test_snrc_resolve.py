@@ -7,11 +7,16 @@ Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import socket
 import sys
+import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.parse import urlparse
 
 # snrc-resolve.py has a hyphen, so import it via importlib instead of `import`.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1061,6 +1066,143 @@ class ListenBacklogTests(unittest.TestCase):
             for c in clients:
                 c.close()
             server.server_close()
+
+
+class FakeNode(ThreadingHTTPServer):
+    """A JSON-RPC node over HTTP/1.1 keep-alive whose contract calls all revert."""
+
+    daemon_threads = True
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), _FakeNodeHandler)
+        self.block = 100
+        self.requests = 0
+        self.connections = 0
+        self.batch = True
+        self.status = 200
+        self.hang_up = False
+        self.drop_after_reply = False
+        threading.Thread(target=self.serve_forever, args=(0.05,), daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server_address[1]}/"
+
+    def stop(self):
+        self.shutdown()
+        self.server_close()
+
+    def answer(self, req):
+        out = {"jsonrpc": "2.0", "id": req.get("id")}
+        method = req["method"]
+        if method == "eth_blockNumber":
+            out["result"] = hex(self.block)
+        elif method == "eth_getBlockByNumber":
+            out["result"] = {"number": hex(self.block), "timestamp": hex(int(time.time()))}
+        elif method == "eth_call":
+            out["error"] = {"code": 3, "message": "execution reverted"}
+        else:
+            out["error"] = {"code": -32601, "message": "method not found"}
+        return out
+
+
+class _FakeNodeHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        # headers and body go out in separate writes, which Nagle holds for the client's delayed ACK
+        self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.server.connections += 1
+
+    def do_POST(self):  # noqa: N802 - http.server contract
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        node = self.server
+        node.requests += 1
+        if node.hang_up:
+            self.close_connection = True
+            return
+        if node.status != 200:
+            reply = {"error": "unavailable"}
+        elif isinstance(request, list):
+            reply = [node.answer(r) for r in request] if node.batch else {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}}
+        else:
+            reply = node.answer(request)
+        data = json.dumps(reply).encode()
+        self.send_response(node.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        # closes without `Connection: close`, as a node dropping an idle connection does
+        self.close_connection = node.drop_after_reply
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+class FakeNodeTestCase(unittest.TestCase):
+    """Points the resolver at a FakeNode."""
+
+    def setUp(self):
+        self.node = FakeNode()
+        self._saved = (snrc.RPC, snrc.RPC_URL)
+        snrc.RPC = self.node.url
+        snrc.RPC_URL = urlparse(snrc.RPC)
+        self._drain_pool()
+
+    def tearDown(self):
+        self._drain_pool()
+        snrc.RPC, snrc.RPC_URL = self._saved
+        self.node.stop()
+
+    def _drain_pool(self):
+        while not snrc._rpc_pool.empty():
+            snrc._rpc_pool.get_nowait().close()
+
+    def requests_made(self, action):
+        before = self.node.requests
+        result = action()
+        return result, self.node.requests - before
+
+
+class RpcTransportTests(FakeNodeTestCase):
+    """A lookup makes several reads, and a new connection per read costs CPU
+    and leaves a TIME_WAIT socket each, which exhausts local ports under load."""
+
+    def test_reads_share_one_connection(self):
+        for _ in range(18):
+            self.assertEqual(snrc.rpc("eth_blockNumber", []), hex(self.node.block))
+        self.assertEqual(self.node.connections, 1)
+
+    def test_a_connection_the_node_closed_is_replaced(self):
+        self.node.drop_after_reply = True
+        for _ in range(3):
+            self.assertEqual(snrc.rpc("eth_blockNumber", []), hex(self.node.block))
+        self.assertEqual(self.node.connections, 3)
+
+    def test_a_fresh_connection_that_fails_is_not_retried(self):
+        """Only a pooled connection can be stale; a new one failing means the
+        node is down, and resending would only double the wait."""
+        self.node.hang_up = True
+        with self.assertRaises(ConnectionError):
+            snrc.rpc("eth_blockNumber", [])
+        self.assertEqual(self.node.requests, 1)
+
+    def test_a_node_failure_is_not_a_reverted_call(self):
+        """Callers read RuntimeError as the call reverting and fall back to an
+        empty value, so a node failure must not look like one."""
+        self.node.status = 502
+        with self.assertRaises(HTTPError) as cm:
+            snrc.rpc("eth_blockNumber", [])
+        self.assertNotIsInstance(cm.exception, RuntimeError)
+        self.assertEqual(cm.exception.code, 502)
+
+    def test_a_reverted_call_is_a_runtime_error_and_keeps_the_connection(self):
+        with self.assertRaises(RuntimeError):
+            snrc.eth_call("0x" + "11" * 20, "0xdeadbeef")
+        snrc.rpc("eth_blockNumber", [])
+        self.assertEqual(self.node.connections, 1)
 
 
 if __name__ == "__main__":

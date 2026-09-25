@@ -243,7 +243,7 @@ wrong, `error` and `status` hold the same value, so one field is enough to read.
 
 `upstreamError` says only which exception type the RPC call raised. The text
 goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
-and urlopen puts the URL it failed on into the message. It is also the answer
+and the exception can carry the URL it failed on. It is also the answer
 when a registrar, controller or oracle address has no contract behind it: the
 empty reply is refused rather than read as zero, which would make every name
 look free.
