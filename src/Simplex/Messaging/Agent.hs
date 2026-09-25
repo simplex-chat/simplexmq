@@ -436,14 +436,14 @@ createConnection c nm userId enableNtfs checkNotices = withAgentEnv c .::: newCo
 -- Caller provides root signing key pair and link entity ID.
 -- Returns the created link and internal params.
 -- The link address is fully determined at this point.
-prepareConnectionLink :: ConnectionModeI c => AgentClient -> UserId -> SConnectionMode c -> C.KeyPairEd25519 -> Maybe ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AE (CreatedConnLink c, PreparedLinkParams)
+prepareConnectionLink :: AgentClient -> UserId -> SConnectionMode c -> C.KeyPairEd25519 -> Maybe ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AE (CreatedConnLink c, PreparedLinkParams c)
 prepareConnectionLink c userId cMode rootKey linkEntityId checkNotices clientData pqInitKeys useDR srv_ =
   withAgentEnv c $ prepareConnectionLink' c userId cMode rootKey linkEntityId checkNotices clientData pqInitKeys useDR srv_
 {-# INLINE prepareConnectionLink #-}
 
 -- | Create connection for prepared link (single network call).
 -- Validates that server response matches the prepared link.
-createConnectionForLink :: ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink c -> PreparedLinkParams -> UserConnLinkData c -> SubscriptionMode -> AE (ConnId, CreatedConnLink c)
+createConnectionForLink :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink c -> PreparedLinkParams c -> UserConnLinkData c -> SubscriptionMode -> AE (ConnId, CreatedConnLink c)
 createConnectionForLink c nm userId enableNtfs = withAgentEnv c .:: createConnectionForLink' c nm userId enableNtfs
 {-# INLINE createConnectionForLink #-}
 
@@ -452,8 +452,8 @@ setConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMo
 setConnShortLink c = withAgentEnv c .:::. setConnShortLink' c
 {-# INLINE setConnShortLink #-}
 
-prepareConnShortLink :: AgentClient -> ConnId -> Maybe CRClientData -> Maybe CR.InitialKeys -> AE (ConnShortLink 'CMContact)
-prepareConnShortLink c = withAgentEnv c .:. prepareConnShortLink' c
+prepareConnShortLink :: AgentClient -> ConnId -> Maybe CRClientData -> AE (ConnShortLink 'CMContact)
+prepareConnShortLink c = withAgentEnv c .: prepareConnShortLink' c
 {-# INLINE prepareConnShortLink #-}
 
 deleteConnShortLink :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AE ()
@@ -1016,7 +1016,7 @@ newConn c nm userId enableNtfs checkNotices cMode linkData_ clientData pqInitKey
 
 -- | Prepare connection link (no network, no database).
 -- Caller provides root signing key pair and link entity ID.
-prepareConnectionLink' :: forall c. ConnectionModeI c => AgentClient -> UserId -> SConnectionMode c -> C.KeyPairEd25519 -> Maybe ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AM (CreatedConnLink c, PreparedLinkParams)
+prepareConnectionLink' :: AgentClient -> UserId -> SConnectionMode c -> C.KeyPairEd25519 -> Maybe ByteString -> Bool -> Maybe CRClientData -> CR.InitialKeys -> UseRatchetKeys -> Maybe SMPServerWithAuth -> AM (CreatedConnLink c, PreparedLinkParams c)
 prepareConnectionLink' c userId cMode rootKey@(_, plpRootPrivKey) linkEntityId checkNotices clientData pqInitKeys useDR srv_ = do
   g <- asks random
   plpSrvWithAuth@(ProtoServerWithAuth srv _) <- maybe (getSMPServer c userId) pure srv_
@@ -1025,44 +1025,62 @@ prepareConnectionLink' c userId cMode rootKey@(_, plpRootPrivKey) linkEntityId c
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
   let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
-      crData qm = ConnReqUriData SSSimplex smpAgentVRange [SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just qm)] clientData
-      preparedLink :: ConnectionRequestUri c -> (LinkKey -> Maybe (ConnShortLink c)) -> Maybe (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448) -> Maybe (CR.RcvE2EPrivRatchetParams 'C.X448) -> (CreatedConnLink c, PreparedLinkParams)
-      preparedLink connReq shortLink plpAddressKeys plpInvitationKeys =
+      qUri qm = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just qm)
+      crData qm = ConnReqUriData SSSimplex smpAgentVRange [qUri qm] clientData
+      params :: ConnectionModeI m => ConnectionRequestUri m -> PreparedRatchetKeys m -> PreparedLinkParams m
+      params connReq plpRatchetKeys =
         let (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData rootKey smpAgentVRange connReq linkEntityId
-         in (CCLink connReq (shortLink plpLinkKey), PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth, plpInitKeys = pqInitKeys, plpAddressKeys, plpInvitationKeys})
+         in PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth, plpInitKeys = pqInitKeys, plpRatchetKeys}
   case cMode of
     SCMContact -> do
       addrKeys_ <- if useDR then Just <$> generateAddressRatchetKeys pqInitKeys else pure Nothing
-      pure $ preparedLink (CRContactUri (crData QMContact) (fst <$> addrKeys_)) (Just . CSLContact SLSServer CCTContact srv) (snd <$> addrKeys_) Nothing
+      let connReq = CRContactUri (crData QMContact) (fst <$> addrKeys_)
+          ps@PreparedLinkParams {plpLinkKey} = params connReq $ PRKContact (snd <$> addrKeys_)
+      pure (CCLink connReq $ Just $ CSLContact SLSServer CCTContact srv plpLinkKey, ps)
     SCMInvitation -> do
       (pks, e2eRcvParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) (CR.initialPQEncryption True pqInitKeys)
-      pure $ preparedLink (CRInvitationUri (crData QMMessaging) (toVersionRangeT e2eRcvParams e2eEncryptVRange)) (const Nothing) Nothing (Just pks)
+      let connReq = CRInvitationUri (crData QMMessaging) (toVersionRangeT e2eRcvParams e2eEncryptVRange)
+      pure (CCLink connReq Nothing, params connReq $ PRKInvitation pks)
 
 -- | Create connection for prepared link (single network call).
-createConnectionForLink' :: forall c. ConnectionModeI c => AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink c -> PreparedLinkParams -> UserConnLinkData c -> SubscriptionMode -> AM (ConnId, CreatedConnLink c)
-createConnectionForLink' c nm userId enableNtfs ccLink@(CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth = srvWithAuth@(ProtoServerWithAuth srv _), plpInitKeys, plpAddressKeys, plpInvitationKeys} userLinkData subMode = do
+createConnectionForLink' :: AgentClient -> NetworkRequestMode -> UserId -> Bool -> CreatedConnLink c -> PreparedLinkParams c -> UserConnLinkData c -> SubscriptionMode -> AM (ConnId, CreatedConnLink c)
+createConnectionForLink' c nm userId enableNtfs ccLink@(CCLink connReq _) PreparedLinkParams {plpNonce, plpQueueE2EKeys, plpLinkKey, plpRootPrivKey, plpSignedFixedData, plpSrvWithAuth, plpInitKeys, plpRatchetKeys} userLinkData subMode = do
   g <- asks random
   AgentConfig {smpAgentVRange} <- asks config
-  connId <- newConnNoQueues c userId enableNtfs (sConnectionMode @c) (CR.connPQEncryption plpInitKeys)
-  let signedUserData = SL.encodeSignUserData (sConnectionMode @c) plpRootPrivKey smpAgentVRange
-      createQueue qd =
-        createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
-          `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
-  case connReq of
-    CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} addrKeys_ -> do
+  case plpRatchetKeys of
+    PRKContact plpAddressKeys -> do
+      connId <- newConnNoQueues c userId enableNtfs SCMContact (CR.connPQEncryption plpInitKeys)
       mapM_ (storeAddressRatchetKeys c connId) plpAddressKeys
-      let userLinkData' = case userLinkData of
-            UserContactLinkData ucd -> UserContactLinkData ucd {ratchetKeys = addrKeys_ <|> ratchetKeys ucd}
-      qd <- encryptContactLinkData g plpRootPrivKey plpLinkKey sndId (plpSignedFixedData, signedUserData userLinkData')
-      (_, qUri) <- createQueue qd
+      let CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} addrKeys_ = connReq
+          userLinkData' = case addrKeys_ of
+            Just arKeys -> let UserContactLinkData ucd = userLinkData in UserContactLinkData ucd {ratchetKeys = Just arKeys}
+            Nothing -> userLinkData
+          md = SL.encodeSignUserData SCMContact plpRootPrivKey smpAgentVRange userLinkData'
+          linkData = (plpSignedFixedData, md)
+      qd <- encryptContactLinkData g plpRootPrivKey plpLinkKey sndId linkData
+      (_, qUri) <-
+        createRcvQueue c nm userId connId plpSrvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
+          `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
       let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri
       unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
       pure (connId, ccLink)
-    CRInvitationUri ConnReqUriData {crSmpQueues = qUri@(SMPQueueUri _ SMPQueueAddress {senderId = sndId}) :| _, crClientData} _ -> do
-      forM_ plpInvitationKeys $ \pks -> withStore' c $ \db -> createRatchetX3dhKeys db connId pks
-      srvData <- liftError id $ SL.encryptLinkData g (SL.invShortLinkKdf plpLinkKey) (plpSignedFixedData, signedUserData userLinkData)
-      (rq, qUri') <- createQueue $ CQRMessaging $ Just CQRData {linkKey = plpLinkKey, privSigKey = plpRootPrivKey, srvReq = (sndId, srvData)}
-      (connId,) <$> connReqWithShortLink srv plpInitKeys crClientData qUri connReq qUri' (shortLink rq)
+    PRKInvitation pks -> do
+      connId <- newConnNoQueues c userId enableNtfs SCMInvitation (CR.connPQEncryption plpInitKeys)
+      withStore' c $ \db -> createRatchetX3dhKeys db connId pks
+      let CRInvitationUri crData@ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId = sndId} :| _} (CR.E2ERatchetParamsUri vr k1 k2 _) = connReq
+          md = SL.encodeSignUserData SCMInvitation plpRootPrivKey smpAgentVRange userLinkData
+      srvData <- liftError id $ SL.encryptLinkData g (SL.invShortLinkKdf plpLinkKey) (plpSignedFixedData, md)
+      let qd = CQRMessaging $ Just CQRData {linkKey = plpLinkKey, privSigKey = plpRootPrivKey, srvReq = (sndId, srvData)}
+      (rq, qUri) <-
+        createRcvQueue c nm userId connId plpSrvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
+          `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+      let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri
+      unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
+      let connReq' = case plpInitKeys of
+            CR.IKPQOn -> CRInvitationUri crData $ CR.E2ERatchetParamsUri vr k1 k2 Nothing
+            _ -> connReq
+          shortLink_ = (\ShortLinkCreds {shortLinkId} -> CSLInvitation SLSServer (qServer rq) shortLinkId plpLinkKey) <$> shortLink rq
+      pure (connId, CCLink connReq' shortLink_)
 
 generateAddressRatchetKeys :: CR.InitialKeys -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
 generateAddressRatchetKeys pqInitKeys = do
@@ -1188,13 +1206,32 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ =
     prepareContactLinkData ConnData {} rq@RcvQueue {shortLink} (UserContactLinkData ucd) = do
       liftEitherWith (CMD PROHIBITED . ("setConnShortLink: " <>)) $ validateOwners shortLink ucd
       g <- asks random
-      AgentConfig {smpAgentVRange} <- asks config
-      ratchetKeys <- addressRatchetKeys c connId rotateKeys pqKeys_
-      ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} <- maybe (newContactLinkCreds c rq clientData ratchetKeys) pure shortLink
-      let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
-      unless (shortLinkId == linkId) $ throwE $ INTERNAL "setConnShortLink: link ID is not derived from link"
-      d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData SCMContact linkPrivSigKey smpAgentVRange (UserContactLinkData ucd {ratchetKeys})
-      pure (rq, linkId, CSLContact SLSServer CCTContact (qServer rq) shortLinkKey, (linkEncFixedData, d))
+      AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
+      -- rotate makes fresh keys from InitialKeys; otherwise keep current keys or create based on InitialKeys if there are no ratchet keys
+      let currKeys = currentAddressRatchetKeys c connId
+      ratchetKeys <- case pqKeys_ of
+        Just pqKeys ->
+          let newKeys = newAddressRatchetKeys c connId pqKeys
+           in Just <$> if rotateKeys then newKeys else currKeys >>= maybe newKeys pure
+        Nothing -> currKeys
+      let ud = UserContactLinkData ucd {ratchetKeys}
+          cslContact = CSLContact SLSServer CCTContact (qServer rq)
+      case shortLink of
+        Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
+          let (linkId, k) = SL.contactShortLinkKdf shortLinkKey
+          unless (shortLinkId == linkId) $ throwE $ INTERNAL "setConnShortLink: link ID is not derived from link"
+          d <- liftError id $ SL.encryptUserData g k $ SL.encodeSignUserData SCMContact linkPrivSigKey smpAgentVRange ud
+          pure (rq, linkId, cslContact shortLinkKey, (linkEncFixedData, d))
+        Nothing -> do
+          sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
+          let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
+              connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) ratchetKeys
+              (linkKey, linkData) = SL.encodeSignLinkData sigKeys smpAgentVRange connReq Nothing ud
+              (linkId, k) = SL.contactShortLinkKdf linkKey
+          srvData <- liftError id $ SL.encryptLinkData g k linkData
+          let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing (fst srvData)
+          withStore' c $ \db -> updateShortLinkCreds db rq slCreds
+          pure (rq, linkId, cslContact linkKey, srvData)
     prepareInvLinkData :: RcvQueue -> UserConnLinkData 'CMInvitation -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMInvitation, QueueLinkData)
     prepareInvLinkData rq@RcvQueue {shortLink} ud = case shortLink of
       Just ShortLinkCreds {shortLinkId, shortLinkKey, linkPrivSigKey, linkEncFixedData} -> do
@@ -1206,37 +1243,24 @@ setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ =
         pure (rq, shortLinkId, sl, (linkEncFixedData, d))
       Nothing -> throwE $ CMD PROHIBITED "setConnShortLink: no ShortLinkCreds in invitation"
 
-prepareConnShortLink' :: AgentClient -> ConnId -> Maybe CRClientData -> Maybe CR.InitialKeys -> AM (ConnShortLink 'CMContact)
-prepareConnShortLink' c connId clientData pqKeys_ =
+prepareConnShortLink' :: AgentClient -> ConnId -> Maybe CRClientData -> AM (ConnShortLink 'CMContact)
+prepareConnShortLink' c connId clientData =
   withConnLock c connId "prepareConnShortLink" $
     withStore c (`getConn` connId) >>= \case
-      SomeConn _ (ContactConnection _ rq@RcvQueue {shortLink}) -> do
-        ShortLinkCreds {shortLinkKey} <- maybe (newContactLinkCreds c rq clientData =<< addressRatchetKeys c connId False pqKeys_) pure shortLink
-        pure $ CSLContact SLSServer CCTContact (qServer rq) shortLinkKey
+      SomeConn _ (ContactConnection _ rq@RcvQueue {shortLink}) ->
+        CSLContact SLSServer CCTContact (qServer rq) <$> maybe (newLinkKey rq) (pure . shortLinkKey) shortLink
       _ -> throwE $ CMD PROHIBITED "prepareConnShortLink: not contact address"
-
--- rotate makes fresh keys from InitialKeys; otherwise keep current keys or create based on InitialKeys if there are no ratchet keys
-addressRatchetKeys :: AgentClient -> ConnId -> NewRatchetKeys -> Maybe CR.InitialKeys -> AM (Maybe AddressRatchetKeys)
-addressRatchetKeys c connId rotateKeys = \case
-  Just pqKeys ->
-    let newKeys = newAddressRatchetKeys c connId pqKeys
-     in Just <$> if rotateKeys then newKeys else currKeys >>= maybe newKeys pure
-  Nothing -> currKeys
   where
-    currKeys = currentAddressRatchetKeys c connId
-
-newContactLinkCreds :: AgentClient -> RcvQueue -> Maybe CRClientData -> Maybe AddressRatchetKeys -> AM ShortLinkCreds
-newContactLinkCreds c rq clientData ratchetKeys = do
-  g <- asks random
-  AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
-  sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
-  let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
-      connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) ratchetKeys
-      (linkKey, fixedData) = SL.encodeSignFixedData sigKeys smpAgentVRange connReq Nothing
-      (linkId, k) = SL.contactShortLinkKdf linkKey
-  encFixedData <- liftError id $ SL.encryptFixedData g k fixedData
-  let slCreds = ShortLinkCreds linkId linkKey privSigKey Nothing encFixedData
-  slCreds <$ withStore' c (\db -> updateShortLinkCreds db rq slCreds)
+    newLinkKey rq = do
+      g <- asks random
+      AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
+      sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
+      let qUri = SMPQueueUri vr $ (rcvSMPQueueAddress rq) {queueMode = Just QMContact}
+          connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) Nothing
+          (linkKey, fixedData) = SL.encodeSignFixedData sigKeys smpAgentVRange connReq Nothing
+          (linkId, k) = SL.contactShortLinkKdf linkKey
+      encFixedData <- liftError id $ SL.encryptFixedData g k fixedData
+      linkKey <$ withStore' c (\db -> updateShortLinkCreds db rq $ ShortLinkCreds linkId linkKey privSigKey Nothing encFixedData)
 
 deleteConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AM ()
 deleteConnShortLink' c nm connId cMode =
@@ -1329,7 +1353,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
     Just d -> do
       (nonce, qUri, cReq, qd) <- prepareLinkData addrKeys_ (setLinkDataRatchetKeys addrKeys_ d) $ fst e2eKeys
       (rq, qUri') <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just nonce) qd e2eKeys
-      connReqWithShortLink srv pqInitKeys clientData qUri cReq qUri' (shortLink rq)
+      connReqWithShortLink qUri cReq qUri' (shortLink rq)
     Nothing -> do
       let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
       (_rq, qUri) <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode Nothing qd e2eKeys
@@ -1376,24 +1400,23 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
           srvData <- liftError id $ SL.encryptLinkData g k linkData
           pure $ CQRMessaging $ Just CQRData {linkKey, privSigKey, srvReq = (sndId, srvData)}
       pure (nonce, qUri, connReq, qd)
-
-connReqWithShortLink :: SMPServer -> CR.InitialKeys -> Maybe CRClientData -> SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
-connReqWithShortLink srv pqInitKeys clientData qUri cReq qUri' shortLink = case shortLink of
-  Just ShortLinkCreds {shortLinkId, shortLinkKey}
-    | qUri == qUri' -> pure $ case cReq of
-        CRContactUri _ _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
-        CRInvitationUri crData (CR.E2ERatchetParamsUri vr k1 k2 _) ->
-          let cReq' = case pqInitKeys of
-                CR.IKPQOn -> CRInvitationUri crData $ CR.E2ERatchetParamsUri vr k1 k2 Nothing -- remove PQ keys
-                _ -> cReq -- either PQ is disabled, or disabled for initial request because there is no short link
-           in CCLink cReq' $ Just $ CSLInvitation SLSServer srv shortLinkId shortLinkKey
-    | otherwise -> throwE $ INTERNAL "different rcv queue address"
-  Nothing ->
-    let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri'] clientData)
-        cReq' = case cReq of
-          CRContactUri crData rk -> CRContactUri (updated crData) rk
-          CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams
-     in pure $ CCLink cReq' Nothing
+    connReqWithShortLink :: SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
+    connReqWithShortLink qUri cReq qUri' shortLink = case shortLink of
+      Just ShortLinkCreds {shortLinkId, shortLinkKey}
+        | qUri == qUri' -> pure $ case cReq of
+            CRContactUri _ _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
+            CRInvitationUri crData (CR.E2ERatchetParamsUri vr k1 k2 _) ->
+              let cReq' = case pqInitKeys of
+                    CR.IKPQOn -> CRInvitationUri crData $ CR.E2ERatchetParamsUri vr k1 k2 Nothing -- remove PQ keys
+                    _ -> cReq -- either PQ is disabled, or disabled for initial request because there is no short link
+               in CCLink cReq' $ Just $ CSLInvitation SLSServer srv shortLinkId shortLinkKey
+        | otherwise -> throwE $ INTERNAL "different rcv queue address"
+      Nothing ->
+        let updated (ConnReqUriData _ vr _ _) = (ConnReqUriData SSSimplex vr [qUri'] clientData)
+            cReq' = case cReq of
+              CRContactUri crData rk -> CRContactUri (updated crData) rk
+              CRInvitationUri crData e2eParams -> CRInvitationUri (updated crData) e2eParams
+         in pure $ CCLink cReq' Nothing
 
 newQueueNtfServer :: AM (Maybe NtfServer)
 newQueueNtfServer = fmap ntfServer_ . readTVarIO . ntfTkn =<< asks ntfSupervisor

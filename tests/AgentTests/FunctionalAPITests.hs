@@ -2079,8 +2079,8 @@ testPrepareConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
   let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
   runRight_ $ do
     (contactId, CCLink _ Nothing) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMSubscribe
-    shortLink <- A.prepareConnShortLink a contactId Nothing Nothing
-    shortLink' <- A.prepareConnShortLink a contactId Nothing Nothing
+    shortLink <- A.prepareConnShortLink a contactId Nothing
+    shortLink' <- A.prepareConnShortLink a contactId Nothing
     liftIO $ shortLink' `shouldBe` shortLink
     shortLink'' <- A.setConnShortLink a NRMInteractive contactId SCMContact (UserContactLinkData userCtData) Nothing False Nothing
     liftIO $ shortLink'' `shouldBe` shortLink

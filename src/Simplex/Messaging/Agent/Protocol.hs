@@ -141,6 +141,7 @@ module Simplex.Messaging.Agent.Protocol
     ShortLinkScheme (..),
     LinkKey (..),
     PreparedLinkParams (..),
+    PreparedRatchetKeys (..),
     validateOwners,
     validateLinkOwners,
     sameConnReqContact,
@@ -1613,7 +1614,7 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
 -- | Parameters for creating a connection with a prepared link.
-data PreparedLinkParams = PreparedLinkParams
+data PreparedLinkParams (m :: ConnectionMode) = PreparedLinkParams
   { -- | Correlation ID / determines sender ID
     plpNonce :: C.CbNonce,
     -- | Queue E2EE DH key pair
@@ -1628,10 +1629,12 @@ data PreparedLinkParams = PreparedLinkParams
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
-    -- | Contact address double ratchet keys
-    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448),
-    plpInvitationKeys :: Maybe (RcvE2EPrivRatchetParams 'C.X448)
+    plpRatchetKeys :: PreparedRatchetKeys m
   }
+
+data PreparedRatchetKeys (m :: ConnectionMode) where
+  PRKInvitation :: RcvE2EPrivRatchetParams 'C.X448 -> PreparedRatchetKeys 'CMInvitation
+  PRKContact :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448) -> PreparedRatchetKeys 'CMContact
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
 
