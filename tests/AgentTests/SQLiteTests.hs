@@ -785,6 +785,7 @@ testGetNextSndFileToPrepare st = do
     -- Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     -- DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
     Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing Nothing
+    Right _ <- startPreparedSndFile db fId2
     DB.execute_ db "UPDATE snd_files SET status = 'new' WHERE snd_file_id = 2"
 
     -- Left e <- getNextSndFileToPrepare db 86400
