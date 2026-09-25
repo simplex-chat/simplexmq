@@ -3,18 +3,15 @@
 
 -- | BIP-39 mnemonics, English only: every word is ASCII, any Unicode space character separates words, and full NFKD normalization is not applied; a passphrase is bytes the caller normalizes.
 module Simplex.Messaging.Crypto.BIP39
-  ( WalletEntropy (unEntropy),
-    WalletSeed (unSeed),
-    Mnemonic, -- ???
+  ( WalletEntropy,
+    unEntropy,
     EntropyStrength (..),
-    -- mnemonicWords,
-    mnemonicPhrase,
-    entropyToMnemonic,
-    mnemonicToEntropy,
-    parseMnemonic,
-    mnemonicToSeed,
-    -- randomMnemonic,
-    strengthWordCount, -- ???
+    mkEntropy,
+    randomEntropy,
+    parsePhrase,
+    entropyPhrase,
+    entropyWordCount,
+    entropySeed,
   )
 where
 
@@ -40,33 +37,15 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 
-newtype WalletSeed =
-  WalletSeed
-    { entropy :: ScrubbedBytes, -- multi-size
-      seed :: ScrubbedBytes -- 64 bytes
-    }
-  deriving (ToField)
-
-mkWalletSeed :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletSeed
-mkWalletSeed entropy seed
-  | seed /= seedSize = Left "bad WalletSeed: seed size"
-  | s `notElem` validEntropySizes =  Left "bad WalletSeed: entropy size"
-  | ... = Left "..." -- establish consistency
-  | oehRight $ WalletSeed s
-
-mkEntropy :: ScrubbedBytes -> Either String WalletEntropy
-mkEntropy s
-  | s `elem` validEntropySizes = Right $ WalletEntropy s
-  | otherwise = Left "bad WalletEntropy"
-
-getWalletEntropy :: TVar ChaChaDRG -> EntropyStrength -> STM WalletEntropy
-getWalletEntropy gVar = stateTVar gVar . randomBytesGenerate . strengthBytes
-
-newtype Mnemonic = Mnemonic {mnemonicIndexes :: [Int]}
+-- | 16, 20, 24, 28 or 32 bytes of entropy: a valid BIP-39 phrase in another encoding.
+newtype WalletEntropy = WalletEntropy {unEntropy :: ScrubbedBytes}
   deriving (Eq, Show)
 
 data EntropyStrength = ES128 | ES160 | ES192 | ES224 | ES256
   deriving (Eq, Show, Bounded, Enum)
+
+newtype Mnemonic = Mnemonic [Int]
+  deriving (Eq)
 
 strengthBytes :: EntropyStrength -> Int
 strengthBytes = \case
@@ -76,12 +55,10 @@ strengthBytes = \case
   ES224 -> 28
   ES256 -> 32
 
-strengthWordCount :: EntropyStrength -> Int
-strengthWordCount s = (entBits + entBits `div` 32) `div` 11
+wordCount :: Int -> Int
+wordCount entBytes = (entBits + entBits `div` 32) `div` 11
   where
-    entBits = strengthBytes s * 8
-
-newtype WalletSeed = WalletSeed {unSeed :: ScrubbedBytes}
+    entBits = entBytes * 8
 
 seedSize :: Int
 seedSize = 64
@@ -90,7 +67,7 @@ validEntropySizes :: [Int]
 validEntropySizes = map strengthBytes [minBound .. maxBound]
 
 validWordCounts :: [Int]
-validWordCounts = map strengthWordCount [minBound .. maxBound]
+validWordCounts = map wordCount validEntropySizes
 
 wordByIndex :: IntMap ByteString
 wordByIndex = IM.fromList $ zip [0 ..] englishWordList
@@ -98,28 +75,30 @@ wordByIndex = IM.fromList $ zip [0 ..] englishWordList
 indexByWord :: Map ByteString Int
 indexByWord = M.fromList $ zip englishWordList [0 ..]
 
--- | Indexes are in @[0, 2047]@: they are masked to 11 bits or looked up in the wordlist.
-mnemonicWords :: Mnemonic -> [ByteString]
-mnemonicWords = map (wordByIndex IM.!) . mnemonicIndexes
+mkEntropy :: ScrubbedBytes -> Either String WalletEntropy
+mkEntropy ent
+  | entLen `elem` validEntropySizes = Right $ WalletEntropy ent
+  | otherwise = Left $ "entropy: expected 16, 20, 24, 28 or 32 bytes, got " <> show entLen
+  where
+    entLen = BA.length ent
+
+randomEntropy :: EntropyStrength -> TVar ChaChaDRG -> STM WalletEntropy
+randomEntropy s gVar = WalletEntropy <$> stateTVar gVar (randomBytesGenerate $ strengthBytes s)
 
 -- | The words joined by single spaces, the PBKDF2 password BIP-39 specifies.
-mnemonicPhrase :: WalletEntropy -> ByteString
-mnemonicPhrase = BC.unwords . mnemonicWords
+entropyPhrase :: WalletEntropy -> ByteString
+entropyPhrase = BC.unwords . mnemonicWords . entropyToMnemonic
 
--- entropyToMnemonic :: WalletEntropy -> Mnemonic
--- entropyToMnemonic = Mnemonic . entropyToIndexes
+entropyWordCount :: WalletEntropy -> Int
+entropyWordCount = wordCount . BA.length . unEntropy
 
--- entropyToMnemonic :: ScrubbedBytes -> Either String Mnemonic
--- entropyToMnemonic ent
---   | entLen `notElem` validEntropySizes =
---       Left $ "entropy: expected 16, 20, 24, 28 or 32 bytes, got " <> show entLen
---   | otherwise = Right $ Mnemonic $ entropyToIndexes ent
---   where
---     entLen = BA.length ent
+-- | Indexes are in @[0, 2047]@: they are masked to 11 bits or looked up in the wordlist.
+mnemonicWords :: Mnemonic -> [ByteString]
+mnemonicWords (Mnemonic idxs) = map (wordByIndex IM.!) idxs
 
-entropyToIndexes :: WalletEntropy -> Mnemonic
-entropyToIndexes (WalletEntropy ent) =
-  [fromIntegral ((combined `shiftR` (11 * (n - 1 - i))) .&. 0x7FF) | i <- [0 .. n - 1]]
+entropyToMnemonic :: WalletEntropy -> Mnemonic
+entropyToMnemonic (WalletEntropy ent) =
+  Mnemonic [fromIntegral ((combined `shiftR` (11 * (n - 1 - i))) .&. 0x7FF) | i <- [0 .. n - 1]]
   where
     entBits = BA.length ent * 8
     csBits = entBits `div` 32
@@ -128,41 +107,38 @@ entropyToIndexes (WalletEntropy ent) =
     combined = os2ip ent `shiftL` csBits .|. fromIntegral (csByte `shiftR` (8 - csBits))
     n = (entBits + csBits) `div` 11
 
-mnemonicToEntropy :: Mnemonic -> ScrubbedBytes
-mnemonicToEntropy idxs = i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
+mnemonicToEntropy :: Mnemonic -> WalletEntropy
+mnemonicToEntropy (Mnemonic idxs) = WalletEntropy $ i2ospOf_ (entBits `div` 8) (combined `shiftR` csBits)
   where
     totalBits = length idxs * 11
     entBits = totalBits * 32 `div` 33
     csBits = totalBits - entBits
     combined = foldl' (\acc i -> acc `shiftL` 11 .|. fromIntegral i) (0 :: Integer) idxs
 
-parseMnemonic :: Text -> Either String Mnemonic
-parseMnemonic = A.parseOnly (mnemonicP <* A.endOfInput)
+parsePhrase :: Text -> Either String WalletEntropy
+parsePhrase = A.parseOnly (phraseP <* A.endOfInput)
 
-mnemonicP :: A.Parser Mnemonic
-mnemonicP = do
+phraseP :: A.Parser WalletEntropy
+phraseP = do
   ws <- A.skipSpace *> (wordP `A.sepBy'` A.takeWhile1 isSpace) <* A.skipSpace
   let n = length ws
   if n `notElem` validWordCounts
     then fail $ "mnemonic: expected 12, 15, 18, 21 or 24 words, got " <> show n
     else do
-      idxs <- traverse lookupWord ws
-      let m = Mnemonic idxs
+      m <- Mnemonic <$> traverse lookupWord ws
+      let ent = mnemonicToEntropy m
       -- recomputing the checksum bits from the decoded entropy rejects wrong checksum bits
-      if entropyToIndexes (mnemonicToEntropy m) == idxs
-        then pure m
+      if entropyToMnemonic ent == m
+        then pure ent
         else fail "mnemonic: checksum mismatch"
   where
     wordP = T.toLower <$> A.takeWhile1 (not . isSpace)
     lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> T.unpack w) pure $ M.lookup (encodeUtf8 w) indexByWord
 
-walletEntropyToSeed :: WalletEntropy -> ByteString -> ScrubbedBytes -- Either String WalletSeed ?
-walletEntropyToSeed ent passphrase =
+entropySeed :: WalletEntropy -> ByteString -> ScrubbedBytes
+entropySeed ent passphrase =
   PBKDF2.generate
     (PBKDF2.prfHMAC SHA512)
     PBKDF2.Parameters {PBKDF2.iterCounts = 2048, PBKDF2.outputLength = seedSize}
-    (mnemonicPhrase ent)
-    ("mnemonic" <> passphrase :: ByteString)
-
--- randomMnemonic :: EntropyStrength -> TVar ChaChaDRG -> STM Mnemonic
--- randomMnemonic s gVar = Mnemonic . entropyToIndexes <$> stateTVar gVar (randomBytesGenerate $ strengthBytes s)
+    (entropyPhrase ent)
+    ("mnemonic" <> passphrase)

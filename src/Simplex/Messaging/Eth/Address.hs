@@ -3,7 +3,6 @@
 module Simplex.Messaging.Eth.Address
   ( Address,
     addressFromPrivateKey,
-    ethereumPath,
   )
 where
 
@@ -18,9 +17,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (isHexDigit, isLower, isUpper, toUpper)
-import Data.Word (Word32)
 import Simplex.Messaging.Crypto (keccak256)
-import Simplex.Messaging.Crypto.BIP32 (hardened, isHardened)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String
 
@@ -60,8 +57,3 @@ checksumAddress (Address bs) = "0x" <> BC.pack (zipWith adjust [0 ..] (BC.unpack
     nibbleAt i =
       let byte = B.index hashed (i `div` 2)
        in if even i then byte `shiftR` 4 else byte .&. 0x0F
-
-ethereumPath :: Word32 -> Word32 -> Maybe [Word32]
-ethereumPath account address
-  | isHardened account || isHardened address = Nothing
-  | otherwise = Just [hardened 44, hardened 60, hardened account, 0, address]

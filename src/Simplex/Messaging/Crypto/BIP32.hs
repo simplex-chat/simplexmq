@@ -9,6 +9,12 @@ module Simplex.Messaging.Crypto.BIP32
     renderPath,
     hardened,
     isHardened,
+    WalletMaster,
+    masterEntropy,
+    walletMasterKey,
+    mkWalletMaster,
+    parseWalletMaster,
+    masterBytes,
   )
 where
 
@@ -26,6 +32,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC
 import Data.List (intercalate)
 import Data.Word (Word32)
+import Simplex.Messaging.Crypto.BIP39 (WalletEntropy, entropySeed, mkEntropy)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding (smpEncode)
 
@@ -44,13 +51,13 @@ hardened = (.|. hardenedOffset)
 isHardened :: Word32 -> Bool
 isHardened i = i >= hardenedOffset
 
-masterKey :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String ExtendedKey)
-masterKey g seed
+masterKey :: ScrubbedBytes -> Either String ExtendedKey
+masterKey seed
   | seedLen < 16 || seedLen > 64 =
-      pure $ Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
+      Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
   | otherwise =
-      bimap (const "seed: invalid master key, use a different seed") (\k -> ExtendedKey {xkKey = k, xkChainCode = ir})
-        <$> S.mkPrivateKey g il
+      bimap (const "seed: invalid master key, use a different seed") (\k -> ExtendedKey {xkKey = k, xkChainCode = ir}) $
+        S.mkPrivateKey il
   where
     seedLen = BA.length seed
     (il, ir) = BA.splitAt 32 $ hmacSHA512 "Bitcoin seed" seed
@@ -77,3 +84,21 @@ renderPath is = BC.pack $ intercalate "/" ("m" : map component is)
 
 hmacSHA512 :: ScrubbedBytes -> ScrubbedBytes -> ScrubbedBytes
 hmacSHA512 key msg = BA.convert (HMAC.hmac key msg :: HMAC.HMAC H.SHA512)
+
+-- | Entropy with the master key it derives, so no derivation from it can fail.
+data WalletMaster = WalletMaster
+  { masterEntropy :: WalletEntropy,
+    walletMasterKey :: ExtendedKey
+  }
+
+mkWalletMaster :: WalletEntropy -> ByteString -> Either String WalletMaster
+mkWalletMaster ent passphrase = WalletMaster ent <$> masterKey (entropySeed ent passphrase)
+
+-- | From storage: the master bytes must be the ones the entropy derives with an empty passphrase.
+parseWalletMaster :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster
+parseWalletMaster entBytes mBytes = do
+  m <- (`mkWalletMaster` "") =<< mkEntropy entBytes
+  if masterBytes m == mBytes then Right m else Left "wallet master: does not match the entropy"
+
+masterBytes :: WalletMaster -> ScrubbedBytes
+masterBytes WalletMaster {walletMasterKey = ExtendedKey {xkKey, xkChainCode}} = S.unPrivateKey xkKey <> xkChainCode

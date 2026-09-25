@@ -22,7 +22,7 @@ held by the device.
 - **English wordlist only, and no full NFKD.** Every English BIP-39 word is
   ASCII, so NFKD normalization, which BIP-39 mandates, does not change a valid
   phrase's words. NFKD maps Unicode space characters such as U+00A0 and U+3000
-  to a space; `parseMnemonic` splits on any character `Data.Char.isSpace`
+  to a space; `parsePhrase` splits on any character `Data.Char.isSpace`
   accepts and lower-cases with `Data.Text.toLower`, and a word that is then not
   in the ASCII wordlist, such as one in fullwidth letters, is rejected. So no
   normalization dependency is needed. A passphrase is bytes the caller
@@ -47,10 +47,14 @@ newtype Secp256k1PrivateKey         -- 32 bytes, validated in [1, n-1]
 newtype Secp256k1PublicKey          -- libsecp256k1's opaque 64-byte form
 data PubKeyFormat = Compressed | Uncompressed
 
-newtype Mnemonic                    -- validated wordlist indexes
-data MnemonicStrength = MS128 | MS160 | MS192 | MS224 | MS256
+newtype WalletEntropy               -- 16, 20, 24, 28 or 32 bytes
+data EntropyStrength = ES128 | ES160 | ES192 | ES224 | ES256
 
 data ExtendedKey = ExtendedKey {xkKey :: Secp256k1PrivateKey, xkChainCode :: ScrubbedBytes}
+data WalletMaster                   -- entropy with the master key it derives
+
+data CoinType = Ethereum            -- SLIP-44 coin types
+newtype AccountIndex                -- below 2^31
 
 newtype Address                     -- 20 bytes
 ```
@@ -64,50 +68,66 @@ it yields the parent private key.
 
 ```haskell
 -- Secp256k1
-mkPrivateKey        :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
+mkPrivateKey        :: ScrubbedBytes -> Either String Secp256k1PrivateKey  -- 32 bytes in [1, n-1]
 unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
 secp256k1PublicKey  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
 serializePublicKey  :: TVar ChaChaDRG -> PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
 privateKeyTweakAdd  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 
 -- BIP39
-entropyToMnemonic   :: ScrubbedBytes -> Either String Mnemonic
-mnemonicToEntropy   :: Mnemonic -> ScrubbedBytes          -- total
-mnemonicWords       :: Mnemonic -> [ByteString]
-mnemonicPhrase      :: Mnemonic -> ByteString
-parseMnemonic       :: Text -> Either String Mnemonic
-mnemonicToSeed      :: Mnemonic -> ByteString -> ScrubbedBytes
-randomMnemonic      :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
-strengthWordCount   :: MnemonicStrength -> Int
+mkEntropy           :: ScrubbedBytes -> Either String WalletEntropy
+randomEntropy       :: EntropyStrength -> TVar ChaChaDRG -> STM WalletEntropy
+parsePhrase         :: Text -> Either String WalletEntropy   -- word count, wordlist, checksum
+entropyPhrase       :: WalletEntropy -> ByteString           -- canonical lowercase phrase
+entropyWordCount    :: WalletEntropy -> Int
+entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 with the passphrase
 
 -- BIP32
-masterKey           :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String ExtendedKey)
+masterKey           :: ScrubbedBytes -> Either String ExtendedKey
 derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
+mkWalletMaster      :: WalletEntropy -> ByteString -> Either String WalletMaster
+parseWalletMaster   :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster  -- entropy and stored master
+masterEntropy       :: WalletMaster -> WalletEntropy
+walletMasterKey     :: WalletMaster -> ExtendedKey
+masterBytes         :: WalletMaster -> ScrubbedBytes         -- key then chain code, the storage form
+
+-- BIP44
+mkAccountIndex      :: Word32 -> Maybe AccountIndex
+unAccountIndex      :: AccountIndex -> Word32
+bip44Path           :: CoinType -> AccountIndex -> [Word32]  -- m/44'/coin'/account'/0/0
 
 -- Crypto
 keccak256           :: ByteString -> ByteString
 
 -- Eth
 addressFromPrivateKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Address
-ethereumPath        :: Word32 -> Word32 -> Maybe [Word32] -- m/44'/60'/account'/0/address, Nothing at or above 2^31
 ```
 
 `Address` has a `StrEncoding` instance: `strEncode` is the EIP-55 checksummed
 form and `strP` accepts bare or `0x`-prefixed hex, rejecting a bad mixed-case
 checksum.
 
-Like `Simplex.Messaging.Crypto.randomBytes`, `randomMnemonic` takes a
+Like `Simplex.Messaging.Crypto.randomBytes`, `randomEntropy` takes a
 `TVar ChaChaDRG` and runs in `STM`. Every function that calls libsecp256k1 takes
 the same generator for the context blinding seed, so this code never reads
 system entropy itself.
 
-Because `parseMnemonic` lower-cases each word, a recovery phrase with a
+A value of one of these types is valid by construction: `WalletEntropy` has one
+of the five sizes, `AccountIndex` is below 2^31, and `WalletMaster` holds a
+master key derived from its entropy, so every function from them is total. The
+fallible steps are the boundaries: `parsePhrase` for typed text,
+`parseWalletMaster` for a stored row, `mkAccountIndex` for a number, and
+`mkWalletMaster` for the one-in-2^128 seed whose master key is out of range.
+The only fallible step after that is the BIP-32 child derivation, which the
+specification requires to be fallible.
+
+Because `parsePhrase` lower-cases each word, a recovery phrase with a
 capitalised word is accepted. This does not change the derived seed:
-`mnemonicPhrase` always rebuilds the canonical lowercase sentence from the
-wordlist, and that is what `mnemonicToSeed` hashes.
+`entropyPhrase` always rebuilds the canonical lowercase sentence from the
+wordlist, and that is what `entropySeed` hashes.
 
 ## How applications use it
 
@@ -115,11 +135,11 @@ An application defines the derivation path. For SimpleX names, one seed per
 device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
-m    <- either fail pure $ parseMnemonic phrase  -- phrase :: Text
-mk   <- either fail pure =<< masterKey (mnemonicToSeed m "")
-path <- maybe (fail "account index too large") pure $ ethereumPath account 0
-xk   <- either fail pure =<< derivePath mk path
-addr <- addressFromPrivateKey (xkKey xk)
+ent    <- either fail pure $ parsePhrase phrase  -- phrase :: Text
+master <- either fail pure $ mkWalletMaster ent ""
+n      <- maybe (fail "account index too large") pure $ mkAccountIndex account
+xk     <- either fail pure =<< derivePath g (walletMasterKey master) (bip44Path Ethereum n)
+addr   <- addressFromPrivateKey g (xkKey xk)
 ```
 
 ## libsecp256k1 C API mapping
@@ -127,7 +147,6 @@ addr <- addressFromPrivateKey (xkKey xk)
 ```c
 secp256k1_context_create(SECP256K1_CONTEXT_NONE)   /* per call, then _randomize */
 secp256k1_context_destroy(ctx)
-secp256k1_ec_seckey_verify(ctx, seckey)
 secp256k1_ec_pubkey_create(ctx, pubkey, seckey)
 secp256k1_ec_pubkey_serialize(ctx, output, outputlen, pubkey, flags)
 secp256k1_ec_seckey_tweak_add(ctx, seckey, tweak)
@@ -217,14 +236,16 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 79 examples, with published vectors:
+`tests/CoreTests/EthCryptoTests.hs`, 92 examples, with published vectors read
+from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
-- **BIP-39**: all 24 official English vectors from
-  `trezor/python-mnemonic/vectors.json`, entropy to mnemonic to entropy and
-  mnemonic to seed with the `TREZOR` passphrase.
-- **BIP-32**: spec test vector 1 (all six chains) and chain m of vector 2.
-  Expected private keys and chain codes were decoded from the published `xprv`
-  base58 strings, since we do not implement xprv serialization.
+- **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:
+  entropy to phrase, phrase to entropy, seed with the `TREZOR` passphrase, and
+  the master key against the vector's `xprv`.
+- **BIP-32**: vectors 1 to 4 of `bip-0032.mediawiki`, every chain, against its
+  `xprv`; the two vector 5 keys outside `[1, n-1]` drive the `mkPrivateKey`
+  rejections. The test decodes base58check itself; the library does not parse
+  `xprv`, so vector 5's malformed serializations do not apply.
 - **EIP-55**: the eight addresses from the EIP-55 spec, round-tripped.
 - **BIP-44**: the well-known `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` for
   the `abandon ... about` mnemonic at `m/44'/60'/0'/0/0`, plus accounts 1 and 2.
@@ -233,8 +254,8 @@ the C code independently of the Haskell build.
   ideographic spaces between words.
 - Negative cases: zero, short and out-of-range private keys, a tweak that makes
   the key zero or is not 32 bytes, bad BIP-39 checksums and word counts,
-  out-of-range seeds, account and address indexes at or above 2^31, and bad
-  EIP-55 checksums.
+  out-of-range seeds, a stored master that does not match its entropy, account
+  indexes at or above 2^31, and bad EIP-55 checksums.
 
 The BIP-44 expectations were additionally reproduced by an independent
 pure-Python secp256k1 reference written for the purpose, so they were not

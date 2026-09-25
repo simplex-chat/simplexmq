@@ -34,6 +34,8 @@ extra-source-files:
     cbits/libsecp256k1/**/*.c
     cbits/libsecp256k1/**/*.h
     src/Simplex/Messaging/Crypto/BIP39/english.txt
+    tests/fixtures/bip39-vectors.json
+    tests/fixtures/bip-0032.mediawiki
     apps/common/Web/static/index.html
     apps/common/Web/static/link.html
     apps/common/Web/static/media/apk_icon.png
@@ -141,6 +143,7 @@ library
       Simplex.Messaging.Crypto.BIP32
       Simplex.Messaging.Crypto.BIP39
       Simplex.Messaging.Crypto.BIP39.English
+      Simplex.Messaging.Crypto.BIP44
       Simplex.Messaging.Crypto.Entitlement
       Simplex.Messaging.Crypto.Secp256k1
       Simplex.Messaging.Crypto.SNTRUP761
