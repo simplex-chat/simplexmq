@@ -131,9 +131,9 @@ secp256k1_ec_pubkey_serialize(ctx, output, outputlen, pubkey, flags)
 secp256k1_ec_seckey_tweak_add(ctx, seckey, tweak)
 ```
 
-Every function runs in `IO` with its own context, created and blinded with a
-fresh seed for the call and destroyed after it, so no context is shared between
-threads.
+Every function that calls libsecp256k1 runs in `IO` with its own context,
+created and blinded with a fresh seed for the call and destroyed after it, so no
+context is shared between threads.
 
 `secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 says to "proceed
 with the next value for i" (tweak out of range, or a zero result), which is why
@@ -156,7 +156,8 @@ c-sources:    cbits/libsecp256k1/src/{secp256k1,precomputed_ecmult,precomputed_e
 
 No `include-dirs` are needed: every libsecp256k1 include is quoted and relative
 to the including file. The embedded wordlist makes `file-embed` a library
-dependency; before this change only the executables and the test suite used it.
+dependency; before this change only the `smp-server` and `xftp-server`
+executables and the test suite used it.
 
 Built with no `-D` of our own. The table-size settings (`ECMULT_WINDOW_SIZE`,
 `COMB_BLOCKS`, `COMB_TEETH`) have `#ifndef` defaults in the headers, and the
