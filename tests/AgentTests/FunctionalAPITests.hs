@@ -4674,8 +4674,7 @@ testServerMultipleIdentities =
         testE2ERatchetParams12
 
 testWaitForUserNetwork :: IO ()
-testWaitForUserNetwork = do
-  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+testWaitForUserNetwork = withAgent 1 aCfg initAgentServers testDB $ \a -> do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   networkDelay a 100000
@@ -4692,8 +4691,7 @@ testWaitForUserNetwork = do
     aCfg = agentCfg {userNetworkInterval = 100000, userOfflineDelay = 0}
 
 testDoNotResetOnlineToOffline :: IO ()
-testDoNotResetOnlineToOffline = do
-  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+testDoNotResetOnlineToOffline = withAgent 1 aCfg initAgentServers testDB $ \a -> do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNWifi False
   networkDelay a 100000
@@ -4714,8 +4712,7 @@ testDoNotResetOnlineToOffline = do
     aCfg = agentCfg {userNetworkInterval = 100000, userOfflineDelay = 0.1}
 
 testResumeMultipleThreads :: IO ()
-testResumeMultipleThreads = do
-  a <- getSMPAgentClient' 1 aCfg initAgentServers testDB
+testResumeMultipleThreads = withAgent 1 aCfg initAgentServers testDB $ \a -> do
   noNetworkDelay a
   setUserNetworkInfo a $ UserNetworkInfo UNNone False
   vs <-

@@ -215,6 +215,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- Rcv files
     createRcvFile,
     createRcvFileRedirect,
+    startPreparedRcvFile,
     lockRcvFileForUpdate,
     getRcvFile,
     getRcvFileByEntityId,
@@ -236,6 +237,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getRcvFilesExpired,
     -- Snd files
     createSndFile,
+    startPreparedSndFile,
     lockSndFileForUpdate,
     getSndFile,
     getSndFileByEntityId,
@@ -3163,6 +3165,29 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
           chunks = []
         }
 
+startPreparedRcvFile :: DB.Connection -> RcvFileId -> IO (Either StoreError [XFTPServer])
+startPreparedRcvFile db rcvFileEntityId = runExceptT $ do
+  rcvFileId <- ExceptT $ getRcvFileIdByEntityId_ db rcvFileEntityId
+  liftIO $ do
+    updatedAt <- getCurrentTime
+    DB.execute
+      db
+      "UPDATE rcv_files SET status = ?, updated_at = ? WHERE (rcv_file_id = ? OR redirect_id = ?) AND status = ?"
+      (RFSReceiving, updatedAt, rcvFileId, rcvFileId, RFSPrepared)
+    map toXFTPServer
+      <$> DB.query
+        db
+        [sql|
+          SELECT DISTINCT
+            s.xftp_host, s.xftp_port, s.xftp_key_hash
+          FROM rcv_file_chunk_replicas r
+          JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+          JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+          JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+          WHERE (f.rcv_file_id = ? OR f.redirect_id = ?) AND r.replica_number = 1
+        |]
+        (rcvFileId, rcvFileId)
+
 insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> Bool -> IO (Either StoreError (RcvFileId, DBRcvFileId))
 insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectId_ redirectEntityId_ approvedRelays = runExceptT $ do
   let (redirectDigest_, redirectSize_) = case redirect of
@@ -3173,7 +3198,7 @@ insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSiz
       DB.execute
         db
         "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, redirect_id, redirect_entity_id, redirect_digest, redirect_size, approved_relays) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ((Binary rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectId_, Binary <$> redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
+        ((Binary rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSPrepared, redirectId_, Binary <$> redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
   rcvFileId <- liftIO $ insertedRowId db
   pure (rcvFileEntityId, rcvFileId)
 
@@ -3478,12 +3503,22 @@ createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath k
     DB.execute
       db
       "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest, storage_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_, storageHours))
+      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSPrepared, redirectSize_, redirectDigest_, storageHours))
   where
     (redirectSize_, redirectDigest_) =
       case redirect_ of
         Nothing -> (Nothing, Nothing)
         Just RedirectFileInfo {size, digest} -> (Just size, Just digest)
+
+startPreparedSndFile :: DB.Connection -> SndFileId -> IO (Either StoreError ())
+startPreparedSndFile db sndFileEntityId = runExceptT $ do
+  sndFileId <- ExceptT $ getSndFileIdByEntityId_ db sndFileEntityId
+  liftIO $ do
+    updatedAt <- getCurrentTime
+    DB.execute
+      db
+      "UPDATE snd_files SET status = ?, updated_at = ? WHERE snd_file_id = ? AND status = ?"
+      (SFSNew, updatedAt, sndFileId, SFSPrepared)
 
 getSndFileByEntityId :: DB.Connection -> SndFileId -> IO (Either StoreError SndFile)
 getSndFileByEntityId db sndFileEntityId = runExceptT $ do
