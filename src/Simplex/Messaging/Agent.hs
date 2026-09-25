@@ -2168,20 +2168,21 @@ data CommandCompletion = CCMoved | CCCompleted
 
 runCommandProcessing :: AgentClient -> ConnId -> Maybe SMPServer -> Worker -> AM ()
 runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
-  ri <- asks $ messageRetryInterval . config -- different retry interval?
+  AgentConfig {messageRetryInterval = RetryInterval2 {riFast}, commandQuotaRetryInterval} <- asks config
+  let ri = RetryInterval2 {riSlow = commandQuotaRetryInterval, riFast}
   forever $ do
     atomically $ endAgentOperation c AOSndNetwork
     lift $ waitForWork doWork
     liftIO $ throwWhenInactive c
     atomically $ beginAgentOperation c AOSndNetwork
-    withWork c doWork (\db -> getPendingServerCommand db connId server_) $ runProcessCmd (riFast ri)
+    withWork c doWork (\db -> getPendingServerCommand db connId server_) $ runProcessCmd ri
   where
     runProcessCmd ri cmd = do
       pending <- newTVarIO []
       processCmd ri cmd pending
       mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
-    processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
-    processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
+    processCmd :: RetryInterval2 -> PendingCommand -> TVar [ATransmission] -> AM ()
+    processCmd ri PendingCommand {cmdId, corrId, userId, command, createdAt} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) pqEnc subMode useDR -> noServer $ do
           triedHosts <- newTVarIO S.empty
@@ -2376,12 +2377,18 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
         tryCommand action = tryMoveableCommand (action $> CCCompleted)
-        tryMoveableCommand action = withRetryInterval ri $ \_ loop -> do
+        tryMoveableCommand action = withRetryInterval2 ri $ \_ loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           tryAllErrors action >>= \case
+            Left e@(SMP _ SMP.QUOTA) -> do
+              AgentConfig {quotaExceededTimeout} <- asks config
+              expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
+              if createdAt < expireTs
+                then cmdError e
+                else retrySndOp c $ loop RISlow
             Left e
-              | temporaryOrHostError e -> retrySndOp c loop
+              | temporaryOrHostError e -> retrySndOp c $ loop RIFast
               | otherwise -> cmdError e
             Right CCCompleted -> withStore' c (`deleteCommand` cmdId)
             Right CCMoved -> pure () -- command processing moved to another command queue
