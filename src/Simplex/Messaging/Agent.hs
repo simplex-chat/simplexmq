@@ -127,10 +127,15 @@ module Simplex.Messaging.Agent
     xftpStartWorkers,
     xftpStartSndWorkers,
     xftpReceiveFile,
+    xftpPrepareReceiveFile,
+    xftpStartReceiveFile,
     xftpDeleteRcvFile,
     xftpDeleteRcvFiles,
     xftpSendFile,
     xftpSendDescription,
+    xftpPrepareSendFile,
+    xftpPrepareSendDescription,
+    xftpStartSendFile,
     xftpDeleteSndFileInternal,
     xftpDeleteSndFilesInternal,
     xftpDeleteSndFileRemote,
@@ -190,7 +195,7 @@ import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
 import Data.Word (Word16, Word32)
-import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpReceiveFile', xftpSendDescription', xftpSendFile')
+import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpPrepareReceiveFile', xftpPrepareSendDescription', xftpPrepareSendFile', xftpReceiveFile', xftpSendDescription', xftpSendFile', xftpStartReceiveFile', xftpStartSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
@@ -769,6 +774,14 @@ xftpReceiveFile :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> 
 xftpReceiveFile c = withAgentEnv c .:: xftpReceiveFile' c
 {-# INLINE xftpReceiveFile #-}
 
+xftpPrepareReceiveFile :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AE RcvFileId
+xftpPrepareReceiveFile c = withAgentEnv c .:: xftpPrepareReceiveFile' c
+{-# INLINE xftpPrepareReceiveFile #-}
+
+xftpStartReceiveFile :: AgentClient -> RcvFileId -> AE ()
+xftpStartReceiveFile c = withAgentEnv c . xftpStartReceiveFile' c
+{-# INLINE xftpStartReceiveFile #-}
+
 -- | Delete XFTP rcv file (deletes work files from file system and db records)
 xftpDeleteRcvFile :: AgentClient -> RcvFileId -> IO ()
 xftpDeleteRcvFile c = withAgentEnv' c . xftpDeleteRcvFile' c
@@ -788,6 +801,18 @@ xftpSendFile c = withAgentEnv c .:: xftpSendFile' c
 xftpSendDescription :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AE SndFileId
 xftpSendDescription c = withAgentEnv c .:. xftpSendDescription' c
 {-# INLINE xftpSendDescription #-}
+
+xftpPrepareSendFile :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AE SndFileId
+xftpPrepareSendFile c = withAgentEnv c .:: xftpPrepareSendFile' c
+{-# INLINE xftpPrepareSendFile #-}
+
+xftpPrepareSendDescription :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AE SndFileId
+xftpPrepareSendDescription c = withAgentEnv c .:. xftpPrepareSendDescription' c
+{-# INLINE xftpPrepareSendDescription #-}
+
+xftpStartSendFile :: AgentClient -> SndFileId -> AE ()
+xftpStartSendFile c = withAgentEnv c . xftpStartSendFile' c
+{-# INLINE xftpStartSendFile #-}
 
 -- | Delete XFTP snd file internally (deletes work files from file system and db records)
 xftpDeleteSndFileInternal :: AgentClient -> SndFileId -> IO ()
