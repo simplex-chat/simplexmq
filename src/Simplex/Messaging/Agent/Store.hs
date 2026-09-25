@@ -489,7 +489,8 @@ data PendingCommand = PendingCommand
     corrId :: ACorrId,
     userId :: UserId,
     connId :: ConnId,
-    command :: AgentCommand
+    command :: AgentCommand,
+    createdAt :: UTCTime
   }
 
 data AgentCmdType = ACClient | ACInternal

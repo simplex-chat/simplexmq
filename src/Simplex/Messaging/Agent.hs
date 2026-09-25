@@ -2156,7 +2156,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
       processCmd ri cmd pending
       mapM_ (atomically . writeTBQueue subQ) . reverse =<< readTVarIO pending
     processCmd :: RetryInterval -> PendingCommand -> TVar [ATransmission] -> AM ()
-    processCmd ri PendingCommand {cmdId, corrId, userId, command} pendingCmds = case command of
+    processCmd ri PendingCommand {cmdId, corrId, userId, command, createdAt} pendingCmds = case command of
       AClientCommand cmd -> case cmd of
         NEW enableNtfs (ACM cMode) pqEnc subMode useDR -> noServer $ do
           triedHosts <- newTVarIO S.empty
@@ -2355,6 +2355,12 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           tryAllErrors action >>= \case
+            Left e@(SMP _ SMP.QUOTA) -> do
+              AgentConfig {messageRetryInterval = RetryInterval2 {riSlow}, quotaExceededTimeout} <- asks config
+              expireTs <- addUTCTime (-quotaExceededTimeout) <$> liftIO getCurrentTime
+              if createdAt < expireTs
+                then cmdError e
+                else retrySndOp c $ liftIO (threadDelay' $ initialInterval riSlow) >> loop
             Left e
               | temporaryOrHostError e -> retrySndOp c loop
               | otherwise -> cmdError e
