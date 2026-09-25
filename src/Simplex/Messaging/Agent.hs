@@ -1065,10 +1065,12 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
           md = SL.encodeSignUserData SCMInvitation plpRootPrivKey smpAgentVRange userLinkData
       createLinkQueue connId crData =<< encryptInvLinkData g plpRootPrivKey plpLinkKey sndId (plpSignedFixedData, md)
   where
-    createLinkQueue connId ConnReqUriData {crSmpQueues = qUri :| _, crClientData} qd = do
+    createLinkQueue connId ConnReqUriData {crSmpQueues = qUri@(SMPQueueUri _ SMPQueueAddress {senderId = sndId}) :| _, crClientData} qd = do
       (rq, qUri') <-
         createRcvQueue c nm userId connId plpSrvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
           `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
+      let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri'
+      unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
       (connId,) <$> connReqWithShortLink (qServer rq) plpInitKeys crClientData qUri connReq qUri' (shortLink rq)
 
 generateAddressRatchetKeys :: CR.InitialKeys -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
