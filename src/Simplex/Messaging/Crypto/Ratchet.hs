@@ -451,6 +451,7 @@ generateSndE2EParams g v = \case
 
 data RatchetInitParams = RatchetInitParams
   { assocData :: Str,
+    rcVerifyCodePQ :: Str,
     ratchetKey :: RatchetKey,
     sndHK :: HeaderKey,
     rcvNextHK :: HeaderKey,
@@ -493,14 +494,14 @@ pqX3dhRcv (rpk1, rpk2, rpKem_) (E2ERatchetParams _ sk1 sk2 sKem_) = do
 
 pqX3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> RatchetInitParams
 pqX3dh (sk1, rk1) dh1 dh2 dh3 kemAccepted =
-  RatchetInitParams {assocData, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk, kemAccepted}
+  RatchetInitParams {assocData, rcVerifyCodePQ = Str vcPQ, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk, kemAccepted}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3 <> pq
     pq = maybe "" (\RatchetKEMAccepted {rcPQRss = KEMSharedKey ss} -> BA.convert ss) kemAccepted
-    (hk, nhk, sk) =
-      let salt = B.replicate 64 '\0'
-       in hkdf3 salt dhs "SimpleXX3DH"
+    salt = B.replicate 64 '\0'
+    (hk, nhk, sk) = hkdf3 salt dhs "SimpleXX3DH"
+    vcPQ = hkdf salt dhs "SimpleXVerifyCode" 32
 
 type RatchetX448 = Ratchet 'X448
 
@@ -509,6 +510,8 @@ data Ratchet a = Ratchet
     rcVersion :: RatchetVersions,
     -- associated data - must be the same in both parties ratchets
     rcAD :: Str,
+    -- verification code covering all handshake keys, absent in the ratchets created before it was added
+    rcVCPQ :: Maybe Str,
     rcDHRs :: PrivateKey a,
     rcKEM :: Maybe RatchetKEM,
     rcSupportKEM :: PQSupport, -- defines header size, can only be enabled once
@@ -637,13 +640,14 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- @
 initSndRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PublicKey a -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> Ratchet a
-initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
+initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, rcVerifyCodePQ, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
   let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs (rcPQRss <$> kemAccepted)
       pqOn = isJust rcPQRs_
    in Ratchet
         { rcVersion,
           rcAD = assocData,
+          rcVCPQ = Just rcVerifyCodePQ,
           rcDHRs,
           rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
           rcSupportKEM = PQSupport pqOn,
@@ -668,10 +672,11 @@ initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, ratchetKey
 -- as part of the connection request and random salt was received from the sender.
 initRcvRatchet ::
   forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> PQSupport -> Ratchet a
-initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) pqSupport =
+initRcvRatchet rcVersion rcDHRs (RatchetInitParams {assocData, rcVerifyCodePQ, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) pqSupport =
   Ratchet
     { rcVersion,
       rcAD = assocData,
+      rcVCPQ = Just rcVerifyCodePQ,
       rcDHRs,
       -- rcKEM:
       -- state.PQRs = bob_pq_kem_key_pair
