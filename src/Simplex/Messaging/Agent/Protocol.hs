@@ -1629,7 +1629,8 @@ data PreparedLinkParams = PreparedLinkParams
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
     -- | Contact address double ratchet keys
-    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
+    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448),
+    plpInvitationKeys :: Maybe (RcvE2EPrivRatchetParams 'C.X448)
   }
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode

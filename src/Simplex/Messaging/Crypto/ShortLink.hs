@@ -17,6 +17,7 @@ module Simplex.Messaging.Crypto.ShortLink
     encodeSignUserData,
     newOwnerAuth,
     encryptLinkData,
+    encryptFixedData,
     encryptUserData,
     decryptLinkData,
   )
@@ -87,6 +88,9 @@ encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> Exce
 encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)
   where
     encrypt len = encryptData g k len
+
+encryptFixedData :: TVar ChaChaDRG -> C.SbKey -> ByteString -> ExceptT AgentErrorType IO EncDataBytes
+encryptFixedData g k s = encryptData g k fixedDataPaddedLength s
 
 encryptUserData :: TVar ChaChaDRG -> C.SbKey -> ByteString -> ExceptT AgentErrorType IO EncDataBytes
 encryptUserData g k s = encryptData g k userDataPaddedLength s
