@@ -374,3 +374,22 @@ here.
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
 as env vars when you run the script directly.
+
+### Load and scaling
+
+A lookup reads the chain in at most three rounds: the name's status and
+registry entries, then its record from its resolver, then prices for a name
+that is free. The node runs the calls of a JSON-RPC batch one after another,
+so the contract reads of a round go to the chain as one `eth_call` to
+[Multicall3](https://github.com/mds1/multicall). A node that is slow for a
+moment therefore delays a lookup a few times, not once per read. Connections to
+the node are kept open and reused.
+
+Each access log line ends with how long the request took, so slow requests
+show up in `docker compose logs resolver`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SNRC_WORKERS` | CPU count, at most 4 | processes sharing the port. If one exits, the others stop, so the container restarts |
+| `SNRC_RPC_TIMEOUT` | `5` | seconds to wait for each request to the node; the smp-server gives up after 3 |
+| `SNRC_MULTICALL` | `0xcA11bde05977b3631167028862bE2a173976CA11` | Multicall3 address. If it does not answer, each round is sent as a plain batch and the log says so once |
