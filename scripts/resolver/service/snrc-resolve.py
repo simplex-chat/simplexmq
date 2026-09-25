@@ -46,6 +46,7 @@ Environment:
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
+  SNRC_RPC_TIMEOUT       Seconds to wait for each RPC request (default: 5)
 
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.
@@ -66,17 +67,21 @@ Unrecognised payloads fall back to `0x`-prefixed raw hex.
 import hashlib
 import json
 import os
+import queue
 import sys
 import time
+from http.client import BadStatusLine, HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
 
 from eth_hash.auto import keccak
 
 RPC = os.environ.get("SNRC_RPC", "http://127.0.0.1:8545")
 BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
+# The smp-server gives up after 3 s, so a slower call only holds a thread.
+RPC_TIMEOUT_S = float(os.environ.get("SNRC_RPC_TIMEOUT", "") or 5)
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
 # happens on the rightmost label of the queried name. Empty / unset means
@@ -129,21 +134,58 @@ ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 # ---------- RPC + ABI helpers (mirrors ens-lookup.py shape) ----------
 
+RPC_URL = urlparse(RPC)
+# Set a non-default User-Agent; Cloudflare-fronted public RPCs (drpc,
+# publicnode, etc.) reject `Python-urllib/3.x` with 403.
+RPC_HEADERS = {"Content-Type": "application/json", "User-Agent": "snrc-resolve/1.0"}
+
+# Idle keep-alive connections to SNRC_RPC. A connection per call costs most of
+# a lookup's CPU and leaves a TIME_WAIT socket per call, which exhausts local
+# ports at a few dozen lookups per second.
+_rpc_pool = queue.LifoQueue()
+
+
+def _new_rpc_connection():
+    conn_class = HTTPSConnection if RPC_URL.scheme == "https" else HTTPConnection
+    return conn_class(RPC_URL.hostname, RPC_URL.port, timeout=RPC_TIMEOUT_S)
+
+
+def _post_rpc(conn, body: bytes) -> bytes:
+    path = (RPC_URL.path or "/") + (f"?{RPC_URL.query}" if RPC_URL.query else "")
+    conn.request("POST", path, body, RPC_HEADERS)
+    res = conn.getresponse()
+    data = res.read()
+    # HTTPError, as urlopen raised: RuntimeError means the call itself failed
+    if not 200 <= res.status < 300:
+        raise HTTPError(RPC, res.status, res.reason, res.headers, None)
+    return data
+
+
+def _post_pooled(conn, body: bytes) -> bytes:
+    try:
+        data = _post_rpc(conn, body)
+    except BaseException:
+        conn.close()
+        raise
+    _rpc_pool.put(conn)
+    return data
+
+
+def _send_rpc(payload) -> object:
+    body = json.dumps(payload).encode()
+    try:
+        idle = _rpc_pool.get_nowait()
+    except queue.Empty:
+        return json.loads(_post_pooled(_new_rpc_connection(), body))
+    try:
+        return json.loads(_post_pooled(idle, body))
+    except (ConnectionError, BadStatusLine):
+        # the node closed the idle connection; every call is a read, so resending is safe
+        return json.loads(_post_pooled(_new_rpc_connection(), body))
+
+
 def rpc(method, params):
-    body = json.dumps(
-        {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-    ).encode()
-    # Set a non-default User-Agent; Cloudflare-fronted public RPCs (drpc,
-    # publicnode, etc.) reject `Python-urllib/3.x` with 403.
-    req = Request(
-        RPC,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "snrc-resolve/1.0",
-        },
-    )
-    res = json.loads(urlopen(req, timeout=15).read())
+    res = _send_rpc({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
     if "error" in res:
         raise RuntimeError(res["error"])
     return res["result"]
@@ -665,8 +707,8 @@ def split_links(value: str) -> list:
 
 
 def upstream_error(subject: dict, e: Exception) -> dict:
-    """urlopen puts the failing URL into its message and SNRC_RPC can carry a
-    provider key, so the text goes to the log and only the type to the caller."""
+    """The exception can carry the failing URL and SNRC_RPC can carry a provider
+    key, so the text goes to the log and only the type to the caller."""
     print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
     return {
         **subject,
