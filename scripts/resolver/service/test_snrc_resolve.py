@@ -8,6 +8,8 @@ import contextlib
 import importlib.util
 import io
 import os
+import socket
+import sys
 import time
 import unittest
 
@@ -1034,6 +1036,32 @@ class RegistrationV2Tests(unittest.TestCase):
         _, res = snrc.registration("acme.testing")
         self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "available")
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux drops SYNs on a full accept queue")
+class ListenBacklogTests(unittest.TestCase):
+    """The smp-server opens a connection per lookup and gives up after 3 s, so a
+    burst the accept queue cannot hold fails: TCP retries a dropped SYN after 1 s."""
+
+    BURST = 50
+
+    def test_a_burst_of_connections_is_queued_while_the_server_is_busy(self):
+        # never accepts, so every connection must wait in the queue
+        server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        clients = []
+        try:
+            for i in range(self.BURST):
+                c = socket.socket()
+                clients.append(c)
+                c.settimeout(0.5)
+                try:
+                    c.connect(server.server_address)
+                except TimeoutError:
+                    self.fail(f"connection {i + 1} of {self.BURST} was not queued")
+        finally:
+            for c in clients:
+                c.close()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
