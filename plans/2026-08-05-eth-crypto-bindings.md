@@ -64,11 +64,11 @@ it yields the parent private key.
 
 ```haskell
 -- Secp256k1
-mkPrivateKey        :: ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
+mkPrivateKey        :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
 unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
-secp256k1PublicKey  :: Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
-serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
-privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
+secp256k1PublicKey  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
+serializePublicKey  :: TVar ChaChaDRG -> PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
+privateKeyTweakAdd  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 
 -- BIP39
 entropyToMnemonic   :: ScrubbedBytes -> Either String Mnemonic
@@ -81,8 +81,8 @@ randomMnemonic      :: MnemonicStrength -> TVar ChaChaDRG -> STM Mnemonic
 strengthWordCount   :: MnemonicStrength -> Int
 
 -- BIP32
-masterKey           :: ScrubbedBytes -> IO (Either String ExtendedKey)
-derivePath          :: ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+masterKey           :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String ExtendedKey)
+derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
@@ -91,7 +91,7 @@ isHardened          :: Word32 -> Bool
 keccak256           :: ByteString -> ByteString
 
 -- Eth
-addressFromPrivateKey :: Secp256k1PrivateKey -> IO Address
+addressFromPrivateKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Address
 ethereumPath        :: Word32 -> Word32 -> Maybe [Word32] -- m/44'/60'/account'/0/address, Nothing at or above 2^31
 ```
 
@@ -100,7 +100,9 @@ form and `strP` accepts bare or `0x`-prefixed hex, rejecting a bad mixed-case
 checksum.
 
 Like `Simplex.Messaging.Crypto.randomBytes`, `randomMnemonic` takes a
-`TVar ChaChaDRG` and runs in `STM`, so it does not read system entropy.
+`TVar ChaChaDRG` and runs in `STM`. Every function that calls libsecp256k1 takes
+the same generator for the context blinding seed, so this code never reads
+system entropy itself.
 
 Because `parseMnemonic` lower-cases each word, a recovery phrase with a
 capitalised word is accepted. This does not change the derived seed:
@@ -132,8 +134,8 @@ secp256k1_ec_seckey_tweak_add(ctx, seckey, tweak)
 ```
 
 Every function that calls libsecp256k1 runs in `IO` with its own context,
-created and blinded with a fresh seed for the call and destroyed after it, so no
-context is shared between threads.
+created for the call, blinded with 32 bytes from the caller's `TVar ChaChaDRG`
+and destroyed after it, so no context is shared between threads.
 
 `secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 says to "proceed
 with the next value for i" (tweak out of range, or a zero result), which is why

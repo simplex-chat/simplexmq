@@ -3,8 +3,9 @@
 
 module CoreTests.EthCryptoTests (ethCryptoTests) where
 
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM (TVar, atomically)
 import Control.Monad (forM_)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
@@ -28,11 +29,12 @@ import Util
 
 ethCryptoTests :: Spec
 ethCryptoTests = do
+  g <- runIO C.newRandom
   describe "Keccak-256" keccakTests
-  describe "secp256k1" secp256k1Tests
+  describe "secp256k1" $ secp256k1Tests g
   describe "BIP-39" bip39Tests
-  describe "BIP-32" bip32Tests
-  describe "BIP-44 derivation" derivationTests
+  describe "BIP-32" $ bip32Tests g
+  describe "BIP-44 derivation" $ derivationTests g
   describe "EIP-55 addresses" eip55Tests
 
 -- helpers
@@ -53,14 +55,14 @@ keccakTests = do
   it "hashes abc" $
     toHex (C.keccak256 "abc") `shouldBe` "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"
 
-secp256k1Tests :: Spec
-secp256k1Tests = do
+secp256k1Tests :: TVar ChaChaDRG -> Spec
+secp256k1Tests g = do
   it "derives the known address for a known key" $
-    (strEncode <$> (addressFromPrivateKey =<< testKey)) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
+    (strEncode <$> (addressFromPrivateKey g =<< testKey)) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
   it "serializes a public key in both SEC1 forms" $ do
-    pk <- S.secp256k1PublicKey =<< testKey
-    comp <- S.serializePublicKey S.Compressed pk
-    uncomp <- S.serializePublicKey S.Uncompressed pk
+    pk <- S.secp256k1PublicKey g =<< testKey
+    comp <- S.serializePublicKey g S.Compressed pk
+    uncomp <- S.serializePublicKey g S.Uncompressed pk
     B.length comp `shouldBe` 33
     B.length uncomp `shouldBe` 65
     B.head uncomp `shouldBe` 0x04
@@ -68,24 +70,24 @@ secp256k1Tests = do
     B.take 32 (B.drop 1 uncomp) `shouldBe` B.drop 1 comp
     B.head comp `shouldBe` (if odd (B.last uncomp) then 0x03 else 0x02)
   it "rejects a zero private key" $
-    (isLeft <$> S.mkPrivateKey (BA.replicate 32 0)) `shouldReturn` True
+    (isLeft <$> S.mkPrivateKey g (BA.replicate 32 0)) `shouldReturn` True
   it "rejects a private key at the group order" $
-    (isLeft <$> S.mkPrivateKey (hx "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")) `shouldReturn` True
+    (isLeft <$> S.mkPrivateKey g (hx "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")) `shouldReturn` True
   it "rejects a short private key" $
-    (isLeft <$> S.mkPrivateKey (BA.replicate 31 1)) `shouldReturn` True
+    (isLeft <$> S.mkPrivateKey g (BA.replicate 31 1)) `shouldReturn` True
   it "adds a tweak to a private key" $ do
     k <- testKey
-    (fmap (toHex . S.unPrivateKey) <$> S.privateKeyTweakAdd k (BA.replicate 31 0 <> BA.singleton 1))
+    (fmap (toHex . S.unPrivateKey) <$> S.privateKeyTweakAdd g k (BA.replicate 31 0 <> BA.singleton 1))
       `shouldReturn` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
   it "returns Nothing for a tweak that makes the key zero" $ do
     k <- testKey
-    (isNothing <$> S.privateKeyTweakAdd k (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
+    (isNothing <$> S.privateKeyTweakAdd g k (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
       `shouldReturn` True
   it "returns Nothing for a tweak that is not 32 bytes" $ do
     k <- testKey
-    (isNothing <$> S.privateKeyTweakAdd k (BA.replicate 31 1)) `shouldReturn` True
+    (isNothing <$> S.privateKeyTweakAdd g k (BA.replicate 31 1)) `shouldReturn` True
   where
-    testKey = right <$> S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
+    testKey = right <$> S.mkPrivateKey g (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
 
 bip39Tests :: Spec
 bip39Tests = do
@@ -141,12 +143,12 @@ canonicalPhrase = "abandon abandon abandon abandon abandon abandon abandon aband
 canonicalMnemonic :: B39.Mnemonic
 canonicalMnemonic = right $ B39.parseMnemonic (decodeLatin1 canonicalPhrase)
 
-bip32Tests :: Spec
-bip32Tests = do
+bip32Tests :: TVar ChaChaDRG -> Spec
+bip32Tests g = do
   describe "spec test vector 1" $
     forM_ vector1 $ \(name, path, keyHex, ccHex) ->
       it name $ do
-        xk <- right <$> (master1 >>= (`B32.derivePath` path))
+        xk <- right <$> (master1 >>= \m -> B32.derivePath g m path)
         toHex (S.unPrivateKey $ B32.xkKey xk) `shouldBe` keyHex
         toHex (B32.xkChainCode xk) `shouldBe` ccHex
   it "spec test vector 2, chain m" $ do
@@ -154,15 +156,15 @@ bip32Tests = do
     toHex (S.unPrivateKey $ B32.xkKey xk) `shouldBe` "4b03d6fc340455b363f51020ad3ecca4f0850280cf436c70c727923f6db46c3e"
     toHex (B32.xkChainCode xk) `shouldBe` "60499f801b896d83179a4374aeb7822aaeaceaa0db1f85ee3e904c4defbd9689"
   it "rejects a seed shorter than 16 bytes" $
-    (isLeft <$> B32.masterKey (BA.replicate 15 1)) `shouldReturn` True
+    (isLeft <$> B32.masterKey g (BA.replicate 15 1)) `shouldReturn` True
   it "rejects a seed longer than 64 bytes" $
-    (isLeft <$> B32.masterKey (BA.replicate 65 1)) `shouldReturn` True
+    (isLeft <$> B32.masterKey g (BA.replicate 65 1)) `shouldReturn` True
   it "renders a path" $
     B32.renderPath [B32.hardened 44, B32.hardened 60, B32.hardened 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
   where
-    master1 = right <$> B32.masterKey (hx "000102030405060708090a0b0c0d0e0f")
+    master1 = right <$> B32.masterKey g (hx "000102030405060708090a0b0c0d0e0f")
     master2 =
-      right <$> B32.masterKey (hx "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542")
+      right <$> B32.masterKey g (hx "fffcf9f6f3f0edeae7e4e1dedbd8d5d2cfccc9c6c3c0bdbab7b4b1aeaba8a5a29f9c999693908d8a8784817e7b7875726f6c696663605d5a5754514e4b484542")
     vector1 =
       [ ( "chain m",
           [],
@@ -196,8 +198,8 @@ bip32Tests = do
         )
       ]
 
-derivationTests :: Spec
-derivationTests = do
+derivationTests :: TVar ChaChaDRG -> Spec
+derivationTests g = do
   it "derives the standard BIP-39 seed" $
     toHex seed
       `shouldBe` "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4"
@@ -214,9 +216,9 @@ derivationTests = do
   where
     seed = B39.mnemonicToSeed canonicalMnemonic ""
     addrAt i = do
-      master <- right <$> B32.masterKey seed
-      xk <- right <$> B32.derivePath master (fromJust $ ethereumPath i 0)
-      addressFromPrivateKey (B32.xkKey xk)
+      master <- right <$> B32.masterKey g seed
+      xk <- right <$> B32.derivePath g master (fromJust $ ethereumPath i 0)
+      addressFromPrivateKey g (B32.xkKey xk)
 
 eip55Tests :: Spec
 eip55Tests = do

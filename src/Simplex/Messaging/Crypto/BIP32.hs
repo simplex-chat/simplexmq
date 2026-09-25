@@ -12,9 +12,11 @@ module Simplex.Messaging.Crypto.BIP32
   )
 where
 
+import Control.Concurrent.STM (TVar)
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
+import Crypto.Random (ChaChaDRG)
 import qualified Crypto.MAC.HMAC as HMAC
 import Data.Bifunctor (bimap)
 import Data.Bits ((.|.))
@@ -42,29 +44,29 @@ hardened = (.|. hardenedOffset)
 isHardened :: Word32 -> Bool
 isHardened i = i >= hardenedOffset
 
-masterKey :: ScrubbedBytes -> IO (Either String ExtendedKey)
-masterKey seed
+masterKey :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String ExtendedKey)
+masterKey g seed
   | seedLen < 16 || seedLen > 64 =
       pure $ Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
   | otherwise =
       bimap (const "seed: invalid master key, use a different seed") (\k -> ExtendedKey {xkKey = k, xkChainCode = ir})
-        <$> S.mkPrivateKey il
+        <$> S.mkPrivateKey g il
   where
     seedLen = BA.length seed
     (il, ir) = BA.splitAt 32 $ hmacSHA512 "Bitcoin seed" seed
 
-deriveChild :: ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
-deriveChild ExtendedKey {xkKey, xkChainCode} i = do
+deriveChild :: TVar ChaChaDRG -> ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
+deriveChild g ExtendedKey {xkKey, xkChainCode} i = do
   dat <-
     if isHardened i
       then pure $ BA.cons 0 (S.unPrivateKey xkKey)
-      else BA.convert <$> (S.serializePublicKey S.Compressed =<< S.secp256k1PublicKey xkKey)
+      else BA.convert <$> (S.serializePublicKey g S.Compressed =<< S.secp256k1PublicKey g xkKey)
   let (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
   maybe (Left $ "derivation: invalid child at index " <> show i <> ", use the next index") (\k -> Right ExtendedKey {xkKey = k, xkChainCode = ir})
-    <$> S.privateKeyTweakAdd xkKey il
+    <$> S.privateKeyTweakAdd g xkKey il
 
-derivePath :: ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
-derivePath xk = runExceptT . foldM (\k -> ExceptT . deriveChild k) xk
+derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath g xk = runExceptT . foldM (\k -> ExceptT . deriveChild g k) xk
 
 renderPath :: [Word32] -> ByteString
 renderPath is = BC.pack $ intercalate "/" ("m" : map component is)

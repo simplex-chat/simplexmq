@@ -8,7 +8,9 @@ module Simplex.Messaging.Eth.Address
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent.STM (TVar)
 import Control.Monad (unless, when, (<=<))
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray.Encoding as BAE
@@ -41,12 +43,12 @@ addressSize :: Int
 addressSize = 20
 
 -- | The last 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
-addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address
-addressFromPublicKey pk =
-  Address . B.drop 12 . keccak256 . B.drop 1 <$> S.serializePublicKey S.Uncompressed pk
+addressFromPublicKey :: TVar ChaChaDRG -> S.Secp256k1PublicKey -> IO Address
+addressFromPublicKey g pk =
+  Address . B.drop 12 . keccak256 . B.drop 1 <$> S.serializePublicKey g S.Uncompressed pk
 
-addressFromPrivateKey :: S.Secp256k1PrivateKey -> IO Address
-addressFromPrivateKey = addressFromPublicKey <=< S.secp256k1PublicKey
+addressFromPrivateKey :: TVar ChaChaDRG -> S.Secp256k1PrivateKey -> IO Address
+addressFromPrivateKey g = addressFromPublicKey g <=< S.secp256k1PublicKey g
 
 -- | EIP-55: @0x@ and 40 hex digits whose case encodes a checksum over the lowercase hex form.
 checksumAddress :: Address -> ByteString

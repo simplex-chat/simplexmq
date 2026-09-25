@@ -1,5 +1,4 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | FFI bindings to libsecp256k1.
 module Simplex.Messaging.Crypto.Secp256k1
@@ -14,14 +13,16 @@ module Simplex.Messaging.Crypto.Secp256k1
   )
 where
 
+import Control.Concurrent.STM
 import Control.Exception (bracket, throwIO)
 import Control.Monad (void, when)
-import Crypto.Random (drgNew, randomBytesGenerate)
+import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import Foreign hiding (void)
 import Foreign.C
+import qualified Simplex.Messaging.Crypto as C
 
 -- Sizes
 
@@ -80,10 +81,9 @@ foreign import ccall "secp256k1_ec_seckey_tweak_add"
 contextNone :: CUInt
 contextNone = 1
 
-withContext :: (Ptr Ctx -> IO a) -> IO a
-withContext f = bracket (c_context_create contextNone) c_context_destroy $ \ctx -> do
-  drg <- drgNew
-  let (seed :: ByteString, _) = randomBytesGenerate 32 drg
+withContext :: TVar ChaChaDRG -> (Ptr Ctx -> IO a) -> IO a
+withContext g f = bracket (c_context_create contextNone) c_context_destroy $ \ctx -> do
+  seed <- atomically $ C.randomBytes 32 g
   rc <- BA.withByteArray seed $ c_context_randomize ctx
   when (rc /= 1) $ throwIO (userError "secp256k1_context_randomize failed")
   f ctx
@@ -91,24 +91,24 @@ withContext f = bracket (c_context_create contextNone) c_context_destroy $ \ctx 
 -- Public API
 
 -- | Reject zero and anything at or above the group order, which is what makes 'secp256k1PublicKey' total.
-mkPrivateKey :: ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
-mkPrivateKey bs
+mkPrivateKey :: TVar ChaChaDRG -> ScrubbedBytes -> IO (Either String Secp256k1PrivateKey)
+mkPrivateKey g bs
   | BA.length bs /= privateKeySize = pure $ Left $ "private key: expected 32 bytes, got " <> show (BA.length bs)
-  | otherwise = withContext $ \ctx -> BA.withByteArray bs $ \p -> do
+  | otherwise = withContext g $ \ctx -> BA.withByteArray bs $ \p -> do
       rc <- c_ec_seckey_verify ctx p
       pure $ if rc == 1 then Right (Secp256k1PrivateKey bs) else Left "private key: not in [1, n-1]"
 
 unPrivateKey :: Secp256k1PrivateKey -> ScrubbedBytes
 unPrivateKey (Secp256k1PrivateKey bs) = bs
 
-secp256k1PublicKey :: Secp256k1PrivateKey -> IO Secp256k1PublicKey
-secp256k1PublicKey (Secp256k1PrivateKey sk) = withContext $ \ctx -> do
+secp256k1PublicKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
+secp256k1PublicKey g (Secp256k1PrivateKey sk) = withContext g $ \ctx -> do
   (rc, pk) <- BA.allocRet pubKeyInternalSize $ \pkPtr -> BA.withByteArray sk $ c_ec_pubkey_create ctx pkPtr
   when (rc /= 1) $ throwIO (userError "secp256k1_ec_pubkey_create failed on a validated key")
   pure $ Secp256k1PublicKey pk
 
-serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
-serializePublicKey fmt (Secp256k1PublicKey pk) = withContext $ \ctx ->
+serializePublicKey :: TVar ChaChaDRG -> PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
+serializePublicKey g fmt (Secp256k1PublicKey pk) = withContext g $ \ctx ->
   BA.alloc outLen $ \outPtr ->
     with (fromIntegral outLen) $ \lenPtr ->
       BA.withByteArray pk $ \pkPtr ->
@@ -120,10 +120,10 @@ serializePublicKey fmt (Secp256k1PublicKey pk) = withContext $ \ctx ->
       Uncompressed -> (2, uncompressedSize)
 
 -- | @sk + tweak mod n@, as BIP-32 child derivation requires. 'Nothing' when the tweak is not 32 bytes or not below n, or when the result is zero.
-privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
-privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
+privateKeyTweakAdd :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
+privateKeyTweakAdd g (Secp256k1PrivateKey sk) tweak
   | BA.length tweak /= privateKeySize = pure Nothing
-  | otherwise = withContext $ \ctx ->
+  | otherwise = withContext g $ \ctx ->
       BA.withByteArray tweak $ \twPtr -> do
         (rc, sk') <- BA.copyRet sk $ \skPtr -> c_ec_seckey_tweak_add ctx skPtr twPtr
         pure $ if rc == 1 then Just (Secp256k1PrivateKey sk') else Nothing
