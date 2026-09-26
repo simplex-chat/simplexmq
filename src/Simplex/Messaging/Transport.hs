@@ -219,10 +219,10 @@ nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
 minClientSMPRelayVersion :: VersionSMP
-minClientSMPRelayVersion = VersionSMP 14
+minClientSMPRelayVersion = VersionSMP 15
 
 minServerSMPRelayVersion :: VersionSMP
-minServerSMPRelayVersion = VersionSMP 14
+minServerSMPRelayVersion = VersionSMP 15
 
 currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 22
@@ -240,7 +240,7 @@ currentServerSMPRelayVersion = VersionSMP 22
 proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 22
 
--- minimal supported protocol version is 14
+-- minimal supported protocol version is 15
 supportedClientSMPRelayVRange :: VersionRangeSMP
 supportedClientSMPRelayVRange = mkVersionRange minClientSMPRelayVersion currentClientSMPRelayVersion
 
