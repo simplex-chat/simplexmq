@@ -442,6 +442,9 @@ functionalAPITests ps = do
       it "should expire multiple messages" $ testExpireManyMessages ps
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota ps
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota ps
+    describe "joining a full contact address" $ do
+      it "should retry joining until the address has space" $ testJoinFullContactAsync ps
+      it "should fail joining after quota exceeded timeout" $ testJoinFullContactAsyncExpire ps
     it "should drop message after too many receive attempts" $ testDropMsgAfterRcvAttempts ps
 #if !defined(dbPostgres)
     -- TODO [postgres] restore from outdated db backup (we use copyFile/renameFile for sqlite)
@@ -2483,6 +2486,49 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort 
   disposeAgentClient a
   where
     cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+
+testJoinFullContactAsync :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testJoinFullContactAsync (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
+  (contactId, qInfo) <- fillContactAddress
+  withAgent 2 agentCfg {commandQuotaRetryInterval = fastRetryInterval} initAgentServers testDB2 $ \bob -> do
+    aliceId <- runRight $ do
+      (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      A.joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      pure aliceId
+    threadDelay 500000
+    noMessages bob "joining should be retried while the address is full"
+    withAgent 1 agentCfg initAgentServers testDB $ \alice -> runRight_ $ do
+      subscribeConnection alice contactId
+      ("", _, A.REQ _ _ _ "carol's connInfo" _ _) <- get alice
+      get bob =##> \case ("2", c, JOINED False) -> c == aliceId; _ -> False
+      ("", _, A.REQ _ _ _ "bob's connInfo" _ _) <- get alice
+      pure ()
+  where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+
+testJoinFullContactAsyncExpire :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testJoinFullContactAsyncExpire (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
+  (_, qInfo) <- fillContactAddress
+  withAgent 2 agentCfg {quotaExceededTimeout = 2, commandQuotaRetryInterval = fastRetryInterval} initAgentServers testDB2 $ \bob -> do
+    aliceId <- runRight $ do
+      (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      A.joinConnectionAsync bob "2" False aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      pure aliceId
+    threadDelay 500000
+    noMessages bob "joining should be retried until quota exceeded timeout"
+    get bob =##> \case ("2", c, ERR (SMP _ QUOTA)) -> c == aliceId; _ -> False
+  where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+
+fillContactAddress :: HasCallStack => IO (ConnId, ConnectionRequestUri 'CMContact)
+fillContactAddress = do
+  (contactId, qInfo) <- withAgent 1 agentCfg initAgentServers testDB $ \alice -> runRight $ do
+    (contactId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn False SMSubscribe
+    pure (contactId, qInfo)
+  withAgent 3 agentCfg initAgentServers testDB3 $ \carol -> runRight_ $ do
+    (aliceId, _) <- A.prepareConnectionToJoin carol 1 True qInfo PQSupportOn
+    void $ A.joinConnection carol NRMInteractive 1 aliceId True qInfo "carol's connInfo" PQSupportOn SMSubscribe
+  pure (contactId, qInfo)
 
 testDropMsgAfterRcvAttempts :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testDropMsgAfterRcvAttempts ps =

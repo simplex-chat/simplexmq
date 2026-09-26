@@ -1718,7 +1718,7 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
         DB.query
           db
           [sql|
-            SELECT c.corr_id, cs.user_id, c.command
+            SELECT c.corr_id, cs.user_id, c.command, c.created_at
             FROM commands c
             JOIN connections cs USING (conn_id)
             WHERE c.command_id = ?
@@ -1726,7 +1726,7 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
           (Only cmdId)
       where
         err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
-        pendingCommand (corrId, userId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+        pendingCommand (corrId, userId, command, createdAt) = PendingCommand {cmdId, corrId, userId, connId, command, createdAt}
     markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
 
 updateCommandServer :: DB.Connection -> AsyncCmdId -> SMPServer -> IO (Either StoreError ())
