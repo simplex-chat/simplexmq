@@ -114,7 +114,7 @@ instance MsgStoreClass PostgresMsgStore where
     where
       st = dbStore $ queueStore_ ms
       oldMsg = now - ttl
-      batchSize = 10000 :: Int
+      batchSize = 1000 :: Int -- queues per COMMIT in expire_old_messages
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
@@ -363,8 +363,8 @@ deleteAllMessages ms =
       db
       [sql|
         UPDATE msg_queues
-        SET msg_queue_size = 0, msg_can_write = TRUE, msg_queue_expire = FALSE
-        WHERE msg_queue_size != 0 OR msg_can_write = FALSE OR msg_queue_expire = TRUE
+        SET msg_queue_size = 0, msg_can_write = TRUE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
       |]
 
 updateQueueCounts :: PostgresMsgStore -> IO ()
@@ -384,16 +384,15 @@ updateQueueCounts ms =
       db
       [sql|
         UPDATE msg_queues
-        SET msg_queue_size = 0, msg_can_write = TRUE, msg_queue_expire = FALSE
-        WHERE msg_queue_size != 0 OR msg_can_write = FALSE OR msg_queue_expire = TRUE
+        SET msg_queue_size = 0, msg_can_write = TRUE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
       |]
     void $ DB.execute_
       db
       [sql|
         UPDATE msg_queues q
         SET msg_queue_size = s.size,
-            msg_can_write = s.quota_count = 0,
-            msg_queue_expire = s.size > s.quota_count
+            msg_can_write = s.quota_count = 0
         FROM queue_stats s
         WHERE q.recipient_id = s.recipient_id
       |]
