@@ -19,15 +19,15 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 
 ## 1. Configure
 
-Edit `.env` — the defaults work as-is; override only if needed:
+The defaults in `docker-compose.yml` work as-is:
 
 ```sh
 NETWORK=mainnet                                               # default
 TRUSTED_NODE_URL=https://mainnet-checkpoint-sync.attestant.io # default
 ```
 
-Everything else (NAT) has a working default baked into `docker-compose.yml`;
-uncomment the hints in `.env` only to override.
+To override these or NAT, copy `.env.example` to `.env` and edit it; `.env` is
+not committed.
 
 ## 2. Run
 

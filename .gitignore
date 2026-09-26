@@ -1,6 +1,8 @@
 *.lock
 # the resolver's Docker image and CI install exactly these
 !/scripts/resolver/service/uv.lock
+# local overrides of scripts/resolver/.env.example
+/scripts/resolver/.env
 *.db
 *.db.bak
 *.session.sql
