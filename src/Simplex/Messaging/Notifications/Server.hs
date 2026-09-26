@@ -23,7 +23,7 @@ module Simplex.Messaging.Notifications.Server
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (mapConcurrently)
+import Control.Concurrent.Async (Async, mapConcurrently, poll)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -42,7 +42,7 @@ import Data.List (foldl')
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -51,11 +51,14 @@ import Data.Text.Encoding (decodeLatin1)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.IORef (atomicSwapIORef)
-import GHC.Stats (getRTSStats)
+import GHC.Conc (ThreadStatus (..), threadStatus)
+import GHC.Stats (GCDetails (..), RTSStats (..), getRTSStats)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore (..), DBStorePool (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..), pClientSentCommandsCount)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -87,6 +90,7 @@ import System.Exit (exitFailure, exitSuccess)
 import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
 import System.Timeout (timeout)
+import Text.Read (readMaybe)
 import UnliftIO (IOMode (..), UnliftIO (..), askUnliftIO, race_, unliftIO, withFile)
 import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
@@ -119,6 +123,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
   raceAny_
     ( ntfSubscriber s
         : periodicNtfsThread ps
+        : ntfDiagnosticsThread
         : map runServer transports
           <> serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
@@ -492,7 +497,11 @@ subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> Int64 -> Serv
 subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer srvId ntfSub =
   getSubscriberVar
     >>= either createSMPSubscriber waitForSMPSubscriber
-    >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
+    >>= mapM_
+      ( \SMPSubscriber {subscriberSubQ, subscriberSubQLen} -> atomically $ do
+          writeTQueue subscriberSubQ ntfSub
+          modifyTVar' subscriberSubQLen (+ 1)
+      )
   where
     getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
     getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
@@ -501,8 +510,9 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
     createSMPSubscriber v =
       E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
         q <- newTQueueIO
-        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
-        let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
+        qLen <- newTVarIO 0
+        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q qLen)
+        let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subscriberSubQLen = qLen, subThreadId = tId}
         atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
         pure $ Just sub
 
@@ -518,11 +528,14 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       atomically $ removeSessVar v smpServer smpSubscribers
       pure Nothing
 
-    runSMPSubscriber :: SMPServer -> Int64 -> TQueue ServerNtfSub -> IO ()
-    runSMPSubscriber smpServer' srvId' q = forever $ do
+    runSMPSubscriber :: SMPServer -> Int64 -> TQueue ServerNtfSub -> TVar Int -> IO ()
+    runSMPSubscriber smpServer' srvId' q qLen = forever $ do
       -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
       -- this should be analysed once we have prometheus stats
-      (nId, sub) <- atomically $ readTQueue q
+      (nId, sub) <- atomically $ do
+        s <- readTQueue q
+        modifyTVar' qLen (subtract 1)
+        pure s
       void $ updateSubStatus st srvId' nId NSPending
       subscribeQueuesNtfs ca smpServer' [sub]
 
@@ -647,7 +660,7 @@ pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(Device
     (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
   where
-    pushWorkersPerServer = 8
+    pushWorkersPerServer = 64
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
@@ -677,23 +690,23 @@ runPushWorker s srvHost_ isOwn q = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue q)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
+  stats <- asks serverStats
   case ntf of
     PNVerification _ ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification stats st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ setTknStatusConfirmed st tkn
           incNtfStatT t ntfVrfDelivered
         Left _ -> incNtfStatT t ntfVrfFailed
     PNCheckMessages ->
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification stats st pp tkn ntf) >>= \case
         Right _ -> do
           void $ liftIO $ updateTokenCronSentAt st ntfTknId . systemSeconds =<< getSystemTime
           incNtfStatT t ntfCronDelivered
         Left _ -> incNtfStatT t ntfCronFailed
     PNMessage {} -> checkActiveTkn tknStatus $ do
-      stats <- asks serverStats
       liftIO $ updatePeriodStats (activeTokens stats) ntfTknId
-      liftIO (deliverNotification st pp tkn ntf) >>= \case
+      liftIO (deliverNotification stats st pp tkn ntf) >>= \case
         Left _ -> do
           incNtfStatT t ntfFailed
           when isOwn $ liftIO $ mapM_ (`incServerStat` ntfFailedOwn stats) srvHost_
@@ -705,23 +718,38 @@ runPushWorker s srvHost_ isOwn q = forever $ do
     checkActiveTkn status action
       | status == NTActive = action
       | otherwise = liftIO $ logError "bad notification token status"
-    deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
-    deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf' = do
-      (deliver, clientVar) <- getPushClient s pp
-      runExceptT (deliver tkn ntf') >>= \case
-        Right _ -> pure $ Right ()
-        Left e -> case e of
-          PPConnection ce -> retryDeliver clientVar $ "connection " <> tshow ce
-          PPRetryLater r -> retryDeliver clientVar r
-          PPCryptoError _ -> err e
-          PPResponseError {} -> err e
-          PPTokenInvalid r -> do
-            void $ updateTknStatus st tkn $ NTInvalid $ Just r
-            err e
-          PPPermanentError -> err e
+    deliverNotification :: NtfServerStats -> NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
+    deliverNotification stats st pp tkn@NtfTknRec {ntfTknId} ntf' = do
+      t0 <- getMonotonicTimeNSec
+      res <- deliver1
+      t1 <- getMonotonicTimeNSec
+      incNtfStat_ stats apnsReqTotal
+      addNtfStat_ stats apnsLatencyMicros $ fromIntegral $ (t1 - t0) `div` 1000
+      either (incNtfStat_ stats . apnsErrSel) (const $ pure ()) res
+      pure res
       where
+        deliver1 = do
+          (deliver, clientVar) <- getPushClient s pp
+          runExceptT (deliver tkn ntf') >>= \case
+            Right _ -> pure $ Right ()
+            Left e -> case e of
+              PPConnection ce -> retryDeliver clientVar $ "connection " <> tshow ce
+              PPRetryLater r -> retryDeliver clientVar r
+              PPCryptoError _ -> err e
+              PPResponseError {} -> err e
+              PPTokenInvalid r -> do
+                void $ updateTknStatus st tkn $ NTInvalid $ Just r
+                err e
+              PPPermanentError -> err e
+        -- connection and retry-later failures stall the shared APNS connection and are the
+        -- likely push-queue-spike driver; everything else is a per-token/response reject
+        apnsErrSel = \case
+          PPConnection _ -> apnsErrConn
+          PPRetryLater _ -> apnsErrConn
+          _ -> apnsErrResponse
         retryDeliver :: PushClientVar -> Text -> IO (Either PushProviderError ())
         retryDeliver oldVar reason = do
+          incNtfStat_ stats apnsRetries
           logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
           atomically $ removeSessVar oldVar pp (pushClients s)
           (deliver, _) <- getPushClient s pp
@@ -743,6 +771,179 @@ pushWorkersQLength workers = do
       atomically (tryReadTMVar $ sessionVar v) >>= \case
         Just PushWorker {workerQ} -> (acc +) <$> atomically (lengthTBQueue workerQ)
         Nothing -> pure acc
+
+-- | Census of push workers: how many exist, how many of their threads are no longer running
+-- (a dead worker's queue is never drained again, so it fills to pushQSize and then blocks
+-- every producer), and the current queue backlog.
+data PushWorkerCensus = PushWorkerCensus
+  { pwCount :: Int,
+    pwDead :: Int,
+    pwQMax :: Int,
+    pwQMaxKey :: Text,
+    -- workers whose queue is at capacity: every producer writing to them is blocked,
+    -- including the single receiveSMP loop that feeds all servers
+    pwQFull :: Int,
+    -- session vars that were never filled: getOrCreatePushWorker waits on them with a
+    -- blocking readTMVar and no timeout, so every push to that key would block forever
+    pwUninit :: Int
+  }
+
+pushWorkerCensus :: Natural -> TMap (Maybe T.Text, PushProvider, Int) PushWorkerVar -> IO PushWorkerCensus
+pushWorkerCensus pushQSize workers = do
+  ws <- readTVarIO workers
+  foldM addWorker PushWorkerCensus {pwCount = M.size ws, pwDead = 0, pwQMax = 0, pwQMaxKey = "-", pwQFull = 0, pwUninit = 0} $ M.assocs ws
+  where
+    capacity = fromIntegral pushQSize :: Int
+    addWorker c (key, v) =
+      atomically (tryReadTMVar $ sessionVar v) >>= \case
+        Nothing -> pure c {pwUninit = pwUninit c + 1} -- still being created, or stuck empty
+        Just PushWorker {workerQ, workerThreadId} -> do
+          n <- fromIntegral <$> atomically (lengthTBQueue workerQ)
+          alive <- maybe (pure False) (fmap threadAlive . threadStatus) =<< deRefWeak workerThreadId
+          let !dead = if alive then pwDead c else pwDead c + 1
+              !full = if n >= capacity then pwQFull c + 1 else pwQFull c
+              (!mx, !mxKey) = if n > pwQMax c then (n, showKey key) else (pwQMax c, pwQMaxKey c)
+          pure c {pwDead = dead, pwQMax = mx, pwQMaxKey = mxKey, pwQFull = full}
+    showKey (srvHost_, pp, shard) = fromMaybe "-" srvHost_ <> "/" <> tshow pp <> "#" <> tshow shard
+
+threadAlive :: ThreadStatus -> Bool
+threadAlive = \case
+  ThreadFinished -> False
+  ThreadDied -> False
+  _ -> True
+
+-- | Census of SMP subscribers: threads that are no longer running (their unbounded
+-- subscriberSubQ then grows with every SNEW for that server and is never drained), and
+-- the depth of those queues, which is not observable any other way.
+data SubscriberCensus = SubscriberCensus
+  { sbDead :: Int,
+    sbQTotal :: Int,
+    sbQMax :: Int,
+    sbQMaxSrv :: Text
+  }
+
+subscriberCensus :: TMap SMPServer SMPSubscriberVar -> IO SubscriberCensus
+subscriberCensus subscribers = do
+  ss <- readTVarIO subscribers
+  foldM addSubscriber SubscriberCensus {sbDead = 0, sbQTotal = 0, sbQMax = 0, sbQMaxSrv = "-"} $ M.assocs ss
+  where
+    addSubscriber c (srv, v) =
+      atomically (tryReadTMVar $ sessionVar v) >>= \case
+        Nothing -> pure c -- subscriber is still being created
+        Just SMPSubscriber {subscriberSubQLen, subThreadId} -> do
+          n <- readTVarIO subscriberSubQLen
+          alive <- maybe (pure False) (fmap threadAlive . threadStatus) =<< deRefWeak subThreadId
+          let !dead = if alive then sbDead c else sbDead c + 1
+              !total = sbQTotal c + n
+              (!mx, !mxSrv) = if n > sbQMax c then (n, showServer' srv) else (sbQMax c, sbQMaxSrv c)
+          pure c {sbDead = dead, sbQTotal = total, sbQMax = mx, sbQMaxSrv = mxSrv}
+
+-- | Sub workers whose Async has already completed. runSubWorker catches its own exceptions,
+-- so a terminated worker leaves a filled SessionVar behind, and reconnectClient only spawns
+-- a replacement when the var is absent - that server then stops reconnecting entirely.
+deadSubWorkers :: TMap SMPServer (SessionVar (Async ())) -> IO Int
+deadSubWorkers workers = do
+  ws <- readTVarIO workers
+  foldM addWorker 0 ws
+  where
+    addWorker !acc v =
+      atomically (tryReadTMVar $ sessionVar v) >>= \case
+        Nothing -> pure acc
+        Just a -> maybe acc (const $ acc + 1) <$> poll a
+
+-- Periodic diagnostics: a single greppable "NTFDIAG" line censusing every growable
+-- in-memory structure of the ntf server. Interval seconds via NTF_DIAG_SEC (default 60).
+-- A counter that grows monotonically is a leak; one that spikes and recovers is backpressure.
+ntfDiagnosticsThread :: M ()
+ntfDiagnosticsThread = do
+  secStr <- liftIO $ lookupEnv "NTF_DIAG_SEC"
+  -- clamped on both sides: a very small value would flood the log, and a very large one
+  -- would overflow the microsecond conversion below and make threadDelay return at once
+  let sec = min 86400 $ max 5 $ fromMaybe 60 (secStr >>= readMaybe)
+  env <- ask
+  labelMyThread "ntfDiagnosticsThread"
+  -- never let a diagnostics error crash the server (this thread is in raceAny_)
+  liftIO $ forever $ do
+    threadDelay $ sec * 1000000
+    tryAny (logNtfDiagStats env) >>= either (logError . ("NTFDIAG error: " <>) . tshow) (const $ pure ())
+
+-- Only structures that are NOT already exported as Prometheus metrics or via the control
+-- port are logged here - see Notifications/Server/Prometheus.hs for what is already tracked
+-- (push queue total, sub/service sub counts, SMP sessions, thread count, period stats).
+logNtfDiagStats :: NtfEnv -> IO ()
+logNtfDiagStats NtfEnv {subscriber, pushServer, store = NtfPostgresStore {dbStore}} = do
+  let NtfSubscriber {smpSubscribers, smpAgent = ca} = subscriber
+      NtfPushServer {pushWorkers, pushQSize} = pushServer
+      SMPClientAgent {msgQ, agentQ, agentCfg = SMPClientAgentConfig {msgQSize, agentQSize}} = ca
+      DBStore {dbPriorityPool, dbPool, dbPoolSize} = dbStore
+  PushWorkerCensus {pwCount, pwDead, pwQMax, pwQMaxKey, pwQFull, pwUninit} <- pushWorkerCensus pushQSize pushWorkers
+  SubscriberCensus {sbDead, sbQTotal, sbQMax, sbQMaxSrv} <- subscriberCensus smpSubscribers
+  nDeadSubWorkers <- deadSubWorkers $ smpSubWorkers ca
+  nSentCmds <- sentCommandsCount $ smpClients ca
+  msgQLen <- atomically $ maybe (pure 0) lengthTBQueue msgQ
+  agentQLen <- atomically $ lengthTBQueue agentQ
+  prioIdle <- atomically $ lengthTBQueue $ dbPoolConns dbPriorityPool
+  poolIdle <- atomically $ lengthTBQueue $ dbPoolConns dbPool
+  (liveBytes, memInUse) <- rtsBytes
+  logNote $
+    T.concat
+      [ "NTFDIAG",
+        -- push worker map only grows, and its key includes the client-supplied SMP host
+        f "pushw_count" pwCount,
+        -- workers whose thread has terminated: their queue is never drained again
+        f "pushw_dead" pwDead,
+        -- only the total across workers is exported, which hides a single wedged worker
+        f "pushw_q_max" pwQMax,
+        f "pushw_q_max_key" pwQMaxKey,
+        -- per-worker capacity: hardcoded, not in the ini and not exported anywhere, so
+        -- pushw_q_max cannot be read as a saturation ratio without it
+        f "pushw_q_cap" pushQSize,
+        -- workers at capacity - each one is blocking every thread that pushes to it
+        f "pushw_q_full" pwQFull,
+        -- persistently non-zero means pushes to that key are blocked on an unfilled var
+        f "pushw_uninit" pwUninit,
+        -- subscriber threads that have terminated, leaving their unbounded subQ undrained
+        f "smpsub_dead" sbDead,
+        -- depth of the unbounded per-server subscription queues (no other way to see it)
+        f "subq_total" sbQTotal,
+        f "subq_max" sbQMax,
+        f "subq_max_srv" sbQMaxSrv,
+        -- finished reconnect workers: that server will never be resubscribed again
+        f "subw_dead" nDeadSubWorkers,
+        -- in-flight commands are only removed when a response arrives, never on timeout
+        f "sentCmds" nSentCmds,
+        -- msgQ feeds the single receiveSMP loop: if a push worker queue saturates that loop
+        -- blocks, msgQ fills, and then every SMP client receive loop blocks behind it
+        f "msgq_len" msgQLen,
+        f "msgq_cap" msgQSize,
+        -- agentQ feeds receiveAgent (subscription status events)
+        f "agentq_len" agentQLen,
+        f "agentq_cap" agentQSize,
+        -- idle connections left in each pool; sustained 0 means every DB operation is
+        -- queueing, e.g. a producer blocked on a full push queue inside a transaction
+        f "dbpool_idle" poolIdle,
+        f "dbpool_prio_idle" prioIdle,
+        f "dbpool_size" dbPoolSize,
+        -- gap between these two is the non-GHC-heap (C heap / fragmentation) component
+        f "rts_live_bytes" liveBytes,
+        f "rts_mem_in_use" memInUse
+      ]
+  where
+    f :: Show a => Text -> a -> Text
+    f name v = " " <> name <> "=" <> tshow v
+    -- SMPClientVar is not exported from Client.Agent, so the type is left inferred
+    sentCommandsCount m = readTVarIO m >>= foldM addSent 0
+      where
+        addSent !acc v =
+          atomically (tryReadTMVar $ sessionVar v) >>= \case
+            Just (Right (_, smp)) -> (acc +) <$> pClientSentCommandsCount smp
+            _ -> pure acc
+    -- requires the -T RTS flag; report zeroes rather than failing the whole census
+    rtsBytes =
+      tryAny getRTSStats >>= \case
+        Right RTSStats {gc = GCDetails {gcdetails_live_bytes, gcdetails_mem_in_use_bytes}} ->
+          pure (gcdetails_live_bytes, gcdetails_mem_in_use_bytes)
+        Left _ -> pure (0, 0)
 
 periodicNtfsThread :: NtfPushServer -> M ()
 periodicNtfsThread s = do
@@ -973,6 +1174,10 @@ incNtfStat statSel = asks serverStats >>= liftIO . (`incNtfStat_` statSel)
 incNtfStat_ :: NtfServerStats -> (NtfServerStats -> IORef Int) -> IO ()
 incNtfStat_ stats statSel = atomicModifyIORef'_ (statSel stats) (+ 1)
 {-# INLINE incNtfStat_ #-}
+
+addNtfStat_ :: NtfServerStats -> (NtfServerStats -> IORef Int) -> Int -> IO ()
+addNtfStat_ stats statSel n = atomicModifyIORef'_ (statSel stats) (+ n)
+{-# INLINE addNtfStat_ #-}
 
 restoreServerLastNtfs :: NtfSTMStore -> FilePath -> IO ()
 restoreServerLastNtfs st f =

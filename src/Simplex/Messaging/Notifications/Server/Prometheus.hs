@@ -95,7 +95,12 @@ ntfPrometheusMetrics sm rtm ts =
         _ntfVrfQueued,
         _ntfVrfDelivered,
         _ntfVrfFailed,
-        _ntfVrfInvalidTkn
+        _ntfVrfInvalidTkn,
+        _apnsReqTotal,
+        _apnsLatencyMicros,
+        _apnsRetries,
+        _apnsErrConn,
+        _apnsErrResponse
       } = statsData
     time =
       "# Recorded at: " <> T.pack (iso8601Show ts) <> "\n\
@@ -212,6 +217,26 @@ ntfPrometheusMetrics sm rtm ts =
       \# HELP simplex_ntf_notifications_verification_invalid_tkn Invalid token errors while delivering verifications\n\
       \# TYPE simplex_ntf_notifications_verification_invalid_tkn counter\n\
       \simplex_ntf_notifications_verification_invalid_tkn " <> mshow _ntfVrfInvalidTkn <> "\n# ntfVrfInvalidTkn\n\
+      \\n\
+      \# HELP simplex_ntf_apns_requests_total APNS delivery attempts (including retried)\n\
+      \# TYPE simplex_ntf_apns_requests_total counter\n\
+      \simplex_ntf_apns_requests_total " <> mshow _apnsReqTotal <> "\n# apnsReqTotal\n\
+      \\n\
+      \# HELP simplex_ntf_apns_latency_micros_total Summed APNS delivery latency in microseconds\n\
+      \# TYPE simplex_ntf_apns_latency_micros_total counter\n\
+      \simplex_ntf_apns_latency_micros_total " <> mshow _apnsLatencyMicros <> "\n# apnsLatencyMicros\n\
+      \\n\
+      \# HELP simplex_ntf_apns_retries_total APNS deliveries retried after connection eviction\n\
+      \# TYPE simplex_ntf_apns_retries_total counter\n\
+      \simplex_ntf_apns_retries_total " <> mshow _apnsRetries <> "\n# apnsRetries\n\
+      \\n\
+      \# HELP simplex_ntf_apns_errors_connection_total APNS failures from connection or retry-later errors\n\
+      \# TYPE simplex_ntf_apns_errors_connection_total counter\n\
+      \simplex_ntf_apns_errors_connection_total " <> mshow _apnsErrConn <> "\n# apnsErrConn\n\
+      \\n\
+      \# HELP simplex_ntf_apns_errors_response_total APNS failures from response, token or permanent errors\n\
+      \# TYPE simplex_ntf_apns_errors_response_total counter\n\
+      \simplex_ntf_apns_errors_response_total " <> mshow _apnsErrResponse <> "\n# apnsErrResponse\n\
       \\n\
       \# HELP simplex_ntf_notifications_total Total number of last notifications stored.\n\
       \# TYPE simplex_ntf_notifications_total gauge\n\
