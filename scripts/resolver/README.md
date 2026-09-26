@@ -385,6 +385,10 @@ so the contract reads of a round go to the chain as one `eth_call` to
 moment therefore delays a lookup a few times, not once per read. Connections to
 the node are kept open and reused.
 
+The resolver answers HTTP/1.1, so each smp-server keeps its connections to it
+open instead of connecting for every lookup. An idle connection is closed after
+60 s; the smp-server drops its own idle ones after 30 s, so it closes them first.
+
 Each access log line ends with how long the request took, so slow requests
 show up in `docker compose logs resolver`.
 
