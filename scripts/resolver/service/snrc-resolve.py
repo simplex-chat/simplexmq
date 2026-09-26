@@ -72,6 +72,7 @@ import json
 import os
 import queue
 import signal
+import socket
 import sys
 import threading
 import time
@@ -1149,6 +1150,17 @@ def resolve(name: str):
 # ---------- HTTP layer ----------
 
 class Handler(BaseHTTPRequestHandler):
+    # the smp-server reuses a connection only after an HTTP/1.1 response
+    protocol_version = "HTTP/1.1"
+    # idle seconds before a kept-alive connection is closed; the smp-server closes
+    # its idle ones after 30-35 s, so it is the one to close them
+    timeout = 60
+
+    def setup(self):
+        super().setup()
+        # headers and body go out in separate writes, which Nagle holds for the client's delayed ACK
+        self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
     def do_GET(self):  # noqa: N802 - http.server contract
         self._started = time.monotonic()
         path = urlparse(self.path).path

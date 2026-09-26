@@ -5,6 +5,7 @@ Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
 """
 
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -1404,6 +1405,52 @@ class RequestLogTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
         self.assertRegex(err.getvalue(), r'"GET /v2/resolve/x\.simplex HTTP/1\.1" 400 - \d+ms')
+
+
+class KeepAliveTests(unittest.TestCase):
+    """The smp-server keeps a resolver connection only after an HTTP/1.1
+    response, and otherwise connects for every lookup."""
+
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True).start()
+        self._saved_timeout = snrc.Handler.timeout
+        self._log = contextlib.redirect_stderr(io.StringIO())
+        self._log.__enter__()
+
+    def tearDown(self):
+        self._log.__exit__(None, None, None)
+        snrc.Handler.timeout = self._saved_timeout
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_requests_share_one_connection_without_delay(self):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        start = time.monotonic()
+        for i in range(20):
+            conn.request("GET", "/v2/resolve/x.simplex")
+            res = conn.getresponse()
+            res.read()
+            self.assertEqual((res.version, res.status), (11, 400))
+            if i == 0:
+                sock = conn.sock
+            self.assertIs(conn.sock, sock)
+        conn.close()
+        # a response held by Nagle for the delayed ACK takes ~40 ms, 20 of them over 0.8 s
+        self.assertLess(time.monotonic() - start, 0.5)
+
+    def test_idle_connections_outlast_the_smp_servers(self):
+        """http-client drops a connection idle for 30 s, checked every 5 s. A
+        resolver that closed sooner would race the client reusing it, and one
+        that never closed would keep a thread per dead connection."""
+        self.assertIsNotNone(self._saved_timeout)
+        self.assertGreater(self._saved_timeout, 35)
+
+    def test_an_idle_connection_is_closed(self):
+        snrc.Handler.timeout = 0.2
+        with socket.create_connection(self.server.server_address, timeout=5) as sock:
+            time.sleep(0.5)
+            self.assertEqual(sock.recv(1), b"")
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")
