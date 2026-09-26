@@ -156,15 +156,13 @@ services:
       # SNRC_REGISTRAR_SIMPLEX: 0x...
       # SNRC_CONTROLLER_TESTING: 0x...
       # SNRC_CONTROLLER_SIMPLEX: 0x...
-      # Worker processes sharing the port (default: CPU count, at most 4), and
-      # seconds to wait for each request to reth (default: 5). See README.
-      # SNRC_WORKERS: "4"
-      # SNRC_RPC_TIMEOUT: "5"
-      # Coloured `docker compose logs` (output is no terminal, so colours are off by default),
-      # and the Docker gateway a reverse proxy on the host connects through, so the
-      # client it names in X-Forwarded-For is logged instead of the gateway. See README.
-      # SNRC_LOG_COLOR: always
-      # SNRC_TRUSTED_PROXIES: 172.18.0.1
+      # Set in .env (see .env.example); unset or empty means the resolver's default.
+      SNRC_WORKERS: ${SNRC_WORKERS:-}
+      SNRC_RPC_TIMEOUT: ${SNRC_RPC_TIMEOUT:-}
+      SNRC_LOG_FORMAT: ${SNRC_LOG_FORMAT:-}
+      SNRC_LOG_COLOR: ${SNRC_LOG_COLOR:-}
+      SNRC_LOG_LEVEL: ${SNRC_LOG_LEVEL:-}
+      SNRC_TRUSTED_PROXIES: ${SNRC_TRUSTED_PROXIES:-}
     ports:
       - "127.0.0.1:8000:8000"
     # a line per lookup; the local driver keeps 5 rotated files of 20 MB
