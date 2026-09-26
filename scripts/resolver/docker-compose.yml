@@ -167,6 +167,9 @@ services:
       # SNRC_TRUSTED_PROXIES: 172.18.0.1
     ports:
       - "127.0.0.1:8000:8000"
+    # a line per lookup; the local driver keeps 5 rotated files of 20 MB
+    logging:
+      driver: local
     restart: unless-stopped
 
 volumes:

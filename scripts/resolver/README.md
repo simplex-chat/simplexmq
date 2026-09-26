@@ -446,6 +446,9 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 Behind a reverse proxy such as Caddy on the host, the resolver sees the Docker
 network's gateway rather than the client. Trust that gateway, and the logged
 client is the last `X-Forwarded-For` address no trusted proxy added, so a caller
-cannot claim another address. The gateway is
+through the proxy cannot claim another address. Everything else on the host that
+connects to `127.0.0.1:8000`, the smp-servers included, arrives through the same
+gateway and could set the logged address too; run the proxy in the compose network
+and trust only its address to avoid that. The gateway is
 `docker network inspect resolver_default --format '{{(index .IPAM.Config 0).Gateway}}'`,
 with the network named after the compose project.
