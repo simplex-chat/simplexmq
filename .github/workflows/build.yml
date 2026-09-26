@@ -320,15 +320,14 @@ jobs:
       - name: Clone project
         uses: actions/checkout@v3
 
-      - name: Set up Python
-        # Matches the runtime stage of scripts/resolver/service/Dockerfile.
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      - name: Set up uv
+        # uv takes Python from .python-version, the version of the Dockerfile's runtime stage.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
-      - name: Install resolver dependencies
-        # Must match scripts/resolver/service/pyproject.toml.
-        run: python -m pip install "eth-hash[pycryptodome]>=0.7"
+      - name: Lint
+        working-directory: scripts/resolver/service
+        run: uv run --frozen ruff check src tests
 
       - name: Test
-        run: python -m unittest discover -s scripts/resolver/service -v
+        working-directory: scripts/resolver/service
+        run: uv run --frozen pytest -v

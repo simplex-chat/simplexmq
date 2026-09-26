@@ -430,7 +430,7 @@ Simplex messaging router implementations MUST NOT create, store or send to any o
 
 - Any other information that may compromise privacy or [forward secrecy][4] of communication between clients using simplex messaging routers (the routers cannot compromise forward secrecy of any application layer protocol, such as double ratchet).
 
-Routers with the names role make outbound HTTP calls to a backing resolver service (the reference implementation is `scripts/resolver/snrc-resolve.py`, which in turn makes JSON-RPC calls to an Ethereum endpoint) to read `NameRecord` data; the lookup key reaches that resolver and its upstream RPC endpoint. Operators MUST run both the resolver process and its upstream RPC endpoint themselves (loopback Reth + Nimbus, or a self-hosted central deployment) — sharing them across multiple operators collapses the two-server privacy property because the resolver / RPC operator would see every lookup key across all of them. The names role and the SMP-proxy role MUST NOT be enabled on the same router by default: a client forwarding `RSLV` through a proxy that is also the names router would expose both its connection and the lookup key to one operator, collapsing the two-server privacy property. (Resolution itself runs on a forked thread, so a slow `RSLV` does not serialise other forwarded commands on the session.)
+Routers with the names role make outbound HTTP calls to a backing resolver service (the reference implementation is `scripts/resolver/service`, which in turn makes JSON-RPC calls to an Ethereum endpoint) to read `NameRecord` data; the lookup key reaches that resolver and its upstream RPC endpoint. Operators MUST run both the resolver process and its upstream RPC endpoint themselves (loopback Reth + Nimbus, or a self-hosted central deployment) — sharing them across multiple operators collapses the two-server privacy property because the resolver / RPC operator would see every lookup key across all of them. The names role and the SMP-proxy role MUST NOT be enabled on the same router by default: a client forwarding `RSLV` through a proxy that is also the names router would expose both its connection and the lookup key to one operator, collapsing the two-server privacy property. (Resolution itself runs on a forked thread, so a slow `RSLV` does not serialise other forwarded commands on the session.)
 
 ## Message delivery notifications
 
@@ -1449,7 +1449,7 @@ available.
 
 **Backing store.** This protocol does not prescribe where the names router
 reads `NameRecord` from. The reference implementation forwards each RSLV to a
-companion REST resolver process (`scripts/resolver/snrc-resolve.py`) that
+companion REST resolver process (`scripts/resolver/service`) that
 queries the SNRC contract on Ethereum; alternative backings (different chains,
 DHT, etc.) are valid as long as they expose the documented HTTP shape (`GET
 /v2/resolve/<query>` returning a `NameRegistration` on 200 for every

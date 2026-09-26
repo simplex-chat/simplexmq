@@ -6,7 +6,7 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 | # | Component | What it does |
 |---|---|---|
 | 1 | **reth + nimbus** | self-hosted Ethereum node (`--minimal` — enough for the resolver's `eth_call` at chain head) |
-| 2 | **resolver** | the REST resolver the smp-server's `[NAMES]` role queries (`snrc-resolve.py`) |
+| 2 | **resolver** | the REST resolver the smp-server's `[NAMES]` role queries (`service/`, Python package `snrc_resolve`) |
 
 ## Requirements
 
@@ -19,15 +19,15 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 
 ## 1. Configure
 
-Edit `.env` — the defaults work as-is; override only if needed:
+The defaults in `docker-compose.yml` work as-is:
 
 ```sh
 NETWORK=mainnet                                               # default
 TRUSTED_NODE_URL=https://mainnet-checkpoint-sync.attestant.io # default
 ```
 
-Everything else (NAT) has a working default baked into `docker-compose.yml`;
-uncomment the hints in `.env` only to override.
+To override these or NAT, copy `.env.example` to `.env` and edit it; `.env` is
+not committed.
 
 ## 2. Run
 
@@ -114,12 +114,29 @@ docker compose down -v    # also wipe volumes → full re-sync
 
 ## Resolver API reference
 
-The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
-standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
+The resolver (host `127.0.0.1:8000`) is also runnable standalone for local dev
+(no Docker), via [`uv`](https://docs.astral.sh/uv/), from `scripts/resolver/service`:
 
 ```sh
-uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
+uv run snrc-resolve        # defaults to local reth + mainnet .testing
+uv run pytest              # tests
+uv run ruff check src tests
 ```
+
+Its code is in `src/snrc_resolve`, a module per concern:
+
+| Module | Holds |
+|---|---|
+| `config` | settings from the environment, contracts of each TLD |
+| `rpc` | pooled connections to the node, batches, reads prefetched for a request |
+| `multicall` | Multicall3 `aggregate3` calldata and results |
+| `abi`, `calls` | ABI encoding, name hashing, and the contract calls as `(to, data)` |
+| `registration_status`, `pricing`, `records` | a name's status, its price, its record |
+| `coins` | chain address encoders |
+| `answers` | the `/v2/resolve` and `/resolve` answers |
+| `server` | HTTP server, worker processes, entry point |
+
+Dependencies are locked in `uv.lock`; the Docker image installs exactly those.
 
 Three routes, versioned separately from the protocol so each only changes when
 its own shape does:
@@ -243,7 +260,7 @@ wrong, `error` and `status` hold the same value, so one field is enough to read.
 
 `upstreamError` says only which exception type the RPC call raised. The text
 goes to the resolver's log instead, because `SNRC_RPC` can carry a provider key
-and urlopen puts the URL it failed on into the message. It is also the answer
+and the exception can carry the URL it failed on. It is also the answer
 when a registrar, controller or oracle address has no contract behind it: the
 empty reply is refused rather than read as zero, which would make every name
 look free.
@@ -374,3 +391,87 @@ here.
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
 as env vars when you run the script directly.
+
+### Load and scaling
+
+A lookup reads the chain in at most three rounds: the name's status and
+registry entries, then its record from its resolver, then prices for a name
+that is free. The node runs the calls of a JSON-RPC batch one after another,
+so the contract reads of a round go to the chain as one `eth_call` to
+[Multicall3](https://github.com/mds1/multicall). A node that is slow for a
+moment therefore delays a lookup a few times, not once per read. Connections to
+the node are kept open and reused.
+
+The resolver answers HTTP/1.1, so each smp-server keeps its connections to it
+open instead of connecting for every lookup. An idle connection is closed after
+60 s; the smp-server drops its own idle ones after 30 s, so it closes them first.
+
+Each access log line ends with how long the request took, so slow requests
+show up in `docker compose logs resolver`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SNRC_WORKERS` | CPU count, at most 4 | processes sharing the port. If one exits, the others stop, so the container restarts |
+| `SNRC_RPC_TIMEOUT` | `5` | seconds to wait for each request to the node; the smp-server gives up after 3 |
+| `SNRC_MULTICALL` | `0xcA11bde05977b3631167028862bE2a173976CA11` | Multicall3 address. If it does not answer, each round is sent as a plain batch and the log says so once |
+
+### Logs
+
+Each event is one line: UTC time, level, event name, then `key=value` fields.
+
+```
+2026-09-26T08:06:19.992Z INFO  request  client=203.0.113.7 worker=12 method=GET path=/v2/resolve/[4fdd…].testing status=200 bytes=701 ms=35
+2026-09-26T08:06:20.051Z WARN  upstream_error  name=foobar.testing error=ConnectionRefusedError message="[Errno 111] Connection refused"
+```
+
+| Event | Level | Meaning |
+|---|---|---|
+| `listening` | info | started: address, workers, RPC endpoint, registries, trusted proxies |
+| `request` | info | one answered request; `/health` only at debug |
+| `upstream_error` | warn | a read from the node failed; the caller got 502 |
+| `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
+| `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
+| `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
+| `request_failed` | error | a request failed unexpectedly, with its traceback |
+| `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
+| `stopping` | info | stopped by a signal |
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SNRC_LOG_FORMAT` | `text` | `text` (`key=value`) or `json`, one object per line |
+| `SNRC_LOG_COLOR` | `auto` | `auto` colours only a terminal, `always`, `never`. Docker output is no terminal, so set `always` for coloured `docker compose logs` |
+| `SNRC_LOG_LEVEL` | `info` | `debug` also logs health checks and idle connections closing |
+| `SNRC_TRUSTED_PROXIES` | none | addresses or CIDRs of reverse proxies whose `X-Forwarded-For` names the client |
+
+With docker compose, set these, and those in "Load and scaling", in `.env`
+(`.env.example` lists them).
+
+Behind a reverse proxy such as Caddy on the host, the resolver sees the Docker
+network's gateway rather than the client. Trust that gateway, and the logged
+client is the last `X-Forwarded-For` address no trusted proxy added, so a caller
+through the proxy cannot claim another address. Everything else on the host that
+connects to `127.0.0.1:8000`, the smp-servers included, arrives through the same
+gateway and could set the logged address too; run the proxy in the compose network
+and trust only its address to avoid that.
+
+The gateway is
+`docker network inspect resolver_default --format '{{(index .IPAM.Config 0).Gateway}}'`,
+with the network named after the compose project. It changes when the network is
+recreated, as `docker compose down` does, so trust one of, in `.env`:
+
+- `SNRC_TRUSTED_PROXIES=172.16.0.0/12`: Docker's default pools for compose
+  networks, whatever subnet it picks. This also trusts every other container on the
+  host. Add the gateway too if Docker ever gives the network a `192.168.x.x` one.
+- a pinned subnet, so the gateway stays fixed, and only that gateway:
+
+  ```yaml
+  networks:
+    default:
+      ipam:
+        config:
+          - subnet: 172.30.0.0/24
+            gateway: 172.30.0.1
+  ```
+
+  in `docker-compose.yml`, with `SNRC_TRUSTED_PROXIES=172.30.0.1`, on a subnet no
+  other network on the host uses.

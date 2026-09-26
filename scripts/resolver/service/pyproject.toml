@@ -2,12 +2,27 @@
 name = "snrc-resolve"
 version = "0.1.0"
 description = "SimpleX Namespace (SNRC) resolver — REST API over ENS-shaped Ethereum registries"
-readme = "README.md"
 requires-python = ">=3.11"
 license = "AGPL-3.0-only"
 dependencies = [
   "eth-hash[pycryptodome]>=0.7",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+snrc-resolve = "snrc_resolve.server:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]
