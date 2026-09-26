@@ -144,6 +144,13 @@ class RequestBodyTests(unittest.TestCase):
         self.assertIn(b"Connection: close", data)
         self.assertNotIn(b"y.simplex", data)
 
+    def test_a_length_after_a_malformed_header_line_is_still_seen(self):
+        """Python stops parsing headers at a malformed line and keeps the rest as payload."""
+        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nX-Junk : 1\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)
+        self.assertIn(b"unexpectedBody", data)
+        self.assertNotIn(b"y.simplex", data)
+
     def test_a_chunked_body_is_refused_and_the_connection_closed(self):
         chunked = b"%x\r\n" % len(self.SMUGGLED) + self.SMUGGLED + b"\r\n0\r\n\r\n"
         data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", chunked)
@@ -168,6 +175,12 @@ class PublicEndpointTests(unittest.TestCase):
 
     def test_a_plain_endpoint_is_unchanged(self):
         self.assertEqual(server.public_endpoint("http://reth:8545"), "http://reth:8545")
+
+    def test_an_ipv6_host_keeps_its_brackets(self):
+        self.assertEqual(server.public_endpoint("http://u:p@[::1]:8545/key"), "http://[::1]:8545")
+
+    def test_a_malformed_port_does_not_break_health(self):
+        self.assertEqual(server.public_endpoint("http://reth:port"), "http://reth:port")
 
 
 class ClientAddressTests(unittest.TestCase):

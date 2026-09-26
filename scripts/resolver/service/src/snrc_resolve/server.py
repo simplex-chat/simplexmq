@@ -94,6 +94,9 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _has_body(self) -> bool:
+        # a malformed header line ends parsing, leaving the rest, Content-Length included, as payload
+        if self.headers.defects or self.headers.get_payload():
+            return True
         if self.headers.get_all("Transfer-Encoding"):
             return True
         return any(length.strip() != "0" for length in self.headers.get_all("Content-Length") or [])
@@ -158,7 +161,7 @@ class ResolverServer(ThreadingHTTPServer):
 def public_endpoint(url: str) -> str:
     """The RPC endpoint without credentials, path or query, where a provider key would be."""
     parsed = urlparse(url)
-    return f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
+    return f"{parsed.scheme}://{parsed.netloc.rpartition('@')[2]}"
 
 
 def client_address(peer: str, forwarded_for: str | None) -> str:
@@ -250,7 +253,7 @@ def main():
         bind=config.BIND,
         port=config.PORT,
         workers=config.WORKERS,
-        rpc=config.RPC,
+        rpc=public_endpoint(config.RPC),
         registries=",".join(f"{tld}={addr or '-'}" for tld, addr in config.REGISTRIES.items()),
         trusted_proxies=",".join(map(str, config.TRUSTED_PROXIES)) or None,
     )
