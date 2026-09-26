@@ -28,6 +28,11 @@ class Handler(BaseHTTPRequestHandler):
         # headers and body go out in separate writes, which Nagle holds for the client's delayed ACK
         self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
+    def handle_one_request(self):
+        # on a kept-alive connection these still hold the previous request's values
+        self._started = self._sent = self.path = self.headers = None
+        super().handle_one_request()
+
     def do_GET(self):  # noqa: N802 - http.server contract
         self._started = time.monotonic()
         if self._has_body():
@@ -39,7 +44,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
-            self._respond(200, {"ok": True, "rpc": config.RPC, "registries": config.REGISTRIES, **head_block()})
+            self._respond(200, {"ok": True, "rpc": public_endpoint(config.RPC), "registries": config.REGISTRIES, **head_block()})
             return
 
         if len(parts) == 3 and parts[0] == "v2" and parts[1] == "resolve":
@@ -107,13 +112,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def address_string(self) -> str:
-        headers = getattr(self, "headers", None)
-        forwarded = headers.get_all("X-Forwarded-For") if headers else None
+        forwarded = self.headers.get_all("X-Forwarded-For") if self.headers else None
         return client_address(self.client_address[0], ",".join(forwarded) if forwarded else None)
 
     def log_request(self, code="-", size="-"):
-        started = getattr(self, "_started", None)
-        path = urlparse(self.path).path if getattr(self, "path", None) else None
+        started = self._started
+        path = urlparse(self.path).path if self.path else None
         log.event(
             # the container's health check runs every 30 s
             logging.DEBUG if path == "/health" else logging.INFO,
@@ -121,9 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             client=self.address_string(),
             worker=os.getpid(),
             method=getattr(self, "command", None),
-            path=unquote(self.path) if getattr(self, "path", None) else None,
+            path=unquote(self.path) if self.path else None,
             status=getattr(code, "value", code),
-            bytes=getattr(self, "_sent", None),
+            bytes=self._sent,
             ms=round((time.monotonic() - started) * 1000) if started else None,
         )
 
@@ -149,6 +153,12 @@ class ResolverServer(ThreadingHTTPServer):
             log.event(logging.WARNING, "client_gone", client=client_address[0], worker=os.getpid(), error=type(error).__name__)
         else:
             log.event(logging.ERROR, "request_failed", client=client_address[0], worker=os.getpid(), exc_info=True)
+
+
+def public_endpoint(url: str) -> str:
+    """The RPC endpoint without credentials, path or query, where a provider key would be."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
 
 
 def client_address(peer: str, forwarded_for: str | None) -> str:

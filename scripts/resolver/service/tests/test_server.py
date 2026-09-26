@@ -91,6 +91,19 @@ class RequestLogTests(unittest.TestCase):
         record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
         self.assertEqual(record.fields["client"], "127.0.0.1")
 
+    def test_a_bad_request_is_not_logged_with_the_previous_ones_fields(self):
+        """On a kept-alive connection the handler still held the last request's path and size."""
+        with self.assertLogs("snrc_resolve", "INFO") as logs:
+            with socket.create_connection(self.http_server.server_address, timeout=5) as sock:
+                sock.sendall(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\n\r\n")
+                sock.recv(65536)
+                sock.sendall(b"BOGUS\r\n\r\n")
+                while sock.recv(65536):
+                    pass
+        first, second = [r for r in logs.records if r.getMessage() == "request"]
+        self.assertEqual(first.fields["path"], "/v2/resolve/x.simplex")
+        self.assertEqual((second.fields["status"], second.fields["path"], second.fields["bytes"], second.fields["ms"]), (400, None, None, None))
+
     def test_health_checks_are_logged_only_at_debug(self):
         """The container checks /health every 30 s."""
         record = self.request("/health", level="DEBUG")
@@ -147,6 +160,14 @@ class RequestBodyTests(unittest.TestCase):
         conn.close()
         self.assertEqual([a[:2] for a in answers], [(400, "tldNotConfigured")] * 2)
         self.assertIs(answers[0][2], answers[1][2])
+
+
+class PublicEndpointTests(unittest.TestCase):
+    def test_credentials_path_and_query_are_not_shown(self):
+        self.assertEqual(server.public_endpoint("https://user:pw@rpc.example:8443/v2/KEY?apikey=K"), "https://rpc.example:8443")
+
+    def test_a_plain_endpoint_is_unchanged(self):
+        self.assertEqual(server.public_endpoint("http://reth:8545"), "http://reth:8545")
 
 
 class ClientAddressTests(unittest.TestCase):

@@ -21,7 +21,10 @@ RPC_HEADERS = {"Content-Type": "application/json", "User-Agent": "snrc-resolve/1
 # Idle keep-alive connections to SNRC_RPC. A connection per call costs most of
 # a lookup's CPU and leaves a TIME_WAIT socket per call, which exhausts local
 # ports at a few dozen lookups per second.
-_rpc_pool = queue.LifoQueue()
+# Idle connections kept per worker; more are closed after use. 4 workers stay well
+# under reth's default limit of 500 connections.
+RPC_POOL_SIZE = 32
+_rpc_pool = queue.LifoQueue(maxsize=RPC_POOL_SIZE)
 
 
 def _new_rpc_connection():
@@ -46,7 +49,10 @@ def _post_pooled(conn, body: bytes) -> bytes:
     except BaseException:
         conn.close()
         raise
-    _rpc_pool.put(conn)
+    try:
+        _rpc_pool.put_nowait(conn)
+    except queue.Full:
+        conn.close()
     return data
 
 
@@ -114,8 +120,8 @@ _multicall_failed_logged = False
 
 def _remember(reads, requests, answers):
     for (m, p), r in zip(requests, answers, strict=True):
-        if r is not None:
-            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r.get("result")
+        if r is not None and ("result" in r or "error" in r):
+            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r["result"]
 
 
 def prefetch(requests):
@@ -140,7 +146,10 @@ def prefetch(requests):
         return
     _remember(reads, others, answers[:-1])
     try:
-        results = decode_aggregate3(answers[-1]["result"])
+        result = (answers[-1] or {}).get("result")
+        if not isinstance(result, str):
+            raise ValueError(f"multicall answered {answers[-1]!r}")
+        results = decode_aggregate3(result)
         if len(results) != len(calls):
             raise ValueError("multicall answered a different number of calls")
     except (KeyError, TypeError, ValueError) as e:

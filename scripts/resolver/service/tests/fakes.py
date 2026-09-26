@@ -123,6 +123,7 @@ class FakeNode(ThreadingHTTPServer):
         self.connections = 0
         self.batch = True
         self.multicall = True
+        self.multicall_null = False
         self.status = 200
         self.hang_up = False
         self.drop_after_reply = False
@@ -146,6 +147,8 @@ class FakeNode(ThreadingHTTPServer):
         elif method == "eth_call" and params[0]["to"].lower() == config.MULTICALL.lower():
             if not self.multicall:
                 out["error"] = {"code": -32000, "message": "no contract code"}
+            elif self.multicall_null:
+                out["result"] = None
             else:
                 results = []
                 for to, data in decode_aggregate3_calls(params[0]["data"]):

@@ -1,3 +1,4 @@
+import threading
 import time
 import unittest
 
@@ -116,6 +117,25 @@ class PricingTests(unittest.TestCase):
         _, body = answers.resolve(hashed + ".testing")
         self.assertEqual(body["status"], "expired")
         self.assertEqual(body["basePrice"], self.BASE)
+
+
+class DecodePricesTests(unittest.TestCase):
+    def test_a_count_longer_than_the_answer_is_refused(self):
+        """The count comes from the oracle; decoding it unchecked could loop for ever."""
+        huge = "0x" + abi.encode_uint(200) + abi.encode_uint(0x40) + abi.encode_uint(2**64)
+        outcome = []
+
+        def decode():
+            try:
+                pricing.decode_prices(huge)
+            except RuntimeError as e:
+                outcome.append(e)
+
+        worker = threading.Thread(target=decode, daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), "decoding did not stop")
+        self.assertRegex(str(outcome[0]), "short response")
 
 
 class EnsOracleTests(unittest.TestCase):

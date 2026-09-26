@@ -1,3 +1,6 @@
+import json
+import queue
+import threading
 from urllib.error import HTTPError
 
 from snrc_resolve import abi, answers, calls, rpc
@@ -41,6 +44,28 @@ class RpcTransportTests(FakeNodeTestCase):
             rpc.eth_call("0x" + "11" * 20, "0xdeadbeef")
         rpc.call("eth_blockNumber", [])
         self.assertEqual(self.node.connections, 1)
+
+
+class RpcPoolTests(FakeNodeTestCase):
+    def test_connections_beyond_the_pool_are_closed_after_use(self):
+        """Every worker would otherwise keep its peak concurrency open to the node."""
+        saved, rpc._rpc_pool = rpc._rpc_pool, queue.LifoQueue(maxsize=1)
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}).encode()
+            kept, extra = rpc._new_rpc_connection(), rpc._new_rpc_connection()
+            rpc._post_pooled(kept, body)
+            # returning a connection to a full pool must not wait for a free slot
+            done = threading.Thread(target=rpc._post_pooled, args=(extra, body), daemon=True)
+            done.start()
+            done.join(5)
+            self.assertFalse(done.is_alive(), "returning a connection to a full pool blocked")
+            self.assertEqual(rpc._rpc_pool.qsize(), 1)
+            self.assertIsNotNone(kept.sock)
+            self.assertIsNone(extra.sock)
+        finally:
+            while not rpc._rpc_pool.empty():
+                rpc._rpc_pool.get_nowait().close()
+            rpc._rpc_pool = saved
 
 
 class BatchedReadsTests(FakeNodeTestCase):
@@ -87,6 +112,17 @@ class BatchedReadsTests(FakeNodeTestCase):
             self.assert_same_answer(answers.registration, "acme.testing", 4)
         [record] = logs.records
         self.assertEqual((record.getMessage(), record.fields["fallback"]), ("multicall_unavailable", "batch"))
+
+    def test_a_multicall_without_a_result_falls_back_to_a_batch(self):
+        self.node.multicall_null = True
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assert_same_answer(answers.registration, "acme.testing", 4)
+        self.assertEqual([r.getMessage() for r in logs.records], ["multicall_unavailable"])
+
+    def test_an_answer_with_neither_result_nor_error_is_not_taken_as_one(self):
+        reads = {}
+        rpc._remember(reads, [("eth_blockNumber", [])], [{"jsonrpc": "2.0", "id": 0}])
+        self.assertEqual(reads, {})
 
     def test_a_node_that_does_not_batch_is_read_one_call_at_a_time(self):
         self.node.batch = False

@@ -83,6 +83,9 @@ def decode_prices(hex_data: str):
     base = int.from_bytes(raw[:32], "big")
     at = int.from_bytes(raw[32:64], "big")
     count = int.from_bytes(raw[at:at + 32], "big")
+    # the count comes from the answer, so it is checked against the answer's length
+    if at + 32 + count * 64 > len(raw):
+        raise RuntimeError("prices(): short response")
     tiers = {}
     for i in range(count):
         item = at + 32 + i * 64
