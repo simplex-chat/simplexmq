@@ -322,7 +322,7 @@ jobs:
 
       - name: Set up uv
         # uv takes Python from .python-version, the version of the Dockerfile's runtime stage.
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Lint
         working-directory: scripts/resolver/service
