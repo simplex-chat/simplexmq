@@ -1,15 +1,15 @@
 """JSON-RPC to the node: pooled connections, batches, and the reads prefetched for a request."""
 
 import json
+import logging
 import queue
-import sys
 import threading
 from contextlib import contextmanager
 from http.client import BadStatusLine, HTTPConnection, HTTPSConnection
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 
-from . import config
+from . import config, log
 from .multicall import decode_aggregate3, encode_aggregate3
 
 
@@ -146,7 +146,7 @@ def prefetch(requests):
     except (KeyError, TypeError, ValueError) as e:
         if not _multicall_failed_logged:
             _multicall_failed_logged = True
-            print(f"multicall at {config.MULTICALL} failed ({e!r}), batching calls instead", file=sys.stderr)
+            log.event(logging.WARNING, "multicall_unavailable", multicall=config.MULTICALL, error=repr(e), fallback="batch")
         _remember(reads, calls, _send_batch(calls))
         return
     for (m, p), (success, data) in zip(calls, results, strict=True):

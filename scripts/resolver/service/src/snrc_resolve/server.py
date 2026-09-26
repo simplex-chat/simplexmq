@@ -1,16 +1,17 @@
 """HTTP server, worker processes and the entry point."""
 
+import ipaddress
 import json
+import logging
 import os
 import signal
 import socket
 import sys
 import time
-import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from . import config, rpc
+from . import config, log, rpc
 from .answers import registration, resolve, upstream_error
 from .registration_status import head_block
 
@@ -84,26 +85,84 @@ class Handler(BaseHTTPRequestHandler):
 
     def _respond(self, status: int, body: dict):
         data = json.dumps(body, indent=2).encode()
+        # send_response logs the request, so the size is known before it
+        self._sent = len(data)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
+    def address_string(self) -> str:
+        headers = getattr(self, "headers", None)
+        forwarded = headers.get_all("X-Forwarded-For") if headers else None
+        return client_address(self.client_address[0], ",".join(forwarded) if forwarded else None)
+
     def log_request(self, code="-", size="-"):
         started = getattr(self, "_started", None)
-        took = f" {(time.monotonic() - started) * 1000:.0f}ms" if started else ""
-        self.log_message('"%s" %s %s%s', self.requestline, getattr(code, "value", code), size, took)
+        path = urlparse(self.path).path if getattr(self, "path", None) else None
+        log.event(
+            # the container's health check runs every 30 s
+            logging.DEBUG if path == "/health" else logging.INFO,
+            "request",
+            client=self.address_string(),
+            worker=os.getpid(),
+            method=getattr(self, "command", None),
+            path=unquote(self.path) if getattr(self, "path", None) else None,
+            status=getattr(code, "value", code),
+            bytes=getattr(self, "_sent", None),
+            ms=round((time.monotonic() - started) * 1000) if started else None,
+        )
+
+    def log_error(self, fmt, *args):
+        message = fmt % args
+        # a kept-alive connection left idle is closed on purpose
+        level = logging.DEBUG if message.startswith("Request timed out") else logging.WARNING
+        log.event(level, "http_error", client=self.address_string(), worker=os.getpid(), message=message)
 
     def log_message(self, fmt, *args):
-        # Quiet the default per-request access log; route to stderr in one line.
-        sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
+        log.event(logging.INFO, "http", client=self.address_string(), message=fmt % args)
 
 
 class ResolverServer(ThreadingHTTPServer):
     # socketserver's default of 5 drops simultaneous connections, each retried by
     # TCP after 1 s, and the smp-server gives up after 3 s. The kernel caps it at somaxconn.
     request_queue_size = 128
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, ConnectionError):
+            # the smp-server hung up, usually after its own timeout
+            log.event(logging.WARNING, "client_gone", client=client_address[0], worker=os.getpid(), error=type(error).__name__)
+        else:
+            log.event(logging.ERROR, "request_failed", client=client_address[0], worker=os.getpid(), exc_info=True)
+
+
+def client_address(peer: str, forwarded_for: str | None) -> str:
+    """The peer, or behind trusted proxies the last X-Forwarded-For address none of them added."""
+    if not forwarded_for or not _trusted(peer):
+        return peer
+    hops = [hop.strip() for hop in forwarded_for.split(",")]
+    for hop in reversed(hops):
+        # an address it cannot read, and anything claimed before it, is not believed
+        if _address(hop) is None:
+            return peer
+        if not _trusted(hop):
+            return hop
+    return hops[0]
+
+
+def _address(text: str):
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    return ip.ipv4_mapped or ip if ip.version == 6 else ip
+
+
+def _trusted(text: str) -> bool:
+    ip = _address(text)
+    return ip is not None and any(ip in net for net in config.TRUSTED_PROXIES)
 
 
 def serve(reuse_port: bool):
@@ -113,10 +172,13 @@ def serve(reuse_port: bool):
         server.server_bind()
         server.server_activate()
         server.serve_forever()
-    except KeyboardInterrupt:
-        sys.stderr.write("\nshutting down\n")
     finally:
         server.server_close()
+
+
+def stop_on(signum, _frame):
+    log.event(logging.INFO, "stopping", signal=signal.Signals(signum).name)
+    sys.exit(0)
 
 
 def supervise(workers: int):
@@ -131,9 +193,9 @@ def supervise(workers: int):
             except ProcessLookupError:
                 pass
 
-    def stop_and_exit(*_):
+    def stop_and_exit(signum, frame):
         stop()
-        sys.exit(0)
+        stop_on(signum, frame)
 
     # before forking, so a signal during startup cannot orphan the workers
     signal.signal(signal.SIGTERM, stop_and_exit)
@@ -147,26 +209,31 @@ def supervise(workers: int):
             try:
                 serve(reuse_port=True)
             except BaseException:
-                traceback.print_exc()
+                log.event(logging.ERROR, "worker_failed", worker=os.getpid(), exc_info=True)
                 code = 1
             os._exit(code)
         children.append(pid)
     pid, status = os.wait()
-    sys.stderr.write(f"worker {pid} exited with status {status}, stopping\n")
+    log.event(logging.ERROR, "worker_exited", worker=pid, status=status, action="stopping")
     stop()
     sys.exit(1)
 
 
 def main():
-    sys.stderr.write(
-        f"snrc-resolve listening on {config.BIND}:{config.PORT} with {config.WORKERS} worker(s)\n"
-        f"  RPC = {config.RPC}\n"
-        f"  Registries:\n"
+    log.setup()
+    log.event(
+        logging.INFO,
+        "listening",
+        bind=config.BIND,
+        port=config.PORT,
+        workers=config.WORKERS,
+        rpc=config.RPC,
+        registries=",".join(f"{tld}={addr or '-'}" for tld, addr in config.REGISTRIES.items()),
+        trusted_proxies=",".join(map(str, config.TRUSTED_PROXIES)) or None,
     )
-    for tld, addr in config.REGISTRIES.items():
-        sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
-    sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
     if config.WORKERS > 1:
         supervise(config.WORKERS)
     else:
+        signal.signal(signal.SIGTERM, stop_on)
+        signal.signal(signal.SIGINT, stop_on)
         serve(reuse_port=False)

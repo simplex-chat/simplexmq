@@ -414,3 +414,38 @@ show up in `docker compose logs resolver`.
 | `SNRC_WORKERS` | CPU count, at most 4 | processes sharing the port. If one exits, the others stop, so the container restarts |
 | `SNRC_RPC_TIMEOUT` | `5` | seconds to wait for each request to the node; the smp-server gives up after 3 |
 | `SNRC_MULTICALL` | `0xcA11bde05977b3631167028862bE2a173976CA11` | Multicall3 address. If it does not answer, each round is sent as a plain batch and the log says so once |
+
+### Logs
+
+Each event is one line: UTC time, level, event name, then `key=value` fields.
+
+```
+2026-09-26T08:06:19.992Z INFO  request  client=203.0.113.7 worker=12 method=GET path=/v2/resolve/[4fdd…].testing status=200 bytes=701 ms=35
+2026-09-26T08:06:20.051Z WARN  upstream_error  name=foobar.testing error=ConnectionRefusedError message="[Errno 111] Connection refused"
+```
+
+| Event | Level | Meaning |
+|---|---|---|
+| `listening` | info | started: address, workers, RPC endpoint, registries, trusted proxies |
+| `request` | info | one answered request; `/health` only at debug |
+| `upstream_error` | warn | a read from the node failed; the caller got 502 |
+| `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
+| `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
+| `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
+| `request_failed` | error | a request failed unexpectedly, with its traceback |
+| `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
+| `stopping` | info | stopped by a signal |
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SNRC_LOG_FORMAT` | `text` | `text` (`key=value`) or `json`, one object per line |
+| `SNRC_LOG_COLOR` | `auto` | `auto` colours only a terminal, `always`, `never`. Docker output is no terminal, so set `always` for coloured `docker compose logs` |
+| `SNRC_LOG_LEVEL` | `info` | `debug` also logs health checks and idle connections closing |
+| `SNRC_TRUSTED_PROXIES` | none | addresses or CIDRs of reverse proxies whose `X-Forwarded-For` names the client |
+
+Behind a reverse proxy such as Caddy on the host, the resolver sees the Docker
+network's gateway rather than the client. Trust that gateway, and the logged
+client is the last `X-Forwarded-For` address no trusted proxy added, so a caller
+cannot claim another address. The gateway is
+`docker network inspect resolver_default --format '{{(index .IPAM.Config 0).Gateway}}'`,
+with the network named after the compose project.

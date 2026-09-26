@@ -44,6 +44,11 @@ Environment:
   SNRC_RPC_TIMEOUT       Seconds to wait for each RPC request (default: 5)
   SNRC_MULTICALL         Multicall3 contract that runs a round of reads as one call
                          (default: 0xcA11bde05977b3631167028862bE2a173976CA11)
+  SNRC_LOG_FORMAT        text (key=value) or json (default: text)
+  SNRC_LOG_COLOR         auto (on a terminal), always or never (default: auto)
+  SNRC_LOG_LEVEL         debug, info, warning or error (default: info)
+  SNRC_TRUSTED_PROXIES   Comma-separated addresses or CIDRs of reverse proxies whose
+                         X-Forwarded-For names the client (default: none)
 
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.

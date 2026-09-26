@@ -1,5 +1,3 @@
-import contextlib
-import io
 import time
 import unittest
 
@@ -86,13 +84,17 @@ class ErrorCodeTests(unittest.TestCase):
                 self.assertNotEqual(body["error"], body["message"])
 
     def test_an_upstream_failure_does_not_echo_the_exception(self):
-        with contextlib.redirect_stderr(io.StringIO()) as log:
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
             body = answers.upstream_error(
                 {"name": "alice.testing"},
                 RuntimeError("http://user:secret@rpc.example/kEy8 refused"),
             )
         # the operator still sees the detail in the log
-        self.assertIn("secret", log.getvalue())
+        [record] = logs.records
+        self.assertEqual(record.getMessage(), "upstream_error")
+        self.assertEqual(record.fields["name"], "alice.testing")
+        self.assertEqual(record.fields["error"], "RuntimeError")
+        self.assertIn("secret", record.fields["message"])
         self.assertEqual(body["error"], "upstreamError")
         self.assertIn("RuntimeError", body["message"])
         self.assertNotIn("secret", body["message"])

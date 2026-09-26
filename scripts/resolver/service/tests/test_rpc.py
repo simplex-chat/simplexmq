@@ -1,5 +1,3 @@
-import contextlib
-import io
 from urllib.error import HTTPError
 
 from snrc_resolve import abi, answers, calls, rpc
@@ -85,19 +83,19 @@ class BatchedReadsTests(FakeNodeTestCase):
 
     def test_without_multicall_a_round_is_still_one_batch(self):
         self.node.multicall = False
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
             self.assert_same_answer(answers.registration, "acme.testing", 4)
-        self.assertIn("batching calls instead", err.getvalue())
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["fallback"]), ("multicall_unavailable", "batch"))
 
     def test_a_node_that_does_not_batch_is_read_one_call_at_a_time(self):
         self.node.batch = False
         one_by_one, one_by_one_trips = self.requests_made(lambda: answers.registration("acme.testing"))
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+        with self.assertNoLogs("snrc_resolve"):
             batched, batched_trips = self.batched(answers.registration, "acme.testing")
         self.assertEqual(batched, one_by_one)
         # one refused batch per round, then the reads the batch would have made
         self.assertEqual(batched_trips, one_by_one_trips + 2)
-        self.assertEqual(err.getvalue(), "")
 
     def test_a_read_reverted_in_the_multicall_is_a_reverted_call(self):
         with rpc.request_reads():

@@ -1,5 +1,6 @@
 """Settings read from the environment, and the contracts of each TLD."""
 
+import ipaddress
 import os
 
 
@@ -14,6 +15,14 @@ WORKERS = int(os.environ.get("SNRC_WORKERS", "") or min(MAX_DEFAULT_WORKERS, os.
 # Multicall3, at this address on mainnet and most chains. A node runs a JSON-RPC
 # batch one call after another, so a round of reads is sent as one eth_call.
 MULTICALL = os.environ.get("SNRC_MULTICALL", "") or "0xcA11bde05977b3631167028862bE2a173976CA11"
+LOG_FORMAT = os.environ.get("SNRC_LOG_FORMAT", "") or "text"
+LOG_COLOR = os.environ.get("SNRC_LOG_COLOR", "") or "auto"
+LOG_LEVEL = os.environ.get("SNRC_LOG_LEVEL", "") or "info"
+# Peers whose X-Forwarded-For is believed, such as the Docker gateway a reverse proxy on the host
+# connects through. Anyone else could put any address there.
+TRUSTED_PROXIES = tuple(
+    ipaddress.ip_network(p.strip(), strict=False) for p in os.environ.get("SNRC_TRUSTED_PROXIES", "").split(",") if p.strip()
+)
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
 # happens on the rightmost label of the queried name. Empty / unset means

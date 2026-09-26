@@ -1,8 +1,8 @@
 """The /v2/resolve registration and the /v1 /resolve record."""
 
-import sys
+import logging
 
-from . import config, rpc
+from . import config, log, rpc
 from .abi import ZERO_ADDR, decode_address, is_encoded_labelhash, label_token, node_of
 from .calls import expires_call, grace_call, label_call, owner_call, reserved_call, resolver_call
 from .coins import COIN_BTC, COIN_DOT, COIN_ETH, COIN_XMR
@@ -34,7 +34,7 @@ def lookup_reads(name: str):
 def upstream_error(subject: dict, e: Exception) -> dict:
     """The exception can carry the failing URL and SNRC_RPC can carry a provider
     key, so the text goes to the log and only the type to the caller."""
-    print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
+    log.event(logging.WARNING, "upstream_error", **subject, error=type(e).__name__, message=str(e))
     return {
         **subject,
         "error": "upstreamError",
