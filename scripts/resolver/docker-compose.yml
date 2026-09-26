@@ -131,6 +131,7 @@ services:
   # smp-server points its [NAMES] resolver_endpoint at this URL.
   # To change the host port, edit the LEFT side of the port mapping below.
   resolver:
+    image: snrc-resolve:local
     build:
       context: ./service
       dockerfile: Dockerfile
