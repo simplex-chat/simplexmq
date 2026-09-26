@@ -2501,11 +2501,11 @@ getSubscriptionServers db onlyNeeded =
 -- TODO [certs rcv] check index for getting queues with service present
 getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> Int -> Maybe SMP.RecipientId -> IO [RcvQueueSub]
 getUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) onlyNeeded hasService limit cursor_ =
-  map (rcvQueueSubSrv srv . toRcvQueueSub) <$> case cursor_ of
+  map (toServerRcvQueueSub srv) <$> case cursor_ of
     Nothing -> DB.query db (q <> orderLimit) (userId, h, p, kh, limit)
     Just cursor -> DB.query db (q <> " AND q.rcv_id > ? " <> orderLimit) (userId, h, p, kh, cursor, limit)
   where
-    q = rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond
+    q = serverRcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond
     orderLimit = " ORDER BY q.rcv_id LIMIT ?"
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
@@ -2518,7 +2518,7 @@ unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [Rcv
 unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   deleteClientService db userId srv
 #if defined(dbPostgres)
-  map (rcvQueueSubSrv srv . toRcvQueueSub)
+  map (toServerRcvQueueSub srv)
     <$> DB.query
       db
       (removeRcvAssocsQuery <> " " <> returningColumns)
@@ -2526,15 +2526,15 @@ unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   where
     returningColumns =
       [sql|
-        RETURNING c.user_id, rcv_queues.conn_id, rcv_queues.host, rcv_queues.port, COALESCE(rcv_queues.server_key_hash, s.key_hash),
+        RETURNING c.user_id, rcv_queues.conn_id,
           rcv_queues.rcv_id, rcv_queues.rcv_private_key, rcv_queues.status, c.enable_ntfs, rcv_queues.client_notice_id,
           rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
       |]
 #else
-  qs <- map (rcvQueueSubSrv srv . toRcvQueueSub)
+  qs <- map (toServerRcvQueueSub srv)
     <$> DB.query
       db
-      (rcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
+      (serverRcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
       (userId, h, p, kh)
   DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
   pure qs
@@ -2885,21 +2885,32 @@ getRcvQueueSubsByConnId_ db connId =
 rcvQueueSubQuery :: Query
 rcvQueueSubQuery =
   [sql|
-    SELECT c.user_id, q.conn_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs, q.client_notice_id,
+    SELECT q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), c.user_id, q.conn_id, q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs, q.client_notice_id,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
     JOIN connections c ON q.conn_id = c.conn_id
   |]
 
--- The rows are filtered on this exact server, so this is the value each row would rebuild.
-rcvQueueSubSrv :: SMPServer -> RcvQueueSub -> RcvQueueSub
-rcvQueueSubSrv srv q = q {server = srv}
+serverRcvQueueSubQuery :: Query
+serverRcvQueueSubQuery =
+  [sql|
+    SELECT c.user_id, q.conn_id, q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs, q.client_notice_id,
+      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id
+    FROM rcv_queues q
+    JOIN servers s ON q.host = s.host AND q.port = s.port
+    JOIN connections c ON q.conn_id = c.conn_id
+  |]
 
-toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey) :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
-toRcvQueueSub ((userId, connId, host, port, keyHash, rcvId, rcvPrivateKey) :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId)) =
+type RcvQueueSubRow = (UserId, ConnId, SMP.RecipientId, SMP.RcvPrivateAuthKey) :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, Int64, BoolInt, Maybe Int64)
+
+toRcvQueueSub :: (NonEmpty TransportHost, ServiceName, C.KeyHash) :. RcvQueueSubRow -> RcvQueueSub
+toRcvQueueSub ((host, port, keyHash) :. r) = toServerRcvQueueSub (SMPServer host port keyHash) r
+
+toServerRcvQueueSub :: SMPServer -> RcvQueueSubRow -> RcvQueueSub
+toServerRcvQueueSub server ((userId, connId, rcvId, rcvPrivateKey) :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId)) =
   let enableNtfs = maybe True unBI enableNtfs_
-   in RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
+   in RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
