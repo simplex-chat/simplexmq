@@ -12,6 +12,7 @@ import ipaddress
 import json
 import logging
 import os
+import queue
 import re
 import signal
 import socket
@@ -650,6 +651,25 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(body["basePrice"], self.BASE)
 
 
+class DecodePricesTests(unittest.TestCase):
+    def test_a_count_longer_than_the_answer_is_refused(self):
+        """The count comes from the oracle; decoding it unchecked could loop for ever."""
+        huge = "0x" + snrc.encode_uint(200) + snrc.encode_uint(0x40) + snrc.encode_uint(2**64)
+        outcome = []
+
+        def decode():
+            try:
+                snrc.decode_prices(huge)
+            except RuntimeError as e:
+                outcome.append(e)
+
+        worker = threading.Thread(target=decode, daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), "decoding did not stop")
+        self.assertRegex(str(outcome[0]), "short response")
+
+
 class EnsOracleTests(unittest.TestCase):
     """.testing runs an ENS-shaped oracle: it prices in attoUSD per second and
     charges a premium on lapsed names that it does not expose."""
@@ -1171,6 +1191,7 @@ class FakeNode(ThreadingHTTPServer):
         self.connections = 0
         self.batch = True
         self.multicall = True
+        self.multicall_null = False
         self.status = 200
         self.hang_up = False
         self.drop_after_reply = False
@@ -1194,6 +1215,8 @@ class FakeNode(ThreadingHTTPServer):
         elif method == "eth_call" and params[0]["to"].lower() == snrc.MULTICALL.lower():
             if not self.multicall:
                 out["error"] = {"code": -32000, "message": "no contract code"}
+            elif self.multicall_null:
+                out["result"] = None
             else:
                 results = []
                 for to, data in _decode_aggregate3_calls(params[0]["data"]):
@@ -1315,6 +1338,28 @@ class RpcTransportTests(FakeNodeTestCase):
         self.assertEqual(self.node.connections, 1)
 
 
+class RpcPoolTests(FakeNodeTestCase):
+    def test_connections_beyond_the_pool_are_closed_after_use(self):
+        """Every worker would otherwise keep its peak concurrency open to the node."""
+        saved, snrc._rpc_pool = snrc._rpc_pool, queue.LifoQueue(maxsize=1)
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}).encode()
+            kept, extra = snrc._new_rpc_connection(), snrc._new_rpc_connection()
+            snrc._post_pooled(kept, body)
+            # returning a connection to a full pool must not wait for a free slot
+            done = threading.Thread(target=snrc._post_pooled, args=(extra, body), daemon=True)
+            done.start()
+            done.join(5)
+            self.assertFalse(done.is_alive(), "returning a connection to a full pool blocked")
+            self.assertEqual(snrc._rpc_pool.qsize(), 1)
+            self.assertIsNotNone(kept.sock)
+            self.assertIsNone(extra.sock)
+        finally:
+            while not snrc._rpc_pool.empty():
+                snrc._rpc_pool.get_nowait().close()
+            snrc._rpc_pool = saved
+
+
 class BatchedReadsTests(FakeNodeTestCase):
     """Inside a request a round of reads is one round trip, and its contract
     reads one multicall, because a node runs the calls of a JSON-RPC batch one
@@ -1359,6 +1404,17 @@ class BatchedReadsTests(FakeNodeTestCase):
             self.assert_same_answer(snrc.registration, "acme.testing", 4)
         [record] = logs.records
         self.assertEqual((record.getMessage(), record.fields["fallback"]), ("multicall_unavailable", "batch"))
+
+    def test_a_multicall_without_a_result_falls_back_to_a_batch(self):
+        self.node.multicall_null = True
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assert_same_answer(snrc.registration, "acme.testing", 4)
+        self.assertEqual([r.getMessage() for r in logs.records], ["multicall_unavailable"])
+
+    def test_an_answer_with_neither_result_nor_error_is_not_taken_as_one(self):
+        reads = {}
+        snrc._remember(reads, [("eth_blockNumber", [])], [{"jsonrpc": "2.0", "id": 0}])
+        self.assertEqual(reads, {})
 
     def test_a_node_that_does_not_batch_is_read_one_call_at_a_time(self):
         self.node.batch = False
@@ -1446,6 +1502,19 @@ class RequestLogTests(unittest.TestCase):
         record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
         self.assertEqual(record.fields["client"], "127.0.0.1")
 
+    def test_a_bad_request_is_not_logged_with_the_previous_ones_fields(self):
+        """On a kept-alive connection the handler still held the last request's path and size."""
+        with self.assertLogs("snrc_resolve", "INFO") as logs:
+            with socket.create_connection(self.server.server_address, timeout=5) as sock:
+                sock.sendall(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\n\r\n")
+                sock.recv(65536)
+                sock.sendall(b"BOGUS\r\n\r\n")
+                while sock.recv(65536):
+                    pass
+        first, second = [r for r in logs.records if r.getMessage() == "request"]
+        self.assertEqual(first.fields["path"], "/v2/resolve/x.simplex")
+        self.assertEqual((second.fields["status"], second.fields["path"], second.fields["bytes"], second.fields["ms"]), (400, None, None, None))
+
     def test_health_checks_are_logged_only_at_debug(self):
         """The container checks /health every 30 s."""
         record = self.request("/health", level="DEBUG")
@@ -1502,6 +1571,14 @@ class RequestBodyTests(unittest.TestCase):
         conn.close()
         self.assertEqual([a[:2] for a in answers], [(400, "tldNotConfigured")] * 2)
         self.assertIs(answers[0][2], answers[1][2])
+
+
+class PublicEndpointTests(unittest.TestCase):
+    def test_credentials_path_and_query_are_not_shown(self):
+        self.assertEqual(snrc.public_endpoint("https://user:pw@rpc.example:8443/v2/KEY?apikey=K"), "https://rpc.example:8443")
+
+    def test_a_plain_endpoint_is_unchanged(self):
+        self.assertEqual(snrc.public_endpoint("http://reth:8545"), "http://reth:8545")
 
 
 class ClientAddressTests(unittest.TestCase):

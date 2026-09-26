@@ -254,7 +254,10 @@ RPC_HEADERS = {"Content-Type": "application/json", "User-Agent": "snrc-resolve/1
 # Idle keep-alive connections to SNRC_RPC. A connection per call costs most of
 # a lookup's CPU and leaves a TIME_WAIT socket per call, which exhausts local
 # ports at a few dozen lookups per second.
-_rpc_pool = queue.LifoQueue()
+# Idle connections kept per worker; more are closed after use. 4 workers stay well
+# under reth's default limit of 500 connections.
+RPC_POOL_SIZE = 32
+_rpc_pool = queue.LifoQueue(maxsize=RPC_POOL_SIZE)
 
 
 def _new_rpc_connection():
@@ -279,7 +282,10 @@ def _post_pooled(conn, body: bytes) -> bytes:
     except BaseException:
         conn.close()
         raise
-    _rpc_pool.put(conn)
+    try:
+        _rpc_pool.put_nowait(conn)
+    except queue.Full:
+        conn.close()
     return data
 
 
@@ -347,8 +353,8 @@ _multicall_failed_logged = False
 
 def _remember(reads, requests, answers):
     for (m, p), r in zip(requests, answers, strict=True):
-        if r is not None:
-            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r.get("result")
+        if r is not None and ("result" in r or "error" in r):
+            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r["result"]
 
 
 def prefetch(requests):
@@ -373,7 +379,10 @@ def prefetch(requests):
         return
     _remember(reads, others, answers[:-1])
     try:
-        results = decode_aggregate3(answers[-1]["result"])
+        result = (answers[-1] or {}).get("result")
+        if not isinstance(result, str):
+            raise ValueError(f"multicall answered {answers[-1]!r}")
+        results = decode_aggregate3(result)
         if len(results) != len(calls):
             raise ValueError("multicall answered a different number of calls")
     except (KeyError, TypeError, ValueError) as e:
@@ -591,6 +600,9 @@ def decode_prices(hex_data: str):
     base = int.from_bytes(raw[:32], "big")
     at = int.from_bytes(raw[32:64], "big")
     count = int.from_bytes(raw[at:at + 32], "big")
+    # the count comes from the answer, so it is checked against the answer's length
+    if at + 32 + count * 64 > len(raw):
+        raise RuntimeError("prices(): short response")
     tiers = {}
     for i in range(count):
         item = at + 32 + i * 64
@@ -1257,6 +1269,11 @@ class Handler(BaseHTTPRequestHandler):
         # headers and body go out in separate writes, which Nagle holds for the client's delayed ACK
         self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
+    def handle_one_request(self):
+        # on a kept-alive connection these still hold the previous request's values
+        self._started = self._sent = self.path = self.headers = None
+        super().handle_one_request()
+
     def do_GET(self):  # noqa: N802 - http.server contract
         self._started = time.monotonic()
         if self._has_body():
@@ -1268,7 +1285,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
-            self._respond(200, {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head_block()})
+            self._respond(200, {"ok": True, "rpc": public_endpoint(RPC), "registries": REGISTRIES, **head_block()})
             return
 
         if len(parts) == 3 and parts[0] == "v2" and parts[1] == "resolve":
@@ -1336,13 +1353,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def address_string(self) -> str:
-        headers = getattr(self, "headers", None)
-        forwarded = headers.get_all("X-Forwarded-For") if headers else None
+        forwarded = self.headers.get_all("X-Forwarded-For") if self.headers else None
         return client_address(self.client_address[0], ",".join(forwarded) if forwarded else None)
 
     def log_request(self, code="-", size="-"):
-        started = getattr(self, "_started", None)
-        path = urlparse(self.path).path if getattr(self, "path", None) else None
+        started = self._started
+        path = urlparse(self.path).path if self.path else None
         log_event(
             # the container's health check runs every 30 s
             logging.DEBUG if path == "/health" else logging.INFO,
@@ -1350,9 +1366,9 @@ class Handler(BaseHTTPRequestHandler):
             client=self.address_string(),
             worker=os.getpid(),
             method=getattr(self, "command", None),
-            path=unquote(self.path) if getattr(self, "path", None) else None,
+            path=unquote(self.path) if self.path else None,
             status=getattr(code, "value", code),
-            bytes=getattr(self, "_sent", None),
+            bytes=self._sent,
             ms=round((time.monotonic() - started) * 1000) if started else None,
         )
 
@@ -1378,6 +1394,12 @@ class ResolverServer(ThreadingHTTPServer):
             log_event(logging.WARNING, "client_gone", client=client_address[0], worker=os.getpid(), error=type(error).__name__)
         else:
             log_event(logging.ERROR, "request_failed", client=client_address[0], worker=os.getpid(), exc_info=True)
+
+
+def public_endpoint(url: str) -> str:
+    """The RPC endpoint without credentials, path or query, where a provider key would be."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
 
 
 def client_address(peer: str, forwarded_for: str | None) -> str:
