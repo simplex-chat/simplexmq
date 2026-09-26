@@ -160,6 +160,11 @@ services:
       # seconds to wait for each request to reth (default: 5). See README.
       # SNRC_WORKERS: "4"
       # SNRC_RPC_TIMEOUT: "5"
+      # Coloured `docker compose logs` (output is no terminal, so colours are off by default),
+      # and the Docker gateway a reverse proxy on the host connects through, so the
+      # client it names in X-Forwarded-For is logged instead of the gateway. See README.
+      # SNRC_LOG_COLOR: always
+      # SNRC_TRUSTED_PROXIES: 172.18.0.1
     ports:
       - "127.0.0.1:8000:8000"
     restart: unless-stopped

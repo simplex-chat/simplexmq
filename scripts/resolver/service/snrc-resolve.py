@@ -50,6 +50,11 @@ Environment:
   SNRC_RPC_TIMEOUT       Seconds to wait for each RPC request (default: 5)
   SNRC_MULTICALL         Multicall3 contract that runs a round of reads as one call
                          (default: 0xcA11bde05977b3631167028862bE2a173976CA11)
+  SNRC_LOG_FORMAT        text (key=value) or json (default: text)
+  SNRC_LOG_COLOR         auto (on a terminal), always or never (default: auto)
+  SNRC_LOG_LEVEL         debug, info, warning or error (default: info)
+  SNRC_TRUSTED_PROXIES   Comma-separated addresses or CIDRs of reverse proxies whose
+                         X-Forwarded-For names the client (default: none)
 
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.
@@ -68,7 +73,9 @@ Unrecognised payloads fall back to `0x`-prefixed raw hex.
 """
 
 import hashlib
+import ipaddress
 import json
+import logging
 import os
 import queue
 import signal
@@ -76,8 +83,8 @@ import socket
 import sys
 import threading
 import time
-import traceback
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from functools import lru_cache
 from http.client import BadStatusLine, HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -97,6 +104,14 @@ WORKERS = int(os.environ.get("SNRC_WORKERS", "") or min(MAX_DEFAULT_WORKERS, os.
 # Multicall3, at this address on mainnet and most chains. A node runs a JSON-RPC
 # batch one call after another, so a round of reads is sent as one eth_call.
 MULTICALL = os.environ.get("SNRC_MULTICALL", "") or "0xcA11bde05977b3631167028862bE2a173976CA11"
+LOG_FORMAT = os.environ.get("SNRC_LOG_FORMAT", "") or "text"
+LOG_COLOR = os.environ.get("SNRC_LOG_COLOR", "") or "auto"
+LOG_LEVEL = os.environ.get("SNRC_LOG_LEVEL", "") or "info"
+# Peers whose X-Forwarded-For is believed, such as the Docker gateway a reverse proxy on the host
+# connects through. Anyone else could put any address there.
+TRUSTED_PROXIES = tuple(
+    ipaddress.ip_network(p.strip(), strict=False) for p in os.environ.get("SNRC_TRUSTED_PROXIES", "").split(",") if p.strip()
+)
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
 # happens on the rightmost label of the queried name. Empty / unset means
@@ -146,6 +161,87 @@ RECORD_COINS = (COIN_ETH, COIN_BTC, COIN_XMR, COIN_DOT)
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
+
+
+# ---------- Logging ----------
+
+LOGGER = logging.getLogger("snrc_resolve")
+LEVEL_NAMES = {logging.DEBUG: "DEBUG", logging.INFO: "INFO", logging.WARNING: "WARN", logging.ERROR: "ERROR"}
+# ANSI SGR codes
+DIM, BOLD, GREEN, YELLOW, RED = "2", "1", "32", "33", "31"
+LEVEL_COLORS = {"DEBUG": DIM, "INFO": GREEN, "WARN": YELLOW, "ERROR": RED}
+STATUS_COLORS = {2: GREEN, 3: GREEN, 4: YELLOW, 5: RED}
+
+
+def log_event(level: int, name: str, /, exc_info=None, **fields):
+    LOGGER.log(level, name, exc_info=exc_info, extra={"fields": fields})
+
+
+def _log_time(record: logging.LogRecord) -> str:
+    return datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _log_value(value) -> str:
+    """A logfmt value: bare when it cannot be misread, JSON-quoted otherwise."""
+    if value is None:
+        return "-"
+    s = str(value)
+    if not s or any(c in s for c in ' ="\\') or not s.isprintable():
+        return json.dumps(s)
+    return s
+
+
+class TextFormatter(logging.Formatter):
+    def __init__(self, color: bool):
+        super().__init__()
+        self.color = color
+
+    def _paint(self, code: str, text: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if self.color and code else text
+
+    def format(self, record: logging.LogRecord) -> str:
+        level = LEVEL_NAMES.get(record.levelno, record.levelname)
+        fields = " ".join(
+            self._paint(DIM, f"{k}=") + self._paint(STATUS_COLORS.get(v // 100, "") if k == "status" and isinstance(v, int) else "", _log_value(v))
+            for k, v in getattr(record, "fields", {}).items()
+        )
+        line = f"{self._paint(DIM, _log_time(record))} {self._paint(LEVEL_COLORS.get(level, ''), f'{level:<5}')} {self._paint(BOLD, record.getMessage())}"
+        if fields:
+            line += "  " + fields
+        if record.exc_info:
+            line += "\n" + self.formatException(record.exc_info)
+        return line
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        out = {
+            "time": _log_time(record),
+            "level": LEVEL_NAMES.get(record.levelno, record.levelname).lower(),
+            "event": record.getMessage(),
+            **getattr(record, "fields", {}),
+        }
+        if record.exc_info:
+            out["exception"] = self.formatException(record.exc_info)
+        return json.dumps(out, default=str)
+
+
+def setup_logging(stream=None):
+    """Sends the resolver's events to stderr in the configured format."""
+    stream = stream or sys.stderr
+    if LOG_FORMAT not in ("text", "json"):
+        raise ValueError(f"SNRC_LOG_FORMAT must be text or json, not {LOG_FORMAT!r}")
+    if LOG_COLOR not in ("auto", "always", "never"):
+        raise ValueError(f"SNRC_LOG_COLOR must be auto, always or never, not {LOG_COLOR!r}")
+    level = logging.getLevelName(LOG_LEVEL.upper())
+    if not isinstance(level, int):
+        raise ValueError(f"SNRC_LOG_LEVEL must be debug, info, warning or error, not {LOG_LEVEL!r}")
+    color = LOG_COLOR == "always" or (LOG_COLOR == "auto" and stream.isatty())
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter() if LOG_FORMAT == "json" else TextFormatter(color))
+    LOGGER.handlers[:] = [handler]
+    LOGGER.setLevel(level)
+    LOGGER.propagate = False
 
 
 # ---------- RPC + ABI helpers (mirrors ens-lookup.py shape) ----------
@@ -283,7 +379,7 @@ def prefetch(requests):
     except (KeyError, TypeError, ValueError) as e:
         if not _multicall_failed_logged:
             _multicall_failed_logged = True
-            print(f"multicall at {MULTICALL} failed ({e!r}), batching calls instead", file=sys.stderr)
+            log_event(logging.WARNING, "multicall_unavailable", multicall=MULTICALL, error=repr(e), fallback="batch")
         _remember(reads, calls, _send_batch(calls))
         return
     for (m, p), (success, data) in zip(calls, results, strict=True):
@@ -939,7 +1035,7 @@ def split_links(value: str) -> list:
 def upstream_error(subject: dict, e: Exception) -> dict:
     """The exception can carry the failing URL and SNRC_RPC can carry a provider
     key, so the text goes to the log and only the type to the caller."""
-    print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
+    log_event(logging.WARNING, "upstream_error", **subject, error=type(e).__name__, message=str(e))
     return {
         **subject,
         "error": "upstreamError",
@@ -1218,26 +1314,84 @@ class Handler(BaseHTTPRequestHandler):
 
     def _respond(self, status: int, body: dict):
         data = json.dumps(body, indent=2).encode()
+        # send_response logs the request, so the size is known before it
+        self._sent = len(data)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
+    def address_string(self) -> str:
+        headers = getattr(self, "headers", None)
+        forwarded = headers.get_all("X-Forwarded-For") if headers else None
+        return client_address(self.client_address[0], ",".join(forwarded) if forwarded else None)
+
     def log_request(self, code="-", size="-"):
         started = getattr(self, "_started", None)
-        took = f" {(time.monotonic() - started) * 1000:.0f}ms" if started else ""
-        self.log_message('"%s" %s %s%s', self.requestline, getattr(code, "value", code), size, took)
+        path = urlparse(self.path).path if getattr(self, "path", None) else None
+        log_event(
+            # the container's health check runs every 30 s
+            logging.DEBUG if path == "/health" else logging.INFO,
+            "request",
+            client=self.address_string(),
+            worker=os.getpid(),
+            method=getattr(self, "command", None),
+            path=unquote(self.path) if getattr(self, "path", None) else None,
+            status=getattr(code, "value", code),
+            bytes=getattr(self, "_sent", None),
+            ms=round((time.monotonic() - started) * 1000) if started else None,
+        )
+
+    def log_error(self, fmt, *args):
+        message = fmt % args
+        # a kept-alive connection left idle is closed on purpose
+        level = logging.DEBUG if message.startswith("Request timed out") else logging.WARNING
+        log_event(level, "http_error", client=self.address_string(), worker=os.getpid(), message=message)
 
     def log_message(self, fmt, *args):
-        # Quiet the default per-request access log; route to stderr in one line.
-        sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
+        log_event(logging.INFO, "http", client=self.address_string(), message=fmt % args)
 
 
 class ResolverServer(ThreadingHTTPServer):
     # socketserver's default of 5 drops simultaneous connections, each retried by
     # TCP after 1 s, and the smp-server gives up after 3 s. The kernel caps it at somaxconn.
     request_queue_size = 128
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, ConnectionError):
+            # the smp-server hung up, usually after its own timeout
+            log_event(logging.WARNING, "client_gone", client=client_address[0], worker=os.getpid(), error=type(error).__name__)
+        else:
+            log_event(logging.ERROR, "request_failed", client=client_address[0], worker=os.getpid(), exc_info=True)
+
+
+def client_address(peer: str, forwarded_for: str | None) -> str:
+    """The peer, or behind trusted proxies the last X-Forwarded-For address none of them added."""
+    if not forwarded_for or not _trusted(peer):
+        return peer
+    hops = [hop.strip() for hop in forwarded_for.split(",")]
+    for hop in reversed(hops):
+        # an address it cannot read, and anything claimed before it, is not believed
+        if _address(hop) is None:
+            return peer
+        if not _trusted(hop):
+            return hop
+    return hops[0]
+
+
+def _address(text: str):
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    return ip.ipv4_mapped or ip if ip.version == 6 else ip
+
+
+def _trusted(text: str) -> bool:
+    ip = _address(text)
+    return ip is not None and any(ip in net for net in TRUSTED_PROXIES)
 
 
 def serve(reuse_port: bool):
@@ -1247,10 +1401,13 @@ def serve(reuse_port: bool):
         server.server_bind()
         server.server_activate()
         server.serve_forever()
-    except KeyboardInterrupt:
-        sys.stderr.write("\nshutting down\n")
     finally:
         server.server_close()
+
+
+def stop_on(signum, _frame):
+    log_event(logging.INFO, "stopping", signal=signal.Signals(signum).name)
+    sys.exit(0)
 
 
 def supervise(workers: int):
@@ -1265,9 +1422,9 @@ def supervise(workers: int):
             except ProcessLookupError:
                 pass
 
-    def stop_and_exit(*_):
+    def stop_and_exit(signum, frame):
         stop()
-        sys.exit(0)
+        stop_on(signum, frame)
 
     # before forking, so a signal during startup cannot orphan the workers
     signal.signal(signal.SIGTERM, stop_and_exit)
@@ -1281,28 +1438,33 @@ def supervise(workers: int):
             try:
                 serve(reuse_port=True)
             except BaseException:
-                traceback.print_exc()
+                log_event(logging.ERROR, "worker_failed", worker=os.getpid(), exc_info=True)
                 code = 1
             os._exit(code)
         children.append(pid)
     pid, status = os.wait()
-    sys.stderr.write(f"worker {pid} exited with status {status}, stopping\n")
+    log_event(logging.ERROR, "worker_exited", worker=pid, status=status, action="stopping")
     stop()
     sys.exit(1)
 
 
 def main():
-    sys.stderr.write(
-        f"snrc-resolve listening on {BIND}:{PORT} with {WORKERS} worker(s)\n"
-        f"  RPC = {RPC}\n"
-        f"  Registries:\n"
+    setup_logging()
+    log_event(
+        logging.INFO,
+        "listening",
+        bind=BIND,
+        port=PORT,
+        workers=WORKERS,
+        rpc=RPC,
+        registries=",".join(f"{tld}={addr or '-'}" for tld, addr in REGISTRIES.items()),
+        trusted_proxies=",".join(map(str, TRUSTED_PROXIES)) or None,
     )
-    for tld, addr in REGISTRIES.items():
-        sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
-    sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
     if WORKERS > 1:
         supervise(WORKERS)
     else:
+        signal.signal(signal.SIGTERM, stop_on)
+        signal.signal(signal.SIGINT, stop_on)
         serve(reuse_port=False)
 
 

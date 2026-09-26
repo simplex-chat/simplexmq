@@ -8,8 +8,11 @@ import contextlib
 import http.client
 import importlib.util
 import io
+import ipaddress
 import json
+import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -20,7 +23,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 # snrc-resolve.py has a hyphen, so import it via importlib instead of `import`.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -788,13 +791,17 @@ class ErrorCodeTests(unittest.TestCase):
                 self.assertNotEqual(body["error"], body["message"])
 
     def test_an_upstream_failure_does_not_echo_the_exception(self):
-        with contextlib.redirect_stderr(io.StringIO()) as log:
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
             body = snrc.upstream_error(
                 {"name": "alice.testing"},
                 RuntimeError("http://user:secret@rpc.example/kEy8 refused"),
             )
         # the operator still sees the detail in the log
-        self.assertIn("secret", log.getvalue())
+        [record] = logs.records
+        self.assertEqual(record.getMessage(), "upstream_error")
+        self.assertEqual(record.fields["name"], "alice.testing")
+        self.assertEqual(record.fields["error"], "RuntimeError")
+        self.assertIn("secret", record.fields["message"])
         self.assertEqual(body["error"], "upstreamError")
         self.assertIn("RuntimeError", body["message"])
         self.assertNotIn("secret", body["message"])
@@ -1348,19 +1355,19 @@ class BatchedReadsTests(FakeNodeTestCase):
 
     def test_without_multicall_a_round_is_still_one_batch(self):
         self.node.multicall = False
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
             self.assert_same_answer(snrc.registration, "acme.testing", 4)
-        self.assertIn("batching calls instead", err.getvalue())
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["fallback"]), ("multicall_unavailable", "batch"))
 
     def test_a_node_that_does_not_batch_is_read_one_call_at_a_time(self):
         self.node.batch = False
         one_by_one, one_by_one_trips = self.requests_made(lambda: snrc.registration("acme.testing"))
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+        with self.assertNoLogs("snrc_resolve"):
             batched, batched_trips = self.batched(snrc.registration, "acme.testing")
         self.assertEqual(batched, one_by_one)
         # one refused batch per round, then the reads the batch would have made
         self.assertEqual(batched_trips, one_by_one_trips + 2)
-        self.assertEqual(err.getvalue(), "")
 
     def test_a_read_reverted_in_the_multicall_is_a_reverted_call(self):
         with snrc.request_reads():
@@ -1393,18 +1400,121 @@ class Aggregate3Tests(unittest.TestCase):
 
 
 class RequestLogTests(unittest.TestCase):
-    def test_each_request_is_logged_with_its_duration(self):
-        server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
-        threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True).start()
-        try:
-            with contextlib.redirect_stderr(io.StringIO()) as err:
-                with self.assertRaises(HTTPError):
-                    urlopen(f"http://127.0.0.1:{server.server_address[1]}/v2/resolve/x.simplex", timeout=5)
-                time.sleep(0.1)
-        finally:
-            server.shutdown()
-            server.server_close()
-        self.assertRegex(err.getvalue(), r'"GET /v2/resolve/x\.simplex HTTP/1\.1" 400 - \d+ms')
+    """Each request is one event with the client it came from, behind a reverse
+    proxy the client the proxy names rather than the proxy itself."""
+
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True).start()
+        self._saved = snrc.TRUSTED_PROXIES
+
+    def tearDown(self):
+        snrc.TRUSTED_PROXIES = self._saved
+        self.server.shutdown()
+        self.server.server_close()
+
+    def request(self, path, headers=None, level="INFO"):
+        url = f"http://127.0.0.1:{self.server.server_address[1]}{path}"
+        with self.assertLogs("snrc_resolve", level) as logs:
+            try:
+                urlopen(Request(url, headers=headers or {}), timeout=5).read()
+            except HTTPError:
+                pass
+            deadline = time.monotonic() + 2
+            while not any(r.getMessage() == "request" for r in logs.records) and time.monotonic() < deadline:
+                time.sleep(0.01)
+        [record] = [r for r in logs.records if r.getMessage() == "request"]
+        return record
+
+    def test_a_request_is_logged_with_its_outcome(self):
+        record = self.request("/v2/resolve/x.simplex")
+        fields = record.fields
+        self.assertEqual(record.levelname, "INFO")
+        self.assertEqual(
+            (fields["client"], fields["method"], fields["path"], fields["status"], fields["worker"]),
+            ("127.0.0.1", "GET", "/v2/resolve/x.simplex", 400, os.getpid()),
+        )
+        self.assertGreater(fields["bytes"], 0)
+        self.assertGreaterEqual(fields["ms"], 0)
+
+    def test_a_trusted_proxy_names_the_client(self):
+        snrc.TRUSTED_PROXIES = (ipaddress.ip_network("127.0.0.1/32"),)
+        record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(record.fields["client"], "203.0.113.7")
+
+    def test_any_other_peer_cannot_name_itself(self):
+        record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(record.fields["client"], "127.0.0.1")
+
+    def test_health_checks_are_logged_only_at_debug(self):
+        """The container checks /health every 30 s."""
+        record = self.request("/health", level="DEBUG")
+        self.assertEqual(record.levelname, "DEBUG")
+
+
+class ClientAddressTests(unittest.TestCase):
+    PROXY = "172.18.0.1"
+
+    def setUp(self):
+        self._saved = snrc.TRUSTED_PROXIES
+        snrc.TRUSTED_PROXIES = (ipaddress.ip_network("172.16.0.0/12"),)
+
+    def tearDown(self):
+        snrc.TRUSTED_PROXIES = self._saved
+
+    def test_a_peer_that_is_no_proxy_is_the_client(self):
+        self.assertEqual(snrc.client_address("198.51.100.9", "203.0.113.7"), "198.51.100.9")
+
+    def test_without_the_header_the_proxy_is_the_client(self):
+        self.assertEqual(snrc.client_address(self.PROXY, None), self.PROXY)
+
+    def test_the_address_the_proxy_added_is_the_client(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "203.0.113.7"), "203.0.113.7")
+
+    def test_addresses_a_client_sent_itself_are_not_believed(self):
+        """A proxy appends the address it saw, so only the last untrusted one is known."""
+        self.assertEqual(snrc.client_address(self.PROXY, "6.6.6.6, 203.0.113.7"), "203.0.113.7")
+
+    def test_trusted_proxies_in_a_chain_are_skipped(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "203.0.113.7, 172.18.0.5"), "203.0.113.7")
+
+    def test_an_address_that_does_not_parse_is_not_believed(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "203.0.113.7, not-an-ip"), self.PROXY)
+
+    def test_an_ipv4_mapped_peer_is_matched_as_ipv4(self):
+        self.assertEqual(snrc.client_address("::ffff:172.18.0.1", "203.0.113.7"), "203.0.113.7")
+
+    def test_an_ipv6_client_is_kept(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "2001:db8::7"), "2001:db8::7")
+
+
+class RequestErrorTests(unittest.TestCase):
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+
+    def tearDown(self):
+        self.server.server_close()
+
+    def test_a_client_that_hung_up_is_a_warning_without_a_traceback(self):
+        """What an smp-server that gave up after its timeout leaves behind."""
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            try:
+                raise BrokenPipeError
+            except BrokenPipeError:
+                self.server.handle_error(None, ("198.51.100.9", 4000))
+        [record] = logs.records
+        self.assertEqual((record.levelname, record.getMessage(), record.fields["error"]), ("WARNING", "client_gone", "BrokenPipeError"))
+        self.assertIsNone(record.exc_info)
+
+    def test_a_failure_is_an_error_with_its_traceback(self):
+        with self.assertLogs("snrc_resolve", "ERROR") as logs:
+            try:
+                raise KeyError("boom")
+            except KeyError:
+                self.server.handle_error(None, ("198.51.100.9", 4000))
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["client"]), ("request_failed", "198.51.100.9"))
+        self.assertIsNotNone(record.exc_info)
 
 
 class KeepAliveTests(unittest.TestCase):
@@ -1465,13 +1575,14 @@ class WorkerProcessesTests(unittest.TestCase):
             self.port = s.getsockname()[1]
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
                    SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
-        self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.DEVNULL)
+        self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
         self.workers = self._wait_for_workers(2)
 
     def tearDown(self):
         if self.service.poll() is None:
             self.service.kill()
             self.service.wait()
+        self.service.stderr.close()
         for pid in self.workers:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
@@ -1518,8 +1629,99 @@ class WorkerProcessesTests(unittest.TestCase):
         self.service.send_signal(signal.SIGTERM)
         self.assertEqual(self.service.wait(timeout=5), 0)
         self.assertTrue(all(self._gone(pid) for pid in self.workers))
+        self.assertRegex(self.service.stderr.read(), r"INFO  stopping  signal=SIGTERM")
 
     def test_a_worker_exiting_stops_the_service(self):
         os.kill(self.workers[0], signal.SIGKILL)
         self.assertEqual(self.service.wait(timeout=5), 1)
         self.assertTrue(self._gone(self.workers[1]))
+
+
+TIME = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z"
+
+
+class LogTestCase(unittest.TestCase):
+    def setUp(self):
+        self._saved = (snrc.LOG_FORMAT, snrc.LOG_COLOR, snrc.LOG_LEVEL)
+        snrc.LOG_FORMAT, snrc.LOG_COLOR, snrc.LOG_LEVEL = "text", "never", "info"
+        self.out = io.StringIO()
+
+    def tearDown(self):
+        snrc.LOG_FORMAT, snrc.LOG_COLOR, snrc.LOG_LEVEL = self._saved
+        snrc.LOGGER.handlers[:] = []
+        snrc.LOGGER.setLevel(logging.NOTSET)
+        snrc.LOGGER.propagate = True
+
+    def emit(self, level=logging.INFO, name="request", **fields):
+        snrc.setup_logging(self.out)
+        snrc.log_event(level, name, **fields)
+        return self.out.getvalue()
+
+
+class TextFormatTests(LogTestCase):
+    def test_a_line_is_utc_time_level_event_and_fields(self):
+        line = self.emit(client="203.0.113.7", path="/v2/resolve/[4fdd].testing", status=200, ms=7)
+        self.assertRegex(line, rf"^{TIME} INFO  request  client=203\.0\.113\.7 path=/v2/resolve/\[4fdd\]\.testing status=200 ms=7\n$")
+
+    def test_values_that_would_be_misread_are_quoted(self):
+        line = self.emit(message='says "hi" here', empty="", missing=None, eq="a=b")
+        self.assertIn('message="says \\"hi\\" here" empty="" missing=- eq="a=b"', line)
+
+    def test_levels_are_named_in_five_columns(self):
+        self.assertRegex(self.emit(logging.WARNING, "upstream_error"), rf"^{TIME} WARN  upstream_error\n$")
+
+    def test_below_the_configured_level_nothing_is_written(self):
+        self.assertEqual(self.emit(logging.DEBUG), "")
+
+    def test_an_exception_follows_its_line(self):
+        snrc.setup_logging(self.out)
+        try:
+            raise KeyError("boom")
+        except KeyError:
+            snrc.log_event(logging.ERROR, "request_failed", exc_info=True)
+        self.assertRegex(self.out.getvalue(), rf"(?s)^{TIME} ERROR request_failed\nTraceback .*KeyError: 'boom'\n$")
+
+
+class ColorTests(LogTestCase):
+    def test_colours_mark_the_level_and_the_status_class(self):
+        snrc.LOG_COLOR = "always"
+        line = self.emit(status=503)
+        self.assertIn("\033[32mINFO ", line)
+        self.assertIn("\033[31m503\033[0m", line)
+
+    def test_auto_leaves_output_that_is_no_terminal_plain(self):
+        snrc.LOG_COLOR = "auto"
+        self.assertNotIn("\033[", self.emit(status=200))
+
+    def test_never_is_plain(self):
+        self.assertNotIn("\033[", self.emit(status=200))
+
+
+class JsonFormatTests(LogTestCase):
+    def test_a_line_is_one_json_object(self):
+        snrc.LOG_FORMAT = "json"
+        record = json.loads(self.emit(client="203.0.113.7", status=200, missing=None))
+        self.assertRegex(record.pop("time"), rf"^{TIME}$")
+        self.assertEqual(record, {"level": "info", "event": "request", "client": "203.0.113.7", "status": 200, "missing": None})
+
+    def test_an_exception_is_a_field(self):
+        snrc.LOG_FORMAT = "json"
+        snrc.setup_logging(self.out)
+        try:
+            raise KeyError("boom")
+        except KeyError:
+            snrc.log_event(logging.ERROR, "request_failed", exc_info=True)
+        self.assertIn("KeyError: 'boom'", json.loads(self.out.getvalue())["exception"])
+
+
+class SetupTests(LogTestCase):
+    def test_unknown_settings_are_refused_at_start(self):
+        for setting, value in (("LOG_FORMAT", "yaml"), ("LOG_COLOR", "sometimes"), ("LOG_LEVEL", "loud")):
+            with self.subTest(setting=setting):
+                saved = getattr(snrc, setting)
+                setattr(snrc, setting, value)
+                try:
+                    with self.assertRaisesRegex(ValueError, re.escape(f"SNRC_{setting}")):
+                        snrc.setup_logging(self.out)
+                finally:
+                    setattr(snrc, setting, saved)
