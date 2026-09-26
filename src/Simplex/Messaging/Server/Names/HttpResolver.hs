@@ -6,7 +6,7 @@
 
 -- | HTTP transport for the public-namespace resolver.
 --
--- The Python REST resolver (see scripts/resolver/snrc-resolve.py) exposes
+-- The Python REST resolver (see scripts/resolver/service) exposes
 --
 --   GET /v2/resolve/<query> -> 200 with a NameRegistration JSON document, for
 --                              all three registration shapes; 400 for unknown

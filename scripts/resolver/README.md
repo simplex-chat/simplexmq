@@ -6,7 +6,7 @@ against **Ethereum mainnet** (where the `.testing` contracts live):
 | # | Component | What it does |
 |---|---|---|
 | 1 | **reth + nimbus** | self-hosted Ethereum node (`--minimal` — enough for the resolver's `eth_call` at chain head) |
-| 2 | **resolver** | the REST resolver the smp-server's `[NAMES]` role queries (`snrc-resolve.py`) |
+| 2 | **resolver** | the REST resolver the smp-server's `[NAMES]` role queries (`service/`, Python package `snrc_resolve`) |
 
 ## Requirements
 
@@ -114,12 +114,29 @@ docker compose down -v    # also wipe volumes → full re-sync
 
 ## Resolver API reference
 
-The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
-standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
+The resolver (host `127.0.0.1:8000`) is also runnable standalone for local dev
+(no Docker), via [`uv`](https://docs.astral.sh/uv/), from `scripts/resolver/service`:
 
 ```sh
-uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
+uv run snrc-resolve        # defaults to local reth + mainnet .testing
+uv run pytest              # tests
+uv run ruff check src tests
 ```
+
+Its code is in `src/snrc_resolve`, a module per concern:
+
+| Module | Holds |
+|---|---|
+| `config` | settings from the environment, contracts of each TLD |
+| `rpc` | pooled connections to the node, batches, reads prefetched for a request |
+| `multicall` | Multicall3 `aggregate3` calldata and results |
+| `abi`, `calls` | ABI encoding, name hashing, and the contract calls as `(to, data)` |
+| `registration_status`, `pricing`, `records` | a name's status, its price, its record |
+| `coins` | chain address encoders |
+| `answers` | the `/v2/resolve` and `/resolve` answers |
+| `server` | HTTP server, worker processes, entry point |
+
+Dependencies are locked in `uv.lock`; the Docker image installs exactly those.
 
 Three routes, versioned separately from the protocol so each only changes when
 its own shape does:

@@ -156,7 +156,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
     <> "\n\n\
         \[NAMES]\n\
-        \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
+        \# Public-namespace resolution via the snrc-resolve REST resolver.\n\
         \# Operator runs the resolver alongside smp-server (default port 8000)\n\
         \# with its own Ethereum JSON-RPC endpoint configured in resolver.toml.\n\
         \enable: off\n\

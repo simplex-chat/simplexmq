@@ -1,4 +1,6 @@
 *.lock
+# the resolver's Docker image and CI install exactly these
+!/scripts/resolver/service/uv.lock
 *.db
 *.db.bak
 *.session.sql
