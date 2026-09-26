@@ -443,12 +443,35 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 | `SNRC_LOG_LEVEL` | `info` | `debug` also logs health checks and idle connections closing |
 | `SNRC_TRUSTED_PROXIES` | none | addresses or CIDRs of reverse proxies whose `X-Forwarded-For` names the client |
 
+With docker compose, set these, and those in "Load and scaling", in `.env`
+(`.env.example` lists them).
+
 Behind a reverse proxy such as Caddy on the host, the resolver sees the Docker
 network's gateway rather than the client. Trust that gateway, and the logged
 client is the last `X-Forwarded-For` address no trusted proxy added, so a caller
 through the proxy cannot claim another address. Everything else on the host that
 connects to `127.0.0.1:8000`, the smp-servers included, arrives through the same
 gateway and could set the logged address too; run the proxy in the compose network
-and trust only its address to avoid that. The gateway is
+and trust only its address to avoid that.
+
+The gateway is
 `docker network inspect resolver_default --format '{{(index .IPAM.Config 0).Gateway}}'`,
-with the network named after the compose project.
+with the network named after the compose project. It changes when the network is
+recreated, as `docker compose down` does, so trust one of, in `.env`:
+
+- `SNRC_TRUSTED_PROXIES=172.16.0.0/12`: Docker's default pools for compose
+  networks, whatever subnet it picks. This also trusts every other container on the
+  host. Add the gateway too if Docker ever gives the network a `192.168.x.x` one.
+- a pinned subnet, so the gateway stays fixed, and only that gateway:
+
+  ```yaml
+  networks:
+    default:
+      ipam:
+        config:
+          - subnet: 172.30.0.0/24
+            gateway: 172.30.0.1
+  ```
+
+  in `docker-compose.yml`, with `SNRC_TRUSTED_PROXIES=172.30.0.1`, on a subnet no
+  other network on the host uses.
