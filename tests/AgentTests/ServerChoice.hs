@@ -71,9 +71,7 @@ initServers =
     }
 
 testChooseDifferentOperator :: IO ()
-testChooseDifferentOperator = do
-  c <- getSMPAgentClient' 1 agentCfg initServers testDB
-  runRight_ $ do
+testChooseDifferentOperator = withAgent 1 agentCfg initServers testDB $ \c -> runRight_ $ do
     -- chooses the only operator with storage role
     srv1 <- withAgentEnv c $ getNextServer c 1 storageSrvs []
     liftIO $ srv1 == testOp1Srv1 || srv1 == testOp1Srv2 `shouldBe` True
