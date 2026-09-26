@@ -1716,7 +1716,7 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
       rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
       cs_ <-
         if withEvents
-          then Just . S.fromList . map qConnId . M.elems <$> atomically (SS.getActiveSubs tSess $ currentSubs c)
+          then Just <$> atomically (SS.getActiveConns tSess $ currentSubs c)
           else pure Nothing
       active <- E.uninterruptibleMask_ $ do
         (active, (serviceQs, notices)) <- atomically $ do
@@ -1734,13 +1734,13 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
         pure active
       forM_ cs_ $ \cs -> do
         let (errs, okConns) = partitionEithers $ map (\(RcvQueueSub {connId}, r) -> bimap (connId,) (const connId) r) $ L.toList rs
-            conns = filter (`S.notMember` cs) okConns
+            conns = filter (`M.notMember` cs) okConns
         unless (null conns) $ notifySub c $ UP srv conns
         forM_ (L.nonEmpty errs) $ \errs' -> do
           let noFinalErrs = all (temporaryClientError . snd) errs'
               addr = B.unpack $ strEncode srv
           notifySub c $ ERRS $ L.map (second $ protocolClientError SMP addr) errs'
-          when (null okConns && S.null cs && noFinalErrs && active) $ liftIO $ do
+          when (null okConns && M.null cs && noFinalErrs && active) $ liftIO $ do
             -- We only close the client session that was used to subscribe.
             v_ <- atomically $ ifM (activeClientSession c tSess sessId) (TM.lookupDelete tSess $ smpClients c) (pure Nothing)
             mapM_ (closeClient_ c) v_
