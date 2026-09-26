@@ -1,7 +1,8 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented.
+-- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented. An invalid master or child key is recomputed as SLIP-0010 specifies, so derivation cannot fail.
 module Simplex.Messaging.Crypto.BIP32
   ( ExtendedKey (..),
     masterKey,
@@ -20,11 +21,9 @@ where
 
 import Control.Concurrent.STM (TVar)
 import Control.Monad (foldM)
-import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
 import Crypto.Random (ChaChaDRG)
 import qualified Crypto.MAC.HMAC as HMAC
-import Data.Bifunctor (bimap)
 import Data.Bits ((.|.))
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
@@ -53,27 +52,37 @@ isHardened i = i >= hardenedOffset
 
 masterKey :: ScrubbedBytes -> Either String ExtendedKey
 masterKey seed
-  | seedLen < 16 || seedLen > 64 =
-      Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
-  | otherwise =
-      bimap (const "seed: invalid master key, use a different seed") (\k -> ExtendedKey {xkKey = k, xkChainCode = ir}) $
-        S.mkPrivateKey il
+  | seedLen < 16 || seedLen > 64 = Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
+  | otherwise = Right $ masterKey' seed
   where
     seedLen = BA.length seed
-    (il, ir) = BA.splitAt 32 $ hmacSHA512 "Bitcoin seed" seed
 
-deriveChild :: TVar ChaChaDRG -> ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
+masterKey' :: ScrubbedBytes -> ExtendedKey
+masterKey' = go
+  where
+    go s = case S.mkPrivateKey il of
+      Right k -> ExtendedKey {xkKey = k, xkChainCode = ir}
+      Left _ -> go i
+      where
+        i = hmacSHA512 "Bitcoin seed" s
+        (il, ir) = BA.splitAt 32 i
+
+deriveChild :: TVar ChaChaDRG -> ExtendedKey -> Word32 -> IO ExtendedKey
 deriveChild g ExtendedKey {xkKey, xkChainCode} i = do
   dat <-
     if isHardened i
       then pure $ BA.cons 0 (S.unPrivateKey xkKey)
       else BA.convert <$> (S.serializePublicKey g S.Compressed =<< S.secp256k1PublicKey g xkKey)
-  let (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
-  maybe (Left $ "derivation: invalid child at index " <> show i <> ", use the next index") (\k -> Right ExtendedKey {xkKey = k, xkChainCode = ir})
-    <$> S.privateKeyTweakAdd g xkKey il
+  go dat
+  where
+    go dat = do
+      let (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
+      S.privateKeyTweakAdd g xkKey il >>= \case
+        Just k -> pure ExtendedKey {xkKey = k, xkChainCode = ir}
+        Nothing -> go $ BA.cons 1 ir
 
-derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
-derivePath g xk = runExceptT . foldM (\k -> ExceptT . deriveChild g k) xk
+derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO ExtendedKey
+derivePath g = foldM (deriveChild g)
 
 renderPath :: [Word32] -> ByteString
 renderPath is = BC.pack $ intercalate "/" ("m" : map component is)
@@ -91,13 +100,13 @@ data WalletMaster = WalletMaster
     walletMasterKey :: ExtendedKey
   }
 
-mkWalletMaster :: WalletEntropy -> ByteString -> Either String WalletMaster
-mkWalletMaster ent passphrase = WalletMaster ent <$> masterKey (entropySeed ent passphrase)
+mkWalletMaster :: WalletEntropy -> ByteString -> WalletMaster
+mkWalletMaster ent passphrase = WalletMaster ent $ masterKey' (entropySeed ent passphrase)
 
 -- | From storage: the master bytes must be the ones the entropy derives with an empty passphrase.
 parseWalletMaster :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster
 parseWalletMaster entBytes mBytes = do
-  m <- (`mkWalletMaster` "") =<< mkEntropy entBytes
+  m <- (`mkWalletMaster` "") <$> mkEntropy entBytes
   if masterBytes m == mBytes then Right m else Left "wallet master: does not match the entropy"
 
 masterBytes :: WalletMaster -> ScrubbedBytes

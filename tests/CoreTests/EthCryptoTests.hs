@@ -227,7 +227,7 @@ bip32Tests g = do
     describe name $
       forM_ chains $ \(chain, path, xprv) ->
         it chain $ do
-          xk <- right <$> B32.derivePath g (right $ B32.masterKey (hx seedHex)) path
+          xk <- B32.derivePath g (right $ B32.masterKey (hx seedHex)) path
           xkHex xk `shouldBe` xprvHex xprv
   it "rejects a seed shorter than 16 bytes" $
     isLeft (B32.masterKey (BA.replicate 15 1)) `shouldBe` True
@@ -245,7 +245,7 @@ bip32Tests g = do
     isLeft (B32.parseWalletMaster (BA.replicate 17 0) stored) `shouldBe` True
 
 canonicalMaster :: B32.WalletMaster
-canonicalMaster = right $ B32.mkWalletMaster canonicalEntropy ""
+canonicalMaster = B32.mkWalletMaster canonicalEntropy ""
 
 derivationTests :: TVar ChaChaDRG -> Spec
 derivationTests g = do
@@ -266,7 +266,7 @@ derivationTests g = do
     seed = B39.entropySeed canonicalEntropy ""
     account = fromJust . mkAccountIndex
     addrAt i = do
-      xk <- right <$> B32.derivePath g (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
+      xk <- B32.derivePath g (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
       addressFromPrivateKey g (B32.xkKey xk)
 
 eip55Tests :: Spec

@@ -84,11 +84,11 @@ entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 w
 
 -- BIP32
 masterKey           :: ScrubbedBytes -> Either String ExtendedKey
-derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO ExtendedKey
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
-mkWalletMaster      :: WalletEntropy -> ByteString -> Either String WalletMaster
+mkWalletMaster      :: WalletEntropy -> ByteString -> WalletMaster
 parseWalletMaster   :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster  -- entropy and stored master
 masterEntropy       :: WalletMaster -> WalletEntropy
 walletMasterKey     :: WalletMaster -> ExtendedKey
@@ -119,10 +119,15 @@ A value of one of these types is valid by construction: `WalletEntropy` has one
 of the five sizes, `AccountIndex` is below 2^31, and `WalletMaster` holds a
 master key derived from its entropy, so every function from them is total. The
 fallible steps are the boundaries: `parsePhrase` for typed text,
-`parseWalletMaster` for a stored row, `mkAccountIndex` for a number, and
-`mkWalletMaster` for the one-in-2^128 seed whose master key is out of range.
-The only fallible step after that is the BIP-32 child derivation, which the
-specification requires to be fallible.
+`parseWalletMaster` for a stored row and `mkAccountIndex` for a number.
+
+BIP-32 declares a master or child key invalid when its IL is 0 or at least n,
+one case in 2^128, and says to use the next index. This code instead applies
+SLIP-0010's rule, which trezor-crypto also implements: recompute the HMAC over
+`I` for a master key, or over `0x01 || IR || ser32(i)` for a child, until the
+key is valid. Every key BIP-32 produces is produced unchanged; only an index
+BIP-32 would skip gets a key, so `masterKey`, `mkWalletMaster` and `derivePath`
+are total and no consumer handles derivation failure.
 
 Because `parsePhrase` lower-cases each word, a recovery phrase with a
 capitalised word is accepted. This does not change the derived seed:
@@ -136,9 +141,9 @@ device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
 ent    <- either fail pure $ parsePhrase phrase  -- phrase :: Text
-master <- either fail pure $ mkWalletMaster ent ""
+let master = mkWalletMaster ent ""
 n      <- maybe (fail "account index too large") pure $ mkAccountIndex account
-xk     <- either fail pure =<< derivePath g (walletMasterKey master) (bip44Path Ethereum n)
+xk     <- derivePath g (walletMasterKey master) (bip44Path Ethereum n)
 addr   <- addressFromPrivateKey g (xkKey xk)
 ```
 
@@ -156,10 +161,9 @@ Every function that calls libsecp256k1 runs in `IO` with its own context,
 created for the call, blinded with 32 bytes from the caller's `TVar ChaChaDRG`
 and destroyed after it, so no context is shared between threads.
 
-`secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 says to "proceed
-with the next value for i" (tweak out of range, or a zero result), which is why
-`privateKeyTweakAdd` returns `Maybe` and `derivePath` returns `Left` in that
-case.
+`secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 declares the
+child invalid (tweak out of range, or a zero result), which is why
+`privateKeyTweakAdd` returns `Maybe`; `deriveChild` then recomputes as above.
 
 libsecp256k1 never reads OS entropy: the caller supplies the context blinding
 seed. So unlike libbbs it causes no `getentropy` / ITMS-90338 issue on iOS, and
@@ -236,7 +240,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 92 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 93 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:
