@@ -1,3 +1,5 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Simplex.Messaging.Eth.Address
@@ -9,6 +11,7 @@ where
 import Control.Applicative (optional)
 import Control.Concurrent.STM (TVar)
 import Control.Monad (unless, when, (<=<))
+import Data.Aeson (FromJSON, ToJSON)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
@@ -23,6 +26,7 @@ import Simplex.Messaging.Encoding.String
 
 newtype Address = Address ByteString
   deriving (Eq, Show)
+  deriving (ToJSON, FromJSON) via (StrJSON "Address" Address)
 
 instance StrEncoding Address where
   strEncode = checksumAddress

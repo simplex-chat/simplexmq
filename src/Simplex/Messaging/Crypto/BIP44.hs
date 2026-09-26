@@ -13,7 +13,7 @@ module Simplex.Messaging.Crypto.BIP44
   )
 where
 
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON (..), ToJSON)
 import Data.Word (Word32)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Crypto.BIP32 (hardened, isHardened)
@@ -34,21 +34,27 @@ coinIndex = \case
   Ethereum -> 60
 
 -- | Below 2^31, so it can be hardened without colliding with another index.
-newtype AccountIndex = AccountIndex {unAccountIndex :: Word32}
+newtype AccountIndex = AccountIndex Word32
   deriving (Eq, Ord, Show)
-  deriving newtype (ToJSON, FromJSON, ToField)
+  deriving newtype (ToJSON, ToField)
 
-mkAccountIndex :: Word32 -> Maybe AccountIndex
+unAccountIndex :: AccountIndex -> Word32
+unAccountIndex (AccountIndex i) = i
+
+mkAccountIndex :: Word32 -> Either String AccountIndex
 mkAccountIndex i
-  | isHardened i = Nothing
-  | otherwise = Just $ AccountIndex i
+  | isHardened i = Left "account index at or above 2^31"
+  | otherwise = Right $ AccountIndex i
+
+instance FromJSON AccountIndex where
+  parseJSON v = parseJSON v >>= either fail pure . mkAccountIndex
 
 #if defined(dbPostgres)
 instance FromField AccountIndex where
-  fromField f dat = fromField f dat >>= maybe (returnError ConversionFailed f "account index at or above 2^31") pure . mkAccountIndex
+  fromField f dat = fromField f dat >>= either (returnError ConversionFailed f) pure . mkAccountIndex
 #else
 instance FromField AccountIndex where
-  fromField f = fromField f >>= maybe (returnError ConversionFailed f "account index at or above 2^31") pure . mkAccountIndex
+  fromField f = fromField f >>= either (returnError ConversionFailed f) pure . mkAccountIndex
 #endif
 
 bip44Path :: CoinType -> AccountIndex -> [Word32]

@@ -16,7 +16,7 @@ where
 import Control.Concurrent.STM
 import Control.Exception (bracket, throwIO)
 import Control.Monad (void, when)
-import Crypto.Number.Serialize (os2ip)
+import Crypto.Number.Serialize (i2ospOf_)
 import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
@@ -93,13 +93,12 @@ withContext g f = bracket (c_context_create contextNone) c_context_destroy $ \ct
 mkPrivateKey :: ScrubbedBytes -> Either String Secp256k1PrivateKey
 mkPrivateKey bs
   | BA.length bs /= privateKeySize = Left $ "private key: expected 32 bytes, got " <> show (BA.length bs)
-  | k == 0 || k >= groupOrder = Left "private key: not in [1, n-1]"
+  | BA.all (== 0) bs || bs >= groupOrder = Left "private key: not in [1, n-1]"
   | otherwise = Right $ Secp256k1PrivateKey bs
-  where
-    k = os2ip bs
 
-groupOrder :: Integer
-groupOrder = ECT.ecc_n $ ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1
+-- | Compared as bytes: both are 32 bytes big-endian, and 'ScrubbedBytes' compares lexicographically.
+groupOrder :: ScrubbedBytes
+groupOrder = i2ospOf_ privateKeySize $ ECT.ecc_n $ ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1
 
 unPrivateKey :: Secp256k1PrivateKey -> ScrubbedBytes
 unPrivateKey (Secp256k1PrivateKey bs) = bs

@@ -4,7 +4,9 @@
 
 -- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented. An invalid master or child key is recomputed as SLIP-0010 specifies, so derivation cannot fail.
 module Simplex.Messaging.Crypto.BIP32
-  ( ExtendedKey (..),
+  ( ExtendedKey,
+    xkKey,
+    xkChainCode,
     masterKey,
     derivePath,
     renderPath,
@@ -95,19 +97,22 @@ hmacSHA512 :: ScrubbedBytes -> ScrubbedBytes -> ScrubbedBytes
 hmacSHA512 key msg = BA.convert (HMAC.hmac key msg :: HMAC.HMAC H.SHA512)
 
 -- | Entropy with the master key it derives, so no derivation from it can fail.
-data WalletMaster = WalletMaster
-  { masterEntropy :: WalletEntropy,
-    walletMasterKey :: ExtendedKey
-  }
+data WalletMaster = WalletMaster WalletEntropy ExtendedKey
 
-mkWalletMaster :: WalletEntropy -> ByteString -> WalletMaster
-mkWalletMaster ent passphrase = WalletMaster ent $ masterKey' (entropySeed ent passphrase)
+masterEntropy :: WalletMaster -> WalletEntropy
+masterEntropy (WalletMaster ent _) = ent
 
--- | From storage: the master bytes must be the ones the entropy derives with an empty passphrase.
+walletMasterKey :: WalletMaster -> ExtendedKey
+walletMasterKey (WalletMaster _ k) = k
+
+mkWalletMaster :: WalletEntropy -> WalletMaster
+mkWalletMaster ent = WalletMaster ent $ masterKey' (entropySeed ent "")
+
+-- | From storage: the master bytes must be the ones the entropy derives.
 parseWalletMaster :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster
 parseWalletMaster entBytes mBytes = do
-  m <- (`mkWalletMaster` "") <$> mkEntropy entBytes
+  m <- mkWalletMaster <$> mkEntropy entBytes
   if masterBytes m == mBytes then Right m else Left "wallet master: does not match the entropy"
 
 masterBytes :: WalletMaster -> ScrubbedBytes
-masterBytes WalletMaster {walletMasterKey = ExtendedKey {xkKey, xkChainCode}} = S.unPrivateKey xkKey <> xkChainCode
+masterBytes (WalletMaster _ ExtendedKey {xkKey, xkChainCode}) = S.unPrivateKey xkKey <> xkChainCode

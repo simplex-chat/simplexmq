@@ -10,7 +10,7 @@ module Simplex.Messaging.Crypto.BIP39
     randomEntropy,
     parsePhrase,
     entropyPhrase,
-    entropyWordCount,
+    entropyStrength,
     entropySeed,
   )
 where
@@ -38,8 +38,11 @@ import Data.Text.Encoding (encodeUtf8)
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 
 -- | 16, 20, 24, 28 or 32 bytes of entropy: a valid BIP-39 phrase in another encoding.
-newtype WalletEntropy = WalletEntropy {unEntropy :: ScrubbedBytes}
+newtype WalletEntropy = WalletEntropy ScrubbedBytes
   deriving (Eq, Show)
+
+unEntropy :: WalletEntropy -> ScrubbedBytes
+unEntropy (WalletEntropy ent) = ent
 
 data EntropyStrength = ES128 | ES160 | ES192 | ES224 | ES256
   deriving (Eq, Show, Bounded, Enum)
@@ -89,8 +92,8 @@ randomEntropy s gVar = WalletEntropy <$> stateTVar gVar (randomBytesGenerate $ s
 entropyPhrase :: WalletEntropy -> ByteString
 entropyPhrase = BC.unwords . mnemonicWords . entropyToMnemonic
 
-entropyWordCount :: WalletEntropy -> Int
-entropyWordCount = wordCount . BA.length . unEntropy
+entropyStrength :: WalletEntropy -> EntropyStrength
+entropyStrength (WalletEntropy ent) = toEnum $ (BA.length ent - 16) `div` 4
 
 -- | Indexes are in @[0, 2047]@: they are masked to 11 bits or looked up in the wordlist.
 mnemonicWords :: Mnemonic -> [ByteString]

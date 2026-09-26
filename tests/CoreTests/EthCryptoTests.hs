@@ -19,7 +19,7 @@ import Data.Either (isLeft, isRight)
 import Data.FileEmbed (embedFile)
 import Data.List (elemIndex, foldl', nub)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromJust, isJust, isNothing, listToMaybe)
+import Data.Maybe (fromJust, isNothing, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -208,7 +208,8 @@ bip39Tests g = do
   it "generates entropy whose phrase parses back" $
     forM_ (zip [minBound .. maxBound] [12, 15, 18, 21, 24]) $ \(s, n) -> do
       ent <- atomically $ B39.randomEntropy s g
-      B39.entropyWordCount ent `shouldBe` n
+      B39.entropyStrength ent `shouldBe` s
+      length (BC.words $ B39.entropyPhrase ent) `shouldBe` n
       B39.parsePhrase (decodeLatin1 $ B39.entropyPhrase ent) `shouldBe` Right ent
 
 canonicalPhrase :: ByteString
@@ -245,7 +246,7 @@ bip32Tests g = do
     isLeft (B32.parseWalletMaster (BA.replicate 17 0) stored) `shouldBe` True
 
 canonicalMaster :: B32.WalletMaster
-canonicalMaster = B32.mkWalletMaster canonicalEntropy ""
+canonicalMaster = B32.mkWalletMaster canonicalEntropy
 
 derivationTests :: TVar ChaChaDRG -> Spec
 derivationTests g = do
@@ -260,11 +261,11 @@ derivationTests g = do
   it "renders the Ethereum path of an account" $
     B32.renderPath (bip44Path Ethereum $ account 7) `shouldBe` "m/44'/60'/7'/0/0"
   it "rejects an account index at or above 2^31" $ do
-    mkAccountIndex 0x7fffffff `shouldSatisfy` isJust
-    mkAccountIndex 0x80000000 `shouldBe` Nothing
+    mkAccountIndex 0x7fffffff `shouldSatisfy` isRight
+    mkAccountIndex 0x80000000 `shouldSatisfy` isLeft
   where
     seed = B39.entropySeed canonicalEntropy ""
-    account = fromJust . mkAccountIndex
+    account = right . mkAccountIndex
     addrAt i = do
       xk <- B32.derivePath g (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
       addressFromPrivateKey g (B32.xkKey xk)

@@ -34,7 +34,8 @@ held by the device.
 Simplex.Messaging.Crypto.Secp256k1      FFI to libsecp256k1
 Simplex.Messaging.Crypto.BIP39          mnemonics
 Simplex.Messaging.Crypto.BIP39.English  embedded upstream 2048-word list
-Simplex.Messaging.Crypto.BIP32          HD derivation
+Simplex.Messaging.Crypto.BIP32          HD derivation, WalletMaster
+Simplex.Messaging.Crypto.BIP44          BIP-44 paths, AccountIndex
 Simplex.Messaging.Eth.Address           addresses, EIP-55
 ```
 
@@ -56,7 +57,7 @@ data WalletMaster                   -- entropy with the master key it derives
 data CoinType = Ethereum            -- SLIP-44 coin types
 newtype AccountIndex                -- below 2^31
 
-newtype Address                     -- 20 bytes
+newtype Address                     -- 20 bytes; StrEncoding is EIP-55, JSON via it
 ```
 
 Private keys, chain codes, BIP-39 entropy and seeds are `ScrubbedBytes`:
@@ -76,10 +77,11 @@ privateKeyTweakAdd  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ScrubbedBytes ->
 
 -- BIP39
 mkEntropy           :: ScrubbedBytes -> Either String WalletEntropy
+unEntropy           :: WalletEntropy -> ScrubbedBytes
 randomEntropy       :: EntropyStrength -> TVar ChaChaDRG -> STM WalletEntropy
 parsePhrase         :: Text -> Either String WalletEntropy   -- word count, wordlist, checksum
 entropyPhrase       :: WalletEntropy -> ByteString           -- canonical lowercase phrase
-entropyWordCount    :: WalletEntropy -> Int
+entropyStrength     :: WalletEntropy -> EntropyStrength
 entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 with the passphrase
 
 -- BIP32
@@ -88,14 +90,14 @@ derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO ExtendedK
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
-mkWalletMaster      :: WalletEntropy -> ByteString -> WalletMaster
+mkWalletMaster      :: WalletEntropy -> WalletMaster                    -- empty passphrase
 parseWalletMaster   :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster  -- entropy and stored master
 masterEntropy       :: WalletMaster -> WalletEntropy
 walletMasterKey     :: WalletMaster -> ExtendedKey
 masterBytes         :: WalletMaster -> ScrubbedBytes         -- key then chain code, the storage form
 
 -- BIP44
-mkAccountIndex      :: Word32 -> Maybe AccountIndex
+mkAccountIndex      :: Word32 -> Either String AccountIndex
 unAccountIndex      :: AccountIndex -> Word32
 bip44Path           :: CoinType -> AccountIndex -> [Word32]  -- m/44'/coin'/account'/0/0
 
@@ -141,8 +143,8 @@ device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
 ent    <- either fail pure $ parsePhrase phrase  -- phrase :: Text
-let master = mkWalletMaster ent ""
-n      <- maybe (fail "account index too large") pure $ mkAccountIndex account
+let master = mkWalletMaster ent
+n      <- either fail pure $ mkAccountIndex account
 xk     <- derivePath g (walletMasterKey master) (bip44Path Ethereum n)
 addr   <- addressFromPrivateKey g (xkKey xk)
 ```
@@ -240,7 +242,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 93 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 92 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:
