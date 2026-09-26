@@ -30,6 +30,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802 - http.server contract
         self._started = time.monotonic()
+        if self._has_body():
+            # an unread body would be taken for the next request on this connection, which a
+            # reverse proxy reusing it would pass to another client (request smuggling)
+            self._respond(400, {"error": "unexpectedBody"}, close=True)
+            return
         path = urlparse(self.path).path
         parts = [unquote(p) for p in path.split("/") if p]
 
@@ -83,13 +88,21 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def _respond(self, status: int, body: dict):
+    def _has_body(self) -> bool:
+        if self.headers.get_all("Transfer-Encoding"):
+            return True
+        return any(length.strip() != "0" for length in self.headers.get_all("Content-Length") or [])
+
+    def _respond(self, status: int, body: dict, close: bool = False):
         data = json.dumps(body, indent=2).encode()
         # send_response logs the request, so the size is known before it
         self._sent = len(data)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if close:
+            # also sets close_connection, so the server closes it after this response
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 

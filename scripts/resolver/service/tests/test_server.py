@@ -97,6 +97,58 @@ class RequestLogTests(unittest.TestCase):
         self.assertEqual(record.levelname, "DEBUG")
 
 
+class RequestBodyTests(unittest.TestCase):
+    """Behind a reverse proxy that reuses connections, a body left unread would be
+    answered as another request, and that answer given to the proxy's next client."""
+
+    def setUp(self):
+        self.http_server = server.ResolverServer(("127.0.0.1", 0), server.Handler)
+        threading.Thread(target=self.http_server.serve_forever, args=(0.05,), daemon=True).start()
+        self._log = contextlib.redirect_stderr(io.StringIO())
+        self._log.__enter__()
+
+    def tearDown(self):
+        self._log.__exit__(None, None, None)
+        self.http_server.shutdown()
+        self.http_server.server_close()
+
+    def exchange(self, head: bytes, body: bytes = b"") -> bytes:
+        with socket.create_connection(self.http_server.server_address, timeout=5) as sock:
+            sock.sendall(head + body)
+            data = b""
+            while chunk := sock.recv(65536):
+                data += chunk
+                if data.count(b"HTTP/1.1 ") > 1:
+                    break
+            return data
+
+    SMUGGLED = b"GET /v2/resolve/y.simplex HTTP/1.1\r\nHost: x\r\n\r\n"
+
+    def test_a_body_is_refused_and_the_connection_closed(self):
+        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)
+        self.assertIn(b"HTTP/1.1 400 ", data)
+        self.assertIn(b"Connection: close", data)
+        self.assertNotIn(b"y.simplex", data)
+
+    def test_a_chunked_body_is_refused_and_the_connection_closed(self):
+        chunked = b"%x\r\n" % len(self.SMUGGLED) + self.SMUGGLED + b"\r\n0\r\n\r\n"
+        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", chunked)
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)
+        self.assertNotIn(b"y.simplex", data)
+
+    def test_an_empty_body_keeps_the_connection(self):
+        conn = http.client.HTTPConnection(*self.http_server.server_address, timeout=5)
+        answers = []
+        for _ in range(2):
+            conn.request("GET", "/v2/resolve/x.simplex", headers={"Content-Length": "0"})
+            res = conn.getresponse()
+            answers.append((res.status, json.loads(res.read())["error"], conn.sock))
+        conn.close()
+        self.assertEqual([a[:2] for a in answers], [(400, "tldNotConfigured")] * 2)
+        self.assertIs(answers[0][2], answers[1][2])
+
+
 class ClientAddressTests(unittest.TestCase):
     PROXY = "172.18.0.1"
 
