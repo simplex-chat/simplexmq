@@ -13,7 +13,7 @@ packages: .
    -- coverage: False
    -- library-coverage: False
 
-index-state: 2023-12-12T00:00:00Z
+index-state: 2025-07-01T00:00:00Z
 
 package cryptostore
     flags: +use_crypton
@@ -51,3 +51,11 @@ source-repository-package
     location: https://github.com/simplex-chat/wai.git
     tag: 2f6e5aa5f05ba9140ac99e195ee647b4f7d926b0
     subdir: warp
+
+source-repository-package
+    type: git
+    location: https://github.com/haskell-tls/hs-tls.git
+    tag: 7f060799ea762c5d7ff058d264dae5f0294fac79
+-- passes 7f060799ea762c5d7ff058d264dae5f0294fac79
+-- fails 1927590272ada1e0a32c29ca29ae9cc8d5ed3595
+    subdir: tls
