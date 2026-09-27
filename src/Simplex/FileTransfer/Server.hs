@@ -65,6 +65,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
 import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
+import Simplex.Messaging.Server.AddressStats (AddrStats, ServerAddrStats (..), addAddrCounter, addressStatsThread, incAddrCounter, printTopAddresses, withAddrStats)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
@@ -101,7 +102,8 @@ data XFTPTransportRequest = XFTPTransportRequest
     request :: H.Request,
     sendResponse :: H.Response -> IO (),
     sniUsed :: SNICredentialUsed,
-    addCORS :: Bool
+    addCORS :: Bool,
+    clientAddrStats :: Maybe (AddrStats XFTPAddrCounter)
   }
 
 corsHeaders :: Bool -> [N.Header]
@@ -141,6 +143,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         : expireFiles fileExpiration
         : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
+          <> addressStatsThread_ cfg
           <> controlPortThread_ cfg
     )
     `finally` stopServer
@@ -154,20 +157,27 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
       env <- ask
       sessions <- liftIO TM.emptyIO
+      sessionAddrStats <- liftIO TM.emptyIO
+      stats_ <- asks addrStats
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
+          withConnection sock sessionId handler =
+            withAddrStats (addrStatsMap <$> stats_) sock $ \case
+              Just s -> (atomically (TM.insert sessionId s sessionAddrStats) >> handler) `finally` atomically (TM.delete sessionId sessionAddrStats)
+              Nothing -> handler
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup withConnection $ \sniUsed sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
           Just "GET" | sniUsed -> forM_ webCanonicalRoot_ $ \root -> serveStaticPageH2 root r sendResponse
           _ -> do
             reqBody <- getHTTP2Body r xftpBlockSize
+            clientAddrStats <- TM.lookupIO sessionId sessionAddrStats
             let v = VersionXFTP 1
                 thServerVRange = versionToRange v
                 thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfo = Nothing}
-                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, sniUsed, addCORS = addCORS'}
+                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, sniUsed, addCORS = addCORS', clientAddrStats}
             flip runReaderT env $ case sessionALPN of
               Nothing -> processRequest req0
               Just alpn
@@ -330,24 +340,30 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       [savePrometheusMetrics interval prometheusMetricsFile]
     prometheusMetricsThread_ _ = []
 
+    addressStatsThread_ :: XFTPServerConfig s -> [M s ()]
+    addressStatsThread_ XFTPServerConfig {addressStats = Just statsCfg} = [asks addrStats >>= mapM_ (liftIO . addressStatsThread statsCfg)]
+    addressStatsThread_ _ = []
+
     savePrometheusMetrics :: Int -> FilePath -> M s ()
     savePrometheusMetrics saveInterval metricsFile = do
       labelMyThread "savePrometheusMetrics"
       liftIO $ putStrLn $ "Prometheus metrics saved every " <> show saveInterval <> " seconds to " <> metricsFile
       ss <- asks serverStats
+      stats_ <- asks addrStats
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
       liftIO $ forever $ do
         threadDelay interval
         ts <- getCurrentTime
-        sm <- getFileServerMetrics ss rtsOpts
+        sm <- getFileServerMetrics ss stats_ rtsOpts
         T.writeFile metricsFile $ xftpPrometheusMetrics sm ts
 
-    getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
-    getFileServerMetrics ss rtsOptions = do
+    getFileServerMetrics :: FileServerStats -> Maybe (ServerAddrStats XFTPAddrCounter) -> T.Text -> IO FileServerMetrics
+    getFileServerMetrics ss stats_ rtsOptions = do
       d <- getFileServerStatsData ss
       let fd = periodStatDataCounts $ _filesDownloaded d
-      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
+      addressHistograms <- mapM (readIORef . addrHistograms) stats_
+      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions, addressHistograms}
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]
@@ -402,7 +418,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
                   (fr, _) <- ExceptT $ liftIO $ getFile fs SFRecipient fileId
                   ExceptT $ blockServerFile fr info
                 liftIO . hPutStrLn h $ either (\e -> "error: " <> show e) (\() -> "ok") r
-              CPHelp -> hPutStrLn h "commands: stats-rts, delete, help, quit"
+              CPAddresses name n_ -> withUserRole $ do
+                stats_ <- unliftIO u $ asks addrStats
+                printTopAddresses h (addrStatsMap <$> stats_) name n_
+              CPHelp -> hPutStrLn h "commands: stats-rts, delete, addresses, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
               where
@@ -421,21 +440,23 @@ data ServerFile = ServerFile
   }
 
 processRequest :: FileStoreClass s => XFTPTransportRequest -> M s ()
-processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS}
-  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS, clientAddrStats}
+  | B.length bodyHead /= xftpBlockSize = incAddrStats XACErrors >> sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
   | otherwise =
       case xftpDecodeTServer thParams bodyHead of
-        Right (Right t@(_, _, (corrId, fId, _))) -> do
+        Right (Right t@(_, _, (corrId, fId, cmd))) -> do
+          incAddrStats $ xftpCmdCounter cmd
           let THandleParams {thAuth} = thParams
               ent = peerEntitlement =<< thAuth
           verifyXFTPTransmission thAuth t >>= \case
-            VRVerified req -> uncurry send =<< processXFTPRequest ent body req
-            VRFailed e -> send (FRErr e) Nothing
+            VRVerified req -> uncurry send =<< processXFTPRequest clientAddrStats ent body req
+            VRFailed e -> incAddrStats XACErrors >> send (FRErr e) Nothing
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
-        Right (Left (corrId, fId, e)) -> sendXFTPResponse (corrId, fId, FRErr e) Nothing
-        Left e -> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
+        Right (Left (corrId, fId, e)) -> incAddrStats XACErrors >> sendXFTPResponse (corrId, fId, FRErr e) Nothing
+        Left e -> incAddrStats XACErrors >> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
   where
+    incAddrStats c = liftIO $ forM_ clientAddrStats (`incAddrCounter` c)
     sendXFTPResponse t' serverFile_ = do
       let t_ = xftpEncodeTransmission thParams t'
 #ifdef slow_servers
@@ -490,8 +511,8 @@ verifyXFTPTransmission thAuth (tAuth, authorized, (corrId, fId, cmd)) =
     -- TODO verify with DH authorization
     req `verifyWith` k = if verifyCmdAuthorization thAuth tAuth authorized corrId k then VRVerified req else VRFailed AUTH
 
-processXFTPRequest :: forall s. FileStoreClass s => Maybe SessionEntitlement -> HTTP2Body -> XFTPRequest -> M s (FileResponse, Maybe ServerFile)
-processXFTPRequest ent HTTP2Body {bodyPart} = \case
+processXFTPRequest :: forall s. FileStoreClass s => Maybe (AddrStats XFTPAddrCounter) -> Maybe SessionEntitlement -> HTTP2Body -> XFTPRequest -> M s (FileResponse, Maybe ServerFile)
+processXFTPRequest addrStats_ ent HTTP2Body {bodyPart} = \case
   XFTPReqNew file rks auth storageHours -> noFile =<< ifM allowNew (createFile file rks storageHours) (pure $ FRErr AUTH)
     where
       allowNew = do
@@ -509,6 +530,10 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
   XFTPReqPing -> noFile FRPong
   where
     noFile resp = pure (resp, Nothing)
+    addAddrStats :: XFTPAddrCounter -> Int -> M s ()
+    addAddrStats c n = liftIO $ forM_ addrStats_ $ \s -> addAddrCounter s c n
+    kilobytes :: Word32 -> Int
+    kilobytes bytes = (fromIntegral bytes + 1023) `div` 1024
     createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Word32 -> M s FileResponse
     createFile file rks storageHours = do
       st <- asks fileStore
@@ -532,6 +557,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
         stats <- asks serverStats
         lift $ incFileStat filesCreated
         liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
+        lift $ addAddrStats XACRecipients $ length rks
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRSndIds sId rIds (Just (GSTExpires (roundedSeconds fileExpiresAt)))
       pure $ either FRErr id r
@@ -567,6 +593,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
         lift $ withFileLog $ \sl -> logAddRecipients sl sId rcps
         stats <- asks serverStats
         liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
+        lift $ addAddrStats XACRecipients $ length rks
         let rIds = L.map (\(FileRecipient rId _) -> rId) rcps
         pure $ FRRcvIds rIds
       pure $ either FRErr id r
@@ -605,6 +632,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                     incFileStat filesUploaded
                     incFileStat filesCount
                     liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
+                    addAddrStats XACUploadKb $ kilobytes size
                     pure FROk
                   Left _e -> do
                     us <- asks usedStorage
@@ -634,6 +662,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                   stats <- asks serverStats
                   incFileStat fileDownloads
                   liftIO $ updatePeriodStats (filesDownloaded stats) senderId
+                  addAddrStats XACDownloadKb $ kilobytes size
                   pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
                 _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)

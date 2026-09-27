@@ -108,6 +108,8 @@ smpServerTest storeLog basicAuth = do
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
   lookupValue "AUTH" "new_queues" ini `shouldBe` Right "on"
   lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "on"
+  lookupValue "ADDRESS_STATS" "enable" ini `shouldBe` Right "off"
+  lookupValue "ADDRESS_STATS" "period" ini `shouldBe` Right "300"
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` True
   -- start
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` smpServerCLI cfgPath logPath) `catchAll_` pure (Just ()))
@@ -193,7 +195,7 @@ smpServerTestStatic = do
         X.Certificate {X.certPubKey = X.PubKeyEd25519 _k} : _ca -> print _ca -- pure ()
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
-      runRight_ . void $ smpClientHandshake tls Nothing caSMP supportedClientSMPRelayVRange False Nothing
+      runRight_ . void $ smpClientHandshake tls Nothing caSMP supportedClientSMPRelayVRange False Nothing (\_ -> pure Nothing)
     logDebug "Combined SMP works"
   where
     getCerts :: TLS 'TClient -> [X.Certificate]
@@ -234,6 +236,8 @@ ntfServerTest storeLog = do
   lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
   lookupValue "TRANSPORT" "websockets" ini `shouldBe` Right "off"
+  lookupValue "ADDRESS_STATS" "enable" ini `shouldBe` Right "off"
+  lookupValue "ADDRESS_STATS" "period" ini `shouldBe` Right "300"
   doesFileExist (ntfCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` ntfServerCLI ntfCfgPath ntfLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SMP notifications server v" <> simplexmqVersionCommit]
@@ -252,6 +256,8 @@ xftpServerTest storeLog = do
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
   lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
+  lookupValue "ADDRESS_STATS" "enable" ini `shouldBe` Right "off"
+  lookupValue "ADDRESS_STATS" "period" ini `shouldBe` Right "300"
   doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SimpleX XFTP server v" <> simplexmqVersionCommit]

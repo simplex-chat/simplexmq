@@ -14,12 +14,15 @@ module Simplex.Messaging.Server.Prometheus
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
 import Data.List (mapAccumL)
+import Data.Map.Strict (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
+import Simplex.Messaging.Server.AddressStats (AddrHistogram, addrHistogramMetrics)
+import Simplex.Messaging.Server.Env.STM (SMPAddrCounter)
 import Simplex.Messaging.Server.MsgStore.Types (LoadedQueueCounts (..))
 import Simplex.Messaging.Server.QueueStore.Types (EntityCounts (..))
 import Simplex.Messaging.Server.Stats
@@ -46,7 +49,8 @@ data RealTimeMetrics = RealTimeMetrics
     deliveredTimes :: TimeBuckets,
     smpSubs :: RTSubscriberMetrics,
     ntfSubs :: RTSubscriberMetrics,
-    loadedCounts :: LoadedQueueCounts
+    loadedCounts :: LoadedQueueCounts,
+    addressHistograms :: Maybe (Map SMPAddrCounter AddrHistogram)
   }
 
 data RTSubscriberMetrics = RTSubscriberMetrics
@@ -59,7 +63,7 @@ data RTSubscriberMetrics = RTSubscriberMetrics
 {-# FOURMOLU_DISABLE\n#-}
 prometheusMetrics :: ServerMetrics -> RealTimeMetrics -> UTCTime -> Text
 prometheusMetrics sm rtm ts =
-  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> names <> info
+  time <> queues <> subscriptions <> messages <> ntfMessages <> ntfs <> relays <> services <> names <> clientAddresses <> info
   where
     ServerMetrics {statsData, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions} = sm
     RealTimeMetrics
@@ -70,7 +74,8 @@ prometheusMetrics sm rtm ts =
         deliveredTimes,
         smpSubs,
         ntfSubs,
-        loadedCounts
+        loadedCounts,
+        addressHistograms
       } = rtm
     ServerStatsData
       { _fromTime,
@@ -485,6 +490,7 @@ prometheusMetrics sm rtm ts =
           \# TYPE simplex_smp_names_disabled counter\n\
           \simplex_smp_names_disabled " <> mshow _rslvDisabled <> "\n# rslvDisabled\n\
           \\n"
+    clientAddresses = maybe "" (addrHistogramMetrics "simplex_smp" $ tsEpoch ts) addressHistograms
     info =
       "# Info\n\
       \# ----\n\

@@ -44,6 +44,8 @@ module Simplex.Messaging.Server.CLI
     checkSavedFingerprint,
     iniTransports,
     iniDBOptions,
+    iniAddressStats,
+    addressStatsIniContent,
     printServerConfig,
     printServerTransports,
     printSMPServerConfig,
@@ -73,13 +75,14 @@ import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
+import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..), defaultAddressStatsPeriod)
 import Simplex.Messaging.Server.Env.STM (ServerStoreCfg (..), StartOptions (..), dbStoreCfg, storeLogFile')
 import Simplex.Messaging.Server.Main.GitCommit
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..), simplexMQVersion)
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
-import Simplex.Messaging.Util (eitherToMaybe, whenM)
+import Simplex.Messaging.Util (eitherToMaybe, tshow, whenM)
 import System.Directory (doesDirectoryExist, listDirectory, removeDirectoryRecursive, removePathForcibly)
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
@@ -434,6 +437,19 @@ iniDBOptions ini _default@DBOpts {connstr, schema, poolSize} =
       poolSize = readIniDefault poolSize "STORE_LOG" "db_pool_size" ini,
       createSchema = False
     }
+
+iniAddressStats :: Ini -> Maybe AddressStatsConfig
+iniAddressStats ini =
+  AddressStatsConfig {period = readIniDefault defaultAddressStatsPeriod "ADDRESS_STATS" "period" ini}
+    <$ settingIsOn "ADDRESS_STATS" "enable" ini
+
+addressStatsIniContent :: Text
+addressStatsIniContent =
+  "[ADDRESS_STATS]\n\
+  \# Command counts per client address, shown by the control port command `addresses`\n\
+  \# and aggregated in Prometheus metrics.\n\
+  \enable = off\n"
+    <> ("period = " <> tshow defaultAddressStatsPeriod <> "\n")
 
 printServerConfig :: String -> [(ServiceName, ASrvTransport, AddHTTP)] -> Maybe FilePath -> IO ()
 printServerConfig protocol transports logFile = do

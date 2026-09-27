@@ -98,12 +98,13 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError, transportHost')
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.AddressStats (AddrStats, ServerAddrStats (..), addAddrCounter, addressStatsThread, incAddrCounter, printTopAddresses, withAddrStats)
 import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
@@ -124,6 +125,7 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
+import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -199,6 +201,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             <> expireMessagesThread_ cfg
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
+            <> addressStatsThread_ cfg
             <> controlPortThread_ cfg
     )
     `finally` stopServer s
@@ -216,11 +219,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
               Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
-              _ -> runClient srvCert srvSignKey t h `runReaderT` env
+              _ -> runClient srvCert srvSignKey t s h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
         _ ->
-          runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+          runTransportServerState_ ss started tcpPort defaultSupportedParams TLSServerCredential {credential = smpCreds, sniCredential = Nothing} tCfg $ \s (_, h) ->
+            runClient srvCert srvSignKey t s h `runReaderT` env
 
     sigIntHandlerThread :: M s ()
     sigIntHandlerThread = do
@@ -515,6 +519,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
+    addressStatsThread_ :: ServerConfig s -> [M s ()]
+    addressStatsThread_ ServerConfig {addressStats = Just statsCfg} = [asks addrStats >>= mapM_ (liftIO . addressStatsThread statsCfg)]
+    addressStatsThread_ _ = []
+
     logServerStats :: Int64 -> Int64 -> FilePath -> M s ()
     logServerStats startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
@@ -699,7 +707,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions}
 
     getRealTimeMetrics :: Env s -> IO RealTimeMetrics
-    getRealTimeMetrics Env {sockets, msgStore_ = ms, server = srv@Server {subscribers, ntfSubscribers}} = do
+    getRealTimeMetrics Env {sockets, msgStore_ = ms, server = srv@Server {subscribers, ntfSubscribers}, addrStats} = do
       socketStats <- mapM (traverse getSocketStats) =<< readTVarIO sockets
 #if MIN_VERSION_base(4,18,0)
       threadsCount <- length <$> listThreads
@@ -711,7 +719,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       smpSubs <- getSubscribersMetrics subscribers
       ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts $ fromMsgStore ms
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
+      addressHistograms <- mapM (readIORef . addrHistograms) addrStats
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts, addressHistograms}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients} = do
           subsCount <- M.size <$> getSubscribedClients queueSubscribers
@@ -732,19 +741,21 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 Nothing -> acc
                 Just (_, ts) -> (cnt + 1, updateTimeBuckets ts ts' times)
 
-    runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
-    runClient srvCert srvSignKey tp h = do
-      ms <- asks msgStore
-      g <- asks random
-      idSize <- asks $ queueIdBytes . config
-      kh <- asks serverIdentity
-      ks <- atomically . C.generateKeyPair =<< asks random
-      ServerConfig {smpServerVRange, smpHandshakeTimeout, information} <- asks config
-      let serverInfo = LB.toStrict . J.encode <$> information
-      labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> runClientTransport th
-        _ -> pure ()
+    runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> Socket -> c 'TServer -> M s ()
+    runClient srvCert srvSignKey tp sock h = do
+      stats_ <- asks addrStats
+      withAddrStats (addrStatsMap <$> stats_) sock $ \addrStats_ -> do
+        ms <- asks msgStore
+        g <- asks random
+        idSize <- asks $ queueIdBytes . config
+        kh <- asks serverIdentity
+        ks <- atomically . C.generateKeyPair =<< asks random
+        ServerConfig {smpServerVRange, smpHandshakeTimeout, information} <- asks config
+        let serverInfo = LB.toStrict . J.encode <$> information
+        labelMyThread $ "smp handshake for " <> transportName tp
+        liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
+          Just (Right th) -> runClientTransport addrStats_ th
+          _ -> pure ()
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
@@ -1040,7 +1051,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 hPutStrLn h "saving server state..."
                 unliftIO u $ saveServer False
                 hPutStrLn h "server state saved!"
-              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, server-info, delete, save, help, quit"
+              CPAddresses name n_ -> withUserRole $ do
+                stats_ <- unliftIO u $ asks addrStats
+                printTopAddresses h (addrStatsMap <$> stats_) name n_
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, clients, sockets, socket-threads, threads, server-info, delete, addresses, save, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
               where
@@ -1061,13 +1075,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     logError "Unauthorized control port command"
                     hPutStrLn h "AUTH"
 
-runClientTransport :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> M s ()
-runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
+runClientTransport :: forall c s. (Transport c, MsgStoreClass s) => Maybe (AddrStats SMPAddrCounter) -> THandleSMP c 'TServer -> M s ()
+runClientTransport addrStats_ h@THandle {params = thParams@THandleParams {sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   nextClientId <- asks clientSeq
   clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
-  c <- liftIO $ newClient clientId q thParams ts
+  c <- liftIO $ newClient clientId q thParams ts addrStats_
   runClientThreads c `finally` clientDisconnected c
   where
     runClientThreads :: Client s -> M s ()
@@ -1144,7 +1158,7 @@ cancelSub s = case subThread s of
 type VerifiedTransmissionOrError s = Either (Transmission BrokerMsg) (VerifiedTransmission s)
 
 receive :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M s ()
-receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, sndQ, rcvActiveAt} = do
+receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, sndQ, rcvActiveAt, clientAddrStats} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   sa <- asks serverActive
   stats <- asks serverStats
@@ -1154,6 +1168,9 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
+    forM_ clientAddrStats $ \s -> do
+      unless (null es) $ addAddrCounter s SACErrors $ length es
+      forM_ ts' $ \(_, _, (_, _, cmd)) -> incAddrCounter s $ smpCmdCounter cmd
     errs' <- case ts' of
       (_, _, (_, _, Cmd p cmd)) : rest -> do
         let service = peerClientService =<< thAuth
@@ -1181,7 +1198,9 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     verified :: ServerStats -> SignedTransmission Cmd -> VerificationResult s -> IO (VerifiedTransmissionOrError s)
     verified stats (_, _, t@(corrId, entId, Cmd _ command)) = \case
       VRVerified q -> pure $ Right (q, t)
-      VRFailed e -> Left (corrId, entId, ERR e) <$ when (e == AUTH) incAuthStat
+      VRFailed e -> do
+        forM_ clientAddrStats (`incAddrCounter` SACErrors)
+        Left (corrId, entId, ERR e) <$ when (e == AUTH) incAuthStat
         where
           incAuthStat = case command of
             SEND {} -> incStat $ msgSentAuth stats
@@ -1376,7 +1395,7 @@ client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
 client
   Server {subscribers, ntfSubscribers}
   ms
-  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, clientAddrStats} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
         process batchSubs t acc@(rs, msgs) =
@@ -1421,25 +1440,30 @@ client
           getRelay = do
             ProxyAgent {smpAgent = a} <- asks proxyAgent
             liftIO (getConnectedSMPServerClient a srv) >>= \case
-              Just r -> Just <$> proxyServerResponse a r
+              Just r -> Just <$> proxyServerResponse a SACPrxyConnected r
               Nothing ->
                 forkProxiedCmd $
                   liftIO (runExceptT (getSMPServerClient'' a srv) `E.catches` clientHandlers)
-                    >>= proxyServerResponse a
-          proxyServerResponse :: SMPClientAgent 'Sender -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
-          proxyServerResponse a smp_ = do
+                    >>= proxyServerResponse a SACPrxyNew
+          proxyServerResponse :: SMPClientAgent 'Sender -> SMPAddrCounter -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
+          proxyServerResponse a otherCounter smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn
             case smp_ of
               Right (own, smp) -> do
                 inc own pRequests
                 case proxyResp smp of
-                  r@PKEY {} -> r <$ inc own pSuccesses
-                  r -> r <$ inc own pErrorsCompat
+                  r@PKEY {} -> do
+                    incAddrStats $ proxyDestCounter own smp SACPrxyOwn SACPrxyOnion otherCounter
+                    r <$ inc own pSuccesses
+                  r -> do
+                    incAddrStats SACPrxyFailed
+                    r <$ inc own pErrorsCompat
               Left e -> do
                 let own = isOwnServer a srv
                 inc own pRequests
                 inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
+                incAddrStats SACPrxyFailed
                 logWarn $ "Error connecting: " <> decodeLatin1 (strEncode $ host srv) <> " " <> tshow e
                 pure . ERR $ smpProxyError e
             where
@@ -1459,16 +1483,24 @@ client
         liftIO (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
+            let delivered = incAddrStats (proxyDestCounter own smp SACPfwdOwn SACPfwdOnion SACPfwdOther) >> inc own pSuccesses
             forkProxiedCmd $ do
               liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ inc own pSuccesses
+                Right r -> PRES r <$ delivered
                 Left e -> ERR (smpProxyError e) <$ case e of
-                  PCEProtocolError {} -> inc own pSuccesses
-                  _ -> inc own pErrorsOther
-          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
+                  PCEProtocolError {} -> delivered
+                  _ -> incAddrStats SACPfwdFailed >> inc own pErrorsOther
+          Nothing -> incAddrStats SACPfwdFailed >> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
+        proxyDestCounter :: OwnServer -> SMPClient -> SMPAddrCounter -> SMPAddrCounter -> SMPAddrCounter -> SMPAddrCounter
+        proxyDestCounter own smp ownCounter onionCounter otherCounter
+          | own = ownCounter
+          | THOnionHost _ <- transportHost' smp = onionCounter
+          | otherwise = otherCounter
+    incAddrStats :: SMPAddrCounter -> M s ()
+    incAddrStats c = liftIO $ forM_ clientAddrStats (`incAddrCounter` c)
     -- Run a slow command on a thread
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId cmdAction = do

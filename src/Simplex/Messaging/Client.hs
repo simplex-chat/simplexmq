@@ -160,6 +160,7 @@ import Network.Socket (HostName, ServiceName)
 import Network.Socks5 (SocksCredentials (..))
 import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
@@ -482,7 +483,9 @@ data ProtocolClientConfig v = ProtocolClientConfig
     -- | Whether connecting client is a proxy server. See comment in ClientHandshake
     proxyServer :: Bool,
     -- | send SNI to server, False for SMP
-    useSNI :: Bool
+    useSNI :: Bool,
+    -- | proof of the user entitlement to send in the handshake, bound to the session
+    mkEntitlementProof :: SessionId -> IO (Maybe EntitlementProof)
   }
 
 -- | Default protocol client configuration.
@@ -497,7 +500,8 @@ defaultClientConfig clientALPN useSNI serverVRange =
       serverVRange,
       agreeSecret = False,
       proxyServer = False,
-      useSNI
+      useSNI,
+      mkEntitlementProof = \_ -> pure Nothing
     }
 {-# INLINE defaultClientConfig #-}
 
@@ -568,7 +572,7 @@ type SMPTransportSession = TransportSession BrokerMsg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI, mkEntitlementProof} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -635,7 +639,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
     client _ c cVar h = do
       ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
       serviceKeys_ <- mapM (\creds -> (creds,) <$> atomically (C.generateKeyPair g)) serviceCredentials
-      runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer serviceKeys_) >>= \case
+      runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer serviceKeys_ mkEntitlementProof) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime

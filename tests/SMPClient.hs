@@ -18,7 +18,12 @@ module SMPClient where
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
+import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
+import Data.Word (Word16)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket
@@ -28,19 +33,24 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientConfig (..), chooseTransportHost, defaultNetworkConfig)
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..), defaultSMPClientAgentConfig)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BBS (BBSPresHeader (..), BBSPublicKey, bbsKeyGen)
+import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementCredential, EntitlementProof, MasterKey (..), generateEntitlementProof, signEntitlement)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
+import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..))
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Util (ifM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+import System.IO (Handle, IOMode (..), hClose, hFlush)
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
@@ -83,6 +93,12 @@ ntfTestPort = "6001"
 
 ntfTestPort2 :: ServiceName
 ntfTestPort2 = "6002"
+
+testControlPort :: ServiceName
+testControlPort = "5226"
+
+testControlPortUserAuth :: BasicAuth
+testControlPortUserAuth = "user_password"
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -163,8 +179,16 @@ testSMPServiceClient serviceCreds client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
   testSMPClient_ useHost testPort supportedClientSMPRelayVRange (Just serviceCreds) client
 
+testSMPClientProof :: Transport c => (SessionId -> IO (Maybe EntitlementProof)) -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClientProof mkEntitlementProof client = do
+  Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
+  testSMPClientProof_ useHost testPort supportedClientSMPRelayVRange Nothing mkEntitlementProof client
+
 testSMPClient_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> Maybe (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
-testSMPClient_ host port vr serviceCreds_ client = do
+testSMPClient_ host port vr serviceCreds_ = testSMPClientProof_ host port vr serviceCreds_ (\_ -> pure Nothing)
+
+testSMPClientProof_ :: Transport c => TransportHost -> ServiceName -> VersionRangeSMP -> Maybe (TLS.Credential, C.KeyPairEd25519) -> (SessionId -> IO (Maybe EntitlementProof)) -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClientProof_ host port vr serviceCreds_ mkEntitlementProof client = do
   serviceAndKeys_ <- forM serviceCreds_ $ \(serviceCreds@(cc, pk), keys) -> do
     Right serviceSignKey <- pure $ C.x509ToPrivate' pk
     let idCert' = case chainIdCaCerts cc of
@@ -175,11 +199,24 @@ testSMPClient_ host port vr serviceCreds_ client = do
     pure (ServiceCredentials {serviceRole = SRMessaging, serviceCreds, serviceCertHash, serviceSignKey}, keys)
   let tcConfig = defaultTransportClientConfig {clientALPN, clientCredentials = fst <$> serviceCreds_} :: TransportClientConfig
   runTransportClient tcConfig Nothing host port (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash vr False serviceAndKeys_) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash vr False serviceAndKeys_ mkEntitlementProof) >>= \case
       Right th -> client th
       Left e -> error $ show e
   where
     clientALPN = Just alpnSupportedSMPHandshakes
+
+mkTestEntitlement :: IO (Map Word16 BBSPublicKey, EntitlementCredential)
+mkTestEntitlement = do
+  Right (issuerKey, issuerSecret) <- bbsKeyGen
+  expiresAt <- addUTCTime (30 * nominalDay) <$> getCurrentTime
+  let entitlement = Entitlement {entitlementName = "supporter", expiresAt, extraInfo = ""}
+  Right credential <- signEntitlement issuerSecret 1 (MasterKey "0123456789abcdef0123456789abcdef") entitlement
+  pure (M.singleton 1 issuerKey, credential)
+
+mkTestEntitlementProof :: IO (SessionId -> IO (Maybe EntitlementProof))
+mkTestEntitlementProof = do
+  (keys, credential) <- mkTestEntitlement
+  pure $ \sessId -> either error Just <$> generateEntitlementProof keys credential (BBSPresHeader sessId)
 
 runSMPClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
 runSMPClient _ test' = testSMPClient test'
@@ -199,7 +236,7 @@ testNtfServiceClient _ keys client = do
             clientALPN = Just alpnSupportedSMPHandshakes
           }
   runTransportClient tcConfig Nothing "localhost" testPort (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h Nothing testKeyHash supportedClientSMPRelayVRange False $ Just (service, keys)) >>= \case
+    runExceptT (smpClientHandshake h Nothing testKeyHash supportedClientSMPRelayVRange False (Just (service, keys)) (\_ -> pure Nothing)) >>= \case
       Right th -> client th
       Left e -> error $ show e
 
@@ -261,6 +298,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = testPrometheusMetricsFile,
+      addressStats = Just AddressStatsConfig {period = 1},
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
       smpCredentials =
@@ -395,6 +433,22 @@ withStallingServerOn port action =
     (\started -> runLocalTCPServer started port (\_ -> threadDelay maxBound))
     (pure ())
     (const action)
+
+withControlPort :: (Handle -> IO a) -> IO a
+withControlPort action = do
+  addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just testControlPort)
+  E.bracket (connectHandle addr) hClose $ \h -> replicateM_ 2 (B.hGetLine h) >> action h
+  where
+    connectHandle addr = do
+      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+      connect sock $ addrAddress addr
+      socketToHandle sock ReadWriteMode
+
+controlPortCommand :: Handle -> ByteString -> Int -> IO [ByteString]
+controlPortCommand h cmd n = do
+  B.hPutStrLn h cmd
+  hFlush h
+  replicateM n $ trimCR <$> B.hGetLine h
 
 withSmpServerOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const

@@ -14,16 +14,19 @@ module Simplex.Messaging.Notifications.Transport
     THandleNTF,
     supportedClientNTFVRange,
     supportedServerNTFVRange,
+    entitlementNTFVersion,
     alpnSupportedNTFHandshakes,
     ntfServerHandshake,
     ntfClientHandshake,
   ) where
 
 import Control.Monad.Except
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
 import Data.Word (Word16)
 import qualified Data.X509 as X
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.Entitlement (EntitlementProof)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (liftEitherWith)
@@ -50,11 +53,14 @@ initialNTFVersion = VersionNTF 3
 _invalidReasonNTFVersion :: VersionNTF
 _invalidReasonNTFVersion = VersionNTF 3
 
+entitlementNTFVersion :: VersionNTF
+entitlementNTFVersion = VersionNTF 4
+
 currentClientNTFVersion :: VersionNTF
-currentClientNTFVersion = VersionNTF 3
+currentClientNTFVersion = VersionNTF 4
 
 currentServerNTFVersion :: VersionNTF
-currentServerNTFVersion = VersionNTF 3
+currentServerNTFVersion = VersionNTF 4
 
 supportedClientNTFVRange :: VersionRangeNTF
 supportedClientNTFVRange = mkVersionRange initialNTFVersion currentClientNTFVersion
@@ -78,7 +84,9 @@ data NtfClientHandshake = NtfClientHandshake
   { -- | agreed SMP notifications server protocol version
     ntfVersion :: VersionNTF,
     -- | server identity - CA certificate fingerprint
-    keyHash :: C.KeyHash
+    keyHash :: C.KeyHash,
+    -- | proof of the user entitlement bound to the session
+    entitlementProof :: Maybe EntitlementProof
   }
 
 instance Encoding NtfServerHandshake where
@@ -91,11 +99,15 @@ instance Encoding NtfServerHandshake where
     pure NtfServerHandshake {ntfVersionRange, sessionId, authPubKey}
 
 instance Encoding NtfClientHandshake where
-  smpEncode NtfClientHandshake {ntfVersion, keyHash} =
-    smpEncode (ntfVersion, keyHash)
+  smpEncode NtfClientHandshake {ntfVersion = v, keyHash, entitlementProof} =
+    smpEncode (v, keyHash) <> ifHasEntitlement v (smpEncode entitlementProof) ""
   smpP = do
-    (ntfVersion, keyHash) <- smpP
-    pure NtfClientHandshake {ntfVersion, keyHash}
+    (v, keyHash) <- smpP
+    entitlementProof <- ifHasEntitlement v smpP (pure Nothing)
+    pure NtfClientHandshake {ntfVersion = v, keyHash, entitlementProof}
+
+ifHasEntitlement :: VersionNTF -> a -> a -> a
+ifHasEntitlement v a b = if v >= entitlementNTFVersion then a else b
 
 -- | Notifcations server transport handshake.
 ntfServerHandshake :: forall c. Transport c => C.APrivateSignKey -> c 'TServer -> C.KeyPairX25519 -> C.KeyHash -> VersionRangeNTF -> ExceptT TransportError IO (THandleNTF c 'TServer)
@@ -113,8 +125,8 @@ ntfServerHandshake serverSignKey c (k, pk) kh ntfVersionRange = do
             Nothing -> throwE TEVersion
 
 -- | Notifcations server client transport handshake.
-ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> ExceptT TransportError IO (THandleNTF c 'TClient)
-ntfClientHandshake c keyHash ntfVRange _proxyServer _serviceKeys = do
+ntfClientHandshake :: forall c. Transport c => c 'TClient -> C.KeyHash -> VersionRangeNTF -> Bool -> Maybe (ServiceCredentials, C.KeyPairEd25519) -> (SessionId -> IO (Maybe EntitlementProof)) -> ExceptT TransportError IO (THandleNTF c 'TClient)
+ntfClientHandshake c keyHash ntfVRange _proxyServer _serviceKeys mkEntitlementProof = do
   let th@THandle {params = THandleParams {sessionId}} = ntfTHandle c
   NtfServerHandshake {sessionId = sessId, ntfVersionRange, authPubKey} <- getHandshake th
   if sessionId /= sessId
@@ -126,7 +138,8 @@ ntfClientHandshake c keyHash ntfVRange _proxyServer _serviceKeys = do
           pubKey <- C.verifyX509 serverKey authPubKey
           (,CertChainPubKey (getPeerCertChain c) authPubKey) <$> C.x509ToPublic' pubKey
         let v = maxVersion vr
-        sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash}
+        ep <- if v >= entitlementNTFVersion then liftIO (mkEntitlementProof sessionId) else pure Nothing
+        sendHandshake th $ NtfClientHandshake {ntfVersion = v, keyHash, entitlementProof = ep}
         pure $ ntfThHandleClient th v vr ck
       Nothing -> throwE TEVersion
 

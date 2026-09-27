@@ -1,11 +1,12 @@
-Version 3, 2025-01-24
+Version 4, 2026-09-11
 
 # Overview of push notifications for SimpleX Messaging Routers
 
-This document describes Notification Router protocol version 3. Version history:
+This document describes Notification Router protocol version 4. Version history:
 - v1: initial version
 - v2: authenticated commands, command batching
 - v3: detailed invalid token reason
+- v4: entitlement proof in client handshake
 
 ## Table of contents
 
@@ -94,7 +95,7 @@ This diagram shows the process of subscription to notifications, notification de
 
 To manage notification subscriptions to SMP routers, SimpleX Notification Router provides an RPC protocol with a similar design to SimpleX Messaging Protocol router.
 
-This protocol sends requests and responses in a fixed size blocks of 512 bytes over TLS, uses the same [syntax of protocol transmissions](./simplex-messaging.md#smp-transmission-and-transport-block-structure) as SMP protocol, and has the same transport [handshake syntax](./simplex-messaging.md#transport-handshake) (except the router certificate is not included in the handshake).
+This protocol sends requests and responses in a fixed size blocks of 512 bytes over TLS, uses the same [syntax of protocol transmissions](./simplex-messaging.md#smp-transmission-and-transport-block-structure) as SMP protocol, and has the same transport [handshake syntax](./simplex-messaging.md#transport-handshake) (except the router certificate is not included in the handshake). The client handshake carries the protocol version, the router key hash and, from v4, the optional `entitlementProof` with the same syntax and session binding as in SMP.
 
 The client and router use ALPN extension with `ntf/1` protocol name to agree handshake version.
 

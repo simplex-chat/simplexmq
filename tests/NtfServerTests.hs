@@ -39,9 +39,10 @@ import qualified Simplex.Messaging.Agent.Protocol as AP
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
+import qualified Simplex.Messaging.Notifications.Protocol as NP
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Transport (THandleNTF)
+import Simplex.Messaging.Notifications.Transport (THandleNTF, entitlementNTFVersion)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
@@ -55,6 +56,8 @@ ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Push provider policy" $ do
     it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
+  describe "Entitlement proof" $ do
+    it "responds in the session with entitlement proof" $ testNtfEntitlementProof t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
@@ -86,6 +89,16 @@ testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
     testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
       RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
         signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+      pure ()
+
+testNtfEntitlementProof :: ASrvTransport -> Expectation
+testNtfEntitlementProof (ATransport (t :: TProxy c 'TServer)) = do
+  mkProof <- mkTestEntitlementProof
+  withNtfServer (ATransport t) $
+    testNtfClientProof mkProof $ \(nh :: THandleNTF c 'TClient) -> do
+      let THandle {params = THandleParams {thVersion}} = nh
+      thVersion `shouldSatisfy` (>= entitlementNTFVersion)
+      RespNtf "1" NoEntity NRPong <- sendRecvNtf nh (Nothing, "1", NoEntity, NP.PING)
       pure ()
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> Transmission (Either ErrorType NtfResponse)
