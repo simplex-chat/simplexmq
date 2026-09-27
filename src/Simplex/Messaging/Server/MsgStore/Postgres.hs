@@ -114,7 +114,9 @@ instance MsgStoreClass PostgresMsgStore where
     where
       st = dbStore $ queueStore_ ms
       oldMsg = now - ttl
-      batchSize = 1000 :: Int -- queues per COMMIT in expire_old_messages
+      -- expired messages read per page in expire_old_messages, and the page is one
+      -- transaction: queues in it stay row-locked against SEND and ACK until it commits.
+      batchSize = 100 :: Int
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 

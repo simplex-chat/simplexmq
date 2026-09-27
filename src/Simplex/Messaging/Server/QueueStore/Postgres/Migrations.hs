@@ -753,16 +753,34 @@ CREATE PROCEDURE expire_old_messages(IN p_old_ts bigint, IN batch_size integer, 
 DECLARE
   rids BYTEA[];
   rid BYTEA;
+  last_ts BIGINT := -1;
+  last_rid BYTEA := '\x';
+  next_ts BIGINT;
+  next_rid BYTEA;
   del_count BIGINT;
   total_deleted BIGINT := 0;
-  i INTEGER := 0;
 BEGIN
-  SELECT array_agg(DISTINCT recipient_id)
-  INTO rids
-  FROM messages
-  WHERE msg_ts < p_old_ts AND msg_quota = FALSE;
+  LOOP
+    -- The page is scanned in (msg_ts, recipient_id) order, so its last row is the next
+    -- keyset cursor. Advancing it past every row read, including queues left unexpired
+    -- because delete_expired_msgs skipped a locked row or raised, is what terminates the
+    -- loop; re-reading from the start instead would repeat those queues forever.
+    SELECT array_agg(DISTINCT recipient_id),
+           (array_agg(msg_ts ORDER BY msg_ts DESC, recipient_id DESC))[1],
+           (array_agg(recipient_id ORDER BY msg_ts DESC, recipient_id DESC))[1]
+    INTO rids, next_ts, next_rid
+    FROM (
+      SELECT msg_ts, recipient_id
+      FROM messages
+      WHERE NOT msg_quota
+        AND msg_ts < p_old_ts
+        AND (msg_ts, recipient_id) > (last_ts, last_rid)
+      ORDER BY msg_ts ASC, recipient_id ASC
+      LIMIT batch_size
+    ) m;
 
-  IF rids IS NOT NULL THEN
+    EXIT WHEN rids IS NULL;
+
     FOREACH rid IN ARRAY rids
     LOOP
       BEGIN
@@ -772,11 +790,12 @@ BEGIN
         RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
         CONTINUE;
       END;
-      i := i + 1;
-      IF i % batch_size = 0 THEN COMMIT; END IF;
     END LOOP;
-  END IF;
-  COMMIT;
+    COMMIT;
+
+    last_ts := next_ts;
+    last_rid := next_rid;
+  END LOOP;
 
   r_expired_msgs_count := total_deleted;
   r_stored_msgs_count := (SELECT COUNT(1) FROM messages);
@@ -970,8 +989,14 @@ down_m20260918_expire_messages =
   [r|
 ALTER TABLE msg_queues ADD COLUMN msg_queue_expire boolean NOT NULL DEFAULT FALSE;
 
+-- ADD COLUMN already defaulted every row to FALSE, so the backfill only needs the rows
+-- that become TRUE, which avoids rewriting the whole table. The flag is only read to pick
+-- queues for delete_expired_msgs, and that returns 0 without deleting when msg_queue_size
+-- is 0, so excluding empty queues here cannot change what expires.
 UPDATE msg_queues q
-SET msg_queue_expire = EXISTS (SELECT 1 FROM messages m WHERE m.recipient_id = q.recipient_id AND NOT m.msg_quota);
+SET msg_queue_expire = TRUE
+WHERE msg_queue_size > 0
+  AND EXISTS (SELECT 1 FROM messages m WHERE m.recipient_id = q.recipient_id AND NOT m.msg_quota);
 
 CREATE INDEX idx_msg_queues_expire ON msg_queues (recipient_id) WHERE deleted_at IS NULL AND msg_queue_expire;
 
