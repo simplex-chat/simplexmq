@@ -1091,13 +1091,11 @@ createConnectionForLink' c nm userId enableNtfs (CCLink connReq _) PreparedLinkP
         `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
       createLinkQueue connId crData qd
   where
-    createLinkQueue connId ConnReqUriData {crSmpQueues = qUri@(SMPQueueUri _ SMPQueueAddress {senderId = sndId}) :| _} qd = do
+    createLinkQueue connId ConnReqUriData {crSmpQueues = qUri :| _} qd = do
       (rq, qUri') <-
         createRcvQueue c nm userId connId plpSrvWithAuth enableNtfs subMode (Just plpNonce) qd plpQueueE2EKeys
           `catchE` \e -> withStore' c (`deleteConnRecord` connId) >> throwE e
-      let SMPQueueUri _ SMPQueueAddress {senderId = actualSndId} = qUri'
-      unless (actualSndId == sndId) $ throwE $ INTERNAL "createConnectionForLink: sender ID mismatch"
-      (connId,) <$> connReqWithShortLink (qServer rq) plpInitKeys qUri connReq qUri' (shortLink rq)
+      (connId,) <$> connReqWithShortLink plpInitKeys qUri connReq qUri' rq
 
 generateAddressRatchetKeys :: CR.InitialKeys -> AM (AddressRatchetKeys, (RatchetKeyId, CR.RcvE2EPrivRatchetParams 'C.X448))
 generateAddressRatchetKeys pqInitKeys = do
@@ -1365,7 +1363,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
     Just d -> do
       (nonce, qUri, cReq, qd) <- prepareLinkData addrKeys_ (setLinkDataRatchetKeys addrKeys_ d) $ fst e2eKeys
       (rq, qUri') <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode (Just nonce) qd e2eKeys
-      connReqWithShortLink srv pqInitKeys qUri cReq qUri' (shortLink rq)
+      connReqWithShortLink pqInitKeys qUri cReq qUri' rq
     Nothing -> do
       let qd = case cMode of SCMContact -> CQRContact Nothing; SCMInvitation -> CQRMessaging Nothing
       (_rq, qUri) <- createRcvQueue c nm userId connId srvWithAuth enableNtfs subMode Nothing qd e2eKeys
@@ -1410,8 +1408,8 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
         SCMInvitation -> encryptInvLinkData g privSigKey linkKey sndId linkData
       pure (nonce, qUri, connReq, qd)
 
-connReqWithShortLink :: SMPServer -> CR.InitialKeys -> SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> Maybe ShortLinkCreds -> AM (CreatedConnLink c)
-connReqWithShortLink srv pqInitKeys qUri cReq qUri' shortLink = case shortLink of
+connReqWithShortLink :: CR.InitialKeys -> SMPQueueUri -> ConnectionRequestUri c -> SMPQueueUri -> RcvQueue -> AM (CreatedConnLink c)
+connReqWithShortLink pqInitKeys qUri cReq qUri' RcvQueue {server = srv, shortLink} = case shortLink of
   Just ShortLinkCreds {shortLinkId, shortLinkKey}
     | qUri == qUri' -> pure $ case cReq of
         CRContactUri _ _ -> CCLink cReq $ Just $ CSLContact SLSServer CCTContact srv shortLinkKey
