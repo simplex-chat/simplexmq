@@ -258,9 +258,11 @@ NTF:  BUSY -> STORE busy
 XFTP: BUSY -> TIMEOUT
 ```
 
-SMP and NTF share `ErrorType`, which has no `TIMEOUT`. Among the errors an SMP or NTF server sends, the deployed agent retries only `STORE`. An asynchronous `NEW` or `JOIN` retries with a growing interval and takes the next server of the user on each attempt, so a refused client moves to a server that has budget left; the XFTP agent retries `FNEW` on `TIMEOUT`. `TNEW` returns the error to the app that called `registerNtfToken`, and the agent holds no retry loop for it. An interactive command shows the error once, and the deployed apps show `STORE busy` in their generic error alert.
+SMP and NTF share `ErrorType`, which has no `TIMEOUT`. Among the errors an SMP or NTF server sends, agents from simplexmq 7.0.0 retry only `STORE`; that release introduced SMP version 19 and ships in the apps from 7.0.0. An asynchronous `NEW` or `JOIN` of these agents retries with a growing interval and takes the next server of the user on each attempt, so a refused client moves to a server that has budget left. The XFTP agent retries `FNEW` on `TIMEOUT` from simplexmq 5.8.0. `TNEW` returns the error to the app that called `registerNtfToken`, and the agent holds no retry loop for it. An interactive command shows the error once, and the deployed apps show `STORE busy` in their generic error alert.
 
-The other errors mislead or stop the client: `QUOTA` is shown as a connection that reached its limit of undelivered messages, `AUTH` as a connection error of authorisation, and both end an asynchronous command. A budget of zero keeps the retries of earlier clients running at the longest interval, and a raised budget lets them through without an update.
+Agents below SMP version 19 retry no error that a server sends. They end an asynchronous command on `STORE`, and the app of these versions shows the error without retrying the command, so a refused connection to a group member is lost.
+
+The other errors mislead or stop the client: `QUOTA` is shown as a connection that reached its limit of undelivered messages, `AUTH` as a connection error of authorisation, and in the deployed agents both end an asynchronous command. A budget of zero keeps the retries of clients from version 19 running at the longest interval, and a raised budget lets them through without an update.
 
 A client of the proof-of-work version shows `BUSY` to the user: an interactive command shows it at once, and a background command shows it when its retries expire on the client.
 
@@ -290,7 +292,7 @@ XFTP: FRErr (POW price epoch)
 NTF:  NRErr (POW price epoch)
 ```
 
-The client resets its price and epoch from the error, solves at the stated price, and retries. Two retries are allowed for one command, which covers a price that moves again while the client solves; past that it reports that the server is busy, as it does when the effort exceeds 4096, its own maximum.
+The client resets its price and epoch from the error, solves at the stated price, and retries. Two retries are allowed for one command, which covers a price that moves again while the client solves; past that it reports that the server is busy, as it does when the effort exceeds its own maximum.
 
 A proof made for a higher effort than required is accepted, so a proof that outlives a decrease stays usable while its epoch holds.
 
@@ -363,7 +365,7 @@ effort   desktop, compiled   phone, interpreted
 
 A queue at a price of 4 costs a phone about 0.6 seconds, and a queue at 16 about 2.5 seconds. A 4 MB chunk stored for 48 hours is 128 units; at an XFTP price of 1 it costs a phone about 20 seconds, while the upload of the same chunk takes seconds to minutes. The prices of the configuration examples assume compiled solving, and fall with this table.
 
-The client maximum of 4096 effort is about 10 minutes on a phone.
+The client maximum is one effort value: the largest that an iPhone 8 solves in 45-60 seconds and a current iPhone in 30 seconds. A benchmark on both devices sets it; by the table above it is about 200. A client reports a request priced above it as busy, so it bounds the prices an operator can set: the price of a queue, and the units of an XFTP chunk multiplied by the price per unit.
 
 Verification at 100 microseconds allows about 10000 proofs per second per core, which exceeds the rate at which queues are created and written to the store.
 
@@ -412,9 +414,8 @@ Proof of work comes in the same version as the entitlement proof in the handshak
 ## Open questions
 
 1. HashX against a fixed hash. Our clients interpret and an attacker compiles, which the estimates put at about 8 times on one core. A fixed hash - Equihash(60,3) over SipHash - removes that factor, and gives a GPU the same program for every challenge, so it runs thousands of instances in step, as the Equihash miners do; that factor is unmeasured. The measurements that decide it: interpreted solving on a mid-range Android phone and an iPhone, compiled against interpreted on one desktop core, and an estimate of a GPU solver for the fixed hash.
-2. The client maximum: 4096 effort is about 10 minutes on a phone. A maximum in seconds, from the rate the device measures, holds the same wait on every device.
-3. The budget of background solving, in CPU seconds per hour.
-4. Whether agents of releases older than the deployed one treat `STORE` and `TIMEOUT` as temporary, as the deployed agent does.
+2. The budget of background solving, in CPU seconds per hour.
+3. Sessions below SMP version 19: whether the budget of earlier versions applies to them, where a refusal ends their asynchronous creations, or they stay outside it and the version range is the lever against them.
 
 ## Follow-up
 
