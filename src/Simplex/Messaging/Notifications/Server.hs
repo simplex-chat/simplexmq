@@ -72,6 +72,7 @@ import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol (EntityId (..), ErrorType (..), NotifierId, Party (..), ProtocolServer (host), SMPServer, ServiceSub (..), SignedTransmission, Transmission, pattern NoEntity, pattern SMPServer, encodeTransmission, tGetServer, tPut)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server
+import Simplex.Messaging.Server.AddressStats (AddrStats, ServerAddrStats (..), addressStatsThread, incAddrCounter, printTopAddresses, withAddrStats)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, periodStatDataCounts, updatePeriodStats)
@@ -80,7 +81,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
-import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (AddHTTP, TLSServerCredential (..), newSocketState, runLocalTCPServer, runTransportServerState_)
 import Simplex.Messaging.Util
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
@@ -122,6 +123,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         : map runServer transports
           <> serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
+          <> addressStatsThread_ cfg
           <> controlPortThread_ cfg
     )
     `finally` stopServer
@@ -131,16 +133,20 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       srvCreds <- asks tlsServerCreds
       serverSignKey <- either fail pure $ C.x509ToPrivate' $ snd srvCreds
       env <- ask
-      liftIO $ runTransportServer started tcpPort defaultSupportedParams srvCreds tCfg $ \h -> runClient serverSignKey t h `runReaderT` env
+      ss <- liftIO newSocketState
+      liftIO $ runTransportServerState_ ss started tcpPort defaultSupportedParams TLSServerCredential {credential = srvCreds, sniCredential = Nothing} tCfg $ \sock (_, h) ->
+        runClient serverSignKey t sock h `runReaderT` env
 
-    runClient :: Transport c => C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M ()
-    runClient signKey _ h = do
-      kh <- asks serverIdentity
-      ks <- atomically . C.generateKeyPair =<< asks random
-      NtfServerConfig {ntfServerVRange} <- asks config
-      liftIO (runExceptT $ ntfServerHandshake signKey h ks kh ntfServerVRange) >>= \case
-        Right th -> runNtfClientTransport th
-        Left _ -> pure ()
+    runClient :: Transport c => C.APrivateSignKey -> TProxy c 'TServer -> Socket -> c 'TServer -> M ()
+    runClient signKey _ sock h = do
+      stats_ <- asks addrStats
+      withAddrStats (addrStatsMap <$> stats_) sock $ \addrStats_ -> do
+        kh <- asks serverIdentity
+        ks <- atomically . C.generateKeyPair =<< asks random
+        NtfServerConfig {ntfServerVRange} <- asks config
+        liftIO (runExceptT $ ntfServerHandshake signKey h ks kh ntfServerVRange) >>= \case
+          Right th -> runNtfClientTransport addrStats_ th
+          Left _ -> pure ()
 
     stopServer :: M ()
     stopServer = do
@@ -231,6 +237,10 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       [savePrometheusMetrics interval prometheusMetricsFile]
     prometheusMetricsThread_ _ = []
 
+    addressStatsThread_ :: NtfServerConfig -> [M ()]
+    addressStatsThread_ NtfServerConfig {addressStats = Just statsCfg} = [asks addrStats >>= mapM_ (liftIO . addressStatsThread statsCfg)]
+    addressStatsThread_ _ = []
+
     savePrometheusMetrics :: Int -> FilePath -> M ()
     savePrometheusMetrics saveInterval metricsFile = do
       labelMyThread "savePrometheusMetrics"
@@ -256,7 +266,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       pure NtfServerMetrics {statsData = d, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions}
 
     getNtfRealTimeMetrics :: NtfEnv -> IO NtfRealTimeMetrics
-    getNtfRealTimeMetrics NtfEnv {subscriber, pushServer} = do
+    getNtfRealTimeMetrics NtfEnv {subscriber, pushServer, addrStats} = do
 #if MIN_VERSION_base(4,18,0)
       threadsCount <- length <$> listThreads
 #else
@@ -274,6 +284,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       ntfPendingQueueSubs <- getSMPSubMetrics a pendingQueueSubs
       smpSessionCount <- M.size <$> readTVarIO smpSessions
       apnsPushQLength <- pushWorkersQLength pushWorkers
+      addressHistograms <- mapM (readIORef . addrHistograms) addrStats
       pure
         NtfRealTimeMetrics
           { threadsCount,
@@ -285,7 +296,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             ntfPendingServiceSubs,
             ntfPendingQueueSubs,
             smpSessionCount,
-            apnsPushQLength
+            apnsPushQLength,
+            addressHistograms
           }
       where
         getSMPServiceSubMetrics :: forall sub. SMPClientAgent 'NotifierService -> (SMPClientAgent 'NotifierService -> TMap SMPServer (TVar (Maybe sub))) -> (sub -> Int64) -> IO NtfSMPSubMetrics
@@ -441,7 +453,10 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                       T.hPutStrLn h $ name <> " own servers count: " <> tshow (length ownServers)
                       when (r == CPRAdmin) $ T.hPutStrLn h $ name <> " own servers: " <> T.intercalate "," ownServers
                       T.hPutStrLn h $ name <> " other servers count: " <> tshow otherServers
-              CPHelp -> hPutStrLn h "commands: stats, stats-rts, server-info, help, quit"
+              CPAddresses name n_ -> withUserRole $ do
+                stats_ <- unliftIO u $ asks addrStats
+                printTopAddresses h (addrStatsMap <$> stats_) name n_
+              CPHelp -> hPutStrLn h "commands: stats, stats-rts, server-info, addresses, help, quit"
               CPQuit -> pure ()
               CPSkip -> pure ()
               where
@@ -756,11 +771,11 @@ periodicNtfsThread s = do
     cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
     logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
-runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
-runNtfClientTransport th@THandle {params} = do
+runNtfClientTransport :: Transport c => Maybe (AddrStats NtfAddrCounter) -> THandleNTF c 'TServer -> M ()
+runNtfClientTransport addrStats_ th@THandle {params} = do
   qSize <- asks $ clientQSize . config
   ts <- liftIO getSystemTime
-  c <- liftIO $ newNtfServerClient qSize params ts
+  c <- liftIO $ newNtfServerClient qSize params ts addrStats_
   s <- asks subscriber
   ps <- asks pushServer
   expCfg <- asks $ inactiveClientExpiration . config
@@ -775,7 +790,7 @@ clientDisconnected :: NtfServerClient -> IO ()
 clientDisconnected NtfServerClient {connected} = atomically $ writeTVar connected False
 
 receive :: Transport c => NtfPostgresStore -> THandleNTF c 'TServer -> NtfServerClient -> IO ()
-receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt} = forever $ do
+receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, sndQ, rcvActiveAt, ntfClientAddrStats} = forever $ do
   ts <- L.toList <$> tGetServer th
   atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
   (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
@@ -784,17 +799,21 @@ receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, s
   where
     cmdAction = \case
       Left (corrId, entId, e) -> do
+        incAddrStats NACErrors
         logError $ "invalid client request: " <> tshow e
         pure $ Left (corrId, entId, NRErr e)
-      Right t@(_, _, (corrId, entId, _)) ->
+      Right t@(_, _, (corrId, entId, cmd)) -> do
+        incAddrStats $ ntfCmdCounter cmd
         verified =<< verifyNtfTransmission st thAuth t
         where
           verified = \case
             VRVerified req -> pure $ Right req
             VRFailed e -> do
+              incAddrStats NACErrors
               logError "unauthorized client request"
               pure $ Left (corrId, entId, NRErr e)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
+    incAddrStats c = forM_ ntfClientAddrStats (`incAddrCounter` c)
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do

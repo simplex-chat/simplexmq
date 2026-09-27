@@ -24,6 +24,7 @@ import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Crypto.File (CryptoFile)
 import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
@@ -208,6 +209,7 @@ testXFTPServerConfig =
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = xftpTestPrometheusMetricsFile,
+      addressStats = Just AddressStatsConfig {period = 1},
       transportConfig = mkTransportServerConfig True (Just alpnSupportedXFTPhandshakes) False,
       responseDelay = 0,
       webStaticPath = Nothing

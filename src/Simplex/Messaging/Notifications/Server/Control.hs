@@ -7,14 +7,17 @@ module Simplex.Messaging.Notifications.Server.Control
 where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Text (Text)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
+import Simplex.Messaging.Server.AddressStats (addressesArgs, addressesArgsP)
 
 data ControlProtocol
   = CPAuth BasicAuth
   | CPStats
   | CPStatsRTS
   | CPServerInfo
+  | CPAddresses Text (Maybe Int)
   | CPHelp
   | CPQuit
   | CPSkip
@@ -25,6 +28,7 @@ instance StrEncoding ControlProtocol where
     CPStats -> "stats"
     CPStatsRTS -> "stats-rts"
     CPServerInfo -> "server-info"
+    CPAddresses name n_ -> "addresses " <> addressesArgs name n_
     CPHelp -> "help"
     CPQuit -> "quit"
     CPSkip -> ""
@@ -34,6 +38,7 @@ instance StrEncoding ControlProtocol where
       "stats" -> pure CPStats
       "stats-rts" -> pure CPStatsRTS
       "server-info" -> pure CPServerInfo
+      "addresses" -> uncurry CPAddresses <$> addressesArgsP
       "help" -> pure CPHelp
       "quit" -> pure CPQuit
       "" -> pure CPSkip

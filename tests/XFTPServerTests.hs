@@ -28,6 +28,7 @@ import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
+import SMPClient (controlPortCommand, testControlPort, testControlPortUserAuth, withControlPort)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -39,7 +40,8 @@ import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
-import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
+import Simplex.Messaging.Protocol (BasicAuth (..), EntityId (..), RecipientId, SenderId, pattern NoEntity)
+import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..), defaultAddressStatsPeriod)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
@@ -68,6 +70,7 @@ xftpServerTests =
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
+      it "should count commands, transfers and recipients by client address" testFileAddressStats
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -333,6 +336,23 @@ testFileLog _ = do
     download g c rpKey rId digest bytes = do
       downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
       liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+
+testFileAddressStats :: AFStoreType -> Expectation
+testFileAddressStats fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {addressStats, controlPort = Just testControlPort, controlPortUserAuth = Just testControlPortUserAuth}) $ \_ -> do
+    ts <- getCurrentTime
+    runRight_ $ do
+      c <- ExceptT $ getXFTPClient (1, "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@127.0.0.1:8000", Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+      runTestFileChunkDelivery c c
+    withControlPort $ \h -> do
+      controlPortCommand h ("auth " <> unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
+      controlPortCommand h "addresses errors" 1 `shouldReturn` ["address,previous,current"]
+      forM_ counts $ \(counter, n) ->
+        controlPortCommand h ("addresses " <> counter) 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0," <> n]
+  where
+    addressStats = Just AddressStatsConfig {period = defaultAddressStatsPeriod}
+    counts :: [(ByteString, ByteString)]
+    counts = [("connections", "1"), ("FNEW", "2"), ("FPUT", "2"), ("FGET", "2"), ("recipients", "2"), ("upload_kb", "128"), ("download_kb", "256")]
 
 testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =

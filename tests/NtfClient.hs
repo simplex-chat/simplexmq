@@ -49,6 +49,7 @@ import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Push.APNS.Internal
 import Simplex.Messaging.Notifications.Transport
 import Simplex.Messaging.Protocol
+import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -159,6 +160,7 @@ ntfServerCfg =
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = ntfTestPrometheusMetricsFile,
+      addressStats = Just AddressStatsConfig {period = 1},
       ntfServerVRange = supportedServerNTFVRange,
       transportConfig = mkTransportServerConfig True (Just alpnSupportedNTFHandshakes) False,
       startOptions = defaultStartOptions
