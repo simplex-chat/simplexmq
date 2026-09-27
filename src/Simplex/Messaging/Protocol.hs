@@ -1814,8 +1814,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   encodeProtocol v = \case
     NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueReqData, ntfCreds}
       | v >= newNtfCredsSMPVersion -> new <> e (subMode, queueReqData, ntfCreds)
-      | v >= shortLinksSMPVersion -> new <> e (subMode, queueReqData)
-      | otherwise -> new <> e (subMode, senderCanSecure (queueReqMode <$> queueReqData))
+      | otherwise -> new <> e (subMode, queueReqData)
       where
         new = e (NEW_, ' ', rKey, dhKey, auth_)
     SUB -> e SUB_
@@ -1902,20 +1901,18 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SCreator NEW_ -> Cmd SCreator <$> newCmd
       where
         newCmd
-          | v >= newNtfCredsSMPVersion = new smpP smpP
-          | v >= shortLinksSMPVersion = new smpP nothing
-          | otherwise = new (qReq <$> smpP) nothing
+          | v >= newNtfCredsSMPVersion = new smpP
+          | otherwise = new nothing
           where
             nothing = pure Nothing
-            new p2 p3 = NEW <$> do
+            new p3 = NEW <$> do
               rcvAuthKey <- _smpP
               rcvDhKey <- smpP
               auth_ <- smpP
               subMode <- smpP
-              queueReqData <- p2
+              queueReqData <- smpP
               ntfCreds <- p3
               pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData, ntfCreds}
-            qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         SUB_ -> pure SUB
@@ -1966,8 +1963,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId, serviceId, serverNtfCreds}
       | v >= newNtfCredsSMPVersion -> ids <> e (queueMode, linkId, serviceId, serverNtfCreds)
       | v >= serviceCertsSMPVersion -> ids <> e (queueMode, linkId, serviceId)
-      | v >= shortLinksSMPVersion -> ids <> e (queueMode, linkId)
-      | otherwise -> ids <> e (senderCanSecure queueMode)
+      | otherwise -> ids <> e (queueMode, linkId)
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     LNK sId d -> e (LNK_, ' ', sId, d)
@@ -2015,19 +2011,17 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     ALLS_ -> pure ALLS
     IDS_
-      | v >= newNtfCredsSMPVersion -> ids smpP smpP smpP smpP
-      | v >= serviceCertsSMPVersion -> ids smpP smpP smpP nothing
-      | v >= shortLinksSMPVersion -> ids smpP smpP nothing nothing
-      | otherwise -> ids (qm <$> smpP) nothing nothing nothing
+      | v >= newNtfCredsSMPVersion -> ids smpP smpP
+      | v >= serviceCertsSMPVersion -> ids smpP nothing
+      | otherwise -> ids nothing nothing
       where
-        qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
         nothing = pure Nothing
-        ids p1 p2 p3 p4 = do
+        ids p3 p4 = do
           rcvId <- _smpP
           sndId <- smpP
           rcvPublicDhKey <- smpP
-          queueMode <- p1
-          linkId <- p2
+          queueMode <- smpP
+          linkId <- smpP
           serviceId <- p3
           serverNtfCreds <- p4
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId, serverNtfCreds}

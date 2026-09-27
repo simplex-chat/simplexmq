@@ -92,7 +92,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAg
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (getConn)
+import Simplex.Messaging.Agent.Store.AgentStore (getConn, getConnIds)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -112,7 +112,7 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
@@ -411,13 +411,15 @@ functionalAPITests ps = do
     describe "should connect via 1-time short link with async join" $ testProxyMatrix ps testInvitationShortLinkAsync
     describe "should connect via contact short link" $ testProxyMatrix ps testContactShortLink
     describe "should add short link to existing contact and connect" $ testProxyMatrix ps testAddContactShortLink
-    xdescribe "try to create 1-time short link with prev versions" $ testProxyMatrixWithPrev ps testInvitationShortLinkPrev
     describe "server restart" $ do
       it "should get 1-time link data after restart" $ testInvitationShortLinkRestart ps
       it "should connect via contact short link after restart" $ testContactShortLinkRestart ps
       it "should connect via added contact short link after restart" $ testAddContactShortLinkRestart ps
     it "should create and get short links with the old contact queues" $ testOldContactQueueShortLink ps
     it "should connect via prepared connection link" $ testPrepareCreateConnectionLink ps
+    it "should connect via prepared invitation link" $ testPrepareCreateInvitationLink ps
+    it "should not create connection for prepared invitation link with too large data" $ testPrepareInvitationLinkTooLarge ps
+    it "should connect via short link prepared for existing contact connection" $ testPrepareConnShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -662,19 +664,6 @@ testProxyMatrix :: HasCallStack => (ASrvTransport, AStoreType) -> (Bool -> Agent
 testProxyMatrix ps runTest = do
   it "2 servers, directly" $ withSmpServers2 ps $ withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers2) $ runTest False
   it "2 servers, via proxy" $ withSmpServersProxy2 ps $ withAgentClientsServers2 (agentCfg, initAgentServersProxy) (agentCfg, initAgentServersProxy2) $ runTest True
-
-testProxyMatrixWithPrev :: HasCallStack => (ASrvTransport, AStoreType) -> (Bool -> Bool -> AgentClient -> AgentClient -> IO ()) -> Spec
-testProxyMatrixWithPrev ps@(t, msType@(ASType qs _ms)) runTest = do
-  it "2 servers, directly, curr clients, prev servers" $ withSmpServers2Prev $ withAgentClientsServers2 (agentCfg, initAgentServers) (agentCfg, initAgentServers2) $ runTest False True
-  it "2 servers, via proxy, curr clients, prev servers" $ withSmpServersProxy2Prev $ withAgentClientsServers2 (agentCfg, initAgentServersProxy) (agentCfg, initAgentServersProxy2) $ runTest True True
-  it "2 servers, directly, prev clients, curr servers" $ withSmpServers2 ps $ withAgentClientsServers2 (agentCfgVPrevPQ, initAgentServers) (agentCfgVPrevPQ, initAgentServers2) $ runTest False False
-  it "2 servers, via proxy, prev clients, curr servers" $ withSmpServersProxy2 ps $ withAgentClientsServers2 (agentCfgVPrevPQ, initAgentServersProxy) (agentCfgVPrevPQ, initAgentServersProxy2) $ runTest True False
-  where
-    prev cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {smpServerVRange = prevRange supportedServerSMPRelayVRange}
-    withSmpServers2Prev a = withServers2 (prev $ cfgMS msType) (prev $ cfgJ2QS qs) a
-    withSmpServersProxy2Prev a = withServers2 (prev $ proxyCfgMS msType) (prev $ proxyCfgJ2QS qs) a
-    withServers2 cfg1 cfg2 a =
-      withSmpServerConfigOn t cfg1 testPort $ \_ -> withSmpServerConfigOn t cfg2 testPort2 $ \_ -> a
 
 testPQMatrix2 :: HasCallStack => (ASrvTransport, AStoreType) -> (HasCallStack => (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()) -> Spec
 testPQMatrix2 = pqMatrix2_ True
@@ -1046,7 +1035,7 @@ runAgentClientContactDRTest_ asyncAccept asyncJoin addrIK useDR bPQ ps = withSmp
       userLinkData = UserContactLinkData userCtData
       pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing addrIK True Nothing
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 SCMContact rootKey (Just linkEntId) True Nothing addrIK True Nothing
     _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
     (_, ContactLinkData _ userCtData', connReq') <- getConnShortLink bob 1 shortLink
     -- the advertised bundle carries a KEM only for IKUsePQ (PQ from message 1)
@@ -1139,8 +1128,8 @@ testAddressKeyRotation ps = withSmpServer ps $ withAgentClients3 $ \alice bob ca
       connIK = IKLinkPQ (CR.connPQEncryption addrIK)
       pqEnc = PQEncryption $ pqConnectionMode addrIK PQSupportOn
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
-    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 SCMContact rootKey (Just linkEntId) True Nothing connIK True Nothing
+    (addrConnId, _) <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
     (_, ContactLinkData _ ctData1, connReq1) <- getConnShortLink bob 1 shortLink
     let key1 = ratchetKeys ctData1
     liftIO $ key1 `shouldSatisfy` isJust
@@ -1165,8 +1154,8 @@ testAddDRViaSetConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \alice 
       userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
       connIK = IKLinkPQ (CR.connPQEncryption addrIK)
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK False Nothing
-    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 SCMContact rootKey (Just linkEntId) True Nothing connIK False Nothing
+    (addrConnId, _) <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
     (_, ContactLinkData _ cd0, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys cd0 `shouldBe` Nothing
     void $ A.setConnShortLink alice NRMInteractive addrConnId SCMContact userLinkData Nothing False (Just addrIK)
@@ -1185,8 +1174,8 @@ testAddressUpdatePreservesDRKeys ps = withSmpServer ps $ withAgentClients2 $ \al
       bPQ = PQSupportOn
       pqEnc = PQEncryption $ pqConnectionMode addrIK bPQ
   runRight_ $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
-    addrConnId <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 SCMContact rootKey (Just linkEntId) True Nothing connIK True Nothing
+    (addrConnId, _) <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
     (_, ContactLinkData _ published, _) <- getConnShortLink bob 1 shortLink
     liftIO $ ratchetKeys published `shouldSatisfy` isJust
     -- update passing ratchetKeys = Nothing; the stored keys must be preserved
@@ -1216,7 +1205,7 @@ testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
       pqEnc = PQEncryption $ pqConnectionMode addrIK PQSupportOn
   -- set up the DR address, bob joins, alice receives REQ and pre-creates the accept connection (server up)
   (bobId, invId, aliceId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 rootKey linkEntId True Nothing connIK True Nothing
+    (ccLink@(CCLink _ (Just shortLink)), preparedParams) <- A.prepareConnectionLink alice 1 SCMContact rootKey (Just linkEntId) True Nothing connIK True Nothing
     _ <- A.createConnectionForLink alice NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
     (_, _, connReq') <- getConnShortLink bob 1 shortLink
     (aId, _) <- A.prepareConnectionToJoin bob 1 True connReq' PQSupportOn
@@ -1777,14 +1766,6 @@ testJoinConn_ viaProxy sndSecure a bId b connReq = do
   get b ##> ("", aId, CON)
   exchangeGreetingsViaProxy viaProxy a bId b aId
 
-testInvitationShortLinkPrev :: HasCallStack => Bool -> Bool -> AgentClient -> AgentClient -> IO ()
-testInvitationShortLinkPrev viaProxy sndSecure a b = runRight_ $ do
-  let userData = UserLinkData "some user data"
-      newLinkData = UserInvLinkData userData
-  -- can't create short link with previous version
-  (bId, CCLink connReq Nothing) <- A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKPQOn False SMSubscribe
-  testJoinConn_ viaProxy sndSecure a bId b connReq
-
 testInvitationShortLinkAsync :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testInvitationShortLinkAsync viaProxy a b = do
   let userData = UserLinkData "some user data"
@@ -2037,7 +2018,7 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
   linkEntId <- atomically $ C.randomBytes 32 g
   runRight $ do
     (ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
-      A.prepareConnectionLink a 1 rootKey linkEntId True Nothing CR.IKPQOn False Nothing
+      A.prepareConnectionLink a 1 SCMContact rootKey (Just linkEntId) True Nothing CR.IKPQOn False Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
     _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
     (FixedLinkData {linkEntityId}, ContactLinkData _ userCtData', connReq') <- getConnShortLink b 1 shortLink
@@ -2058,6 +2039,56 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
     get a ##> ("", aId, CON)
     get b ##> ("", bId, CON)
     exchangeGreetings a aId b bId
+
+testPrepareCreateInvitationLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareCreateInvitationLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
+  let userData = UserLinkData "test user data"
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  runRight_ $ do
+    (ccLink@(CCLink preparedReq Nothing), preparedParams) <- A.prepareConnectionLink a 1 SCMInvitation rootKey Nothing False Nothing CR.IKPQOn False Nothing
+    (bId, CCLink connReq (Just shortLink@(CSLInvitation _ _ _ linkKey))) <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams (UserInvLinkData userData) SMSubscribe
+    liftIO $ linkKey `shouldBe` plpLinkKey preparedParams
+    (_, connData', connReq') <- getConnShortLink b 1 shortLink
+    liftIO $ connReq' `shouldBe` preparedReq
+    liftIO $ connReq `shouldNotBe` preparedReq
+    liftIO $ linkUserData connData' `shouldBe` userData
+    testJoinConn_ False True a bId b connReq
+
+testPrepareInvitationLinkTooLarge :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareInvitationLinkTooLarge ps = withSmpServer ps $ withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  runRight_ $ do
+    (ccLink, preparedParams) <- A.prepareConnectionLink a 1 SCMInvitation rootKey Nothing False Nothing CR.IKPQOn False Nothing
+    Left (A.CMD LARGE _) <- tryError $ A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams (UserInvLinkData $ UserLinkData $ B.replicate 14000 'a') SMSubscribe
+    pure ()
+  withTransaction (store $ agentEnv a) getConnIds `shouldReturn` []
+
+testPrepareConnShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
+  let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+  runRight_ $ do
+    (contactId, CCLink _ Nothing) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMSubscribe
+    shortLink <- A.prepareConnShortLink a contactId Nothing
+    shortLink' <- A.prepareConnShortLink a contactId Nothing
+    liftIO $ shortLink' `shouldBe` shortLink
+    shortLink'' <- A.setConnShortLink a NRMInteractive contactId SCMContact (UserContactLinkData userCtData) Nothing False Nothing
+    liftIO $ shortLink'' `shouldBe` shortLink
+    (_, ContactLinkData _ userCtData', connReq) <- getConnShortLink b 1 shortLink
+    liftIO $ userCtData' `shouldBe` userCtData
+    (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
+    liftIO $ sndSecure `shouldBe` False
+    ("", _, REQ invId _ "bob's connInfo") <- get a
+    (bId, _) <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
+    sndSecure' <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    liftIO $ sndSecure' `shouldBe` True
+    ("", _, CONF confId _ "alice's connInfo") <- get b
+    allowConnection b aId confId "bob's connInfo"
+    get a ##> ("", bId, INFO "bob's connInfo")
+    get a ##> ("", bId, CON)
+    get b ##> ("", aId, CON)
+    exchangeGreetings a bId b aId
 
 connReqWithKeys :: BinaryConnectionRequestUri m -> Maybe AddressRatchetKeys -> ConnectionRequestUri m
 connReqWithKeys cr rk = case cr of
