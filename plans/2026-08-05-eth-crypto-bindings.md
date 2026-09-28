@@ -86,11 +86,11 @@ entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 w
 
 -- BIP32
 masterKey           :: ScrubbedBytes -> Either String ExtendedKey
-derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO ExtendedKey
+derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
-mkWalletMaster      :: WalletEntropy -> WalletMaster                    -- empty passphrase
+mkWalletMaster      :: WalletEntropy -> Either String WalletMaster      -- empty passphrase
 parseWalletMaster   :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster  -- entropy and stored master
 masterEntropy       :: WalletMaster -> WalletEntropy
 walletMasterKey     :: WalletMaster -> ExtendedKey
@@ -126,10 +126,12 @@ fallible steps are the boundaries: `parsePhrase` for typed text,
 BIP-32 declares a master or child key invalid when its IL is 0 or at least n,
 one case in 2^128, and says to use the next index. This code instead applies
 SLIP-0010's rule, which trezor-crypto also implements: recompute the HMAC over
-`I` for a master key, or over `0x01 || IR || ser32(i)` for a child, until the
-key is valid. Every key BIP-32 produces is produced unchanged; only an index
-BIP-32 would skip gets a key, so `masterKey`, `mkWalletMaster` and `derivePath`
-are total and no consumer handles derivation failure.
+`I` for a master key, or over `0x01 || IR || ser32(i)` for a child. Every key
+BIP-32 produces is produced unchanged; only an index BIP-32 would skip gets a
+key. The recomputation is bounded to three attempts, after which `masterKey`,
+`mkWalletMaster` and `derivePath` return `Left "derivation failed after 3
+attempts"`, an error no input is expected to produce, which consumers report as
+an internal error rather than a wallet condition.
 
 Because `parsePhrase` lower-cases each word, a recovery phrase with a
 capitalised word is accepted. This does not change the derived seed:
@@ -143,9 +145,9 @@ device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
 ent    <- either fail pure $ parsePhrase phrase  -- phrase :: Text
-let master = mkWalletMaster ent
+master <- either fail pure $ mkWalletMaster ent
 n      <- either fail pure $ mkAccountIndex account
-xk     <- derivePath g (walletMasterKey master) (bip44Path Ethereum n)
+xk     <- either fail pure =<< derivePath g (walletMasterKey master) (bip44Path Ethereum n)
 addr   <- addressFromPrivateKey g (xkKey xk)
 ```
 

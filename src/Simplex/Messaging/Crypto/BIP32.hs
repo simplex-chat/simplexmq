@@ -2,7 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented. An invalid master or child key is recomputed as SLIP-0010 specifies, so derivation cannot fail.
+-- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented. An invalid master or child key is recomputed as SLIP-0010 specifies, up to three times.
 module Simplex.Messaging.Crypto.BIP32
   ( ExtendedKey,
     xkKey,
@@ -23,6 +23,7 @@ where
 
 import Control.Concurrent.STM (TVar)
 import Control.Monad (foldM)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
 import Crypto.Random (ChaChaDRG)
 import qualified Crypto.MAC.HMAC as HMAC
@@ -55,36 +56,42 @@ isHardened i = i >= hardenedOffset
 masterKey :: ScrubbedBytes -> Either String ExtendedKey
 masterKey seed
   | seedLen < 16 || seedLen > 64 = Left $ "seed: expected 16 to 64 bytes, got " <> show seedLen
-  | otherwise = Right $ masterKey' seed
+  | otherwise = go attempts seed
   where
     seedLen = BA.length seed
-
-masterKey' :: ScrubbedBytes -> ExtendedKey
-masterKey' = go
-  where
-    go s = case S.mkPrivateKey il of
-      Right k -> ExtendedKey {xkKey = k, xkChainCode = ir}
-      Left _ -> go i
+    go :: Int -> ScrubbedBytes -> Either String ExtendedKey
+    go 0 _ = Left derivationFailed
+    go n s = case S.mkPrivateKey il of
+      Right k -> Right ExtendedKey {xkKey = k, xkChainCode = ir}
+      Left _ -> go (n - 1) i
       where
         i = hmacSHA512 "Bitcoin seed" s
         (il, ir) = BA.splitAt 32 i
 
-deriveChild :: TVar ChaChaDRG -> ExtendedKey -> Word32 -> IO ExtendedKey
+deriveChild :: TVar ChaChaDRG -> ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
 deriveChild g ExtendedKey {xkKey, xkChainCode} i = do
   dat <-
     if isHardened i
       then pure $ BA.cons 0 (S.unPrivateKey xkKey)
       else BA.convert <$> (S.serializePublicKey g S.Compressed =<< S.secp256k1PublicKey g xkKey)
-  go dat
+  go attempts dat
   where
-    go dat = do
+    go :: Int -> ScrubbedBytes -> IO (Either String ExtendedKey)
+    go 0 _ = pure $ Left derivationFailed
+    go n dat = do
       let (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
       S.privateKeyTweakAdd g xkKey il >>= \case
-        Just k -> pure ExtendedKey {xkKey = k, xkChainCode = ir}
-        Nothing -> go $ BA.cons 1 ir
+        Just k -> pure $ Right ExtendedKey {xkKey = k, xkChainCode = ir}
+        Nothing -> go (n - 1) $ BA.cons 1 ir
 
-derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO ExtendedKey
-derivePath g = foldM (deriveChild g)
+derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath g xk = runExceptT . foldM (\k -> ExceptT . deriveChild g k) xk
+
+attempts :: Int
+attempts = 3
+
+derivationFailed :: String
+derivationFailed = "derivation failed after " <> show attempts <> " attempts"
 
 renderPath :: [Word32] -> ByteString
 renderPath is = BC.pack $ intercalate "/" ("m" : map component is)
@@ -96,7 +103,7 @@ renderPath is = BC.pack $ intercalate "/" ("m" : map component is)
 hmacSHA512 :: ScrubbedBytes -> ScrubbedBytes -> ScrubbedBytes
 hmacSHA512 key msg = BA.convert (HMAC.hmac key msg :: HMAC.HMAC H.SHA512)
 
--- | Entropy with the master key it derives, so no derivation from it can fail.
+-- | Entropy with the master key it derives.
 data WalletMaster = WalletMaster WalletEntropy ExtendedKey
 
 masterEntropy :: WalletMaster -> WalletEntropy
@@ -105,13 +112,13 @@ masterEntropy (WalletMaster ent _) = ent
 walletMasterKey :: WalletMaster -> ExtendedKey
 walletMasterKey (WalletMaster _ k) = k
 
-mkWalletMaster :: WalletEntropy -> WalletMaster
-mkWalletMaster ent = WalletMaster ent $ masterKey' (entropySeed ent "")
+mkWalletMaster :: WalletEntropy -> Either String WalletMaster
+mkWalletMaster ent = WalletMaster ent <$> masterKey (entropySeed ent "")
 
 -- | From storage: the master bytes must be the ones the entropy derives.
 parseWalletMaster :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster
 parseWalletMaster entBytes mBytes = do
-  m <- mkWalletMaster <$> mkEntropy entBytes
+  m <- mkWalletMaster =<< mkEntropy entBytes
   if masterBytes m == mBytes then Right m else Left "wallet master: does not match the entropy"
 
 masterBytes :: WalletMaster -> ScrubbedBytes
