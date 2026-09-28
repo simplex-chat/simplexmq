@@ -19,6 +19,8 @@ module Simplex.Messaging.Notifications.Server.Env
     PushWorkerVar,
     NtfRequest (..),
     NtfServerClient (..),
+    NtfAddrCounter (..),
+    ntfCmdCounter,
     defaultInactiveClientExpiration,
     newNtfServerEnv,
     newNtfSubscriber,
@@ -55,6 +57,7 @@ import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
 import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), ServiceId, Transmission)
+import Simplex.Messaging.Server.AddressStats (AddrCounter (..), AddrStats, AddressStatsConfig, ServerAddrStats, newServerAddrStats)
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -97,6 +100,7 @@ data NtfServerConfig = NtfServerConfig
     -- | interval and file to save prometheus metrics
     prometheusInterval :: Maybe Int,
     prometheusMetricsFile :: FilePath,
+    addressStats :: Maybe AddressStatsConfig,
     ntfServerVRange :: VersionRangeNTF,
     transportConfig :: TransportServerConfig,
     startOptions :: StartOptions
@@ -117,11 +121,56 @@ data NtfEnv = NtfEnv
     random :: TVar ChaChaDRG,
     tlsServerCreds :: TLS.Credential,
     serverIdentity :: C.KeyHash,
-    serverStats :: NtfServerStats
+    serverStats :: NtfServerStats,
+    addrStats :: Maybe (ServerAddrStats NtfAddrCounter)
   }
 
+data NtfAddrCounter
+  = NACConnections
+  | NACErrors
+  | NACTNew
+  | NACTVfy
+  | NACTChk
+  | NACTRpl
+  | NACTDel
+  | NACTCrn
+  | NACSNew
+  | NACSChk
+  | NACSDel
+  | NACPing
+  deriving (Eq, Ord, Enum, Bounded, Show)
+
+instance AddrCounter NtfAddrCounter where
+  counterName = \case
+    NACConnections -> "connections"
+    NACErrors -> "errors"
+    NACTNew -> "TNEW"
+    NACTVfy -> "TVFY"
+    NACTChk -> "TCHK"
+    NACTRpl -> "TRPL"
+    NACTDel -> "TDEL"
+    NACTCrn -> "TCRN"
+    NACSNew -> "SNEW"
+    NACSChk -> "SCHK"
+    NACSDel -> "SDEL"
+    NACPing -> "PING"
+  connectionsCounter = NACConnections
+
+ntfCmdCounter :: NtfCmd -> NtfAddrCounter
+ntfCmdCounter (NtfCmd _ cmd) = case cmd of
+  TNEW _ -> NACTNew
+  TVFY _ -> NACTVfy
+  TCHK -> NACTChk
+  TRPL _ -> NACTRpl
+  TDEL -> NACTDel
+  TCRN _ -> NACTCrn
+  SNEW _ -> NACSNew
+  SCHK -> NACSChk
+  SDEL -> NACSDel
+  PING -> NACPing
+
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
-newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds} = do
+newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds, addressStats} = do
   random <- C.newRandom
   store <- newNtfDbStore dbStoreConfig
   tlsServerCreds <- loadServerCredential ntfCredentials
@@ -130,7 +179,8 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   subscriber <- newNtfSubscriber smpAgentCfg dbService random
   pushServer <- newNtfPushServer pushQSize apnsConfig
   serverStats <- newNtfServerStats =<< getCurrentTime
-  pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  addrStats <- mapM (const newServerAddrStats) addressStats
+  pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats, addrStats}
   where
     mkDbService g st = DBService {getCredentials, updateServiceId}
       where
@@ -242,14 +292,15 @@ data NtfServerClient = NtfServerClient
     ntfThParams :: THandleParams NTFVersion 'TServer,
     connected :: TVar Bool,
     rcvActiveAt :: TVar SystemTime,
-    sndActiveAt :: TVar SystemTime
+    sndActiveAt :: TVar SystemTime,
+    ntfClientAddrStats :: Maybe (AddrStats NtfAddrCounter)
   }
 
-newNtfServerClient :: Natural -> THandleParams NTFVersion 'TServer -> SystemTime -> IO NtfServerClient
-newNtfServerClient qSize ntfThParams ts = do
+newNtfServerClient :: Natural -> THandleParams NTFVersion 'TServer -> SystemTime -> Maybe (AddrStats NtfAddrCounter) -> IO NtfServerClient
+newNtfServerClient qSize ntfThParams ts ntfClientAddrStats = do
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO ts
   sndActiveAt <- newTVarIO ts
-  return NtfServerClient {rcvQ, sndQ, ntfThParams, connected, rcvActiveAt, sndActiveAt}
+  return NtfServerClient {rcvQ, sndQ, ntfThParams, connected, rcvActiveAt, sndActiveAt, ntfClientAddrStats}

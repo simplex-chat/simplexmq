@@ -18,6 +18,7 @@ module SMPClient where
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -31,16 +32,19 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
+import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..))
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Util (ifM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+import System.IO (Handle, IOMode (..), hClose, hFlush)
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
@@ -83,6 +87,12 @@ ntfTestPort = "6001"
 
 ntfTestPort2 :: ServiceName
 ntfTestPort2 = "6002"
+
+testControlPort :: ServiceName
+testControlPort = "5226"
+
+testControlPortUserAuth :: BasicAuth
+testControlPortUserAuth = "user_password"
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -261,6 +271,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = testPrometheusMetricsFile,
+      addressStats = Just AddressStatsConfig {period = 1},
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
       smpCredentials =
@@ -395,6 +406,22 @@ withStallingServerOn port action =
     (\started -> runLocalTCPServer started port (\_ -> threadDelay maxBound))
     (pure ())
     (const action)
+
+withControlPort :: (Handle -> IO a) -> IO a
+withControlPort action = do
+  addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just testControlPort)
+  E.bracket (connectHandle addr) hClose $ \h -> replicateM_ 2 (B.hGetLine h) >> action h
+  where
+    connectHandle addr = do
+      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
+      connect sock $ addrAddress addr
+      socketToHandle sock ReadWriteMode
+
+controlPortCommand :: Handle -> ByteString -> Int -> IO [ByteString]
+controlPortCommand h cmd n = do
+  B.hPutStrLn h cmd
+  hFlush h
+  replicateM n $ trimCR <$> B.hGetLine h
 
 withSmpServerOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const

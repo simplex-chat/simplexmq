@@ -7,8 +7,10 @@ module Simplex.Messaging.Server.Control
   ) where
 
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Text (Text)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth, BlockingInfo, SenderId)
+import Simplex.Messaging.Server.AddressStats (addressesArgs, addressesArgsP)
 
 data CPClientRole = CPRNone | CPRUser | CPRAdmin
   deriving (Eq, Show)
@@ -28,6 +30,7 @@ data ControlProtocol
   | CPStatus SenderId
   | CPBlock SenderId BlockingInfo
   | CPUnblock SenderId
+  | CPAddresses Text (Maybe Int)
   | CPSave
   | CPHelp
   | CPQuit
@@ -49,6 +52,7 @@ instance StrEncoding ControlProtocol where
     CPStatus sId -> "status " <> strEncode sId
     CPBlock sId info -> "block " <> strEncode sId <> " " <> strEncode info
     CPUnblock sId -> "unblock " <> strEncode sId
+    CPAddresses name n_ -> "addresses " <> addressesArgs name n_
     CPSave -> "save"
     CPHelp -> "help"
     CPQuit -> "quit"
@@ -69,6 +73,7 @@ instance StrEncoding ControlProtocol where
       "status" -> CPStatus <$> _strP
       "block" -> CPBlock <$> _strP <*> _strP
       "unblock" -> CPUnblock <$> _strP
+      "addresses" -> uncurry CPAddresses <$> addressesArgsP
       "save" -> pure CPSave
       "help" -> pure CPHelp
       "quit" -> pure CPQuit

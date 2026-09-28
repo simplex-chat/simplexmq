@@ -141,6 +141,8 @@ ntfServerCLI cfgPath logPath =
                \disconnect = off\n"
             <> ("# ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+            <> "\n"
+            <> addressStatsIniContent
     enableStoreLog' = settingIsOn "STORE_LOG" "enable"
     runServer startOptions ini = do
       setLogLevel $ logLevel startOptions
@@ -216,6 +218,7 @@ ntfServerCLI cfgPath logPath =
               serverStatsBackupFile = logStats $> combine logPath "ntf-server-stats.log",
               prometheusInterval = eitherToMaybe $ read . T.unpack <$> lookupValue "STORE_LOG" "prometheus_interval" ini,
               prometheusMetricsFile = combine logPath "ntf-server-metrics.txt",
+              addressStats = iniAddressStats ini,
               ntfServerVRange = supportedServerNTFVRange,
               transportConfig =
                 mkTransportServerConfig
