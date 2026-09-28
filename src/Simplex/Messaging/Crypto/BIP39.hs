@@ -10,7 +10,6 @@ module Simplex.Messaging.Crypto.BIP39
     randomEntropy,
     parsePhrase,
     entropyPhrase,
-    entropyStrength,
     entropySeed,
   )
 where
@@ -91,9 +90,6 @@ randomEntropy s gVar = WalletEntropy <$> stateTVar gVar (randomBytesGenerate $ s
 -- | The words joined by single spaces, the PBKDF2 password BIP-39 specifies.
 entropyPhrase :: WalletEntropy -> ByteString
 entropyPhrase = BC.unwords . mnemonicWords . entropyToMnemonic
-
-entropyStrength :: WalletEntropy -> EntropyStrength
-entropyStrength (WalletEntropy ent) = toEnum $ (BA.length ent - 16) `div` 4
 
 -- | Indexes are in @[0, 2047]@: they are masked to 11 bits or looked up in the wordlist.
 mnemonicWords :: Mnemonic -> [ByteString]

@@ -208,7 +208,6 @@ bip39Tests g = do
   it "generates entropy whose phrase parses back" $
     forM_ (zip [minBound .. maxBound] [12, 15, 18, 21, 24]) $ \(s, n) -> do
       ent <- atomically $ B39.randomEntropy s g
-      B39.entropyStrength ent `shouldBe` s
       length (BC.words $ B39.entropyPhrase ent) `shouldBe` n
       B39.parsePhrase (decodeLatin1 $ B39.entropyPhrase ent) `shouldBe` Right ent
 

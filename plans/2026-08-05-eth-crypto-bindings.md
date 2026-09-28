@@ -81,7 +81,6 @@ unEntropy           :: WalletEntropy -> ScrubbedBytes
 randomEntropy       :: EntropyStrength -> TVar ChaChaDRG -> STM WalletEntropy
 parsePhrase         :: Text -> Either String WalletEntropy   -- word count, wordlist, checksum
 entropyPhrase       :: WalletEntropy -> ByteString           -- canonical lowercase phrase
-entropyStrength     :: WalletEntropy -> EntropyStrength
 entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 with the passphrase
 
 -- BIP32
