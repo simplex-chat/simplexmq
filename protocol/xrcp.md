@@ -121,9 +121,15 @@ During TLS handshake, parties validate certificate chains against previously kno
 
 ### Session verification and protocol negotiation
 
-Once TLS session is established, both the host and controller devices present a "session security code" to the user who must match them (e.g., visually or via QR code scan) and confirm on the host device. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established, mitigating the possibility of MITM attack in the connection.
+Once TLS session is established, both the host and controller devices present a "session security code" to the user. The session security code must be a digest of tlsunique channel binding. As it is computed as a digest of the TLS handshake for both the controller and the host, it will validate that the same TLS certificates are used on both sides, and that the same TLS session is established, mitigating the possibility of MITM attack in the connection.
 
-Once the session is confirmed by the user, the host sends HELLO block to the controller.
+To verify the session, the user matches the codes (e.g., visually or via QR code scan) and confirms the session on the host device.
+
+The user MUST verify the first session with a new controller. The host stores the long-term identity of the controller (CA fingerprint and Ed25519 public key) only after this session is verified. A controller with the stored long-term identity is a known controller.
+
+The user MAY verify the subsequent sessions with a known controller. In a session that the host confirms without user action, the controller is authenticated only by its long-term identity stored in the first session (see [Threat model](#threat-model)). SimpleX Chat mobile apps require user verification of sessions with known controllers only when the user enables the "Verify connections" option.
+
+Once the session is confirmed, the host sends HELLO block to the controller.
 
 XRCP blocks inside TLS are padded to 16384 bytes.
 
@@ -305,7 +311,7 @@ to receive: (rcvKey', sk, nonce) = HKDF(rcvKey, "SimpleXSbChain", 88)
 - prevent host and controller devices from establishing the session
 
 *cannot:*
-- same as passive adversary, provided that user visually verified session code out-of-band.
+- same as passive adversary, provided that user visually verified session code out-of-band in the first session with the controller.
 
 #### An active adversary with the access to the network:
 
@@ -323,6 +329,15 @@ to receive: (rcvKey', sk, nonce) = HKDF(rcvKey, "SimpleXSbChain", 88)
 
 *cannot:*
 - connect to the host or make host connect to itself.
+
+#### An active adversary with the access to the network who also obtained the long-term private keys of a known controller (e.g., from the controller device):
+
+*can:*
+- make host connect to itself instead of the controller.
+- access any data of the controlled host application, within the capabilities of the provided API, if the host confirms the session without user action.
+
+*cannot:*
+- access host application data, provided that user visually verified session code out-of-band.
 
 #### Compromised controller device:
 
