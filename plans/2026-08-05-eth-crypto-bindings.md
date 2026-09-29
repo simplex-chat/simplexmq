@@ -10,12 +10,13 @@ held by the device.
 
 ## What is deliberately absent
 
-- **No RLP encoder, and no transaction building.** RLP is only needed to
-  construct raw transactions or EIP-7702 authorizations. The client does
-  neither, so the `RSLV` resolver path in this repo stays strictly read-only.
-- **No signing and no stealth addresses.** This change adds key and address
-  derivation only. Signing, the EIP-712 typed-data hashing it requires, and
-  stealth addresses are added with the first code that uses them.
+- **No EIP-7702 authorizations.** RLP is implemented only as far as EIP-1559
+  transactions need it, for registering names; the `RSLV` resolver path in
+  this repo stays strictly read-only.
+- **No stealth addresses and no EIP-712.** Signing covers recoverable ECDSA
+  over a 32-byte digest and EIP-1559 transactions, which name registration
+  requires. EIP-712 typed-data hashing and stealth addresses are added with
+  the first code that uses them.
 - **No BIP-32 public derivation.** We always hold the seed, so CKDpub, xpub
   serialization and fingerprints are not implemented. Non-hardened *private*
   derivation is, because BIP-44 paths end in non-hardened components.
@@ -37,6 +38,8 @@ Simplex.Messaging.Crypto.BIP39.English  embedded upstream 2048-word list
 Simplex.Messaging.Crypto.BIP32          HD derivation, WalletMaster
 Simplex.Messaging.Crypto.BIP44          BIP-44 paths, AccountIndex
 Simplex.Messaging.Eth.Address           addresses, EIP-55
+Simplex.Messaging.Eth.RLP               Recursive Length Prefix encoding
+Simplex.Messaging.Eth.Transaction       signed EIP-1559 transactions
 ```
 
 `keccak256` is added to `Simplex.Messaging.Crypto`, next to `sha3_256`.
@@ -213,10 +216,11 @@ to the including file. The embedded wordlist makes `file-embed` a library
 dependency; before this change only the `smp-server` and `xftp-server`
 executables and the test suite used it.
 
-Built with no `-D` of our own. The table-size settings (`ECMULT_WINDOW_SIZE`,
-`COMB_BLOCKS`, `COMB_TEETH`) have `#ifndef` defaults in the headers, and the
-checked-in precomputed tables are generated for those defaults; every other
-option, such as the optional modules and x86-64 assembly, is off unless a `-D`
+Built with one `-D` of our own, `ENABLE_MODULE_RECOVERY=1`, for recoverable
+signatures. The table-size settings (`ECMULT_WINDOW_SIZE`, `COMB_BLOCKS`,
+`COMB_TEETH`) have `#ifndef` defaults in the headers, and the checked-in
+precomputed tables are generated for those defaults; every other option, such
+as the other optional modules and x86-64 assembly, is off unless a `-D`
 enables it. `secp256k1.c` defines `SECP256K1_BUILD` itself.
 
 32-bit targets (armv7a-android, i686 musl) are covered by libsecp256k1's own
@@ -269,7 +273,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 93 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 105 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:

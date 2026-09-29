@@ -7,6 +7,7 @@ module Simplex.Messaging.Crypto.Secp256k1
     Secp256k1PublicKey,
     Secp256k1Context,
     PubKeyFormat (..),
+    RecoverableSignature (..),
     mkPrivateKey,
     unPrivateKey,
     withContext,
@@ -14,6 +15,7 @@ module Simplex.Messaging.Crypto.Secp256k1
     secp256k1PublicKey_,
     serializePublicKey,
     privateKeyTweakAdd,
+    signRecoverable,
   )
 where
 
@@ -26,6 +28,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
 import Foreign hiding (void)
 import Foreign.C
 import qualified Simplex.Messaging.Crypto as C
@@ -46,6 +49,16 @@ uncompressedSize = 65
 pubKeyInternalSize :: Int
 pubKeyInternalSize = 64
 
+-- | Internal size of @secp256k1_ecdsa_recoverable_signature@.
+recSigInternalSize :: Int
+recSigInternalSize = 65
+
+compactSigSize :: Int
+compactSigSize = 64
+
+digestSize :: Int
+digestSize = 32
+
 -- Types
 
 newtype Secp256k1PrivateKey = Secp256k1PrivateKey ScrubbedBytes
@@ -59,11 +72,20 @@ newtype Secp256k1Context = Secp256k1Context (Ptr Ctx)
 data PubKeyFormat = Compressed | Uncompressed
   deriving (Eq, Show)
 
+-- | @r || s@, 64 bytes big-endian, and the recovery id, EIP-1559's @yParity@.
+data RecoverableSignature = RecoverableSignature
+  { rsCompact :: ByteString,
+    rsRecId :: Word8
+  }
+  deriving (Eq, Show)
+
 -- FFI
 
 data Ctx
 
 data PubKeyRaw
+
+data RecSigRaw
 
 foreign import ccall "secp256k1_context_create"
   c_context_create :: CUInt -> IO (Ptr Ctx)
@@ -85,6 +107,12 @@ foreign import ccall "secp256k1_ec_pubkey_serialize"
 
 foreign import ccall "secp256k1_ec_seckey_tweak_add"
   c_ec_seckey_tweak_add :: Ptr Ctx -> Ptr Word8 -> Ptr Word8 -> IO CInt
+
+foreign import ccall "secp256k1_ecdsa_sign_recoverable"
+  c_ecdsa_sign_recoverable :: Ptr Ctx -> Ptr RecSigRaw -> Ptr Word8 -> Ptr Word8 -> Ptr () -> Ptr () -> IO CInt
+
+foreign import ccall "secp256k1_ecdsa_recoverable_signature_serialize_compact"
+  c_ecdsa_recoverable_signature_serialize_compact :: Ptr Ctx -> Ptr Word8 -> Ptr CInt -> Ptr RecSigRaw -> IO CInt
 
 -- SECP256K1_CONTEXT_NONE = SECP256K1_FLAGS_TYPE_CONTEXT
 contextNone :: CUInt
@@ -146,3 +174,17 @@ privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
       BA.withByteArray tweak $ \twPtr -> do
         (rc, sk') <- BA.copyRet sk $ \skPtr -> c_ec_seckey_tweak_add staticContext skPtr twPtr
         pure $ if rc == 1 then Just (Secp256k1PrivateKey sk') else Nothing
+
+-- | Signs a 32-byte digest, deterministically (RFC 6979) and always low-@s@, as EIP-2 requires.
+signRecoverable :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ByteString -> IO RecoverableSignature
+signRecoverable g (Secp256k1PrivateKey sk) digest
+  | B.length digest /= digestSize = throwIO $ userError $ "digest: expected 32 bytes, got " <> show (B.length digest)
+  | otherwise = withContext g $ \(Secp256k1Context ctx) ->
+      allocaBytes recSigInternalSize $ \sigPtr -> do
+        rc <- BA.withByteArray digest $ \msgPtr -> BA.withByteArray sk $ \skPtr -> c_ecdsa_sign_recoverable ctx sigPtr msgPtr skPtr nullPtr nullPtr
+        when (rc /= 1) $ throwIO (userError "secp256k1_ecdsa_sign_recoverable failed on a validated key")
+        (recId, compact) <- BA.allocRet compactSigSize $ \outPtr ->
+          alloca $ \recIdPtr -> do
+            void $ c_ecdsa_recoverable_signature_serialize_compact ctx outPtr recIdPtr sigPtr
+            peek recIdPtr
+        pure RecoverableSignature {rsCompact = compact, rsRecId = fromIntegral recId}
