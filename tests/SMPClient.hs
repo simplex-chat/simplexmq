@@ -316,6 +316,9 @@ prevRange vr = vr {maxVersion = max (minVersion vr) (prevVersion $ maxVersion vr
 prevVersion :: Version v -> Version v
 prevVersion (Version v) = Version (v - 1)
 
+nextVersion :: Version v -> Version v
+nextVersion (Version v) = Version (v + 1)
+
 proxyCfg :: AServerConfig
 proxyCfg = proxyCfgMS (ASType SQSMemory SMSJournal)
 
