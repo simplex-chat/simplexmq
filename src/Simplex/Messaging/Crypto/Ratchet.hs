@@ -904,8 +904,7 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
             rcNs = rcNs + 1,
             rcSupportKEM = rcSupportKEM',
             rcEnableKEM = rcEnableKEM',
-            rcVersion = rcVersion',
-            rcKEM = if pqEnc_ == Just PQEncOff then (\rck -> rck {rcKEMs = Nothing}) <$> rcKEM else rcKEM
+            rcVersion = rcVersion'
           }
   pure (msgEncryptKey, rc')
   where

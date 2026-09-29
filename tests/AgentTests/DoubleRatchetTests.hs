@@ -65,6 +65,7 @@ doubleRatchetTests = do
       describe "message tests, KEM proposed again in reply" $ runMessageTests initRatchetsKEMProposedAgain True
       it "should disable and re-enable KEM" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableEnableKEM
       it "should disable and re-enable KEM (always set PQEncryption)" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableEnableKEMStrict
+      it "should decrypt messages out of order after disabling KEM" $ withRatchets_ @X25519 initRatchetsKEMAccepted testDisableKEMOutOfOrder
       it "should enable KEM when it was not enabled in handshake" $ withRatchets_ @X25519 initRatchets testEnableKEM
       it "should enable KEM when it was not enabled in handshake (always set PQEncryption)" $ withRatchets_ @X25519 initRatchets testEnableKEMStrict
 
@@ -290,6 +291,14 @@ testDisableEnableKEMStrict alice bob _ _ _ = do
   (bob, "still enabling KEM") \#>! alice
   (alice, "now KEM is enabled") !#>! bob
   (bob, "KEM is enabled for both sides") !#>! alice
+
+testDisableKEMOutOfOrder :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
+testDisableKEMOutOfOrder alice bob encrypt decrypt _ = do
+  Right b1 <- withTVar (encrypt_ (Just PQEncOff)) hasSndKEM bob "disabling KEM"
+  Right b2 <- encrypt bob "KEM disabled"
+  Decrypted "KEM disabled" <- decrypt alice b2
+  Decrypted "disabling KEM" <- decrypt alice b1
+  pure ()
 
 testEnableKEM :: forall a. (AlgorithmI a, DhAlgorithm a) => TestRatchets a
 testEnableKEM alice bob _ _ _ = do
