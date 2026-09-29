@@ -135,11 +135,11 @@ keccakTests = do
 secp256k1Tests :: TVar ChaChaDRG -> Spec
 secp256k1Tests g = do
   it "derives the known address for a known key" $
-    (strEncode <$> addressFromPrivateKey g testKey) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
+    (strEncode <$> S.withContext g (\ctx -> addressFromPrivateKey ctx testKey)) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
   it "serializes a public key in both SEC1 forms" $ do
-    pk <- S.secp256k1PublicKey g testKey
-    comp <- S.serializePublicKey g S.Compressed pk
-    uncomp <- S.serializePublicKey g S.Uncompressed pk
+    pk <- S.withContext g (\ctx -> S.secp256k1PublicKey ctx testKey)
+    let comp = S.serializePublicKey S.Compressed pk
+        uncomp = S.serializePublicKey S.Uncompressed pk
     B.length comp `shouldBe` 33
     B.length uncomp `shouldBe` 65
     B.head uncomp `shouldBe` 0x04
@@ -152,13 +152,13 @@ secp256k1Tests g = do
   it "rejects a short private key" $
     isLeft (S.mkPrivateKey (BA.replicate 31 1)) `shouldBe` True
   it "adds a tweak to a private key" $
-    (fmap (toHex . S.unPrivateKey) <$> S.privateKeyTweakAdd g testKey (BA.replicate 31 0 <> BA.singleton 1))
-      `shouldReturn` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
+    (toHex . S.unPrivateKey <$> S.privateKeyTweakAdd testKey (BA.replicate 31 0 <> BA.singleton 1))
+      `shouldBe` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
   it "returns Nothing for a tweak that makes the key zero" $
-    (isNothing <$> S.privateKeyTweakAdd g testKey (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
-      `shouldReturn` True
+    isNothing (S.privateKeyTweakAdd testKey (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
+      `shouldBe` True
   it "returns Nothing for a tweak that is not 32 bytes" $
-    (isNothing <$> S.privateKeyTweakAdd g testKey (BA.replicate 31 1)) `shouldReturn` True
+    isNothing (S.privateKeyTweakAdd testKey (BA.replicate 31 1)) `shouldBe` True
   where
     testKey = right $ S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
 
@@ -227,7 +227,7 @@ bip32Tests g = do
     describe name $
       forM_ chains $ \(chain, path, xprv) ->
         it chain $ do
-          xk <- right <$> B32.derivePath g (right $ B32.masterKey (hx seedHex)) path
+          xk <- right <$> S.withContext g (\ctx -> B32.derivePath ctx (right $ B32.masterKey (hx seedHex)) path)
           xkHex xk `shouldBe` xprvHex xprv
   it "rejects a seed shorter than 16 bytes" $
     isLeft (B32.masterKey (BA.replicate 15 1)) `shouldBe` True
@@ -265,9 +265,9 @@ derivationTests g = do
   where
     seed = B39.entropySeed canonicalEntropy ""
     account = right . mkAccountIndex
-    addrAt i = do
-      xk <- right <$> B32.derivePath g (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
-      addressFromPrivateKey g (B32.xkKey xk)
+    addrAt i = S.withContext g $ \ctx -> do
+      xk <- right <$> B32.derivePath ctx (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
+      addressFromPrivateKey ctx (B32.xkKey xk)
 
 eip55Tests :: Spec
 eip55Tests = do

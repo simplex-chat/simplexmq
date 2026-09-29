@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -21,12 +20,10 @@ module Simplex.Messaging.Crypto.BIP32
   )
 where
 
-import Control.Concurrent.STM (TVar)
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
 import qualified Crypto.MAC.HMAC as HMAC
-import Crypto.Random (ChaChaDRG)
 import Data.Bits ((.|.))
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
@@ -68,24 +65,24 @@ masterKey seed
         i = hmacSHA512 "Bitcoin seed" s
         (il, ir) = BA.splitAt 32 i
 
-deriveChild :: TVar ChaChaDRG -> ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
-deriveChild g ExtendedKey {xkKey, xkChainCode} i = do
+deriveChild :: S.Secp256k1Context -> ExtendedKey -> Word32 -> IO (Either String ExtendedKey)
+deriveChild ctx ExtendedKey {xkKey, xkChainCode} i = do
   dat <-
     if isHardened i
       then pure $ BA.cons 0 (S.unPrivateKey xkKey)
-      else BA.convert <$> (S.serializePublicKey g S.Compressed =<< S.secp256k1PublicKey g xkKey)
-  go attempts dat
+      else BA.convert . S.serializePublicKey S.Compressed <$> S.secp256k1PublicKey ctx xkKey
+  pure $ go attempts dat
   where
-    go :: Int -> ScrubbedBytes -> IO (Either String ExtendedKey)
-    go 0 _ = pure $ Left derivationFailed
-    go n dat = do
-      let (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
-      S.privateKeyTweakAdd g xkKey il >>= \case
-        Just k -> pure $ Right ExtendedKey {xkKey = k, xkChainCode = ir}
-        Nothing -> go (n - 1) $ BA.cons 1 ir
+    go :: Int -> ScrubbedBytes -> Either String ExtendedKey
+    go 0 _ = Left derivationFailed
+    go n dat = case S.privateKeyTweakAdd xkKey il of
+      Just k -> Right ExtendedKey {xkKey = k, xkChainCode = ir}
+      Nothing -> go (n - 1) $ BA.cons 1 ir
+      where
+        (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
 
-derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
-derivePath g xk = runExceptT . foldM (\k -> ExceptT . deriveChild g k) xk
+derivePath :: S.Secp256k1Context -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath ctx xk = runExceptT . foldM (\k -> ExceptT . deriveChild ctx k) xk
 
 attempts :: Int
 attempts = 3

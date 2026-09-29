@@ -46,6 +46,7 @@ Simplex.Messaging.Eth.Address           addresses, EIP-55
 ```haskell
 newtype Secp256k1PrivateKey         -- 32 bytes, validated in [1, n-1]
 newtype Secp256k1PublicKey          -- libsecp256k1's opaque 64-byte form
+newtype Secp256k1Context            -- randomised libsecp256k1 context, valid inside withContext
 data PubKeyFormat = Compressed | Uncompressed
 
 newtype WalletEntropy               -- 16, 20, 24, 28 or 32 bytes
@@ -71,9 +72,10 @@ it yields the parent private key.
 -- Secp256k1
 mkPrivateKey        :: ScrubbedBytes -> Either String Secp256k1PrivateKey  -- 32 bytes in [1, n-1]
 unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
-secp256k1PublicKey  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
-serializePublicKey  :: TVar ChaChaDRG -> PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
-privateKeyTweakAdd  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
+withContext         :: TVar ChaChaDRG -> (Secp256k1Context -> IO a) -> IO a
+secp256k1PublicKey  :: Secp256k1Context -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
+serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
+privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> Maybe Secp256k1PrivateKey
 
 -- BIP39
 mkEntropy           :: ScrubbedBytes -> Either String WalletEntropy
@@ -85,7 +87,7 @@ entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 w
 
 -- BIP32
 masterKey           :: ScrubbedBytes -> Either String ExtendedKey
-derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath          :: Secp256k1Context -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
@@ -104,7 +106,8 @@ bip44Path           :: CoinType -> AccountIndex -> [Word32]  -- m/44'/coin'/acco
 keccak256           :: ByteString -> ByteString
 
 -- Eth
-addressFromPrivateKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Address
+addressFromPublicKey  :: Secp256k1PublicKey -> Address
+addressFromPrivateKey :: Secp256k1Context -> Secp256k1PrivateKey -> IO Address
 ```
 
 `Address` has a `StrEncoding` instance: `strEncode` is the EIP-55 checksummed
@@ -112,9 +115,8 @@ form and `strP` accepts bare or `0x`-prefixed hex, rejecting a bad mixed-case
 checksum.
 
 Like `Simplex.Messaging.Crypto.randomBytes`, `randomEntropy` takes a
-`TVar ChaChaDRG` and runs in `STM`. Every function that calls libsecp256k1 takes
-the same generator for the context blinding seed, so this code never reads
-system entropy itself.
+`TVar ChaChaDRG` and runs in `STM`. `withContext` takes the same generator for
+the context blinding seed, so this code never reads system entropy itself.
 
 A value of one of these types is valid by construction: `WalletEntropy` has one
 of the five sizes, `AccountIndex` is below 2^31, and `WalletMaster` holds a
@@ -146,23 +148,35 @@ device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 ent    <- either fail pure $ parsePhrase phrase  -- phrase :: Text
 master <- either fail pure $ mkWalletMaster ent
 n      <- either fail pure $ mkAccountIndex account
-xk     <- either fail pure =<< derivePath g (walletMasterKey master) (bip44Path Ethereum n)
-addr   <- addressFromPrivateKey g (xkKey xk)
+addr   <- withContext g $ \ctx -> do
+  xk <- either fail pure =<< derivePath ctx (walletMasterKey master) (bip44Path Ethereum n)
+  addressFromPrivateKey ctx (xkKey xk)
 ```
 
 ## libsecp256k1 C API mapping
 
 ```c
-secp256k1_context_create(SECP256K1_CONTEXT_NONE)   /* per call, then _randomize */
+secp256k1_context_create(SECP256K1_CONTEXT_NONE)   /* per withContext, then _randomize */
 secp256k1_context_destroy(ctx)
 secp256k1_ec_pubkey_create(ctx, pubkey, seckey)
-secp256k1_ec_pubkey_serialize(ctx, output, outputlen, pubkey, flags)
-secp256k1_ec_seckey_tweak_add(ctx, seckey, tweak)
+secp256k1_ec_pubkey_serialize(secp256k1_context_static, output, outputlen, pubkey, flags)
+secp256k1_ec_seckey_tweak_add(secp256k1_context_static, seckey, tweak)
 ```
 
-Every function that calls libsecp256k1 runs in `IO` with its own context,
-created for the call, blinded with 32 bytes from the caller's `TVar ChaChaDRG`
-and destroyed after it, so no context is shared between threads.
+Context randomisation blinds only the multiplication of a secret scalar by the
+generator, which only `secp256k1_ec_pubkey_create` performs here. `withContext`
+creates a context, randomises it with 32 bytes from the caller's
+`TVar ChaChaDRG`, passes it to the action and destroys it after. One context
+is used per derivation: `derivePath` and the address of its result.
+`secp256k1_ec_pubkey_serialize` and `secp256k1_ec_seckey_tweak_add` run on
+`secp256k1_context_static`, so `serializePublicKey`, `addressFromPublicKey`
+and `privateKeyTweakAdd` are pure. The functions that take a
+`Secp256k1Context` run in `IO`, so none is evaluated after the context is
+destroyed; the context is not retained past `withContext`.
+
+`Secp256k1PublicKey` is produced only by libsecp256k1 and has no encoding: its
+64-byte form is not portable between libsecp256k1 versions, and
+`serializePublicKey` returns the SEC1 bytes.
 
 `secp256k1_ec_seckey_tweak_add` returns 0 exactly when BIP-32 declares the
 child invalid (tweak out of range, or a zero result), which is why

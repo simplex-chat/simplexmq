@@ -5,9 +5,11 @@
 module Simplex.Messaging.Crypto.Secp256k1
   ( Secp256k1PrivateKey,
     Secp256k1PublicKey,
+    Secp256k1Context,
     PubKeyFormat (..),
     mkPrivateKey,
     unPrivateKey,
+    withContext,
     secp256k1PublicKey,
     serializePublicKey,
     privateKeyTweakAdd,
@@ -26,6 +28,7 @@ import Data.ByteString (ByteString)
 import Foreign hiding (void)
 import Foreign.C
 import qualified Simplex.Messaging.Crypto as C
+import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 
 -- Sizes
 
@@ -50,6 +53,8 @@ newtype Secp256k1PrivateKey = Secp256k1PrivateKey ScrubbedBytes
 -- | A public key in libsecp256k1's opaque 64-byte form; 'serializePublicKey' returns the SEC1 bytes.
 newtype Secp256k1PublicKey = Secp256k1PublicKey ByteString
 
+newtype Secp256k1Context = Secp256k1Context (Ptr Ctx)
+
 data PubKeyFormat = Compressed | Uncompressed
   deriving (Eq, Show)
 
@@ -68,6 +73,9 @@ foreign import ccall "secp256k1_context_destroy"
 foreign import ccall "secp256k1_context_randomize"
   c_context_randomize :: Ptr Ctx -> Ptr Word8 -> IO CInt
 
+foreign import ccall "&secp256k1_context_static"
+  c_context_static :: Ptr (Ptr Ctx)
+
 foreign import ccall "secp256k1_ec_pubkey_create"
   c_ec_pubkey_create :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr Word8 -> IO CInt
 
@@ -81,12 +89,16 @@ foreign import ccall "secp256k1_ec_seckey_tweak_add"
 contextNone :: CUInt
 contextNone = 1
 
-withContext :: TVar ChaChaDRG -> (Ptr Ctx -> IO a) -> IO a
+staticContext :: Ptr Ctx
+staticContext = unsafePerformIO $ peek c_context_static
+{-# NOINLINE staticContext #-}
+
+withContext :: TVar ChaChaDRG -> (Secp256k1Context -> IO a) -> IO a
 withContext g f = bracket (c_context_create contextNone) c_context_destroy $ \ctx -> do
   seed :: ScrubbedBytes <- atomically $ C.randomBytes' 32 g
   rc <- BA.withByteArray seed $ c_context_randomize ctx
   when (rc /= 1) $ throwIO (userError "secp256k1_context_randomize failed")
-  f ctx
+  f $ Secp256k1Context ctx
 
 -- Public API
 
@@ -104,18 +116,18 @@ groupOrder = i2ospOf_ privateKeySize $ ECT.ecc_n $ ECT.common_curve $ ECT.getCur
 unPrivateKey :: Secp256k1PrivateKey -> ScrubbedBytes
 unPrivateKey (Secp256k1PrivateKey bs) = bs
 
-secp256k1PublicKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
-secp256k1PublicKey g (Secp256k1PrivateKey sk) = withContext g $ \ctx -> do
+secp256k1PublicKey :: Secp256k1Context -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
+secp256k1PublicKey (Secp256k1Context ctx) (Secp256k1PrivateKey sk) = do
   (rc, pk) <- BA.allocRet pubKeyInternalSize $ \pkPtr -> BA.withByteArray sk $ c_ec_pubkey_create ctx pkPtr
   when (rc /= 1) $ throwIO (userError "secp256k1_ec_pubkey_create failed on a validated key")
   pure $ Secp256k1PublicKey pk
 
-serializePublicKey :: TVar ChaChaDRG -> PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
-serializePublicKey g fmt (Secp256k1PublicKey pk) = withContext g $ \ctx ->
-  BA.alloc outLen $ \outPtr ->
+serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
+serializePublicKey fmt (Secp256k1PublicKey pk) =
+  BA.allocAndFreeze outLen $ \outPtr ->
     with (fromIntegral outLen) $ \lenPtr ->
       BA.withByteArray pk $ \pkPtr ->
-        void $ c_ec_pubkey_serialize ctx outPtr lenPtr pkPtr flag
+        void $ c_ec_pubkey_serialize staticContext outPtr lenPtr pkPtr flag
   where
     -- SECP256K1_EC_COMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION | SECP256K1_FLAGS_BIT_COMPRESSION, SECP256K1_EC_UNCOMPRESSED = SECP256K1_FLAGS_TYPE_COMPRESSION
     (flag, outLen) = case fmt of
@@ -123,10 +135,10 @@ serializePublicKey g fmt (Secp256k1PublicKey pk) = withContext g $ \ctx ->
       Uncompressed -> (2, uncompressedSize)
 
 -- | @sk + tweak mod n@, as BIP-32 child derivation requires. 'Nothing' when the tweak is not 32 bytes or not below n, or when the result is zero.
-privateKeyTweakAdd :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
-privateKeyTweakAdd g (Secp256k1PrivateKey sk) tweak
-  | BA.length tweak /= privateKeySize = pure Nothing
-  | otherwise = withContext g $ \ctx ->
+privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> Maybe Secp256k1PrivateKey
+privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
+  | BA.length tweak /= privateKeySize = Nothing
+  | otherwise = unsafeDupablePerformIO $
       BA.withByteArray tweak $ \twPtr -> do
-        (rc, sk') <- BA.copyRet sk $ \skPtr -> c_ec_seckey_tweak_add ctx skPtr twPtr
+        (rc, sk') <- BA.copyRet sk $ \skPtr -> c_ec_seckey_tweak_add staticContext skPtr twPtr
         pure $ if rc == 1 then Just (Secp256k1PrivateKey sk') else Nothing
