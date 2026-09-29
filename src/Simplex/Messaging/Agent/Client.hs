@@ -1261,9 +1261,10 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
           Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
-ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
-  isJust socksProxy || (hostMode == HMOnion && any isOnionHost hosts)
+ipAddressProtected cfg@NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) =
+  either (const $ isJust socksProxy) protected $ chooseTransportHost cfg hosts
   where
+    protected h = isJust (useSocksProxy cfg h) || (hostMode == HMOnion && isOnionHost h)
     isOnionHost = \case THOnionHost _ -> True; _ -> False
 
 withNtfClient :: AgentClient -> NetworkRequestMode -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> AM a
