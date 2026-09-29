@@ -241,6 +241,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import Data.Bits (xor)
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -1323,7 +1324,10 @@ instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
   parseJSON = strParseJSON "ProtocolServer"
 
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
-  deriving (Eq, Ord, Show)
+  deriving (Ord, Show)
+
+instance Eq BasicAuth where
+  BasicAuth s == BasicAuth s' = BA.constEq s s'
 
 instance IsString BasicAuth where fromString = BasicAuth . B.pack
 

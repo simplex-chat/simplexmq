@@ -1092,6 +1092,7 @@ controlPortAuth h user admin role auth = do
   readTVarIO role >>= \case
     CPRNone -> do
       atomically $ writeTVar role $! newRole
+      when (newRole == CPRNone) $ logWarn "ControlPort: failed auth"
       hPutStrLn h $ currentRole newRole
     r -> hPutStrLn h $ currentRole r <> if r == newRole then "" else ", start new session to change."
   where
