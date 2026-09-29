@@ -155,6 +155,8 @@ library
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Eth.Address
+      Simplex.Messaging.Eth.RLP
+      Simplex.Messaging.Eth.Transaction
       Simplex.Messaging.Names.Record
       Simplex.Messaging.Notifications.Client
       Simplex.Messaging.Notifications.Protocol
@@ -339,8 +341,8 @@ library
       cbits/blst/src
       cbits/libbbs/include
       cbits/libbbs/src
-  -- libsecp256k1 requires no -D flags: every setting has an #ifndef default that matches the checked-in tables
-  cc-options: -D__BLST_PORTABLE__
+  -- libsecp256k1's only -D flag enables its recovery module: every other setting has an #ifndef default that matches the checked-in tables
+  cc-options: -D__BLST_PORTABLE__ -DENABLE_MODULE_RECOVERY=1
   if flag(commoncrypto)
     cc-options: -DBBS_CRYPTO_CC
     frameworks: Security
