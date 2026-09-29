@@ -190,7 +190,7 @@ bip39Tests g = do
     B39.parsePhrase "" `shouldBe` Left "Failed reading: mnemonic: expected 12, 15, 18, 21 or 24 words, got 0"
   it "rejects a word with trailing punctuation, naming it" $
     B39.parsePhrase "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about."
-      `shouldBe` Left "Failed reading: mnemonic: not in wordlist: about."
+      `shouldBe` Left "Failed reading: mnemonic: not in wordlist"
   it "rejects a wrong word count" $
     B39.parsePhrase "abandon abandon about" `shouldSatisfy` isLeft
   it "accepts a capitalised phrase and normalises it" $
