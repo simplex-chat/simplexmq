@@ -133,7 +133,7 @@ phraseP = do
         else fail "mnemonic: checksum mismatch"
   where
     wordP = T.toLower <$> A.takeWhile1 (not . isSpace)
-    lookupWord w = maybe (fail $ "mnemonic: not in wordlist: " <> T.unpack w) pure $ M.lookup (encodeUtf8 w) indexByWord
+    lookupWord w = maybe (fail "mnemonic: not in wordlist") pure $ M.lookup (encodeUtf8 w) indexByWord
 
 entropySeed :: WalletEntropy -> ByteString -> ScrubbedBytes
 entropySeed ent passphrase =

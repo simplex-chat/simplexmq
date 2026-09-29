@@ -11,8 +11,8 @@ where
 import Control.Applicative (optional)
 import Control.Concurrent.STM (TVar)
 import Control.Monad (unless, when, (<=<))
-import Data.Aeson (FromJSON, ToJSON)
 import Crypto.Random (ChaChaDRG)
+import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray.Encoding as BAE

@@ -17,6 +17,7 @@ import Data.Aeson (FromJSON (..), ToJSON)
 import Data.Word (Word32)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Crypto.BIP32 (hardened, isHardened)
+import Simplex.Messaging.Util ((<$?>))
 
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple.FromField (ResultError (..), returnError)
@@ -47,7 +48,7 @@ mkAccountIndex i
   | otherwise = Right $ AccountIndex i
 
 instance FromJSON AccountIndex where
-  parseJSON v = parseJSON v >>= either fail pure . mkAccountIndex
+  parseJSON v = mkAccountIndex <$?> parseJSON v
 
 #if defined(dbPostgres)
 instance FromField AccountIndex where

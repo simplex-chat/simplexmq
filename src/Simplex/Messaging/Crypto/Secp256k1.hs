@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | FFI bindings to libsecp256k1.
 module Simplex.Messaging.Crypto.Secp256k1
@@ -82,7 +83,7 @@ contextNone = 1
 
 withContext :: TVar ChaChaDRG -> (Ptr Ctx -> IO a) -> IO a
 withContext g f = bracket (c_context_create contextNone) c_context_destroy $ \ctx -> do
-  seed <- atomically $ C.randomBytes 32 g
+  seed :: ScrubbedBytes <- atomically $ C.randomBytes' 32 g
   rc <- BA.withByteArray seed $ c_context_randomize ctx
   when (rc /= 1) $ throwIO (userError "secp256k1_context_randomize failed")
   f ctx

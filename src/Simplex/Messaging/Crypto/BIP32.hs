@@ -2,7 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented. An invalid master or child key is recomputed as SLIP-0010 specifies, up to three times.
+-- | BIP-32 HD derivation over secp256k1, private only: we hold the seed, so CKDpub, xpub and fingerprints are not implemented. An invalid master or child key is recomputed as SLIP-0010 specifies, up to two times.
 module Simplex.Messaging.Crypto.BIP32
   ( ExtendedKey,
     xkKey,
@@ -25,8 +25,8 @@ import Control.Concurrent.STM (TVar)
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
-import Crypto.Random (ChaChaDRG)
 import qualified Crypto.MAC.HMAC as HMAC
+import Crypto.Random (ChaChaDRG)
 import Data.Bits ((.|.))
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
