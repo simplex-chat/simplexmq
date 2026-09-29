@@ -939,7 +939,7 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
-    AgentRatchetInfo info -> smpEncode ('R', Tail info)
+    AgentRatchetInfo keyHash -> smpEncode ('R', keyHash)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
     AgentServiceRequest qs sig_ body -> smpEncode ('A', qs, sig_, Tail body)
     AgentServiceResponse body -> smpEncode ('P', Tail body)
@@ -948,7 +948,7 @@ instance Encoding AgentMessage where
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
-      'R' -> AgentRatchetInfo . unTail <$> smpP
+      'R' -> AgentRatchetInfo <$> (smpP <|> pure "") <* A.takeByteString
       'M' -> AgentMessage <$> smpP <*> smpP
       'A' -> AgentServiceRequest <$> smpP <*> smpP <*> (unTail <$> smpP)
       'P' -> AgentServiceResponse . unTail <$> smpP
