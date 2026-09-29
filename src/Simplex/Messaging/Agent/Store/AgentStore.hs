@@ -2823,12 +2823,12 @@ deleteRatchetKeyHashesExpired db ttl limit = do
       WHERE processed_ratchet_key_hash_id IN (
         SELECT processed_ratchet_key_hash_id
         FROM processed_ratchet_key_hashes
-        WHERE created_at < ?
+        WHERE created_at < ? AND conn_id IN (SELECT conn_id FROM connections WHERE conn_mode = ?)
         ORDER BY created_at ASC
         LIMIT ?
       )
     |]
-    (cutoffTs, limit)
+    (cutoffTs, CMContact, limit)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
