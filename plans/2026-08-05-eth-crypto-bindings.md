@@ -46,7 +46,7 @@ Simplex.Messaging.Eth.Address           addresses, EIP-55
 ```haskell
 newtype Secp256k1PrivateKey         -- 32 bytes, validated in [1, n-1]
 newtype Secp256k1PublicKey          -- libsecp256k1's opaque 64-byte form
-newtype Secp256k1Context            -- randomised libsecp256k1 context, valid inside withContext
+newtype Secp256k1Context            -- randomised libsecp256k1 context, internal to simplexmq
 data PubKeyFormat = Compressed | Uncompressed
 
 newtype WalletEntropy               -- 16, 20, 24, 28 or 32 bytes
@@ -72,8 +72,7 @@ it yields the parent private key.
 -- Secp256k1
 mkPrivateKey        :: ScrubbedBytes -> Either String Secp256k1PrivateKey  -- 32 bytes in [1, n-1]
 unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
-withContext         :: TVar ChaChaDRG -> (Secp256k1Context -> IO a) -> IO a
-secp256k1PublicKey  :: Secp256k1Context -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
+secp256k1PublicKey  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
 serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
 privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> Maybe Secp256k1PrivateKey
 
@@ -87,7 +86,7 @@ entropySeed         :: WalletEntropy -> ByteString -> ScrubbedBytes  -- PBKDF2 w
 
 -- BIP32
 masterKey           :: ScrubbedBytes -> Either String ExtendedKey
-derivePath          :: Secp256k1Context -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath          :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 renderPath          :: [Word32] -> ByteString
 hardened            :: Word32 -> Word32
 isHardened          :: Word32 -> Bool
@@ -107,7 +106,16 @@ keccak256           :: ByteString -> ByteString
 
 -- Eth
 addressFromPublicKey  :: Secp256k1PublicKey -> Address
-addressFromPrivateKey :: Secp256k1Context -> Secp256k1PrivateKey -> IO Address
+addressFromPrivateKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Address
+deriveAddress         :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String (ExtendedKey, Address))
+```
+
+Internal to simplexmq, for sharing one context:
+
+```haskell
+withContext         :: TVar ChaChaDRG -> (Secp256k1Context -> IO a) -> IO a
+secp256k1PublicKey_ :: Secp256k1Context -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
+derivePath_         :: Secp256k1Context -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 ```
 
 `Address` has a `StrEncoding` instance: `strEncode` is the EIP-55 checksummed
@@ -115,8 +123,9 @@ form and `strP` accepts bare or `0x`-prefixed hex, rejecting a bad mixed-case
 checksum.
 
 Like `Simplex.Messaging.Crypto.randomBytes`, `randomEntropy` takes a
-`TVar ChaChaDRG` and runs in `STM`. `withContext` takes the same generator for
-the context blinding seed, so this code never reads system entropy itself.
+`TVar ChaChaDRG` and runs in `STM`. Every exported function that computes a
+public key takes the same generator for the context blinding seed, so this code
+never reads system entropy itself.
 
 A value of one of these types is valid by construction: `WalletEntropy` has one
 of the five sizes, `AccountIndex` is below 2^31, and `WalletMaster` holds a
@@ -130,9 +139,10 @@ SLIP-0010's rule, which trezor-crypto also implements: recompute the HMAC over
 `I` for a master key, or over `0x01 || IR || ser32(i)` for a child. Every key
 BIP-32 produces is produced unchanged; only an index BIP-32 would skip gets a
 key. The recomputation is bounded to three attempts, after which `masterKey`,
-`mkWalletMaster` and `derivePath` return `Left "derivation failed after 3
-attempts"`, an error no input is expected to produce, which consumers report as
-an internal error rather than a wallet condition.
+`mkWalletMaster`, `derivePath` and `deriveAddress` return
+`Left "derivation failed after 3 attempts"`, an error no input is expected to
+produce, which consumers report as an internal error rather than a wallet
+condition.
 
 Because `parsePhrase` lower-cases each word, a recovery phrase with a
 capitalised word is accepted. This does not change the derived seed:
@@ -145,12 +155,10 @@ An application defines the derivation path. For SimpleX names, one seed per
 device and one account per name, as in `Simplex.Chat.Wallet` in simplex-chat:
 
 ```haskell
-ent    <- either fail pure $ parsePhrase phrase  -- phrase :: Text
-master <- either fail pure $ mkWalletMaster ent
-n      <- either fail pure $ mkAccountIndex account
-addr   <- withContext g $ \ctx -> do
-  xk <- either fail pure =<< derivePath ctx (walletMasterKey master) (bip44Path Ethereum n)
-  addressFromPrivateKey ctx (xkKey xk)
+ent        <- either fail pure $ parsePhrase phrase  -- phrase :: Text
+master     <- either fail pure $ mkWalletMaster ent
+n          <- either fail pure $ mkAccountIndex account
+(xk, addr) <- either fail pure =<< deriveAddress g (walletMasterKey master) (bip44Path Ethereum n)
 ```
 
 ## libsecp256k1 C API mapping
@@ -166,8 +174,10 @@ secp256k1_ec_seckey_tweak_add(secp256k1_context_static, seckey, tweak)
 Context randomisation blinds only the multiplication of a secret scalar by the
 generator, which only `secp256k1_ec_pubkey_create` performs here. `withContext`
 creates a context, randomises it with 32 bytes from the caller's
-`TVar ChaChaDRG`, passes it to the action and destroys it after. One context
-is used per derivation: `derivePath` and the address of its result.
+`TVar ChaChaDRG`, passes it to the action and destroys it after. Each exported
+function that computes a public key creates one context: `deriveAddress` uses
+it for the derivation and the address of its result. Functions that end in `_`
+take the context and are defined for sharing it inside simplexmq.
 `secp256k1_ec_pubkey_serialize` and `secp256k1_ec_seckey_tweak_add` run on
 `secp256k1_context_static`, so `serializePublicKey`, `addressFromPublicKey`
 and `privateKeyTweakAdd` are pure. The functions that take a
@@ -257,7 +267,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 92 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 93 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:
@@ -269,7 +279,8 @@ from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
   `xprv`, so vector 5's malformed serializations do not apply.
 - **EIP-55**: the eight addresses from the EIP-55 spec, round-tripped.
 - **BIP-44**: the well-known `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` for
-  the `abandon ... about` mnemonic at `m/44'/60'/0'/0/0`, plus accounts 1 and 2.
+  the `abandon ... about` mnemonic at `m/44'/60'/0'/0/0`, plus accounts 1 and 2,
+  all through `deriveAddress`, whose key is checked against `derivePath`.
 - Keccak-256 of the empty string and of `abc`.
 - Recovery phrases with capitalised words, extra whitespace, and non-breaking or
   ideographic spaces between words.

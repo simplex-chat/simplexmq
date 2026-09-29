@@ -135,9 +135,9 @@ keccakTests = do
 secp256k1Tests :: TVar ChaChaDRG -> Spec
 secp256k1Tests g = do
   it "derives the known address for a known key" $
-    (strEncode <$> S.withContext g (\ctx -> addressFromPrivateKey ctx testKey)) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
+    (strEncode <$> addressFromPrivateKey g testKey) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
   it "serializes a public key in both SEC1 forms" $ do
-    pk <- S.withContext g (\ctx -> S.secp256k1PublicKey ctx testKey)
+    pk <- S.secp256k1PublicKey g testKey
     let comp = S.serializePublicKey S.Compressed pk
         uncomp = S.serializePublicKey S.Uncompressed pk
     B.length comp `shouldBe` 33
@@ -227,7 +227,7 @@ bip32Tests g = do
     describe name $
       forM_ chains $ \(chain, path, xprv) ->
         it chain $ do
-          xk <- right <$> S.withContext g (\ctx -> B32.derivePath ctx (right $ B32.masterKey (hx seedHex)) path)
+          xk <- right <$> B32.derivePath g (right $ B32.masterKey (hx seedHex)) path
           xkHex xk `shouldBe` xprvHex xprv
   it "rejects a seed shorter than 16 bytes" $
     isLeft (B32.masterKey (BA.replicate 15 1)) `shouldBe` True
@@ -257,6 +257,12 @@ derivationTests g = do
       (strEncode <$> addrAt i) `shouldReturn` a
   it "derives distinct addresses for accounts 0 to 4" $
     mapM addrAt [0 .. 4] >>= (`shouldSatisfy` \as -> length as == length (nub as))
+  it "derives an account key together with its address" $ do
+    let path = bip44Path Ethereum $ account 0
+    (xk, a) <- right <$> deriveAddress g (B32.walletMasterKey canonicalMaster) path
+    xk' <- right <$> B32.derivePath g (B32.walletMasterKey canonicalMaster) path
+    xkHex xk `shouldBe` xkHex xk'
+    addressFromPrivateKey g (B32.xkKey xk) `shouldReturn` a
   it "renders the Ethereum path of an account" $
     B32.renderPath (bip44Path Ethereum $ account 7) `shouldBe` "m/44'/60'/7'/0/0"
   it "rejects an account index at or above 2^31" $ do
@@ -265,9 +271,7 @@ derivationTests g = do
   where
     seed = B39.entropySeed canonicalEntropy ""
     account = right . mkAccountIndex
-    addrAt i = S.withContext g $ \ctx -> do
-      xk <- right <$> B32.derivePath ctx (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
-      addressFromPrivateKey ctx (B32.xkKey xk)
+    addrAt i = snd . right <$> deriveAddress g (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
 
 eip55Tests :: Spec
 eip55Tests = do

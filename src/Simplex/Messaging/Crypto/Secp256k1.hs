@@ -11,6 +11,7 @@ module Simplex.Messaging.Crypto.Secp256k1
     unPrivateKey,
     withContext,
     secp256k1PublicKey,
+    secp256k1PublicKey_,
     serializePublicKey,
     privateKeyTweakAdd,
   )
@@ -116,8 +117,11 @@ groupOrder = i2ospOf_ privateKeySize $ ECT.ecc_n $ ECT.common_curve $ ECT.getCur
 unPrivateKey :: Secp256k1PrivateKey -> ScrubbedBytes
 unPrivateKey (Secp256k1PrivateKey bs) = bs
 
-secp256k1PublicKey :: Secp256k1Context -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
-secp256k1PublicKey (Secp256k1Context ctx) (Secp256k1PrivateKey sk) = do
+secp256k1PublicKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
+secp256k1PublicKey g k = withContext g (`secp256k1PublicKey_` k)
+
+secp256k1PublicKey_ :: Secp256k1Context -> Secp256k1PrivateKey -> IO Secp256k1PublicKey
+secp256k1PublicKey_ (Secp256k1Context ctx) (Secp256k1PrivateKey sk) = do
   (rc, pk) <- BA.allocRet pubKeyInternalSize $ \pkPtr -> BA.withByteArray sk $ c_ec_pubkey_create ctx pkPtr
   when (rc /= 1) $ throwIO (userError "secp256k1_ec_pubkey_create failed on a validated key")
   pure $ Secp256k1PublicKey pk

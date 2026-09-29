@@ -8,6 +8,7 @@ module Simplex.Messaging.Crypto.BIP32
     xkChainCode,
     masterKey,
     derivePath,
+    derivePath_,
     renderPath,
     hardened,
     isHardened,
@@ -20,10 +21,12 @@ module Simplex.Messaging.Crypto.BIP32
   )
 where
 
+import Control.Concurrent.STM (TVar)
 import Control.Monad (foldM)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import qualified Crypto.Hash as H
 import qualified Crypto.MAC.HMAC as HMAC
+import Crypto.Random (ChaChaDRG)
 import Data.Bits ((.|.))
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
@@ -70,7 +73,7 @@ deriveChild ctx ExtendedKey {xkKey, xkChainCode} i = do
   dat <-
     if isHardened i
       then pure $ BA.cons 0 (S.unPrivateKey xkKey)
-      else BA.convert . S.serializePublicKey S.Compressed <$> S.secp256k1PublicKey ctx xkKey
+      else BA.convert . S.serializePublicKey S.Compressed <$> S.secp256k1PublicKey_ ctx xkKey
   pure $ go attempts dat
   where
     go :: Int -> ScrubbedBytes -> Either String ExtendedKey
@@ -81,8 +84,11 @@ deriveChild ctx ExtendedKey {xkKey, xkChainCode} i = do
       where
         (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
 
-derivePath :: S.Secp256k1Context -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
-derivePath ctx xk = runExceptT . foldM (\k -> ExceptT . deriveChild ctx k) xk
+derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath g xk path = S.withContext g $ \ctx -> derivePath_ ctx xk path
+
+derivePath_ :: S.Secp256k1Context -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
+derivePath_ ctx xk = runExceptT . foldM (\k -> ExceptT . deriveChild ctx k) xk
 
 attempts :: Int
 attempts = 3
