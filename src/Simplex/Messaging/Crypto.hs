@@ -173,12 +173,14 @@ module Simplex.Messaging.Crypto
 
     -- * pseudo-random bytes
     randomBytes,
+    randomBytes',
 
     -- * digests
     sha256Hash,
     sha512Hash,
     sha3_256,
     sha3_384,
+    keccak256,
     md5Hash,
 
     -- * Message padding / un-padding
@@ -218,7 +220,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, MD5, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, Keccak_256, MD5, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -232,7 +234,7 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
-import Data.ByteArray (ByteArrayAccess)
+import Data.ByteArray (ByteArray, ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode)
 import qualified Data.ByteString.Base64.URL as U
@@ -1040,6 +1042,11 @@ sha3_384 :: ByteString -> ByteString
 sha3_384 = BA.convert . (hash :: ByteString -> Digest SHA3_384)
 {-# INLINE sha3_384 #-}
 
+-- | Keccak-256, the hash Ethereum uses. Not SHA3-256: they differ in the padding byte and produce entirely different digests.
+keccak256 :: ByteString -> ByteString
+keccak256 = BA.convert . (hash :: ByteString -> Digest Keccak_256)
+{-# INLINE keccak256 #-}
+
 md5Hash :: ByteString -> ByteString
 md5Hash = BA.convert . (hash :: ByteString -> Digest MD5)
 
@@ -1420,7 +1427,12 @@ randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+randomBytes = randomBytes'
+{-# INLINE randomBytes #-}
+
+randomBytes' :: ByteArray a => Int -> TVar ChaChaDRG -> STM a
+randomBytes' n gVar = stateTVar gVar $ randomBytesGenerate n
+{-# INLINE randomBytes' #-}
 
 reverseNonce :: CbNonce -> CbNonce
 reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
