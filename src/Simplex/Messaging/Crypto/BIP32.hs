@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -73,16 +74,16 @@ deriveChild ctx ExtendedKey {xkKey, xkChainCode} i = do
   dat <-
     if isHardened i
       then pure $ BA.cons 0 (S.unPrivateKey xkKey)
-      else BA.convert . S.serializePublicKey S.Compressed <$> S.secp256k1PublicKey_ ctx xkKey
-  pure $ go attempts dat
+      else BA.convert <$> (S.serializePublicKey S.Compressed =<< S.secp256k1PublicKey_ ctx xkKey)
+  go attempts dat
   where
-    go :: Int -> ScrubbedBytes -> Either String ExtendedKey
-    go 0 _ = Left derivationFailed
-    go n dat = case S.privateKeyTweakAdd xkKey il of
-      Just k -> Right ExtendedKey {xkKey = k, xkChainCode = ir}
-      Nothing -> go (n - 1) $ BA.cons 1 ir
-      where
-        (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
+    go :: Int -> ScrubbedBytes -> IO (Either String ExtendedKey)
+    go 0 _ = pure $ Left derivationFailed
+    go n dat = do
+      let (il, ir) = BA.splitAt 32 $ hmacSHA512 xkChainCode (dat <> BA.convert (smpEncode i))
+      S.privateKeyTweakAdd xkKey il >>= \case
+        Just k -> pure $ Right ExtendedKey {xkKey = k, xkChainCode = ir}
+        Nothing -> go (n - 1) $ BA.cons 1 ir
 
 derivePath :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String ExtendedKey)
 derivePath g xk path = S.withContext g $ \ctx -> derivePath_ ctx xk path

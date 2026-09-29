@@ -138,8 +138,8 @@ secp256k1Tests g = do
     (strEncode <$> addressFromPrivateKey g testKey) `shouldReturn` "0x2c7536E3605D9C16a7a3D7b1898e529396a65c23"
   it "serializes a public key in both SEC1 forms" $ do
     pk <- S.secp256k1PublicKey g testKey
-    let comp = S.serializePublicKey S.Compressed pk
-        uncomp = S.serializePublicKey S.Uncompressed pk
+    comp <- S.serializePublicKey S.Compressed pk
+    uncomp <- S.serializePublicKey S.Uncompressed pk
     B.length comp `shouldBe` 33
     B.length uncomp `shouldBe` 65
     B.head uncomp `shouldBe` 0x04
@@ -152,13 +152,13 @@ secp256k1Tests g = do
   it "rejects a short private key" $
     isLeft (S.mkPrivateKey (BA.replicate 31 1)) `shouldBe` True
   it "adds a tweak to a private key" $
-    (toHex . S.unPrivateKey <$> S.privateKeyTweakAdd testKey (BA.replicate 31 0 <> BA.singleton 1))
-      `shouldBe` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
+    (fmap (toHex . S.unPrivateKey) <$> S.privateKeyTweakAdd testKey (BA.replicate 31 0 <> BA.singleton 1))
+      `shouldReturn` Just "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362319"
   it "returns Nothing for a tweak that makes the key zero" $
-    isNothing (S.privateKeyTweakAdd testKey (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
-      `shouldBe` True
+    (isNothing <$> S.privateKeyTweakAdd testKey (hx "b3f77c596efd6c829dceb8e4a2449df9bc5db3853ec62710db698e7291001e29"))
+      `shouldReturn` True
   it "returns Nothing for a tweak that is not 32 bytes" $
-    isNothing (S.privateKeyTweakAdd testKey (BA.replicate 31 1)) `shouldBe` True
+    (isNothing <$> S.privateKeyTweakAdd testKey (BA.replicate 31 1)) `shouldReturn` True
   where
     testKey = right $ S.mkPrivateKey (hx "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318")
 

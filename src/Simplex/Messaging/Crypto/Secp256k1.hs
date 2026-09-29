@@ -29,7 +29,7 @@ import Data.ByteString (ByteString)
 import Foreign hiding (void)
 import Foreign.C
 import qualified Simplex.Messaging.Crypto as C
-import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
+import System.IO.Unsafe (unsafePerformIO)
 
 -- Sizes
 
@@ -126,9 +126,9 @@ secp256k1PublicKey_ (Secp256k1Context ctx) (Secp256k1PrivateKey sk) = do
   when (rc /= 1) $ throwIO (userError "secp256k1_ec_pubkey_create failed on a validated key")
   pure $ Secp256k1PublicKey pk
 
-serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
+serializePublicKey :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
 serializePublicKey fmt (Secp256k1PublicKey pk) =
-  BA.allocAndFreeze outLen $ \outPtr ->
+  BA.alloc outLen $ \outPtr ->
     with (fromIntegral outLen) $ \lenPtr ->
       BA.withByteArray pk $ \pkPtr ->
         void $ c_ec_pubkey_serialize staticContext outPtr lenPtr pkPtr flag
@@ -139,10 +139,10 @@ serializePublicKey fmt (Secp256k1PublicKey pk) =
       Uncompressed -> (2, uncompressedSize)
 
 -- | @sk + tweak mod n@, as BIP-32 child derivation requires. 'Nothing' when the tweak is not 32 bytes or not below n, or when the result is zero.
-privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> Maybe Secp256k1PrivateKey
+privateKeyTweakAdd :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
-  | BA.length tweak /= privateKeySize = Nothing
-  | otherwise = unsafeDupablePerformIO $
+  | BA.length tweak /= privateKeySize = pure Nothing
+  | otherwise =
       BA.withByteArray tweak $ \twPtr -> do
         (rc, sk') <- BA.copyRet sk $ \skPtr -> c_ec_seckey_tweak_add staticContext skPtr twPtr
         pure $ if rc == 1 then Just (Secp256k1PrivateKey sk') else Nothing

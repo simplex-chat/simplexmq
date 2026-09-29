@@ -13,7 +13,7 @@ where
 
 import Control.Applicative (optional)
 import Control.Concurrent.STM (TVar)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, (<=<))
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Attoparsec.ByteString.Char8 as A
@@ -49,14 +49,14 @@ addressSize :: Int
 addressSize = 20
 
 -- | The last 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
-addressFromPublicKey :: S.Secp256k1PublicKey -> Address
-addressFromPublicKey = Address . B.drop 12 . keccak256 . B.drop 1 . S.serializePublicKey S.Uncompressed
+addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address
+addressFromPublicKey pk = Address . B.drop 12 . keccak256 . B.drop 1 <$> S.serializePublicKey S.Uncompressed pk
 
 addressFromPrivateKey :: TVar ChaChaDRG -> S.Secp256k1PrivateKey -> IO Address
 addressFromPrivateKey g k = S.withContext g (`addressFromPrivateKey_` k)
 
 addressFromPrivateKey_ :: S.Secp256k1Context -> S.Secp256k1PrivateKey -> IO Address
-addressFromPrivateKey_ ctx = fmap addressFromPublicKey . S.secp256k1PublicKey_ ctx
+addressFromPrivateKey_ ctx = addressFromPublicKey <=< S.secp256k1PublicKey_ ctx
 
 deriveAddress :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String (ExtendedKey, Address))
 deriveAddress g xk path = S.withContext g $ \ctx ->

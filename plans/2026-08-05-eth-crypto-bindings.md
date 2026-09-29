@@ -73,8 +73,8 @@ it yields the parent private key.
 mkPrivateKey        :: ScrubbedBytes -> Either String Secp256k1PrivateKey  -- 32 bytes in [1, n-1]
 unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
 secp256k1PublicKey  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
-serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> ByteString
-privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> Maybe Secp256k1PrivateKey
+serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
+privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
 
 -- BIP39
 mkEntropy           :: ScrubbedBytes -> Either String WalletEntropy
@@ -105,7 +105,7 @@ bip44Path           :: CoinType -> AccountIndex -> [Word32]  -- m/44'/coin'/acco
 keccak256           :: ByteString -> ByteString
 
 -- Eth
-addressFromPublicKey  :: Secp256k1PublicKey -> Address
+addressFromPublicKey  :: Secp256k1PublicKey -> IO Address
 addressFromPrivateKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Address
 deriveAddress         :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String (ExtendedKey, Address))
 ```
@@ -180,9 +180,11 @@ it for the derivation and the address of its result. Functions that end in `_`
 take the context and are defined for sharing it inside simplexmq.
 `secp256k1_ec_pubkey_serialize` and `secp256k1_ec_seckey_tweak_add` run on
 `secp256k1_context_static`, so `serializePublicKey`, `addressFromPublicKey`
-and `privateKeyTweakAdd` are pure. The functions that take a
-`Secp256k1Context` run in `IO`, so none is evaluated after the context is
-destroyed; the context is not retained past `withContext`.
+and `privateKeyTweakAdd` take no generator. Every function that calls
+libsecp256k1 runs in `IO`; `unsafePerformIO` is used only to read
+`secp256k1_context_static` once. The functions that take a `Secp256k1Context`
+are therefore not evaluated after the context is destroyed; the context is not
+retained past `withContext`.
 
 `Secp256k1PublicKey` is produced only by libsecp256k1 and has no encoding: its
 64-byte form is not portable between libsecp256k1 versions, and
