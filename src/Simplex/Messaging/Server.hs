@@ -2127,6 +2127,7 @@ client
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
           b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et

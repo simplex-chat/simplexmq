@@ -865,7 +865,6 @@ forceCertChain :: CertChainPubKey -> CertChainPubKey
 forceCertChain cert@(CertChainPubKey (X.CertificateChain cc) signedKey) = length (show cc) `seq` show signedKey `seq` cert
 {-# INLINE forceCertChain #-}
 
--- This function is only used with v >= 8, so currently it's a simple record update.
 -- * Note: it requires updating version-based parameters, to be consistent with smpTHandle_.
 smpTHParamsSetVersion :: VersionSMP -> THandleParams SMPVersion p -> THandleParams SMPVersion p
 smpTHParamsSetVersion v params =

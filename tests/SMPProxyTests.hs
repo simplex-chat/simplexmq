@@ -191,6 +191,8 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   forM_ unsecuredMsgs $ \msg -> do
     runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sndId noMsgFlags msg) `shouldReturn` Right ()
     runExceptT' (proxySMPMessage pc NRMInteractive sess {prSessionId = "bad session"} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY SMP.NO_SESSION)
+    forM_ ([prevVersion minServerSMPRelayVersion, nextVersion currentServerSMPRelayVersion] :: [VersionSMP]) $ \v ->
+      runExceptT' (proxySMPMessage pc NRMInteractive sess {prVersion = v} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY $ SMP.PROTOCOL $ SMP.PROXY $ SMP.BROKER $ SMP.TRANSPORT TEVersion)
     -- receive 1
     (_tSess, _, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
     dec msgId encBody `shouldBe` Right msg
