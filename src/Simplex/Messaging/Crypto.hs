@@ -173,6 +173,7 @@ module Simplex.Messaging.Crypto
 
     -- * pseudo-random bytes
     randomBytes,
+    randomBytes',
 
     -- * digests
     sha256Hash,
@@ -233,7 +234,7 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
-import Data.ByteArray (ByteArrayAccess)
+import Data.ByteArray (ByteArray, ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode)
 import qualified Data.ByteString.Base64.URL as U
@@ -1426,7 +1427,12 @@ randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+randomBytes = randomBytes'
+{-# INLINE randomBytes #-}
+
+randomBytes' :: ByteArray a => Int -> TVar ChaChaDRG -> STM a
+randomBytes' n gVar = stateTVar gVar $ randomBytesGenerate n
+{-# INLINE randomBytes' #-}
 
 reverseNonce :: CbNonce -> CbNonce
 reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)

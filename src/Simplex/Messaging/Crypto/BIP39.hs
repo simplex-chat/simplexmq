@@ -18,7 +18,7 @@ import Control.Concurrent.STM
 import Crypto.Hash (Digest, SHA256, SHA512 (..), hash)
 import qualified Crypto.KDF.PBKDF2 as PBKDF2
 import Crypto.Number.Serialize (i2ospOf_, os2ip)
-import Crypto.Random (ChaChaDRG, randomBytesGenerate)
+import Crypto.Random (ChaChaDRG)
 import qualified Data.Attoparsec.Text as A
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
 import Data.ByteArray (ScrubbedBytes)
@@ -34,6 +34,7 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 
 -- | 16, 20, 24, 28 or 32 bytes of entropy: a valid BIP-39 phrase in another encoding.
@@ -85,7 +86,7 @@ mkEntropy ent
     entLen = BA.length ent
 
 randomEntropy :: EntropyStrength -> TVar ChaChaDRG -> STM WalletEntropy
-randomEntropy s gVar = WalletEntropy <$> stateTVar gVar (randomBytesGenerate $ strengthBytes s)
+randomEntropy s = fmap WalletEntropy . C.randomBytes' (strengthBytes s)
 
 -- | The words joined by single spaces, the PBKDF2 password BIP-39 specifies.
 entropyPhrase :: WalletEntropy -> ByteString
