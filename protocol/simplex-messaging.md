@@ -1120,6 +1120,8 @@ When the client receives PKEY response it MUST validate that:
 - the fingerprint of the received certificate matches fingerprint in the router address - it mitigates MITM attack by proxy.
 - the router session key is correctly signed with the received certificate.
 
+`smpVersionRange` in `PKEY` is not signed.
+
 The proxy router may respond with error response in case the destination router is not available or in case it has an earlier version that does not support proxied commands.
 
 #### Send command via proxy
