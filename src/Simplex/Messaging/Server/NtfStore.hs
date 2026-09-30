@@ -10,6 +10,7 @@ module Simplex.Messaging.Server.NtfStore
     storeNtf,
     deleteNtfs,
     deleteExpiredNtfs,
+    deleteEmptyNtfs,
   ) where
 
 import Control.Concurrent.STM
@@ -22,6 +23,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EncNMsgMeta, MsgId, NotifierId)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (whenM)
 
 newtype NtfStore = NtfStore (TMap NotifierId (TVar [MsgNtf]))
 
@@ -56,6 +58,14 @@ deleteExpiredNtfs (NtfStore ns) old =
               then TM.delete nId ns >> pure (length ntfs)
               else writeTVar v ntfs' >> pure (length ntfs - length ntfs')
         | otherwise -> pure 0
+
+deleteEmptyNtfs :: NtfStore -> [(NotifierId, TVar [MsgNtf])] -> IO ()
+deleteEmptyNtfs (NtfStore ns) = mapM_ deleteEmpty
+  where
+    deleteEmpty (nId, v) =
+      whenM (null <$> readTVarIO v) $
+        atomically $
+          TM.lookup nId ns >>= mapM_ (\v' -> whenM (null <$> readTVar v') $ TM.delete nId ns)
 
 data NtfLogRecord = NLRv1 NotifierId MsgNtf
 

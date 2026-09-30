@@ -28,22 +28,25 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Int (Int64)
 import Data.List (isPrefixOf, isSuffixOf)
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType, LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EntityId (..), ErrorType, LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
 import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
+import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
+import qualified Simplex.Messaging.TMap as TM
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
 import System.IO (IOMode (..), withFile)
@@ -83,6 +86,9 @@ msgStoreTests = do
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
     it "should expire messages in idle queues" testExpireIdleQueues
+  describe "Notification store" $ do
+    it "should remove keys of expired notifications" testExpireNtfs
+    it "should remove keys of delivered notifications" testDeleteEmptyNtfs
   where
     journalMsgStoreTests :: SpecWith (JournalMsgStore s)
     journalMsgStoreTests = do
@@ -610,6 +616,54 @@ testExpireIdleQueues = do
   stored `shouldBe` 0
   (Nothing, False) <- readQueueState ms statePath
   pure ()
+
+mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
+mkMsgNtf g ts = do
+  ntfMsgId <- atomically $ C.randomBytes 24 g
+  ntfNonce <- atomically $ C.randomCbNonce g
+  pure MsgNtf {ntfMsgId, ntfTs = MkSystemTime ts 0, ntfNonce, ntfEncMeta = "meta"}
+
+ntfCounts :: NtfStore -> IO [(NotifierId, Int)]
+ntfCounts (NtfStore ns) = M.assocs <$> (mapM (fmap length . readTVarIO) =<< readTVarIO ns)
+
+testExpireNtfs :: IO ()
+testExpireNtfs = do
+  g <- C.newRandom
+  st@(NtfStore ns) <- NtfStore <$> TM.emptyIO
+  now <- systemSeconds <$> getSystemTime
+  let old = now - 100
+      nId1 = EntityId "notifier 1"
+      nId2 = EntityId "notifier 2"
+      nId3 = EntityId "notifier 3"
+  storeNtf st nId1 =<< mkMsgNtf g old
+  storeNtf st nId2 =<< mkMsgNtf g old
+  storeNtf st nId2 =<< mkMsgNtf g now
+  atomically $ TM.insertM nId3 (newTVar []) ns
+  ntfCounts st `shouldReturn` [(nId1, 1), (nId2, 2), (nId3, 0)]
+  deleteExpiredNtfs st (now - 50) `shouldReturn` 2
+  ntfCounts st `shouldReturn` [(nId2, 1)]
+  storeNtf st nId1 =<< mkMsgNtf g now
+  deleteExpiredNtfs st (now - 50) `shouldReturn` 0
+  ntfCounts st `shouldReturn` [(nId1, 1), (nId2, 1)]
+
+testDeleteEmptyNtfs :: IO ()
+testDeleteEmptyNtfs = do
+  g <- C.newRandom
+  st@(NtfStore ns) <- NtfStore <$> TM.emptyIO
+  now <- systemSeconds <$> getSystemTime
+  let nId1 = EntityId "notifier 1"
+      nId2 = EntityId "notifier 2"
+      nId3 = EntityId "notifier 3"
+      nId4 = EntityId "notifier 4"
+  forM_ ([nId1, nId2, nId3, nId4] :: [NotifierId]) $ \nId -> storeNtf st nId =<< mkMsgNtf g now
+  ntfs <- M.assocs <$> readTVarIO ns
+  let flush nId = forM_ (lookup nId ntfs) $ \v -> atomically $ writeTVar v []
+  mapM_ flush ([nId1, nId2, nId4] :: [NotifierId])
+  storeNtf st nId2 =<< mkMsgNtf g now
+  deleteNtfs st nId4 `shouldReturn` 0
+  storeNtf st nId4 =<< mkMsgNtf g now
+  deleteEmptyNtfs st ntfs
+  ntfCounts st `shouldReturn` [(nId2, 1), (nId3, 1), (nId4, 1)]
 
 testReadFileMissing :: JournalMsgStore s -> IO ()
 testReadFileMissing ms = do

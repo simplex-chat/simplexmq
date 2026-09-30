@@ -369,7 +369,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         runDeliverNtfs ms ns' stats
       where
         runDeliverNtfs :: s -> NtfStore -> ServerStats -> IO ()
-        runDeliverNtfs ms (NtfStore ns) stats = do
+        runDeliverNtfs ms ns'@(NtfStore ns) stats = do
           ntfs <- M.assocs <$> readTVarIO ns
           unless (null ntfs) $
             getQueueNtfServices @(StoreQueue s) (queueStore ms) ntfs >>= \case
@@ -381,6 +381,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     cIds <- IS.toList <$> readTVarIO subClients
                     forM_ cIds $ \cId -> getServerClient cId srv >>= mapM_ (deliverQueueNtfs ntfs')
                 atomically $ modifyTVar' ns (`M.withoutKeys` S.fromList (map fst deleted))
+                deleteEmptyNtfs ns' ntfs
           where
             deliverQueueNtfs ntfs' c@Client {ntfSubscriptions} =
               whenM (currentClient readTVarIO c) $ do
