@@ -167,6 +167,8 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# resolver_auth: basic <username>:<password>\n\
         \# resolver_timeout_ms: 3000\n\
         \# resolver_max_response_bytes: 16000\n\
+        \# Max concurrent requests to the resolver from all connections.\n\
+        \# resolver_global_concurrency: 32\n\
         \# Max concurrent name resolutions per connection (forwarded RSLVs from many\n\
         \# clients share one proxy connection, so this is much higher than PROXY client_concurrency).\n"
     <> ("# resolver_concurrency = " <> tshow defaultNameResolverConcurrency)

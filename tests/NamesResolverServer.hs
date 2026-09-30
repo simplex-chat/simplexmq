@@ -61,7 +61,8 @@ testNamesConfig port =
     { resolverEndpoint = "http://127.0.0.1:" <> show port,
       resolverAuth = Nothing,
       resolverTimeoutMs = 1000,
-      resolverMaxResponseBytes = 65536
+      resolverMaxResponseBytes = 65536,
+      resolverGlobalConcurrency = 8
     }
 
 memCfg :: AServerConfig

@@ -85,9 +85,9 @@ data ResolverError
   | ResolverTimeout
   deriving (Show)
 
-newResolverEnv :: String -> Maybe RpcAuth -> Int -> Int -> IO ResolverEnv
-newResolverEnv baseUrl auth_ timeoutMs maxResponseBytes = do
-  manager <- HC.newManager tlsManagerSettings {managerConnCount = 10}
+newResolverEnv :: String -> Maybe RpcAuth -> Int -> Int -> Int -> IO ResolverEnv
+newResolverEnv baseUrl auth_ timeoutMs maxResponseBytes maxConcurrency = do
+  manager <- HC.newManager tlsManagerSettings {managerConnCount = maxConcurrency}
   pure
     ResolverEnv
       { manager,
