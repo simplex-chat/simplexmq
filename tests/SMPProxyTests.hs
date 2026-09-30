@@ -21,6 +21,7 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
@@ -65,6 +66,8 @@ smpProxyTests = do
       testProxyReconnectAfterRelayRestart
     xit "must drop a stuck relay session after forward timeouts" $ \_ ->
       testProxyForwardTimeoutStuckSession
+    xit "does not keep oversized forwarded command" $ \_ ->
+      testForwardOversizedNotKept
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -510,6 +513,19 @@ testProxyForwardTimeoutStuckSession =
     sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
     rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
     rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
+
+testForwardOversizedNotKept :: IO ()
+testForwardOversizedNotKept =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let proxyClientCfg = defaultSMPClientConfig {serverVRange = supportedProxyClientSMPRelayVRange, agreeSecret = True, proxyServer = True}
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) proxyClientCfg [] Nothing ts (\_ -> pure ())
+    (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+    let et = SMP.EncTransmission $ B.replicate smpBlockSize 'a'
+    runExceptT (forwardSMPTransmission c (SMP.CorrId "123456789012345678901234") currentClientSMPRelayVersion k et)
+      `shouldReturn` Left (PCETransportError TELargeMsg)
+    pClientSentCommandsCount c `shouldReturn` 0
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
