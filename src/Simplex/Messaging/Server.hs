@@ -1476,11 +1476,15 @@ client
     -- Run a slow command on a thread
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId cmdAction = do
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+      -- the forked thread releases the slot when the command completes, the caller only if the fork failed
+      mask $ \restore -> do
+        wait
+        forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") (restore cmd `finally` signal)
+          `onException` signal
       pure Nothing
       where
+        -- commands MUST be processed under a reasonable timeout or the client would halt
+        cmd = cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
         wait = do
           limit <- asks (concurrency . config)
           atomically $ do
