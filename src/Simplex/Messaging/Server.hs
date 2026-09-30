@@ -198,6 +198,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         : sigIntHandlerThread
         : map runServer transports
             <> expireMessagesThread_ cfg
+            <> expireClientsThread_ cfg
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
@@ -474,6 +475,27 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     expireMessagesThread_ :: ServerConfig s -> [M s ()]
     expireMessagesThread_ ServerConfig {messageExpiration = Just msgExp} = [expireMessagesThread msgExp]
     expireMessagesThread_ _ = []
+
+    expireClientsThread_ :: ServerConfig s -> [M s ()]
+    expireClientsThread_ ServerConfig {inactiveClientExpiration = Just expCfg} = [expireClientsThread expCfg]
+    expireClientsThread_ _ = []
+
+    expireClientsThread :: ExpirationConfig -> M s ()
+    expireClientsThread expCfg = do
+      labelMyThread "expireClients"
+      srv <- asks server
+      liftIO $ forever $ do
+        threadDelay' $ checkInterval expCfg * 1000000
+        old <- expireBeforeEpoch expCfg
+        getServerClients srv >>= mapM_ (expireClient srv old)
+      where
+        expireClient srv old c@Client {rcvActiveAt, sndActiveAt, closeTransport} = do
+          ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
+          when (systemSeconds ts < old) $ whenM (noSubscriptions srv c) closeTransport
+        noSubscriptions srv Client {clientId} =
+          not <$> anyM [hasSubs (subscribers srv), hasSubs (ntfSubscribers srv)]
+          where
+            hasSubs ServerSubscribers {subClients} = IS.member clientId <$> readTVarIO subClients
 
     expireMessagesThread :: ExpirationConfig -> M s ()
     expireMessagesThread ExpirationConfig {checkInterval, ttl} = do
@@ -1068,7 +1090,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
   ts <- liftIO getSystemTime
   nextClientId <- asks clientSeq
   clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
-  c <- liftIO $ newClient clientId q thParams ts
+  c <- liftIO $ newClient clientId q thParams ts (closeConnection $ connection h)
   runClientThreads c `finally` clientDisconnected c
   where
     runClientThreads :: Client s -> M s ()
@@ -1076,16 +1098,8 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
       s <- asks server
       ms <- asks msgStore
       whenM (liftIO $ insertServerClient c s) $ do
-        expCfg <- asks $ inactiveClientExpiration . config
         labelMyThread . B.unpack $ "client $" <> encode sessionId
-        raceAny_ $ [liftIO $ send h c, client s ms c, receive h ms c] <> disconnectThread_ c s expCfg
-    disconnectThread_ :: Client s -> Server s -> Maybe ExpirationConfig -> [M s ()]
-    disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
-    disconnectThread_ _ _ _ = []
-    noSubscriptions Client {clientId} s =
-      not <$> anyM [hasSubs (subscribers s), hasSubs (ntfSubscribers s)]
-      where
-        hasSubs ServerSubscribers {subClients} = IS.member clientId <$> readTVarIO subClients
+        raceAny_ [liftIO $ send h c, client s ms c, receive h ms c]
 
 controlPortAuth :: Handle -> Maybe BasicAuth -> Maybe BasicAuth -> TVar CPClientRole -> BasicAuth -> IO ()
 controlPortAuth h user admin role auth = do
