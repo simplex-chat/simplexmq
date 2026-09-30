@@ -756,6 +756,32 @@ testLateResponseCommandReleased =
     (_, _, [(_, STUnexpectedError _)]) <- atomically $ readTBQueue msgQ
     pure ()
 
+testProxyForwardTimeoutStuckSession :: IO ()
+testProxyForwardTimeoutStuckSession =
+  withSmpServerConfigOn (transport @TLS) proxyCfgForwardTimeout testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let srv = SMPServer testHost testPort testKeyHash
+        vr = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion
+    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ())
+    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive srv (Just "correct")
+    sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
+    rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
+    rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
+
+testForwardOversizedNotKept :: IO ()
+testForwardOversizedNotKept =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let proxyClientCfg = defaultSMPClientConfig {serverVRange = supportedProxyClientSMPRelayVRange, agreeSecret = True, proxyServer = True}
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) proxyClientCfg [] Nothing ts (\_ -> pure ())
+    (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+    let et = SMP.EncTransmission $ B.replicate smpBlockSize 'a'
+    runExceptT (forwardSMPTransmission c (SMP.CorrId "123456789012345678901234") currentClientSMPRelayVersion k et)
+      `shouldReturn` Left (PCETransportError TELargeMsg)
+    pClientSentCommandsCount c `shouldReturn` 0
+
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
 -- rethrows async exceptions. If the connecting thread is cancelled mid-connect, putTMVar is
