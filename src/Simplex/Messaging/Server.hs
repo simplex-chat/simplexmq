@@ -2154,22 +2154,26 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked (RSLV).
-          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
-            -- rejectOrVerify filters allowed commands, no need to repeat it here.
-            Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
-                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+          let forwarded =
+                lift (rejectOrVerify clntThAuth t') >>= \case
+                  -- rejectOrVerify filters allowed commands, no need to repeat it here.
+                  Left r -> pure r
+                  Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                    Cmd SResolver (RSLV d) ->
+                      lift $
+                        rslvNamesEnv >>= \case
+                          Nothing -> pure (corrId', entId', ERR (NAME NO_RESOLVER))
+                          Just nenv -> (corrId',entId',) <$> resolveNameMsg (thVersion clntTHParams) nenv d
+                    -- INTERNAL because processCommand never returns Nothing for sender commands;
+                    -- `fst` drops the empty message only returned for SUB.
+                    _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+              -- commands of all clients of a proxy share its connection, so they are processed concurrently
+              concurrency = case t' of
+                Right (_, _, (_, _, Cmd SResolver _)) -> serverResolverConcurrency
+                _ -> serverClientConcurrency
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_
+          lift $ forkCmd concurrency corrId NoEntity $ either ERR id <$> runExceptT (forwarded >>= encodeResp)
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
