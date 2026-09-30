@@ -136,8 +136,9 @@ httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} 
           }
   result <- E.try $ withResponse req manager $ \res -> do
     let status = HT.statusCode (responseStatus res)
+    -- http-client closes the connection unless the body is read to the end
     if status >= 400
-      then pure (Left (HttpStatusErr status))
+      then Left (HttpStatusErr status) <$ brReadSome (responseBody res) (maxResponseBytes + 1)
       else do
         bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
         pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right bs
