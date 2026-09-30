@@ -51,6 +51,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Names (NamesConfig (..))
 import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
@@ -108,22 +109,7 @@ rslvTests = do
     it "a record naming a different name is rejected" testRslvWrongName
   describe "RSLV resource use" $ do
     it "one connection has at most resolver_concurrency lookups in flight" testRslvConnectionCap
-    xit "one connection must not fan out to many concurrent resolver requests" testRslvFanOut
-
-testRslvFanOut :: IO ()
-testRslvFanOut =
-  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
-    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ const $
-      testSMPClient @TLS $ \(h@THandle {params} :: THandleSMP TLS 'TClient) -> do
-        let k = 64 :: Int
-            globalCap = 8 :: Int
-        forM_ [1 .. k] $ \i -> do
-          let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId (B.pack $ "fan" <> show i), NoEntity, Cmd SResolver (RSLV (NQDomain (domain "alice.simplex"))))
-          [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
-          pure ()
-        threadDelay 800000
-        inFlight <- length <$> resolvePaths reqs
-        inFlight `shouldSatisfy` (<= globalCap)
+    it "all connections have at most resolver_global_concurrency lookups in flight" testRslvFanOut
 
 -- | /v2/resolve answers 200, 400 or 502, so a 404 is a resolver that predates
 -- the route, not a name that does not exist.
@@ -310,6 +296,19 @@ testRslvConnectionCap =
         recvResponses h 16 `shouldReturn` replicate 16 (Right (ERR (NAME (RESOLVER "timeout"))))
   where
     connCap = 4
+
+testRslvFanOut :: IO ()
+testRslvFanOut =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ const $
+      testSMPClient @TLS $ \h1 -> testSMPClient @TLS $ \h2 -> do
+        sendRslvs h1 "a" 32
+        sendRslvs h2 "b" 32
+        threadDelay 800000
+        length <$> resolvePaths reqs `shouldReturn` resolverGlobalConcurrency (NRS.testNamesConfig port)
+        let timedOut = replicate 32 (Right (ERR (NAME (RESOLVER "timeout"))))
+        recvResponses h1 32 `shouldReturn` timedOut
+        recvResponses h2 32 `shouldReturn` timedOut
 
 -- | One RSLV per block, so no batch limit applies.
 sendRslvs :: THandleSMP TLS 'TClient -> String -> Int -> IO ()
