@@ -98,8 +98,8 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError, transportHost')
-import Simplex.Messaging.Client.Agent (AgentLeakStats (..), OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getAgentLeakStats, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, closeTimedOutClient, forwardSMPTransmission, smpProxyError, temporaryClientError, transportHost')
+import Simplex.Messaging.Client.Agent (AgentLeakStats (..), OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getAgentLeakStats, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1583,6 +1583,9 @@ client
                   _ -> do
                     logWarn $ "Error forwarding to relay: " <> decodeLatin1 (strEncode $ transportHost' smp) <> " own=" <> tshow own <> " " <> tshow e
                     inc own pErrorsOther
+                    case e of
+                      PCEResponseTimeout -> liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
+                      _ -> pure ()
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
