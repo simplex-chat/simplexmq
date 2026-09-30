@@ -1454,25 +1454,35 @@ client
                         Nothing -> ERR $ transportErr TENoServerAuth
                       _ -> ERR $ transportErr TEVersion
       PFWD fwdV pubKey encBlock -> do
-        ProxyAgent {smpAgent = a} <- asks proxyAgent
+        ProxyAgent {smpAgent = a, relayForwards} <- asks proxyAgent
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
         liftIO (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
-            forkProxiedCmd $ do
-              liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ inc own pSuccesses
-                Left e -> ERR (smpProxyError e) <$ case e of
-                  PCEProtocolError {} -> inc own pSuccesses
-                  PCEResponseTimeout -> do
-                    inc own pErrorsOther
-                    liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
-                  _ -> inc own pErrorsOther
+            maxFwds <- asks $ proxyRelayConcurrency . config
+            -- reserved on the forked thread, so that the slot is released when the forward completes
+            forkProxiedCmd $
+              bracket (atomically $ reserve maxFwds relayForwards) (\r -> when r $ atomically $ release relayForwards) $ \case
+                -- the relay is not keeping up, the client retries TIMEOUT later
+                False -> ERR (smpProxyError PCEResponseTimeout) <$ inc own pErrorsOther
+                True ->
+                  liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers) >>= \case
+                    Right r -> PRES r <$ inc own pSuccesses
+                    Left e -> ERR (smpProxyError e) <$ case e of
+                      PCEProtocolError {} -> inc own pSuccesses
+                      PCEResponseTimeout -> do
+                        inc own pErrorsOther
+                        liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
+                      _ -> inc own pErrorsOther
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
+        reserve maxFwds v = stateTVar v $ \fwds -> case M.lookup sessId fwds of
+          Just n | n >= maxFwds -> (False, fwds)
+          n_ -> (True, M.insert sessId (maybe 1 (+ 1) n_) fwds)
+        release v = modifyTVar' v $ M.update (\n -> if n > 1 then Just (n - 1) else Nothing) sessId
     -- Run a slow command on a thread
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId cmdAction = do
