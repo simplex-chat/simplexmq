@@ -14,11 +14,13 @@ import Control.Monad
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
+import Data.ByteString.Unsafe (unsafeUseAsCString)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock.System (SystemTime, getSystemTime)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import qualified Data.X509.File as XF
+import Foreign.Ptr (plusPtr)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -40,6 +42,8 @@ batchingTests = do
     it "should batch subscription responses with message" testBatchSubResponses
     it "should break on message that does not fit" testClientBatchWithMessage
     it "should break on large message" testClientBatchWithLargeMessage
+  describe "tDecodeServer" $
+    it "should copy IDs out of received block" testDecodeServerCopiesIds
 
 testBatchSubscriptions :: IO ()
 testBatchSubscriptions = do
@@ -166,6 +170,26 @@ testClientBatchWithLargeMessage = do
   (length rs1', length rs2') `shouldBe` (75, 135)
   all lenOk [s1', s2'] `shouldBe` True
 
+testDecodeServerCopiesIds :: IO ()
+testDecodeServerCopiesIds = do
+  sessId <- atomically . C.randomBytes 32 =<< C.newRandom
+  subs <- replicateM 2 $ randomSUB sessId
+  let thParams = testTHandleParams sessId
+  [TBTransmissions s 2 _] <- pure $ batchTransmissions thParams $ L.fromList subs
+  forM_ (tParse thParams s) $ \t -> do
+    let (corrId, entId, _) = tDecodeClient @SMPVersion @ErrorType @Cmd thParams t
+    Right (_, _, (corrId', entId', _)) <- pure $ tDecodeServer @SMPVersion @ErrorType @Cmd (testTHandleParams sessId) t
+    (corrId', entId') `shouldBe` (corrId, entId)
+    sharesBuffer s (bs corrId) `shouldReturn` True
+    sharesBuffer s (unEntityId entId) `shouldReturn` True
+    sharesBuffer s (bs corrId') `shouldReturn` False
+    sharesBuffer s (unEntityId entId') `shouldReturn` False
+
+sharesBuffer :: ByteString -> ByteString -> IO Bool
+sharesBuffer block s =
+  unsafeUseAsCString block $ \blockPtr -> unsafeUseAsCString s $ \ptr ->
+    pure $ ptr >= blockPtr && ptr < blockPtr `plusPtr` B.length block
+
 testClientStub :: IO (ProtocolClient SMPVersion ErrorType BrokerMsg)
 testClientStub = do
   g <- C.newRandom
@@ -237,7 +261,7 @@ randomSEND sessId len = do
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
   pure $ (,tToSend) <$> authTransmission thAuth_ False (Just spKey) nonce tForAuth
 
-testTHandleParams :: ByteString -> THandleParams SMPVersion 'TClient
+testTHandleParams :: ByteString -> THandleParams SMPVersion p
 testTHandleParams sessionId =
   THandleParams
     { sessionId,
