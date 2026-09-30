@@ -1381,17 +1381,19 @@ sendProtocolCommand c nm = sendProtocolCommand_ c nm Nothing Nothing
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ, sentCommands}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
   where
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t_ r = case t_ of
-      Left e -> pure . Left $ PCETransportError e
+    sendRecv t_ r@Request {corrId} = case t_ of
+      Left e -> notSent e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> response <$> sendBlock c [r] (Just r, s) (getResponse c nm tOut r)
         where
           s = tEncodeBatch1 serviceAuth t
+      where
+        notSent e = Left (PCETransportError e) <$ atomically (TM.delete corrId sentCommands)
 
 sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
 sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses = do
@@ -1426,6 +1428,7 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, se
       Just r' -> writeTVar timeoutErrorCount 0 $> r'
       Nothing -> do
         modifyTVar' timeoutErrorCount (+ 1)
+        -- a late response is delivered to msgQ, without msgQ it is only logged
         when (isNothing msgQ) $ TM.delete corrId sentCommands
         pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
