@@ -35,6 +35,7 @@ module Simplex.Messaging.Client
     ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
+    pClientSentCommandsCount,
     protocolClientServer,
     protocolClientServer',
     transportHost',
@@ -150,6 +151,7 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -749,6 +751,9 @@ unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
 closeProtocolClient = mapM_ (deRefWeak >=> mapM_ killThread) . action
 {-# INLINE closeProtocolClient #-}
+
+pClientSentCommandsCount :: ProtocolClient v err msg -> IO Int
+pClientSentCommandsCount ProtocolClient {client_ = PClient {sentCommands}} = M.size <$> readTVarIO sentCommands
 
 -- | SMP client error type.
 data ProtocolClientError err
