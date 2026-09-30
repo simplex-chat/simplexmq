@@ -121,6 +121,15 @@ standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
 ```
 
+Tests and lint run from `scripts/resolver/service`:
+
+```sh
+uv run pytest
+uv run ruff check .
+```
+
+Dependencies are locked in `uv.lock`; the Docker image installs exactly those.
+
 Three routes, versioned separately from the protocol so each only changes when
 its own shape does:
 

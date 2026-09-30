@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ---------- builder ----------
-# Use the official uv image (Astral) on top of a slim Python base.
-# uv resolves and installs the lockfile-free pyproject.toml in seconds and
-# produces a portable .venv we can copy into the runtime stage.
+# The official uv image (Astral) on top of a slim Python base installs the
+# locked dependencies into a portable .venv for the runtime stage.
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 ENV UV_LINK_MODE=copy \
@@ -12,10 +11,10 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 
-# Install deps first (separate layer) — script edits won't bust this cache.
-COPY pyproject.toml ./
+# Dependencies first (separate layer), exactly as locked: script edits don't bust this cache.
+COPY pyproject.toml uv.lock .python-version ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-dev --no-install-project
+    uv sync --frozen --no-dev --no-install-project
 
 # Script is added after the dep layer for cache friendliness.
 COPY snrc-resolve.py ./

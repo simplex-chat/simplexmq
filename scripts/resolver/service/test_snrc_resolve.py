@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for snrc-resolve helpers.
 
-Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
+Run with `uv run pytest` from scripts/resolver/service.
 """
 
 import contextlib
@@ -1523,7 +1523,3 @@ class WorkerProcessesTests(unittest.TestCase):
         os.kill(self.workers[0], signal.SIGKILL)
         self.assertEqual(self.service.wait(timeout=5), 1)
         self.assertTrue(self._gone(self.workers[1]))
-
-
-if __name__ == "__main__":
-    unittest.main()
