@@ -20,12 +20,13 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
-import Control.Monad (replicateM_)
+import Control.Monad (forM_, replicateM_)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
@@ -51,6 +52,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (pattern IKPQOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -135,6 +137,7 @@ storeTests = do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs
+      it "should keep only the newest skipped message keys" testGetSkippedMsgKeys
       describe "Work items" $ do
         it "should getPendingQueueMsg" testGetPendingQueueMsg
         it "should getPendingServerCommand" testGetPendingServerCommand
@@ -598,6 +601,27 @@ testCreateRcvAndSndMsgs =
       testCreateRcvMsg_ db 2 "rcv_hash_2" connId rq $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
       testCreateSndMsg_ db "snd_hash_1" connId sq $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId sq $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
+
+testGetSkippedMsgKeys :: DBStore -> Expectation
+testGetSkippedMsgKeys st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right connId' <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    createSkippedKeys db connId'
+    createSkippedKeys db connId
+    M.map M.keys <$> getSkippedMsgKeys db connId 4
+      `shouldReturn` M.singleton (C.Key "header_key") [1, 2, 3, 4]
+    getMsgNs db connId `shouldReturn` [1 .. 4]
+    getMsgNs db connId' `shouldReturn` [1 .. 10]
+  where
+    createSkippedKeys :: DB.Connection -> ConnId -> IO ()
+    createSkippedKeys db connId = do
+      DB.execute db "INSERT INTO ratchets (conn_id) VALUES (?)" (Only connId)
+      forM_ ([10, 9 .. 1] :: [Int]) $ \msgN ->
+        DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, "header_key" :: ByteString, msgN, smpEncode ("key" :: ByteString, "iv" :: ByteString))
+    getMsgNs :: DB.Connection -> ConnId -> IO [Int]
+    getMsgNs db connId = map fromOnly <$> DB.query db "SELECT msg_n FROM skipped_messages WHERE conn_id = ? ORDER BY msg_n" (Only connId)
 
 testCloseReopenStore :: IO ()
 testCloseReopenStore = do
