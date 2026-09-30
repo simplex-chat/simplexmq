@@ -135,6 +135,7 @@ storeTests = do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs
+      describe "deleteRatchetKeyHashesExpired" testDeleteRatchetKeyHashesExpired
       describe "Work items" $ do
         it "should getPendingQueueMsg" testGetPendingQueueMsg
         it "should getPendingServerCommand" testGetPendingServerCommand
@@ -598,6 +599,18 @@ testCreateRcvAndSndMsgs =
       testCreateRcvMsg_ db 2 "rcv_hash_2" connId rq $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
       testCreateSndMsg_ db "snd_hash_1" connId sq $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId sq $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
+
+testDeleteRatchetKeyHashesExpired :: SpecWith DBStore
+testDeleteRatchetKeyHashesExpired =
+  it "should delete expired ratchet key hashes of contact addresses only" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right duplexConnId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right addressConnId <- createNewConn db g cData1 {connId = ""} SCMContact
+    addProcessedRatchetKeyHash db duplexConnId "hash"
+    addProcessedRatchetKeyHash db addressConnId "hash"
+    deleteRatchetKeyHashesExpired db 0 100
+    checkRatchetKeyHashExists db duplexConnId "hash" `shouldReturn` True
+    checkRatchetKeyHashExists db addressConnId "hash" `shouldReturn` False
 
 testCloseReopenStore :: IO ()
 testCloseReopenStore = do
