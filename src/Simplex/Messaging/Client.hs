@@ -515,7 +515,8 @@ defaultSMPClientConfig =
 data Request err msg = Request
   { corrId :: CorrId,
     entityId :: EntityId,
-    command :: ProtoCommand msg,
+    -- only kept to report a late response to msgQ, a forwarded command holds a whole block
+    command :: Maybe (ProtoCommand msg),
     pending :: TVar Bool,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
@@ -710,7 +711,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
                     (pure False)
               if wasPending
                 then pure Nothing
-                else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
+                else sendMsg $ case command of
+                  Just cmd | entityId == entId -> STResponse cmd clientResp
+                  _ -> STUnexpectedError unexpected
       where
         unexpected = unexpectedResponse respOrErr
         clientResp = case respOrErr of
@@ -1408,7 +1411,7 @@ mkTransmission :: Protocol v err msg => ProtocolClient v err msg ->  ClientComma
 mkTransmission c = mkTransmission_ c Nothing
 
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
+mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands, msgQ}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ nonce tForAuth
@@ -1423,7 +1426,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
             Request
               { corrId,
                 entityId,
-                command,
+                command = command <$ msgQ,
                 pending,
                 responseVar
               }
