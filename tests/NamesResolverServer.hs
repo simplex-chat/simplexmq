@@ -9,6 +9,7 @@
 module NamesResolverServer
   ( withResolverServer,
     withResolverServerDelayed,
+    withResolverServerConns,
     resolveResp,
     testNamesConfig,
     memCfg,
@@ -36,9 +37,18 @@ withResolverServer :: ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Tex
 withResolverServer = withResolverServerDelayed 0
 
 withResolverServerDelayed :: Int -> ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Text]] -> IO a) -> IO a
-withResolverServerDelayed delayMs handler action = do
+withResolverServerDelayed delayMs handler action = withResolverServer_ delayMs handler $ \port reqs _ -> action port reqs
+
+-- | Also counts the TCP connections the resolver accepted.
+withResolverServerConns :: ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Text]] -> IORef Int -> IO a) -> IO a
+withResolverServerConns = withResolverServer_ 0
+
+withResolverServer_ :: Int -> ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Text]] -> IORef Int -> IO a) -> IO a
+withResolverServer_ delayMs handler action = do
   reqs <- newIORef []
-  Warp.withApplication (pure (app reqs)) $ \port -> action port reqs
+  conns <- newIORef 0
+  let settings = Warp.setOnOpen (\_ -> True <$ atomicModifyIORef' conns (\n -> (n + 1, ()))) Warp.defaultSettings
+  Warp.withApplicationSettings settings (pure (app reqs)) $ \port -> action port reqs conns
   where
     app :: IORef [[Text]] -> Application
     app reqs req send = do
@@ -61,7 +71,8 @@ testNamesConfig port =
     { resolverEndpoint = "http://127.0.0.1:" <> show port,
       resolverAuth = Nothing,
       resolverTimeoutMs = 1000,
-      resolverMaxResponseBytes = 65536
+      resolverMaxResponseBytes = 65536,
+      resolverGlobalConcurrency = 8
     }
 
 memCfg :: AServerConfig
