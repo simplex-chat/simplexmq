@@ -50,6 +50,7 @@ import Data.List.NonEmpty (NonEmpty (..), fromList)
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import qualified Data.X509.Validation as XV
+import GHC.Profiling (requestHeapCensus)
 import GHC.Stats
 import qualified Network.Socket as N
 import NetLag (LagTLS, clearLag, setDropEvery, setDropSnd, setLag)
@@ -160,6 +161,12 @@ drainAll h = timeout 40000 (tGet1 h) >>= maybe (pure ()) (const $ drainAll h)
 
 liveBytesMiB :: IO Double
 liveBytesMiB = do
+  -- a major GC schedules the finalizers of everything that died since the last one (crypton keys
+  -- are finalized ScrubbedBytes); let them run, or their weak pointers and closures count as live
+  performMajorGC
+  threadDelay 200000
+  -- with +RTS -hT this makes the census coincide with the measurement; ignored otherwise
+  requestHeapCensus
   performMajorGC
   s <- getRTSStats
   pure $ fromIntegral (gcdetails_live_bytes (gc s)) / (1024 * 1024)
