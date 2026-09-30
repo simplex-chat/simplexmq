@@ -77,6 +77,7 @@ module Simplex.Messaging.Transport
     ALPN,
     connectTLS,
     closeTLS,
+    recvTLS,
     defaultSupportedParams,
     defaultSupportedParamsHTTPS,
     withTlsUnique,
@@ -375,6 +376,11 @@ withTlsUnique cxt f =
       STServer -> T.getPeerFinished
       STClient -> T.getFinished
 
+-- tls stores the receive record state lazily, so until the next record arrives it retains the last one (up to 16KB).
+-- Reading the negotiated cipher forces it.
+recvTLS :: T.Context -> IO ByteString
+recvTLS cxt = T.recvData cxt <* T.contextGetInformation cxt
+
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
@@ -437,7 +443,7 @@ instance Transport TLS where
   -- this function may return less than requested number of bytes
   cGet :: TLS p -> Int -> IO ByteString
   cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
-    getBuffered tlsBuffer n t_ (T.recvData tlsContext)
+    getBuffered tlsBuffer n t_ (recvTLS tlsContext)
 
   cPut :: TLS p -> ByteString -> IO ()
   cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} =
@@ -445,7 +451,7 @@ instance Transport TLS where
 
   getLn :: TLS p -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
-    getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
+    getLnBuffered tlsBuffer (recvTLS tlsContext) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
     where
       handleTlsEOF = \case
         T.PostHandshake T.Error_EOF -> E.throwIO TEBadBlock
