@@ -2411,7 +2411,9 @@ tDecodeServer THandleParams {sessionId, thVersion = v, implySessId} = \case
           where
             cmdOrErr = parseProtocol @v @err @cmd v command >>= checkCredentials tAuth entityId
             t :: a -> (CorrId, EntityId, a)
-            t = (corrId,entityId,)
+            -- IDs are slices of the ~16 KB received block and are kept as subscription keys,
+            -- so without a copy one live key retains the whole block
+            t = (CorrId $ B.copy $ bs corrId,EntityId $ B.copy $ unEntityId entityId,)
         Left _ -> tError corrId PEBlock
     | otherwise -> tError corrId PESession
   Left _ -> tError "" PEBlock
