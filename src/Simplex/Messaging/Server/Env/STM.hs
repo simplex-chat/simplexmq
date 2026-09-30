@@ -410,16 +410,14 @@ getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO (subKey entId) cs
 {-# INLINE getSubscribedClient #-}
 
 -- insert subscribed and current client, return previously subscribed client if it is different
-upsertSubscribedClient :: EntityId -> Client s -> SubscribedClients s -> STM (Maybe (Client s))
-upsertSubscribedClient entId c (SubscribedClients cs) =
+upsertSubscribedClient :: SubKey -> Client s -> SubscribedClients s -> STM (Maybe (Client s))
+upsertSubscribedClient k c (SubscribedClients cs) =
   TM.lookup k cs >>= \case
     Nothing -> Nothing <$ TM.insertM k (newTVar (Just c)) cs
     Just cv ->
       readTVar cv >>= \case
         Just c' | sameClientId c c' -> pure Nothing
         c_ -> c_ <$ writeTVar cv (Just c)
-  where
-    k = subKey entId
 
 lookupSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
 lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup (subKey entId) cs $>>= readTVar
@@ -451,7 +449,7 @@ sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 {-# INLINE sameClient #-}
 
 data ClientSub
-  = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
+  = CSClient QueueId SubKey (Maybe ServiceId) (Maybe ServiceId) -- includes the key in client subscriptions, previous and new associated service IDs
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
   | CSService ServiceId (Int64, IdsHash) -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
