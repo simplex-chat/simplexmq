@@ -83,6 +83,7 @@ import Data.Word (Word64)
 import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Server.NtfStore (MsgNtf (..), NtfLogRecord (..))
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Environment (getExecutablePath)
 import System.IO (Handle, stdout)
 import System.Process (CreateProcess (..), StdStream (..), callProcess, createProcess, proc, waitForProcess)
@@ -347,11 +348,17 @@ runNtfLoop n = postgressBracket benchDBConnectInfo $ do
 
 -- Its own database, user and port, so a bench run cannot collide with a concurrent test-suite run,
 -- which binds testPort and drops and recreates test_server_db and test_server_user.
+-- BENCHID (default 0) offsets the ports and names the database, so concurrent runs do not collide;
+-- child processes inherit it.
+benchId :: Int
+benchId = unsafePerformIO $ fromMaybe 0 . (>>= readMaybe) <$> lookupEnv "BENCHID"
+{-# NOINLINE benchId #-}
+
 benchDBConnectInfo :: ConnectInfo
-benchDBConnectInfo = testServerDBConnectInfo {connectUser = "mem_bench_user", connectDatabase = "mem_bench_db"}
+benchDBConnectInfo = testServerDBConnectInfo {connectUser = "mem_bench_user" <> show benchId, connectDatabase = "mem_bench_db" <> show benchId}
 
 benchPort :: ServiceName
-benchPort = "15001"
+benchPort = show $ 15001 + 100 * benchId
 
 benchPgCfg :: AServerConfig
 benchPgCfg = case cfgMS (ASType SQSPostgres SMSPostgres) of
@@ -428,7 +435,7 @@ runCpSave g = benchClient $ \h -> do
   putStrLn $ "cpsave: NEW after save: " <> maybe "no response in 10s (DB access blocked)" (const "responded") res
 
 benchCpPort :: ServiceName
-benchCpPort = "15010"
+benchCpPort = show $ 15010 + 100 * benchId
 
 -- The IDs are a tag byte followed by i in 23 big-endian bytes, the same bytes the SQL builds with
 -- lpad(to_hex(i), 46, '0'), so file entries and rows match without passing IDs between them.
