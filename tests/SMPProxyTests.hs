@@ -66,7 +66,7 @@ smpProxyTests = do
       testProxyReconnectAfterRelayRestart
     xit "must drop a stuck relay session after forward timeouts" $ \_ ->
       testProxyForwardTimeoutStuckSession
-    xit "does not keep oversized forwarded command" $ \_ ->
+    it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
