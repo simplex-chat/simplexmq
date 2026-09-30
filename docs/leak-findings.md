@@ -8,22 +8,24 @@ Twelve findings: three proxy-path memory leaks (Leak 1-3), two `forkClient` bugs
 unauthenticated resolver fan-out (Bug 5), five PostgreSQL-backend costs (Bug 6-10), and a stuck proxy
 session (Bug 11). The TLS/TCP stack is clean (last two sections).
 
+Memory at production scale, with measurements after these fixes: `smp-server-memory.md`.
+
 ## Overview
 
 | # | Issue | Reachable | Backend | Evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Leak 1 | Forwarded commands not removed on timeout | Client, pre-auth (PRXY) | all | measured | present |
+| Leak 1 | Forwarded commands not removed on timeout | Client, pre-auth (PRXY) | all | measured | fixed, `sh/fix-proxy-leak` |
 | Leak 2 | Failed relay connects not cleared | Client, pre-auth (PRXY) | all | measured | present |
 | Leak 3 | Proxy relay queue has no reader | Client, pre-auth (PRXY) | all | measured | fixed, #1839 |
-| Bug 3 | Proxy concurrency limit does nothing | Client, pre-auth (PRXY) | all | measured | present |
+| Bug 3 | Proxy concurrency limit does nothing | Client, pre-auth (PRXY) | all | measured | fixed, `sh/fix-rslv-fanout` |
 | Bug 4 | Stale `endThreads` entry on fast finish | Client, limited window | all | isolation only | present |
-| Bug 5 | RSLV resolver fan-out | Client, if `[NAMES]` on | all | measured | present |
+| Bug 5 | RSLV resolver fan-out | Client, if `[NAMES]` on | all | measured | fixed, `sh/fix-rslv-fanout` |
 | Bug 6 | SEND is three DB transactions | authenticated SEND | postgres | code review | present |
 | Bug 7 | Per-transmission verify and DB lookup | Client, pre-auth | postgres | code review | present |
 | Bug 8 | Service handshake grows `services` table | Client, pre-auth | postgres | code review | present |
 | Bug 9 | Prometheus scrape scans everything | internal, periodic | postgres | code review | present |
 | Bug 10 | Subscription churn serialized | authenticated SUB | all | code review | present |
-| Bug 11 | Proxy never drops a stuck relay session | Client, pre-auth (PRXY) | all | reproduced | present |
+| Bug 11 | Proxy never drops a stuck relay session | Client, pre-auth (PRXY) | all | reproduced | fixed, `sh/fix-proxy-leak` |
 
 Leak 1, Leak 2, Leak 3, Bug 3, and Bug 11 share one entry point. `PRXY` is unauthenticated unless
 `newQueueBasicAuth` is set (`Server.hs:1534`) and it names an arbitrary destination, so a client can
