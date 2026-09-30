@@ -64,7 +64,7 @@ smpProxyTests = do
       testProxyRecoversWithoutDisconnect
     it "reconnects to relay after sender disconnects mid-connection" $ \_ ->
       testProxyReconnectAfterRelayRestart
-    xit "must drop a stuck relay session after forward timeouts" $ \_ ->
+    it "must drop a stuck relay session after forward timeouts" $ \_ ->
       testProxyForwardTimeoutStuckSession
     it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept

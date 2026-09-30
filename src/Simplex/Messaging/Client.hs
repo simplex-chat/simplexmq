@@ -35,6 +35,7 @@ module Simplex.Messaging.Client
     ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
+    closeTimedOutClient,
     pClientSentCommandsCount,
     protocolClientServer,
     protocolClientServer',
@@ -660,10 +661,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               responseErr = atomically . putTMVar responseVar . Left . PCETransportError
 
     receive :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
-    receive ProtocolClient {client_ = PClient {rcvQ, lastReceived, timeoutErrorCount}} h = forever $ do
+    receive ProtocolClient {client_ = PClient {rcvQ, lastReceived}} h = forever $ do
       tGetClient h >>= atomically . writeTBQueue rcvQ
       getCurrentTime >>= atomically . writeTVar lastReceived
-      atomically $ writeTVar timeoutErrorCount 0
 
     monitor :: ProtocolClient v err msg -> IO ()
     monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount}} = loop smpPingInterval
@@ -751,6 +751,12 @@ unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
 closeProtocolClient = mapM_ (deRefWeak >=> mapM_ killThread) . action
 {-# INLINE closeProtocolClient #-}
+
+-- | Disconnects client when maxCnt commands in a row timed out, 0 to disable.
+closeTimedOutClient :: Int -> ProtocolClient v err msg -> IO ()
+closeTimedOutClient maxCnt c@ProtocolClient {client_ = PClient {timeoutErrorCount}} = do
+  cnt <- readTVarIO timeoutErrorCount
+  when (maxCnt > 0 && cnt >= maxCnt) $ closeProtocolClient c
 
 pClientSentCommandsCount :: ProtocolClient v err msg -> IO Int
 pClientSentCommandsCount ProtocolClient {client_ = PClient {sentCommands}} = M.size <$> readTVarIO sentCommands

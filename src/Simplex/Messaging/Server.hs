@@ -98,8 +98,8 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
-import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, closeTimedOutClient, forwardSMPTransmission, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1465,6 +1465,9 @@ client
                 Right r -> PRES r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
                   PCEProtocolError {} -> inc own pSuccesses
+                  PCEResponseTimeout -> do
+                    inc own pErrorsOther
+                    liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
                   _ -> inc own pErrorsOther
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
