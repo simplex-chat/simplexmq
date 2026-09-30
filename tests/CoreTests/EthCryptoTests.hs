@@ -235,17 +235,9 @@ bip32Tests g = do
     isLeft (B32.masterKey (BA.replicate 65 1)) `shouldBe` True
   it "renders a path" $
     B32.renderPath [B32.hardened 44, B32.hardened 60, B32.hardened 0, 0, 0] `shouldBe` "m/44'/60'/0'/0/0"
-  it "parses a wallet master back from its storage form" $
-    (xkHex . B32.walletMasterKey <$> B32.parseWalletMaster (B39.unEntropy canonicalEntropy) (B32.masterBytes canonicalMaster))
-      `shouldBe` Right (xkHex $ B32.walletMasterKey canonicalMaster)
-  it "rejects a stored master the entropy does not derive" $ do
-    let stored = B32.masterBytes canonicalMaster
-    isLeft (B32.parseWalletMaster (B39.unEntropy canonicalEntropy) (BA.xor stored (BA.replicate 64 1 :: BA.ScrubbedBytes))) `shouldBe` True
-    isLeft (B32.parseWalletMaster (B39.unEntropy canonicalEntropy) (BA.take 63 stored)) `shouldBe` True
-    isLeft (B32.parseWalletMaster (BA.replicate 17 0) stored) `shouldBe` True
 
-canonicalMaster :: B32.WalletMaster
-canonicalMaster = right $ B32.mkWalletMaster canonicalEntropy
+canonicalMaster :: B32.ExtendedKey
+canonicalMaster = right $ B32.masterKey (B39.entropySeed canonicalEntropy "")
 
 derivationTests :: TVar ChaChaDRG -> Spec
 derivationTests g = do
@@ -259,8 +251,8 @@ derivationTests g = do
     mapM addrAt [0 .. 4] >>= (`shouldSatisfy` \as -> length as == length (nub as))
   it "derives an account key together with its address" $ do
     let path = bip44Path Ethereum $ account 0
-    (xk, a) <- right <$> deriveAddress g (B32.walletMasterKey canonicalMaster) path
-    xk' <- right <$> B32.derivePath g (B32.walletMasterKey canonicalMaster) path
+    (xk, a) <- right <$> deriveAddress g canonicalMaster path
+    xk' <- right <$> B32.derivePath g canonicalMaster path
     xkHex xk `shouldBe` xkHex xk'
     addressFromPrivateKey g (B32.xkKey xk) `shouldReturn` a
   it "renders the Ethereum path of an account" $
@@ -271,7 +263,7 @@ derivationTests g = do
   where
     seed = B39.entropySeed canonicalEntropy ""
     account = right . mkAccountIndex
-    addrAt i = snd . right <$> deriveAddress g (B32.walletMasterKey canonicalMaster) (bip44Path Ethereum $ account i)
+    addrAt i = snd . right <$> deriveAddress g canonicalMaster (bip44Path Ethereum $ account i)
 
 eip55Tests :: Spec
 eip55Tests = do
