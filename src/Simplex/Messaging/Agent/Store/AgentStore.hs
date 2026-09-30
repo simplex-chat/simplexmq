@@ -165,6 +165,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createRatchet,
     deleteRatchet,
     getRatchet,
+    getRatchetVerifyCodes,
+    ratchetVerifyCodes,
     getRatchetForUpdate,
     getSkippedMsgKeys,
     updateRatchet,
@@ -213,6 +215,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     -- Rcv files
     createRcvFile,
     createRcvFileRedirect,
+    startPreparedRcvFile,
     lockRcvFileForUpdate,
     getRcvFile,
     getRcvFileByEntityId,
@@ -234,6 +237,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getRcvFilesExpired,
     -- Snd files
     createSndFile,
+    startPreparedSndFile,
     lockSndFileForUpdate,
     getSndFile,
     getSndFileByEntityId,
@@ -291,6 +295,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortBy)
@@ -1474,9 +1479,11 @@ createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetPa
     db
     [sql|
       INSERT INTO ratchets
-        (conn_id, ratchet_state, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?)
+        (conn_id, ratchet_state, rc_verify_code_ad, rc_verify_code_pq, x3dh_pub_key_1, x3dh_pub_key_2, pq_pub_kem) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
         ratchet_state = EXCLUDED.ratchet_state,
+        rc_verify_code_ad = EXCLUDED.rc_verify_code_ad,
+        rc_verify_code_pq = EXCLUDED.rc_verify_code_pq,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = EXCLUDED.x3dh_pub_key_1,
@@ -1484,7 +1491,13 @@ createSndRatchet db connId ratchetState (CR.AE2ERatchetParams s (CR.E2ERatchetPa
         pq_priv_kem = NULL,
         pq_pub_kem = EXCLUDED.pq_pub_kem
     |]
-    (connId, ratchetState, x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem)
+    ((connId, ratchetState) :. verifyCodesRow (ratchetVerifyCodes ratchetState) :. (x3dhPubKey1, x3dhPubKey2, CR.ARKP s <$> pqPubKem))
+
+ratchetVerifyCodes :: RatchetX448 -> ConnVerifyCodes
+ratchetVerifyCodes CR.Ratchet {rcAD, rcVCPQ} = ConnVerifyCodes {codeAD = C.sha256Hash $ unStr rcAD, codePQ = unStr <$> rcVCPQ}
+
+verifyCodesRow :: ConnVerifyCodes -> (Binary ByteString, Maybe (Binary ByteString))
+verifyCodesRow ConnVerifyCodes {codeAD, codePQ} = (Binary codeAD, Binary <$> codePQ)
 
 getSndRatchet :: DB.Connection -> ConnId -> CR.VersionE2E -> IO (Either StoreError (RatchetX448, CR.AE2ERatchetParams 'C.X448))
 getSndRatchet db connId v =
@@ -1505,10 +1518,12 @@ createRatchet db connId rc =
   DB.execute
     db
     [sql|
-      INSERT INTO ratchets (conn_id, ratchet_state)
-      VALUES (?, ?)
+      INSERT INTO ratchets (conn_id, ratchet_state, rc_verify_code_ad, rc_verify_code_pq)
+      VALUES (?, ?, ?, ?)
       ON CONFLICT (conn_id) DO UPDATE SET
-        ratchet_state = ?,
+        ratchet_state = EXCLUDED.ratchet_state,
+        rc_verify_code_ad = EXCLUDED.rc_verify_code_ad,
+        rc_verify_code_pq = EXCLUDED.rc_verify_code_pq,
         x3dh_priv_key_1 = NULL,
         x3dh_priv_key_2 = NULL,
         x3dh_pub_key_1 = NULL,
@@ -1516,7 +1531,42 @@ createRatchet db connId rc =
         pq_priv_kem = NULL,
         pq_pub_kem = NULL
     |]
-    (connId, rc, rc)
+    ((connId, rc) :. verifyCodesRow (ratchetVerifyCodes rc))
+
+getRatchetVerifyCodes :: DB.Connection -> [ConnId] -> IO (Map ConnId ConnVerifyCodes)
+getRatchetVerifyCodes db connIds = do
+  (saved, computed) <- partitionEithers . mapMaybe rowCodes <$> selectCodes
+  stored <- saveCodes computed
+  pure $ M.fromList $ saved <> stored
+  where
+    rowCodes (connId, codeAD_, codePQ_, rc_) = case codeAD_ of
+      Just codeAD -> Just $ Left $ toCodes (connId, codeAD, codePQ_)
+      Nothing -> Right . (connId,) . ratchetVerifyCodes <$> rc_
+    toCodes (connId, Binary codeAD, codePQ_) = (connId, ConnVerifyCodes {codeAD, codePQ = fromBinary <$> codePQ_})
+    codesRow (connId, cs) = verifyCodesRow cs :. Only connId
+    codesQuery :: Query
+    codesQuery = "SELECT conn_id, rc_verify_code_ad, rc_verify_code_pq, CASE WHEN rc_verify_code_ad IS NULL THEN ratchet_state END FROM ratchets"
+    selectCodes :: IO [(ConnId, Maybe (Binary ByteString), Maybe (Binary ByteString), Maybe RatchetX448)]
+    saveCodes :: [(ConnId, ConnVerifyCodes)] -> IO [(ConnId, ConnVerifyCodes)]
+#if defined(dbPostgres)
+    selectCodes = DB.query db (codesQuery <> " WHERE conn_id IN ?") (Only (In connIds))
+    saveCodes cs =
+      map toCodes
+        <$> DB.returning
+          db
+          [sql|
+            UPDATE ratchets r
+            SET rc_verify_code_ad = COALESCE(r.rc_verify_code_ad, (upd.rc_verify_code_ad :: BYTEA)),
+              rc_verify_code_pq = CASE WHEN r.rc_verify_code_ad IS NULL THEN (upd.rc_verify_code_pq :: BYTEA) ELSE r.rc_verify_code_pq END
+            FROM (VALUES(?, ?, ?)) AS upd(rc_verify_code_ad, rc_verify_code_pq, conn_id)
+            WHERE r.conn_id = (upd.conn_id :: BYTEA)
+            RETURNING r.conn_id, r.rc_verify_code_ad, r.rc_verify_code_pq
+          |]
+          (map codesRow cs)
+#else
+    selectCodes = concat <$> mapM (DB.query db (codesQuery <> " WHERE conn_id = ?") . Only) connIds
+    saveCodes cs = cs <$ unless (null cs) (DB.executeMany db "UPDATE ratchets SET rc_verify_code_ad = ?, rc_verify_code_pq = ? WHERE conn_id = ?" $ map codesRow cs)
+#endif
 
 deleteRatchet :: DB.Connection -> ConnId -> IO ()
 deleteRatchet db connId =
@@ -1668,7 +1718,7 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
         DB.query
           db
           [sql|
-            SELECT c.corr_id, cs.user_id, c.command
+            SELECT c.corr_id, cs.user_id, c.command, c.created_at
             FROM commands c
             JOIN connections cs USING (conn_id)
             WHERE c.command_id = ?
@@ -1676,7 +1726,7 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
           (Only cmdId)
       where
         err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
-        pendingCommand (corrId, userId, command) = PendingCommand {cmdId, corrId, userId, connId, command}
+        pendingCommand (corrId, userId, command, createdAt) = PendingCommand {cmdId, corrId, userId, connId, command, createdAt}
     markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
 
 updateCommandServer :: DB.Connection -> AsyncCmdId -> SMPServer -> IO (Either StoreError ())
@@ -2450,12 +2500,12 @@ getSubscriptionServers db onlyNeeded =
 
 -- TODO [certs rcv] check index for getting queues with service present
 getUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> Bool -> ServiceAssoc -> Int -> Maybe SMP.RecipientId -> IO [RcvQueueSub]
-getUserServerRcvQueueSubs db userId (SMPServer h p kh) onlyNeeded hasService limit cursor_ =
-  map toRcvQueueSub <$> case cursor_ of
+getUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) onlyNeeded hasService limit cursor_ =
+  map (toServerRcvQueueSub srv) <$> case cursor_ of
     Nothing -> DB.query db (q <> orderLimit) (userId, h, p, kh, limit)
     Just cursor -> DB.query db (q <> " AND q.rcv_id > ? " <> orderLimit) (userId, h, p, kh, cursor, limit)
   where
-    q = rcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond
+    q = serverRcvQueueSubQuery <> toSubscribe <> " c.deleted = 0 AND q.deleted = 0 AND c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ?" <> serviceCond
     orderLimit = " ORDER BY q.rcv_id LIMIT ?"
     toSubscribe
       | onlyNeeded = " WHERE q.to_subscribe = 1 AND "
@@ -2468,7 +2518,7 @@ unassocUserServerRcvQueueSubs :: DB.Connection -> UserId -> SMPServer -> IO [Rcv
 unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   deleteClientService db userId srv
 #if defined(dbPostgres)
-  map toRcvQueueSub
+  map (toServerRcvQueueSub srv)
     <$> DB.query
       db
       (removeRcvAssocsQuery <> " " <> returningColumns)
@@ -2476,15 +2526,15 @@ unassocUserServerRcvQueueSubs db userId srv@(SMPServer h p kh) = do
   where
     returningColumns =
       [sql|
-        RETURNING c.user_id, rcv_queues.conn_id, rcv_queues.host, rcv_queues.port, COALESCE(rcv_queues.server_key_hash, s.key_hash),
+        RETURNING c.user_id, rcv_queues.conn_id,
           rcv_queues.rcv_id, rcv_queues.rcv_private_key, rcv_queues.status, c.enable_ntfs, rcv_queues.client_notice_id,
           rcv_queues.rcv_queue_id, rcv_queues.rcv_primary, rcv_queues.replace_rcv_queue_id
       |]
 #else
-  qs <- map toRcvQueueSub
+  qs <- map (toServerRcvQueueSub srv)
     <$> DB.query
       db
-      (rcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
+      (serverRcvQueueSubQuery <> " WHERE c.user_id = ? AND q.host = ? AND q.port = ? AND COALESCE(q.server_key_hash, s.key_hash) = ? AND q.rcv_service_assoc = 1")
       (userId, h, p, kh)
   DB.execute db removeRcvAssocsQuery (h, p, userId, kh)
   pure qs
@@ -2835,17 +2885,32 @@ getRcvQueueSubsByConnId_ db connId =
 rcvQueueSubQuery :: Query
 rcvQueueSubQuery =
   [sql|
-    SELECT c.user_id, q.conn_id, q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs, q.client_notice_id,
+    SELECT q.host, q.port, COALESCE(q.server_key_hash, s.key_hash), c.user_id, q.conn_id, q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs, q.client_notice_id,
       q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id
     FROM rcv_queues q
     JOIN servers s ON q.host = s.host AND q.port = s.port
     JOIN connections c ON q.conn_id = c.conn_id
   |]
 
-toRcvQueueSub :: (UserId, ConnId, NonEmpty TransportHost, ServiceName, C.KeyHash, SMP.RecipientId, SMP.RcvPrivateAuthKey) :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, Int64, BoolInt, Maybe Int64) -> RcvQueueSub
-toRcvQueueSub ((userId, connId, host, port, keyHash, rcvId, rcvPrivateKey) :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId)) =
+serverRcvQueueSubQuery :: Query
+serverRcvQueueSubQuery =
+  [sql|
+    SELECT c.user_id, q.conn_id, q.rcv_id, q.rcv_private_key, q.status, c.enable_ntfs, q.client_notice_id,
+      q.rcv_queue_id, q.rcv_primary, q.replace_rcv_queue_id
+    FROM rcv_queues q
+    JOIN servers s ON q.host = s.host AND q.port = s.port
+    JOIN connections c ON q.conn_id = c.conn_id
+  |]
+
+type RcvQueueSubRow = (UserId, ConnId, SMP.RecipientId, SMP.RcvPrivateAuthKey) :. (QueueStatus, Maybe BoolInt, Maybe NoticeId, Int64, BoolInt, Maybe Int64)
+
+toRcvQueueSub :: (NonEmpty TransportHost, ServiceName, C.KeyHash) :. RcvQueueSubRow -> RcvQueueSub
+toRcvQueueSub ((host, port, keyHash) :. r) = toServerRcvQueueSub (SMPServer host port keyHash) r
+
+toServerRcvQueueSub :: SMPServer -> RcvQueueSubRow -> RcvQueueSub
+toServerRcvQueueSub server ((userId, connId, rcvId, rcvPrivateKey) :. (status, enableNtfs_, clientNoticeId, dbQueueId, BI primary, dbReplaceQueueId)) =
   let enableNtfs = maybe True unBI enableNtfs_
-   in RcvQueueSub {userId, connId, server = SMPServer host port keyHash, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
+   in RcvQueueSub {userId, connId, server, rcvId, rcvPrivateKey, status, enableNtfs, clientNoticeId, dbQueueId, primary, dbReplaceQueueId}
 
 getRcvQueueById :: DB.Connection -> ConnId -> Int64 -> IO (Either StoreError RcvQueue)
 getRcvQueueById db connId dbRcvId =
@@ -3115,6 +3180,29 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
           chunks = []
         }
 
+startPreparedRcvFile :: DB.Connection -> RcvFileId -> IO (Either StoreError [XFTPServer])
+startPreparedRcvFile db rcvFileEntityId = runExceptT $ do
+  rcvFileId <- ExceptT $ getRcvFileIdByEntityId_ db rcvFileEntityId
+  liftIO $ do
+    updatedAt <- getCurrentTime
+    DB.execute
+      db
+      "UPDATE rcv_files SET status = ?, updated_at = ? WHERE (rcv_file_id = ? OR redirect_id = ?) AND status = ?"
+      (RFSReceiving, updatedAt, rcvFileId, rcvFileId, RFSPrepared)
+    map toXFTPServer
+      <$> DB.query
+        db
+        [sql|
+          SELECT DISTINCT
+            s.xftp_host, s.xftp_port, s.xftp_key_hash
+          FROM rcv_file_chunk_replicas r
+          JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+          JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+          JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+          WHERE (f.rcv_file_id = ? OR f.redirect_id = ?) AND r.replica_number = 1
+        |]
+        (rcvFileId, rcvFileId)
+
 insertRcvFile :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> Maybe DBRcvFileId -> Maybe RcvFileId -> Bool -> IO (Either StoreError (RcvFileId, DBRcvFileId))
 insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSize, redirect} prefixPath tmpPath (CryptoFile savePath cfArgs) redirectId_ redirectEntityId_ approvedRelays = runExceptT $ do
   let (redirectDigest_, redirectSize_) = case redirect of
@@ -3125,7 +3213,7 @@ insertRcvFile db gVar userId FileDescription {size, digest, key, nonce, chunkSiz
       DB.execute
         db
         "INSERT INTO rcv_files (rcv_file_entity_id, user_id, size, digest, key, nonce, chunk_size, prefix_path, tmp_path, save_path, save_file_key, save_file_nonce, status, redirect_id, redirect_entity_id, redirect_digest, redirect_size, approved_relays) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-        ((Binary rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSReceiving, redirectId_, Binary <$> redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
+        ((Binary rcvFileEntityId, userId, size, digest, key, nonce, chunkSize, prefixPath, tmpPath) :. (savePath, fileKey <$> cfArgs, fileNonce <$> cfArgs, RFSPrepared, redirectId_, Binary <$> redirectEntityId_, redirectDigest_, redirectSize_, BI approvedRelays))
   rcvFileId <- liftIO $ insertedRowId db
   pure (rcvFileEntityId, rcvFileId)
 
@@ -3430,12 +3518,22 @@ createSndFile db gVar userId (CryptoFile path cfArgs) numRecipients prefixPath k
     DB.execute
       db
       "INSERT INTO snd_files (snd_file_entity_id, user_id, path, src_file_key, src_file_nonce, num_recipients, prefix_path, key, nonce, status, redirect_size, redirect_digest, storage_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSNew, redirectSize_, redirectDigest_, storageHours))
+      ((Binary sndFileEntityId, userId, path, fileKey <$> cfArgs, fileNonce <$> cfArgs, numRecipients) :. (prefixPath, key, nonce, SFSPrepared, redirectSize_, redirectDigest_, storageHours))
   where
     (redirectSize_, redirectDigest_) =
       case redirect_ of
         Nothing -> (Nothing, Nothing)
         Just RedirectFileInfo {size, digest} -> (Just size, Just digest)
+
+startPreparedSndFile :: DB.Connection -> SndFileId -> IO (Either StoreError ())
+startPreparedSndFile db sndFileEntityId = runExceptT $ do
+  sndFileId <- ExceptT $ getSndFileIdByEntityId_ db sndFileEntityId
+  liftIO $ do
+    updatedAt <- getCurrentTime
+    DB.execute
+      db
+      "UPDATE snd_files SET status = ?, updated_at = ? WHERE snd_file_id = ? AND status = ?"
+      (SFSNew, updatedAt, sndFileId, SFSPrepared)
 
 getSndFileByEntityId :: DB.Connection -> SndFileId -> IO (Either StoreError SndFile)
 getSndFileByEntityId db sndFileEntityId = runExceptT $ do

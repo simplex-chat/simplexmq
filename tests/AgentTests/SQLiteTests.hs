@@ -743,9 +743,11 @@ testGetNextRcvChunkToDownload st = do
   withTransaction st $ \db -> do
     Right Nothing <- getNextRcvChunkToDownload db xftpServer1 86400
 
-    Right _ <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
+    Right fId1 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
+    Right _ <- startPreparedRcvFile db fId1
     DB.execute_ db "UPDATE rcv_file_chunk_replicas SET replica_key = cast('bad' as blob) WHERE rcv_file_chunk_replica_id = 1"
     Right fId2 <- createRcvFile db g 1 rcvFileDescr1 "filepath" "filepath" (CryptoFile "filepath" Nothing) True
+    Right _ <- startPreparedRcvFile db fId2
 
     Left e <- getNextRcvChunkToDownload db xftpServer1 86400
     show e `shouldContain` "ConversionFailed"
@@ -783,6 +785,7 @@ testGetNextSndFileToPrepare st = do
     -- Right _ <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing
     -- DB.execute_ db "UPDATE snd_files SET status = 'new', num_recipients = 'bad' WHERE snd_file_id = 1"
     Right fId2 <- createSndFile db g 1 (CryptoFile "filepath" Nothing) 1 "filepath" testFileSbKey testFileCbNonce Nothing Nothing
+    Right _ <- startPreparedSndFile db fId2
     DB.execute_ db "UPDATE snd_files SET status = 'new' WHERE snd_file_id = 2"
 
     -- Left e <- getNextSndFileToPrepare db 86400

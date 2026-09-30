@@ -168,7 +168,7 @@ This document describes the cryptographic primitives and threat model for the Si
 
 *cannot:*
 
-- impersonate a sender and send messages to the user whose database was stolen. Doing so requires also compromising the router (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
+- impersonate a sender and send messages to the user whose database was stolen, unless the database contains a new rotation queue that is not secured yet. Doing so requires also compromising the router (to place the message in the queue, that is possible until the Double-Ratchet advances forward) or the user's device at a subsequent time (to place the message in the database).
 
 - undetectably communicate at the same time as Alice with her contacts. Doing so would result in the contact getting different messages with repeated IDs.
 

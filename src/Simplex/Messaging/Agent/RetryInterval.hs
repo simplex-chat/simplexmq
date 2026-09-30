@@ -10,6 +10,7 @@ module Simplex.Messaging.Agent.RetryInterval
     withRetryInterval,
     withRetryIntervalCount,
     withRetryForeground,
+    withRetryInterval2,
     withRetryLock2,
     updateRetryInterval2,
     nextRetryDelay,
@@ -86,9 +87,24 @@ withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInte
                 | otherwise = (elapsed + delay, nextRetryDelay elapsed' delay ri)
           callAction elapsed' delay'
 
+withRetryInterval2 :: forall m. MonadIO m => RetryInterval2 -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
+withRetryInterval2 = withRetryWait2 $ liftIO . threadDelay'
+
 -- This function allows action to toggle between slow and fast retry intervals.
 withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
-withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
+withRetryLock2 ri lock = withRetryWait2 wait ri
+  where
+    wait delay = do
+      waiting <- newTVarIO True
+      _ <- liftIO . forkIO $ do
+        threadDelay' delay
+        atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
+      atomically $ do
+        takeTMVar lock
+        writeTVar waiting False
+
+withRetryWait2 :: forall m. Monad m => (Int64 -> m ()) -> RetryInterval2 -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
+withRetryWait2 wait RetryInterval2 {riSlow, riFast} action =
   callAction (0, initialInterval riSlow) (0, initialInterval riFast)
   where
     callAction :: (Int64, Int64) -> (Int64, Int64) -> m ()
@@ -102,14 +118,6 @@ withRetryLock2 RetryInterval2 {riSlow, riFast} lock action =
           let elapsed' = elapsed + delay
               delay' = nextRetryDelay elapsed' delay ri
           call (elapsed', delay')
-        wait delay = do
-          waiting <- newTVarIO True
-          _ <- liftIO . forkIO $ do
-            threadDelay' delay
-            atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
-          atomically $ do
-            takeTMVar lock
-            writeTVar waiting False
 
 nextRetryDelay :: Int64 -> Int64 -> RetryInterval -> Int64
 nextRetryDelay elapsed delay RetryInterval {increaseAfter, maxInterval} =

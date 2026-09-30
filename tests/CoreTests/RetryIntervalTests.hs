@@ -14,8 +14,11 @@ import Util
 retryIntervalTests :: Spec
 retryIntervalTests = do
   describe "Retry interval with 2 modes and lock" $ do
-    testRetryIntervalSameMode
-    testRetryIntervalSwitchMode
+    testRetryIntervalSameMode withRetryNewLock2
+    testRetryIntervalSwitchMode withRetryNewLock2
+  describe "Retry interval with 2 modes" $ do
+    testRetryIntervalSameMode withRetryInterval2
+    testRetryIntervalSwitchMode withRetryInterval2
   describe "Foreground retry interval" $ do
     testRetryForeground
     testRetryToBackground
@@ -41,14 +44,18 @@ testFastRI =
       maxInterval = 40000
     }
 
-testRetryIntervalSameMode :: Spec
-testRetryIntervalSameMode =
+type WithRetry2 = RetryInterval2 -> (RI2State -> (RetryIntervalMode -> IO ()) -> IO ()) -> IO ()
+
+withRetryNewLock2 :: WithRetry2
+withRetryNewLock2 ri action = newEmptyTMVarIO >>= \lock -> withRetryLock2 ri lock action
+
+testRetryIntervalSameMode :: WithRetry2 -> Spec
+testRetryIntervalSameMode withRetry =
   it "should increase elapased time and interval when the mode stays the same" $ do
-    lock <- newEmptyTMVarIO
     intervals <- newTVarIO []
     reportedIntervals <- newTVarIO []
     ts <- newTVarIO =<< getCurrentTime
-    withRetryLock2 testRI lock $ \(RI2State slow fast) loop -> do
+    withRetry testRI $ \(RI2State slow fast) loop -> do
       ints <- addInterval intervals ts
       atomically $ modifyTVar' reportedIntervals ((slow, fast) :)
       when (length ints < 9) $ loop RIFast
@@ -65,14 +72,13 @@ testRetryIntervalSameMode =
                        (20000, 40000)
                      ]
 
-testRetryIntervalSwitchMode :: Spec
-testRetryIntervalSwitchMode =
+testRetryIntervalSwitchMode :: WithRetry2 -> Spec
+testRetryIntervalSwitchMode withRetry =
   it "should increase elapased time and interval when the mode switches" $ do
-    lock <- newEmptyTMVarIO
     intervals <- newTVarIO []
     reportedIntervals <- newTVarIO []
     ts <- newTVarIO =<< getCurrentTime
-    withRetryLock2 testRI lock $ \(RI2State slow fast) loop -> do
+    withRetry testRI $ \(RI2State slow fast) loop -> do
       ints <- addInterval intervals ts
       atomically $ modifyTVar' reportedIntervals ((slow, fast) :)
       when (length ints < 11) $ loop $ if length ints <= 5 then RIFast else RISlow

@@ -93,7 +93,8 @@ data RcvFile = RcvFile
   deriving (Show)
 
 data RcvFileStatus
-  = RFSReceiving
+  = RFSPrepared
+  | RFSReceiving
   | RFSReceived
   | RFSDecrypting
   | RFSComplete
@@ -106,6 +107,7 @@ instance ToField RcvFileStatus where toField = toField . textEncode
 
 instance TextEncoding RcvFileStatus where
   textDecode = \case
+    "prepared" -> Just RFSPrepared
     "receiving" -> Just RFSReceiving
     "received" -> Just RFSReceived
     "decrypting" -> Just RFSDecrypting
@@ -113,6 +115,7 @@ instance TextEncoding RcvFileStatus where
     "error" -> Just RFSError
     _ -> Nothing
   textEncode = \case
+    RFSPrepared -> "prepared"
     RFSReceiving -> "receiving"
     RFSReceived -> "received"
     RFSDecrypting -> "decrypting"
@@ -177,7 +180,8 @@ sndFileEncPath :: FilePath -> FilePath
 sndFileEncPath prefixPath = prefixPath </> "xftp.encrypted"
 
 data SndFileStatus
-  = SFSNew -- db record created
+  = SFSPrepared
+  | SFSNew -- db record created
   | SFSEncrypting -- encryption started
   | SFSEncrypted -- encryption complete
   | SFSUploading -- all chunk replicas are created on servers
@@ -191,6 +195,7 @@ instance ToField SndFileStatus where toField = toField . textEncode
 
 instance TextEncoding SndFileStatus where
   textDecode = \case
+    "prepared" -> Just SFSPrepared
     "new" -> Just SFSNew
     "encrypting" -> Just SFSEncrypting
     "encrypted" -> Just SFSEncrypted
@@ -199,6 +204,7 @@ instance TextEncoding SndFileStatus where
     "error" -> Just SFSError
     _ -> Nothing
   textEncode = \case
+    SFSPrepared -> "prepared"
     SFSNew -> "new"
     SFSEncrypting -> "encrypting"
     SFSEncrypted -> "encrypted"

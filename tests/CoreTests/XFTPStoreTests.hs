@@ -9,7 +9,7 @@ import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
-import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, writeFileStore)
+import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BlockingInfo (..), BlockingReason (..), EntityId (..))
@@ -17,6 +17,7 @@ import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import System.Directory (doesFileExist, removeFile)
+import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
@@ -265,7 +266,7 @@ testMigrationRoundTrip = do
       sId2 = EntityId "migration_file_2"
       rId1 = EntityId "migration_rcp_1_"
   addFile stmStore sId1 fileInfo1 testCreatedAt (Just testExpiresAt) EntityActive `shouldReturn` Right ()
-  void $ setFilePath stmStore sId1 "/tmp/file1"
+  void $ setFilePath stmStore sId1 ("/tmp" </> serverFileName sId1)
   addRecipient stmStore sId1 (FileRecipient rId1 rcpKey1) `shouldReturn` Right ()
   let testBlockInfo = BlockingInfo {reason = BRSpam, notice = Nothing}
   addFile stmStore sId2 fileInfo2 testCreatedAt Nothing (EntityBlocked testBlockInfo) `shouldReturn` Right ()
@@ -289,7 +290,7 @@ testMigrationRoundTrip = do
   case result1 of
     Right (FileRec {fileInfo = fi, filePath, expiresAt, fileStatus}, _) -> do
       size fi `shouldBe` 128000
-      readTVarIO filePath `shouldReturn` Just "/tmp/file1"
+      readTVarIO filePath `shouldReturn` Just ("/tmp" </> serverFileName sId1)
       expiresAt `shouldBe` Just testExpiresAt
       readTVarIO fileStatus `shouldReturn` EntityActive
     Left e -> expectationFailure $ "getFile sId1 failed: " <> show e

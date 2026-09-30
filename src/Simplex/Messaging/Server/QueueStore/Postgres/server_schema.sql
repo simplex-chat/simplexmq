@@ -1,5 +1,6 @@
 
 
+
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -56,7 +57,7 @@ $$;
 
 
 
-CREATE PROCEDURE smp_server.expire_old_messages(IN p_old_queue bigint, IN p_old_ts bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
+CREATE PROCEDURE smp_server.expire_old_messages(IN p_old_ts bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -73,7 +74,6 @@ BEGIN
       SELECT recipient_id
       FROM msg_queues
       WHERE deleted_at IS NULL
-        AND updated_at > p_old_queue
         AND msg_queue_expire = TRUE
         AND recipient_id > last_rid
       ORDER BY recipient_id ASC
@@ -397,7 +397,8 @@ CREATE TABLE smp_server.messages (
     msg_quota boolean NOT NULL,
     msg_ntf_flag boolean NOT NULL,
     msg_body bytea NOT NULL
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', toast.autovacuum_vacuum_scale_factor='0.02');
 
 
 
@@ -441,7 +442,8 @@ CREATE TABLE smp_server.msg_queues (
     msg_can_write boolean DEFAULT true NOT NULL,
     msg_queue_expire boolean DEFAULT false NOT NULL,
     msg_queue_size bigint DEFAULT 0 NOT NULL
-);
+)
+WITH (fillfactor='80', autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', autovacuum_vacuum_cost_limit='1000');
 
 
 
@@ -453,7 +455,8 @@ CREATE TABLE smp_server.services (
     created_at bigint NOT NULL,
     queue_count bigint DEFAULT 0 NOT NULL,
     queue_ids_hash bytea DEFAULT '\x00000000000000000000000000000000'::bytea NOT NULL
-);
+)
+WITH (fillfactor='70', autovacuum_vacuum_threshold='1000', autovacuum_vacuum_scale_factor='0');
 
 
 
@@ -494,7 +497,15 @@ CREATE INDEX idx_messages_recipient_id_msg_ts ON smp_server.messages USING btree
 
 
 
+CREATE INDEX idx_msg_queues_expire ON smp_server.msg_queues USING btree (recipient_id) WHERE ((deleted_at IS NULL) AND msg_queue_expire);
+
+
+
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON smp_server.msg_queues USING btree (link_id);
+
+
+
+CREATE INDEX idx_msg_queues_notifier_active ON smp_server.msg_queues USING btree (notifier_id) WHERE ((deleted_at IS NULL) AND (notifier_id IS NOT NULL));
 
 
 
@@ -511,10 +522,6 @@ CREATE INDEX idx_msg_queues_rcv_service_id ON smp_server.msg_queues USING btree 
 
 
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON smp_server.msg_queues USING btree (sender_id);
-
-
-
-CREATE INDEX idx_msg_queues_updated_at_recipient_id ON smp_server.msg_queues USING btree (deleted_at, updated_at, msg_queue_expire, recipient_id);
 
 
 
@@ -546,6 +553,7 @@ ALTER TABLE ONLY smp_server.msg_queues
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_rcv_service_id_fkey FOREIGN KEY (rcv_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
+
 
 
 

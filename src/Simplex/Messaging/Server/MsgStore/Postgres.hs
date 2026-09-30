@@ -110,10 +110,9 @@ instance MsgStoreClass PostgresMsgStore where
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =
     maybeFirstRow' newMessageStats toMessageStats $ withConnection st $ \db ->
-      DB.query db "CALL expire_old_messages(?,?,?,0,0,0)" (oldQueue, oldMsg, batchSize)
+      DB.query db "CALL expire_old_messages(?,?,0,0,0)" (oldMsg, batchSize)
     where
       st = dbStore $ queueStore_ ms
-      oldQueue = 0 :: Int64 -- expire all queues
       oldMsg = now - ttl
       batchSize = 10000 :: Int
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =

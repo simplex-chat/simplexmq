@@ -193,6 +193,8 @@ deliverMessagesViaProxy proxyServ relayServ alg unsecuredMsgs securedMsgs = do
   forM_ unsecuredMsgs $ \msg -> do
     runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sndId noMsgFlags msg) `shouldReturn` Right ()
     runExceptT' (proxySMPMessage pc NRMInteractive sess {prSessionId = "bad session"} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY SMP.NO_SESSION)
+    forM_ ([prevVersion minServerSMPRelayVersion, nextVersion currentServerSMPRelayVersion] :: [VersionSMP]) $ \v ->
+      runExceptT' (proxySMPMessage pc NRMInteractive sess {prVersion = v} Nothing sndId noMsgFlags msg) `shouldReturn` Left (ProxyProtocolError $ SMP.PROXY $ SMP.PROTOCOL $ SMP.PROXY $ SMP.BROKER $ SMP.TRANSPORT TEVersion)
     -- receive 1
     (_tSess, _, [(_entId, STEvent (Right (SMP.MSG RcvMessage {msgId, msgBody = EncRcvMsgBody encBody})))]) <- atomically $ readTBQueue msgQ
     dec msgId encBody `shouldBe` Right msg
@@ -231,7 +233,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
       (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
-      aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
@@ -287,7 +289,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     -- otherwise the CONF messages would get mixed with MSG
     prePair alice bob = do
       (bobId, CCLink qInfo Nothing) <- runExceptT' $ A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
-      aliceId <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      (aliceId, _) <- runExceptT' $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
       sqSecured <- runExceptT' $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
       liftIO $ sqSecured `shouldBe` True
       confId <-
@@ -346,7 +348,7 @@ agentViaProxyRetryOffline = do
       withServer $ \_ -> do
         (aliceId, bobId) <- withServer2 $ \_ -> runRight $ do
           (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
-          aliceId <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+          (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
           sqSecured <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
           liftIO $ sqSecured `shouldBe` True
           ("", _, A.CONF confId pqSup' _ "bob's connInfo") <- get alice
