@@ -992,7 +992,7 @@ main = do
         ( case phase of
             "conclimit" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {serverClientConcurrency = 1}) storeEnv
             -- shrink the proxy agent's msgQ so its bound is reachable in one run
-            "msgqfill" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {smpAgentCfg = (smpAgentCfg c) {msgQSize = msgQSz}}) storeEnv
+            "msgqfill" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {smpAgentCfg = (smpAgentCfg c) {msgQSize = Just msgQSz}}) storeEnv
             _ -> withProxyTopology storeEnv
         )
           $ settle leakDiagSec
