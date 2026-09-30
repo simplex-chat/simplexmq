@@ -45,6 +45,7 @@ module Simplex.Messaging.Server
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent.STM (throwSTM)
 import qualified Control.Exception as E
 import Control.Logger.Simple
@@ -1076,9 +1077,8 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
       ms <- asks msgStore
       whenM (liftIO $ insertServerClient c s) $ do
         expCfg <- asks $ inactiveClientExpiration . config
-        th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
         labelMyThread . B.unpack $ "client $" <> encode sessionId
-        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client s ms c, receive h ms c] <> disconnectThread_ c s expCfg
+        raceAny_ $ [liftIO $ send h c, client s ms c, receive h ms c] <> disconnectThread_ c s expCfg
     disconnectThread_ :: Client s -> Server s -> Maybe ExpirationConfig -> [M s ()]
     disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
     disconnectThread_ _ _ _ = []
@@ -1191,36 +1191,38 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
             GET -> incStat $ msgGetAuth stats
             _ -> pure ()
 
-send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
-send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
+-- Messages are sent one per transmission, interleaved with command responses.
+send :: Transport c => THandleSMP c 'TServer -> Client s -> IO ()
+send h c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " send"
-  forever $ atomically (readTBQueue sndQ) >>= sendTransmissions
+  sendLoop []
   where
+    sendLoop :: [Transmission BrokerMsg] -> IO ()
+    sendLoop = \case
+      [] ->
+        atomically (Left <$> readTBQueue sndQ <|> Right <$> readTBQueue msgQ) >>= \case
+          Left ts -> sendTransmissions ts >>= sendLoop
+          Right msgs -> sendLoop $ L.toList msgs
+      msg : msgs -> do
+        tSend h c [msg]
+        atomically (tryReadTBQueue sndQ) >>= \case
+          Just ts -> sendTransmissions ts >>= sendLoop . (msgs <>)
+          Nothing -> sendLoop msgs
     -- If the request had batched subscriptions
     -- this will reply SOKs to all SUBs in the first batched transmission,
     -- to reduce client timeouts.
     -- After that all messages will be sent in separate transmissions,
     -- without any client response timeouts, and allowing them to interleave
     -- with other requests responses.
-    sendTransmissions :: (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
-    sendTransmissions (ts, []) = tSend th c ts
+    sendTransmissions :: (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO [Transmission BrokerMsg]
+    sendTransmissions (ts, []) = [] <$ tSend h c ts
     sendTransmissions (ts, msg : msgs)
-      | length ts <= 4 = do -- up to 4 SOKs can be in one block with MSG (see testBatchSubResponses test)
-          tSend th c $ ts <> [msg]
-          mapM_ (atomically . writeTBQueue msgQ) $ L.nonEmpty msgs
-      | otherwise = do
-          tSend th c ts
-          atomically $ writeTBQueue msgQ (msg :| msgs)
+      | length ts <= 4 = msgs <$ tSend h c (ts <> [msg]) -- up to 4 SOKs can be in one block with MSG (see testBatchSubResponses test)
+      | otherwise = (msg : msgs) <$ tSend h c ts
 
-sendMsg :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
-sendMsg th c@Client {msgQ, clientTHParams = THandleParams {sessionId}} = do
-  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " sendMsg"
-  forever $ atomically (readTBQueue msgQ) >>= mapM_ (\t -> tSend th c [t])
-
-tSend :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> NonEmpty (Transmission BrokerMsg) -> IO ()
-tSend th Client {sndActiveAt} ts = do
-  withMVar th $ \h@THandle {params} ->
-    void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
+tSend :: Transport c => THandleSMP c 'TServer -> Client s -> NonEmpty (Transmission BrokerMsg) -> IO ()
+tSend h@THandle {params} Client {sndActiveAt} ts = do
+  void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
 disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
