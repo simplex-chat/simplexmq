@@ -27,7 +27,7 @@
 --   tlsstall | tlshalf | tlschurn | tlspartial  -- TLS/TCP stack
 --
 -- Two-server phases (proxy on testPort, lagged destination relay on testPort2):
---   proxyfwd | proxytmo | proxychurn | subtmo
+--   proxyfwd | proxytmo | proxychurn | subtmo | pfwdbig
 --
 -- Env: BENCHSTORE selects the store (see srvStoreCfg); SMP_LEAKDIAG_SEC sets the LEAKDIAG
 -- interval (defaulted to 10s here). In two-server phases each LEAKDIAG line is tagged with the
@@ -1374,7 +1374,8 @@ main = do
   withGlobalLogging LogConfig {lc_file = Nothing, lc_stderr = True} $
     if phase `elem` proxyPhases
       then
-        ( case phase of
+        pgBracket
+          . ( case phase of
             "conclimit" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {serverClientConcurrency = 1}) storeEnv
             -- shrink the proxy agent's msgQ so its bound is reachable in one run
             "msgqfill" -> withProxyTopologyCfg (updateCfg (proxySrvCfg storeEnv) $ \c -> c {smpAgentCfg = (smpAgentCfg c) {msgQSize = Just msgQSz}}) storeEnv
@@ -1389,6 +1390,7 @@ main = do
         "conclimit" -> runConcLimit g iters cp
         "fastfwd" -> runFastFwd g iters cp
         "msgqfill" -> runMsgQFill g iters cp
+        "pfwdbig" -> runPfwdBig g iters cp
         _ -> error $ "unknown proxy phase: " <> phase
 #if defined(dbServerPostgres)
       else if phase == "ntfloop" then runNtfLoop iters
@@ -1465,8 +1467,37 @@ runMsgQFill g iters _cp = do
   o <- readTVarIO ok
   printf "msgqfill: recovery forwards succeeded=%d/3 (0 means the proxy stalled)\n" o
 
+-- Leak 1 without relay cooperation: an oversized PFWD.
+--
+-- A client that declares proxyServer = True in its handshake gets no block encryption, so a PFWD
+-- whose encBlock is 16260-16266 bytes still fits its block (the PFWD length is not validated). The
+-- proxy's RFWD to the relay is then too large for the relay block: sendRecv returns TELargeMsg
+-- before sending, and the Request stays in the proxy's sentCommands for the life of the
+-- proxy-relay session. LEAKDIAG proxy_sentCommands (srv=5001) counts the entries.
+runPfwdBig :: TVar ChaChaDRG -> Int -> Int -> IO ()
+runPfwdBig g iters cp = do
+  size <- fromMaybe 16260 . (>>= readMaybe) <$> lookupEnv "PFWDSIZE"
+  ts <- getCurrentTime
+  pc <- getProtocolClient g NRMInteractive (1, proxySrv, Nothing) benchClientCfg {proxyServer = True} [] Nothing ts (\_ -> pure ())
+    >>= either (fail . show) pure
+  ProxiedRelay {prSessionId, prVersion} <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relaySrv Nothing
+  (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+  let pfwd = Cmd SProxiedClient $ PFWD prVersion k $ EncTransmission $ B.replicate size 'a'
+  r <- runExceptT $ sendProtocolCommand pc NRMInteractive Nothing (EntityId prSessionId) pfwd
+  printf "pfwdbig: size=%d first response: %s\n" size (show r)
+  withCheckpoints "pfwdbig" iters cp $ \_ ->
+    void $ runExceptT $ sendProtocolCommand pc NRMInteractive Nothing (EntityId prSessionId) pfwd
+
 proxyPhases :: [String]
-proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo", "conclimit", "fastfwd", "msgqfill"]
+proxyPhases = ["proxyfwd", "proxytmo", "proxychurn", "subtmo", "conclimit", "fastfwd", "msgqfill", "pfwdbig"]
+
+-- proxy topologies use the test databases; create them for the run and drop them after
+pgBracket :: IO a -> IO a
+#if defined(dbServerPostgres)
+pgBracket = postgressBracket testServerDBConnectInfo
+#else
+pgBracket = id
+#endif
 
 -- Hold the servers up past one LEAKDIAG interval after the phase finishes, so the end state is
 -- always sampled at least once. Short phases would otherwise exit before any line is emitted,
