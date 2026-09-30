@@ -18,6 +18,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.IORef (IORef, readIORef)
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (getCurrentTime)
@@ -49,6 +50,7 @@ import Simplex.Messaging.Protocol
     tPut,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
@@ -104,7 +106,8 @@ rslvTests = do
     it "RSLV sends the 2LD as its hash" testRslvSendsTheHash
     it "a name with subnames is sent as text" testSubnameKeepsItsLabels
     it "a record naming a different name is rejected" testRslvWrongName
-  describe "RSLV resource use" $
+  describe "RSLV resource use" $ do
+    it "one connection has at most resolver_concurrency lookups in flight" testRslvConnectionCap
     xit "one connection must not fan out to many concurrent resolver requests" testRslvFanOut
 
 testRslvFanOut :: IO ()
@@ -293,6 +296,35 @@ testRslvWrongName =
     case r of
       Left (PCEUnexpectedResponse _) -> pure ()
       _ -> expectationFailure $ "expected Left (PCEUnexpectedResponse ..), got: " <> show r
+
+-- The resolver answers after 3s and the server gives up after 1s, so a request
+-- that reached the resolver stays in flight for the whole check.
+testRslvConnectionCap :: IO ()
+testRslvConnectionCap =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (updateCfg (withNames port memCfg) $ \c -> c {serverResolverConcurrency = connCap}) testPort $ const $
+      testSMPClient @TLS $ \h -> do
+        sendRslvs h "cap" 16
+        threadDelay 800000
+        length <$> resolvePaths reqs `shouldReturn` connCap
+        recvResponses h 16 `shouldReturn` replicate 16 (Right (ERR (NAME (RESOLVER "timeout"))))
+  where
+    connCap = 4
+
+-- | One RSLV per block, so no batch limit applies.
+sendRslvs :: THandleSMP TLS 'TClient -> String -> Int -> IO ()
+sendRslvs h@THandle {params} prefix n =
+  forM_ [1 .. n] $ \i -> do
+    let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId (B.pack $ prefix <> show i), NoEntity, Cmd SResolver (RSLV (NQDomain (domain "alice.simplex"))))
+    [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
+    pure ()
+
+recvResponses :: THandleSMP TLS 'TClient -> Int -> IO [Either ErrorType BrokerMsg]
+recvResponses h n
+  | n <= 0 = pure []
+  | otherwise = do
+      rs <- map (\(_, _, r) -> r) . L.toList <$> tGetClient h
+      (rs <>) <$> recvResponses h (n - length rs)
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure
