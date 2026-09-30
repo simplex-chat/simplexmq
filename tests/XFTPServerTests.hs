@@ -63,7 +63,7 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), defaultHTTP2BufferSize
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential, newSocketState)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Util (bshow, unlessM, whenM)
 import Simplex.Messaging.Version (mkVersionRange)
@@ -339,19 +339,6 @@ testCancelledClientConnect =
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
     cancel a
     timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
-
-testTLSHandshakeTimeout :: HasTestEnv => Expectation
-testTLSHandshakeTimeout =
-  withStallingServerOn xftpTestPort $
-    timeout 1000000 (runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort Nothing $ \(_ :: TLS 'TClient) -> pure ())
-      `shouldReturn` Nothing
-  where
-    cfg :: TransportClientConfig
-    cfg = defaultTransportClientConfig {logTLSErrors = True}
-
-testReceiveFileTimeout :: HasTestEnv => Expectation
-testReceiveFileTimeout =
-  timeout 100000 (runExceptT $ receiveFile (\_ -> "" <$ threadDelay maxBound) $ XFTPRcvChunkSpec testChunkPath chSize "") `shouldReturn` Nothing
 
 testTLSHandshakeTimeout :: HasTestEnv => Expectation
 testTLSHandshakeTimeout =
@@ -967,7 +954,7 @@ withHeldHTTP2Requests action = do
       cfg = HC.defaultHTTP2ClientConfig {HC.qSize = 1, HC.connTimeout = 1000000, HC.suportedTLSParams = defaultSupportedParams}
       connect = either (error . show) pure =<< HC.getVerifiedHTTP2Client Nothing (THDomainName "localhost") xftpTestPort (Just $ C.KeyHash fp) Nothing cfg (pure ())
   serverBracket
-    (\started -> runHTTP2Server started xftpTestPort defaultHTTP2BufferSize defaultSupportedParams creds Nothing transportConfig Nothing (\_ -> pure ()) hold)
+    (\started -> newSocketState >>= \ss -> runHTTP2Server ss started xftpTestPort defaultHTTP2BufferSize defaultSupportedParams creds Nothing transportConfig Nothing (\_ -> pure ()) hold)
     (pure ())
     $ \_ -> bracket connect HC.closeHTTP2Client $ \c ->
       action (HC.sendRequest c $ H2.requestNoBody "POST" "/" []) received release

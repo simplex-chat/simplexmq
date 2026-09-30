@@ -70,6 +70,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultProxyConnectConcurrency,
+    defaultProxyRelayConcurrency,
     defaultNameResolverConcurrency,
     defaultForwardWorkers,
     defaultMaxClientCmdWait,
@@ -133,7 +134,7 @@ import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, SessionId, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=))
 import System.Directory (doesFileExist)
@@ -204,6 +205,8 @@ data ServerConfig s = ServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
+    -- | max forwarded commands awaiting a response from one destination relay
+    proxyRelayConcurrency :: Int,
     -- | max concurrent forwarded name resolutions per proxy connection, enforced in forkCmd.
     -- Much higher than serverClientConcurrency: forwarded RSLVs from many clients
     -- aggregate over a single proxy->relay connection (only servers send proxied
@@ -262,6 +265,9 @@ defaultProxyClientConcurrency = 500
 
 defaultProxyConnectConcurrency :: Int
 defaultProxyConnectConcurrency = 1000
+
+defaultProxyRelayConcurrency :: Int
+defaultProxyRelayConcurrency = 512
 
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 5000
@@ -442,8 +448,10 @@ data ClientSub
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
   | CSService ServiceId (Int64, IdsHash) -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
-newtype ProxyAgent = ProxyAgent
-  { smpAgent :: SMPClientAgent 'Sender
+data ProxyAgent = ProxyAgent
+  { smpAgent :: SMPClientAgent 'Sender,
+    -- forwarded commands awaiting a response, per relay session
+    relayForwards :: TVar (Map SessionId Int)
   }
 
 type ClientId = Int
@@ -717,7 +725,8 @@ noPostgresExitStr =
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent SSender smpAgentCfg Nothing random
-  pure ProxyAgent {smpAgent}
+  relayForwards <- newTVarIO mempty
+  pure ProxyAgent {smpAgent, relayForwards}
 
 readWriteQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO (StoreLog 'WriteMode)
 readWriteQueueStore tty mkQ = readWriteStoreLog (readQueueStore tty mkQ) (writeQueueStore @q)
