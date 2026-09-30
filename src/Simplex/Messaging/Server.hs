@@ -1092,6 +1092,7 @@ controlPortAuth h user admin role auth = do
   readTVarIO role >>= \case
     CPRNone -> do
       atomically $ writeTVar role $! newRole
+      when (newRole == CPRNone) $ logWarn "ControlPort: failed auth"
       hPutStrLn h $ currentRole newRole
     r -> hPutStrLn h $ currentRole r <> if r == newRole then "" else ", start new session to change."
   where
@@ -2127,6 +2128,7 @@ client
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
           b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et

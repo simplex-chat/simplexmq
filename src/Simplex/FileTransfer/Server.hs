@@ -25,7 +25,6 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -594,7 +593,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive = do
             path <- asks $ filesPath . config
-            let fPath = path </> B.unpack (B64.encode $ unEntityId senderId)
+            let fPath = path </> serverFileName senderId
             receiveChunk (XFTPRcvChunkSpec fPath size digest) >>= \case
               Right () -> do
                 stats <- asks serverStats
