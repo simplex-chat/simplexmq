@@ -1454,33 +1454,47 @@ client
                         Nothing -> ERR $ transportErr TENoServerAuth
                       _ -> ERR $ transportErr TEVersion
       PFWD fwdV pubKey encBlock -> do
-        ProxyAgent {smpAgent = a} <- asks proxyAgent
+        ProxyAgent {smpAgent = a, relayForwards} <- asks proxyAgent
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
         liftIO (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
-            forkProxiedCmd $ do
-              liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ inc own pSuccesses
-                Left e -> ERR (smpProxyError e) <$ case e of
-                  PCEProtocolError {} -> inc own pSuccesses
-                  PCEResponseTimeout -> do
-                    inc own pErrorsOther
-                    liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
-                  _ -> inc own pErrorsOther
+            maxFwds <- asks $ proxyRelayConcurrency . config
+            -- reserved on the forked thread, so that the slot is released when the forward completes
+            forkProxiedCmd $
+              bracket (atomically $ reserve maxFwds relayForwards) (\r -> when r $ atomically $ release relayForwards) $ \case
+                -- the relay is not keeping up, the client retries TIMEOUT later
+                False -> ERR (smpProxyError PCEResponseTimeout) <$ inc own pErrorsOther
+                True ->
+                  liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers) >>= \case
+                    Right r -> PRES r <$ inc own pSuccesses
+                    Left e -> ERR (smpProxyError e) <$ case e of
+                      PCEProtocolError {} -> inc own pSuccesses
+                      PCEResponseTimeout -> do
+                        inc own pErrorsOther
+                        liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
+                      _ -> inc own pErrorsOther
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
+        reserve maxFwds v = stateTVar v $ \fwds -> case M.lookup sessId fwds of
+          Just n | n >= maxFwds -> (False, fwds)
+          n_ -> (True, M.insert sessId (maybe 1 (+ 1) n_) fwds)
+        release v = modifyTVar' v $ M.update (\n -> if n > 1 then Just (n - 1) else Nothing) sessId
     -- Run a slow command on a thread
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId cmdAction = do
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+      -- the forked thread releases the slot when the command completes, the caller only if the fork failed
+      mask $ \restore -> do
+        wait
+        forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") (restore cmd `finally` signal)
+          `onException` signal
       pure Nothing
       where
+        -- commands MUST be processed under a reasonable timeout or the client would halt
+        cmd = cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
         wait = do
           limit <- asks (concurrency . config)
           atomically $ do
@@ -2150,22 +2164,26 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked (RSLV).
-          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
-            -- rejectOrVerify filters allowed commands, no need to repeat it here.
-            Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
-                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+          let forwarded =
+                lift (rejectOrVerify clntThAuth t') >>= \case
+                  -- rejectOrVerify filters allowed commands, no need to repeat it here.
+                  Left r -> pure r
+                  Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                    Cmd SResolver (RSLV d) ->
+                      lift $
+                        rslvNamesEnv >>= \case
+                          Nothing -> pure (corrId', entId', ERR (NAME NO_RESOLVER))
+                          Just nenv -> (corrId',entId',) <$> resolveNameMsg (thVersion clntTHParams) nenv d
+                    -- INTERNAL because processCommand never returns Nothing for sender commands;
+                    -- `fst` drops the empty message only returned for SUB.
+                    _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+              -- commands of all clients of a proxy share its connection, so they are processed concurrently
+              concurrency = case t' of
+                Right (_, _, (_, _, Cmd SResolver _)) -> serverResolverConcurrency
+                _ -> serverClientConcurrency
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_
+          lift $ forkCmd concurrency corrId NoEntity $ either ERR id <$> runExceptT (forwarded >>= encodeResp)
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
