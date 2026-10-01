@@ -76,7 +76,7 @@ import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing, listToMaybe)
 import Data.Semigroup (Sum (..))
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -98,8 +98,8 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
-import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
+import Simplex.Messaging.Client (NetworkConfig (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, closeTimedOutClient, forwardSMPTransmission, smpProxyError, temporaryClientError, transportHost')
+import Simplex.Messaging.Client.Agent (AgentLeakStats (..), OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getAgentLeakStats, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -128,6 +128,7 @@ import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
+import Text.Read (readMaybe)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
@@ -174,6 +175,23 @@ data ClientSubAction
 
 type PrevClientSub s = (Client s, ClientSubAction, (EntityId, BrokerMsg))
 
+-- accumulator for per-client leak diagnostics (summed across all connected clients)
+data ClientAgg = ClientAgg
+  { aggEndThreads :: !Int, -- Weak ThreadId registrations in endThreads (forkClient leak)
+    aggEndThreadSeq :: !Int, -- total forkClient forks ever (fork rate)
+    aggProcThreads :: !Int,
+    aggSubs :: !Int, -- entries in per-client subscriptions map
+    aggNoSub :: !Int,
+    aggPending :: !Int, -- SubPending: forked delivery threads not yet completed (blocked-thread candidates)
+    aggThread :: !Int, -- SubThread: live delivery threads
+    aggProhibit :: !Int,
+    aggNtfSubs :: !Int,
+    aggSvcSubsCount :: !Int,
+    aggRcvQ :: !Int,
+    aggSndQ :: !Int, -- full sndQ => forkDeliver blocks (leak trigger)
+    aggMsgQ :: !Int
+  }
+
 smpServer :: forall s. MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> M s ()
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
   s <- asks server
@@ -191,6 +209,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     ( serverThread "server subscribers" s subscribers subscriptions serviceSubsCount (Just cancelSub)
         : serverThread "server ntfSubscribers" s ntfSubscribers ntfSubscriptions ntfServiceSubsCount Nothing
         : deliverNtfsThread s
+        : leakDiagnosticsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
@@ -369,7 +388,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         runDeliverNtfs ms ns' stats
       where
         runDeliverNtfs :: s -> NtfStore -> ServerStats -> IO ()
-        runDeliverNtfs ms (NtfStore ns) stats = do
+        runDeliverNtfs ms ns'@(NtfStore ns) stats = do
           ntfs <- M.assocs <$> readTVarIO ns
           unless (null ntfs) $
             getQueueNtfServices @(StoreQueue s) (queueStore ms) ntfs >>= \case
@@ -381,6 +400,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     cIds <- IS.toList <$> readTVarIO subClients
                     forM_ cIds $ \cId -> getServerClient cId srv >>= mapM_ (deliverQueueNtfs ntfs')
                 atomically $ modifyTVar' ns (`M.withoutKeys` S.fromList (map fst deleted))
+                deleteEmptyNtfs ns' ntfs
           where
             deliverQueueNtfs ntfs' c@Client {ntfSubscriptions} =
               whenM (currentClient readTVarIO c) $ do
@@ -495,6 +515,101 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               atomicModifyIORef'_ (msgExpired stats) (+ expired)
               printMessageStats "STORE: messages" msgStats
             Left e -> logError $ "STORE: expireOldMessages, error expiring messages, " <> tshow e
+
+    -- Periodic comprehensive leak diagnostics: sizes of every growable structure in the
+    -- server, summed across clients, plus the proxy agent. Interval seconds via SMP_LEAKDIAG_SEC
+    -- (default 60). A single greppable "LEAKDIAG ..." line per interval; whichever counter grows
+    -- monotonically over time is the leak.
+    leakDiagnosticsThread :: Server s -> M s ()
+    leakDiagnosticsThread srv = do
+      secStr <- liftIO $ lookupEnv "SMP_LEAKDIAG_SEC"
+      let sec = max 5 $ fromMaybe 60 (secStr >>= readMaybe)
+      ms <- asks msgStore
+      ns <- asks ntfStore
+      ProxyAgent {smpAgent} <- asks proxyAgent
+      -- listening port identifies the server when several run in one process (bench topologies)
+      let srvPort = maybe "?" (\(p, _, _) -> p) $ listToMaybe transports
+      labelMyThread "leakDiagnosticsThread"
+      -- never let a diagnostics error crash the server (this thread is in raceAny_)
+      liftIO $ forever $ do
+        threadDelay $ sec * 1000000
+        tryAny (logLeakStats srvPort srv ms ns smpAgent) >>= either (logError . ("LEAKDIAG error: " <>) . tshow) (const $ pure ())
+
+    logLeakStats :: ServiceName -> Server s -> s -> NtfStore -> SMPClientAgent 'Sender -> IO ()
+    logLeakStats srvPort srv ms (NtfStore nsv) smpAgent = do
+#if MIN_VERSION_base(4,18,0)
+      nThreads <- length <$> listThreads
+#else
+      let nThreads = 0 :: Int
+#endif
+      cls <- IM.elems <$> getServerClients srv
+      cc <- foldM accClient emptyAgg cls
+      (smpQ, smpS, smpC, smpT, smpP) <- subAgg (subscribers srv)
+      (ntfQ, ntfS, ntfC, ntfT, ntfP) <- subAgg (ntfSubscribers srv)
+      ntfMap <- readTVarIO nsv
+      ntfMsgs <- foldM (\ !a v -> (a +) . length <$> readTVarIO v) (0 :: Int) (M.elems ntfMap)
+      EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <- getEntityCounts @(StoreQueue s) (queueStore ms)
+      LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount, queueLockCount, notifierLockCount} <- loadedQueueCounts ms
+      AgentLeakStats {alSmpClients, alSmpSessions, alActiveServiceSubs, alActiveQueueSubs, alPendingServiceSubs, alPendingQueueSubs, alSmpSubWorkers, alSentCommands, alMsgQ} <- getAgentLeakStats smpAgent
+      logNote $
+        T.concat
+          [ "LEAKDIAG",
+            " srv=" <> T.pack srvPort,
+            f "threads" nThreads, f "clients" (length cls),
+            f "endThreads" (aggEndThreads cc), f "endThreadSeq" (aggEndThreadSeq cc), f "procThreads" (aggProcThreads cc),
+            f "subs" (aggSubs cc), f "subs_nosub" (aggNoSub cc), f "subs_pending" (aggPending cc), f "subs_thread" (aggThread cc), f "subs_prohibit" (aggProhibit cc),
+            f "ntfSubsClient" (aggNtfSubs cc), f "svcSubsCount" (aggSvcSubsCount cc),
+            f "rcvQ" (aggRcvQ cc), f "sndQ" (aggSndQ cc), f "msgQ" (aggMsgQ cc),
+            f "smp_qSubscribers" smpQ, f "smp_svcSubscribers" smpS, f "smp_subClients" smpC, f "smp_totalSvcSubs" smpT, f "smp_pendingEvents" smpP,
+            f "ntf_qSubscribers" ntfQ, f "ntf_svcSubscribers" ntfS, f "ntf_subClients" ntfC, f "ntf_totalSvcSubs" ntfT, f "ntf_pendingEvents" ntfP,
+            f "ntfStore_keys" (M.size ntfMap), f "ntfStore_msgs" ntfMsgs,
+            f "store_queues" queueCount, f "store_notifiers" notifierCount, f "store_rcvServices" rcvServiceCount, f "store_ntfServices" ntfServiceCount, f "store_rcvSvcQueues" rcvServiceQueuesCount, f "store_ntfSvcQueues" ntfServiceQueuesCount,
+            f "loaded_queues" loadedQueueCount, f "loaded_notifiers" loadedNotifierCount, f "open_journals" openJournalCount, f "queue_locks" queueLockCount, f "notifier_locks" notifierLockCount,
+            f "proxy_smpClients" alSmpClients, f "proxy_smpSessions" alSmpSessions, f "proxy_activeSvcSubs" alActiveServiceSubs, f "proxy_activeQSubs" alActiveQueueSubs, f "proxy_pendingSvcSubs" alPendingServiceSubs, f "proxy_pendingQSubs" alPendingQueueSubs, f "proxy_subWorkers" alSmpSubWorkers, f "proxy_sentCommands" alSentCommands, f "proxy_msgQ" alMsgQ
+          ]
+      where
+        f :: Show a => Text -> a -> Text
+        f k v = " " <> k <> "=" <> tshow v
+        emptyAgg = ClientAgg 0 0 0 0 0 0 0 0 0 0 0 0 0
+        accClient !agg Client {subscriptions, ntfSubscriptions, serviceSubsCount, procThreads, endThreads, endThreadSeq, rcvQ, sndQ, msgQ} = do
+          et <- IM.size <$> readTVarIO endThreads
+          es <- readTVarIO endThreadSeq
+          pt <- readTVarIO procThreads
+          subs <- readTVarIO subscriptions
+          (no, pe, th, pr) <- foldM accSub (0, 0, 0, 0) (M.elems subs)
+          nt <- M.size <$> readTVarIO ntfSubscriptions
+          sc <- fst <$> readTVarIO serviceSubsCount
+          (rl, sl, ml) <- atomically $ (,,) <$> lengthTBQueue rcvQ <*> lengthTBQueue sndQ <*> lengthTBQueue msgQ
+          pure
+            agg
+              { aggEndThreads = aggEndThreads agg + et,
+                aggEndThreadSeq = aggEndThreadSeq agg + es,
+                aggProcThreads = aggProcThreads agg + pt,
+                aggSubs = aggSubs agg + M.size subs,
+                aggNoSub = aggNoSub agg + no,
+                aggPending = aggPending agg + pe,
+                aggThread = aggThread agg + th,
+                aggProhibit = aggProhibit agg + pr,
+                aggNtfSubs = aggNtfSubs agg + nt,
+                aggSvcSubsCount = aggSvcSubsCount agg + fromIntegral sc,
+                aggRcvQ = aggRcvQ agg + fromIntegral rl,
+                aggSndQ = aggSndQ agg + fromIntegral sl,
+                aggMsgQ = aggMsgQ agg + fromIntegral ml
+              }
+        accSub (no, pe, th, pr) Sub {subThread} = case subThread of
+          ServerSub t ->
+            readTVarIO t >>= \case
+              NoSub -> pure (no + 1, pe, th, pr)
+              SubPending -> pure (no, pe + 1, th, pr)
+              SubThread _ -> pure (no, pe, th + 1, pr)
+          ProhibitSub -> pure (no, pe, th, pr + 1)
+        subAgg ServerSubscribers {queueSubscribers, serviceSubscribers, subClients, totalServiceSubs, pendingEvents} = do
+          q <- M.size <$> getSubscribedClients queueSubscribers
+          s' <- M.size <$> getSubscribedClients serviceSubscribers
+          sc <- IS.size <$> readTVarIO subClients
+          ts <- fst <$> readTVarIO totalServiceSubs
+          pe <- IM.size <$> readTVarIO pendingEvents
+          pure (q, s', sc, ts, pe)
 
     expireNtfsThread :: ServerConfig s -> M s ()
     expireNtfsThread ServerConfig {notificationExpiration = expCfg} = do
@@ -1465,7 +1580,12 @@ client
                 Right r -> PRES r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
                   PCEProtocolError {} -> inc own pSuccesses
-                  _ -> inc own pErrorsOther
+                  _ -> do
+                    logWarn $ "Error forwarding to relay: " <> decodeLatin1 (strEncode $ transportHost' smp) <> " own=" <> tshow own <> " " <> tshow e
+                    inc own pErrorsOther
+                    case e of
+                      PCEResponseTimeout -> liftIO $ closeTimedOutClient (smpPingCount $ networkConfig $ smpCfg $ agentCfg a) smp
+                      _ -> pure ()
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
@@ -1473,11 +1593,15 @@ client
     -- Run a slow command on a thread
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId cmdAction = do
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+      -- the forked thread releases the slot when the command completes, the caller only if the fork failed
+      mask $ \restore -> do
+        wait
+        forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") (restore cmd `finally` signal)
+          `onException` signal
       pure Nothing
       where
+        -- commands MUST be processed under a reasonable timeout or the client would halt
+        cmd = cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
         wait = do
           limit <- asks (concurrency . config)
           atomically $ do
@@ -1493,7 +1617,7 @@ client
         Nothing -> incStat (rslvDisabled st) $> Nothing
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
-    -- concurrency is limited by serverResolverConcurrency in forkCmd.
+    -- concurrency is limited per connection by serverResolverConcurrency in forkCmd and globally in resolveName.
     resolveNameMsg :: VersionSMP -> NamesEnv -> NameQuery -> M s BrokerMsg
     resolveNameMsg v nenv q = do
       st <- asks (rslvStats . serverStats)

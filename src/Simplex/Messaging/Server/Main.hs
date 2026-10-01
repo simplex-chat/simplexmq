@@ -814,7 +814,8 @@ readNamesConfig ini
               { resolverEndpoint = either (error . ("[NAMES] resolver_endpoint: " <>)) id (validateUrl endpoint resolverAuth_),
                 resolverAuth = resolverAuth_,
                 resolverTimeoutMs = boundedIniInt 3000 100 60000 "resolver_timeout_ms",
-                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes"
+                resolverMaxResponseBytes = boundedIniInt 16000 1024 16000 "resolver_max_response_bytes",
+                resolverGlobalConcurrency = boundedIniInt 32 1 1000 "resolver_global_concurrency"
               }
   where
     enabled = fromMaybe False (iniOnOff "NAMES" "enable" ini)
