@@ -459,6 +459,8 @@ functionalAPITests ps = do
         testRatchetSyncSuspendForeground ps
       it "should synchronize ratchets when clients start synchronization simultaneously" $
         testRatchetSyncSimultaneous ps
+      it "should synchronize ratchets when synchronization is forced again" $
+        testRatchetSyncRepeated ps
 #endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
@@ -2742,6 +2744,33 @@ testRatchetSyncSimultaneous ps = do
       exchangeGreetingsMsgIds alice bobId 10 bob2 aliceId 7
   disposeAgentClient alice
   disposeAgentClient bob
+  disposeAgentClient bob2
+
+testRatchetSyncRepeated :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncRepeated ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+
+  ConnectionStats {ratchetSyncState = rss1} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  rss1 `shouldBe` RSStarted
+  ConnectionStats {ratchetSyncState = rss2} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn True
+  rss2 `shouldBe` RSStarted
+
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
+    runRight_ $ do
+      get alice =##> ratchetSyncP bobId RSAgreed
+      get alice =##> ratchetSyncP bobId RSOk
+      get bob2 =##> ratchetSyncP aliceId RSOk
+      msgId <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT msgId)
+      get bob2 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob2 aliceId 8 Nothing
   disposeAgentClient bob2
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
