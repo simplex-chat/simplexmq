@@ -7,6 +7,7 @@ import CLITests
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Logger.Simple
+import CoreTests.AddressStatsTests
 import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
@@ -83,6 +84,7 @@ main = do
       . after_ (eventuallyRemove "tests/tmp" 3)
       $ do
         describe "Core tests" $ do
+          describe "Address statistics tests" addressStatsTests
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
           describe "Version range" versionRangeTests
