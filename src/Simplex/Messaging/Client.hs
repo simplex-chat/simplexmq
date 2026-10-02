@@ -195,6 +195,7 @@ data PClient v err msg = PClient
     transportHost :: TransportHost,
     tcpConnectTimeout :: NetworkTimeout,
     tcpTimeout :: NetworkTimeout,
+    proxiedRelayVRange :: VersionRange v,
     sendPings :: TVar Bool,
     lastReceived :: TVar UTCTime,
     timeoutErrorCount :: TVar Int,
@@ -240,6 +241,7 @@ smpClientStub g sessionId thVersion thAuth = do
               transportHost = "localhost",
               tcpConnectTimeout,
               tcpTimeout,
+              proxiedRelayVRange = supportedClientSMPRelayVRange,
               sendPings,
               lastReceived,
               timeoutErrorCount,
@@ -477,6 +479,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     serviceCredentials :: Maybe ServiceCredentials,
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
+    proxiedRelayVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
     agreeSecret :: Bool,
     -- | Whether connecting client is a proxy server. See comment in ClientHandshake
@@ -495,6 +498,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
       clientALPN,
       serviceCredentials = Nothing,
       serverVRange,
+      proxiedRelayVRange = serverVRange,
       agreeSecret = False,
       proxyServer = False,
       useSNI
@@ -505,6 +509,7 @@ defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
 defaultSMPClientConfig =
   (defaultClientConfig (Just alpnSupportedSMPHandshakes) False supportedClientSMPRelayVRange)
     { defaultTransport = (show defaultSMPPort, transport @TLS),
+      proxiedRelayVRange = supportedClientSMPRelayVRange,
       agreeSecret = True
     }
 {-# INLINE defaultSMPClientConfig #-}
@@ -568,7 +573,7 @@ type SMPTransportSession = TransportSession BrokerMsg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, proxiedRelayVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -593,6 +598,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             transportHost,
             tcpConnectTimeout,
             tcpTimeout,
+            proxiedRelayVRange,
             sendPings,
             lastReceived,
             timeoutErrorCount,
@@ -1115,10 +1121,10 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {thParams = THandleParams {thServerVRange}, client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
+connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout, proxiedRelayVRange}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
   sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
     PKEY sId vr (CertChainPubKey chain key) ->
-      case thServerVRange `compatibleVersion` vr of
+      case proxiedRelayVRange `compatibleVersion` vr of
         Nothing -> throwE $ transportErr TEVersion
         Just (Compatible v) -> do
           relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)

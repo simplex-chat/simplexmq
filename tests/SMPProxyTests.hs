@@ -162,7 +162,7 @@ smpProxyTests = do
     twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
     twoServersMoreConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 128}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
     twoServersNoConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 1}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
-    twoServersPrevProxy test msType = twoServers_ (prevServerVRange $ proxyCfgMS msType) (cfgMS msType) test msType
+    twoServersPrevProxy test msType = twoServers_ (proxyCfgVPrev msType) (cfgMS msType) test msType
     twoServersPrevRelay test msType = twoServers_ (proxyCfgMS msType) (prevServerVRange $ cfgMS msType) test msType
     prevServerVRange cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {smpServerVRange = prevRange $ smpServerVRange cfg_}
     twoServers_ :: AServerConfig -> AServerConfig -> IO () -> AStoreType -> IO ()
@@ -184,7 +184,7 @@ deliverMessagesViaProxyVR clientVR proxyServ relayServ alg unsecuredMsgs secured
   g <- C.newRandom
   -- set up proxy
   ts <- getCurrentTime
-  pc' <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = clientVR} [] Nothing ts (\_ -> pure ())
+  pc' <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) defaultSMPClientConfig {serverVRange = clientVR, proxiedRelayVRange = clientVR} [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pc'
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- set up relay
