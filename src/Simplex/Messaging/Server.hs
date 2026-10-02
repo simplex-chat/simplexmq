@@ -2131,7 +2131,7 @@ client
           unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
-          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
+          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
@@ -2144,7 +2144,13 @@ client
                   TBError _ _ : _ -> throwE BLOCK
                   TBTransmission b' _ : _ -> pure b'
                   TBTransmissions b' _ _ : _ -> pure b'
-                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
+                let encrypt nonce = liftEitherWith (const BLOCK) $ C.cbEncrypt clientSecret nonce r' paddedProxiedTLength
+                r2 <-
+                  if fwdVersion >= fwdNoncesSMPVersion
+                    then do
+                      nonce <- atomically . C.randomCbNonce =<< asks random
+                      EncResponse . (smpEncode nonce <>) <$> encrypt nonce
+                    else EncResponse <$> encrypt (C.reverseNonce clientNonce)
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           -- the inner response, or Nothing if forked (RSLV).

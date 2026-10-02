@@ -142,6 +142,7 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64 as B64
@@ -1228,14 +1229,17 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
     TBError e _ : _ -> throwE $ PCETransportError e
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
-  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
+  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret (encTransmissionNonce v nonce) b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * netTimeoutInt tcpTimeout nm
   tryE (sendProtocolCommand_ c nm (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
       PRES (EncResponse er) -> do
         -- server interaction errors are thrown directly
-        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
+        let (respNonce, er')
+              | v >= fwdNoncesSMPVersion = first C.cbNonce $ B.splitAt 24 er
+              | otherwise = (C.reverseNonce nonce, er)
+        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret respNonce er'
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeClient serverThParams t'' of
             (_, _, cmd) -> case cmd of

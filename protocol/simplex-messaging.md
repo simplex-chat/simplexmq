@@ -86,7 +86,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 22. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 23. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -109,6 +109,7 @@ This document describes SMP protocol version 22. Versions 1-5 are discontinued. 
 - v20: public namespaces resolver (RSLV command, RNAME response) — direct or forwarded via PFWD
 - v21: server public information in handshake
 - v22: `RNAME` says whether a name can be registered, not only what it resolves to
+- v23: version in nonces of forwarded commands, random nonces for forwarded responses
 
 ## Introduction
 
@@ -1128,7 +1129,7 @@ The proxy router may respond with error response in case the destination router 
 
 Sender can send `SKEY` and `SEND` commands via proxy after obtaining the session ID with `PRXY` command (see [Request proxied session](#request-proxied-session)).
 
-Transmission sent to proxy router should use session ID as entity ID and use a random correlation ID of 24 bytes as a nonce for crypto_box encryption of transmission to the destination router. The random ephemeral X25519 key to encrypt transmission should be unique per command, and it should be combined with the key sent by the router in the handshake header to proxy and to the client in `PKEY` command.
+Transmission sent to proxy router should use session ID as entity ID and use a random correlation ID of 24 bytes as a nonce for crypto_box encryption of transmission to the destination router. When `smpVersion` in `PFWD` is 23 or higher, the first 2 bytes of this nonce are XOR-ed with `smpVersion`. The random ephemeral X25519 key to encrypt transmission should be unique per command, and it should be combined with the key sent by the router in the handshake header to proxy and to the client in `PKEY` command.
 
 Encrypted transmission should use the received session ID from the connection between proxy router and destination router in the authorized body.
 
@@ -1140,10 +1141,11 @@ commandKey = length x509encoded
 
 The proxy router will forward the encrypted transmission in `RFWD` command (see below).
 
-Having received the `RRES` response from the destination router, proxy router will forward `PRES` response to the client. `PRES` response should use the same correlation ID as `PFWD` command. The destination router will use this correlation ID increased by 1 as a nonce for encryption of the response.
+Having received the `RRES` response from the destination router, proxy router will forward `PRES` response to the client. `PRES` response should use the same correlation ID as `PFWD` command. The destination router will use this correlation ID increased by 1 as a nonce for encryption of the response. When `smpVersion` in `PFWD` is 23 or higher, the destination router uses a random nonce instead, and sends it before the encrypted response.
 
 ```abnf
-proxyResponse = %s"PRES" SP <encrypted padded(forwardedResponse, 16226)>
+proxyResponse = %s"PRES" SP [responseNonce] <encrypted padded(forwardedResponse, 16226)>
+responseNonce = 24*24 OCTET ; from v23
 forwardedResponse = *OCTET ; client-encrypted SMP response, decrypted by client using per-command DH secret
 ```
 

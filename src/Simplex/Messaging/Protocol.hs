@@ -168,6 +168,7 @@ module Simplex.Messaging.Protocol
     EncFwdTransmission (..),
     EncResponse (..),
     EncTransmission (..),
+    encTransmissionNonce,
     FwdResponse (..),
     FwdTransmission (..),
     NameRecord (..),
@@ -701,6 +702,11 @@ instance Encoding NewNtfCreds where
 
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
+
+encTransmissionNonce :: VersionSMP -> C.CbNonce -> C.CbNonce
+encTransmissionNonce v nonce@(C.CbNonce s)
+  | v >= fwdNoncesSMPVersion = C.cbNonce $ BS.pack (BS.zipWith xor (smpEncode v) s) <> BS.drop 2 s
+  | otherwise = nonce
 
 data FwdTransmission = FwdTransmission
   { fwdCorrId :: CorrId,
