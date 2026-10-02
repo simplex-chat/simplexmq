@@ -210,6 +210,8 @@ The outer envelope contains the encrypted header (used as associated data for bo
 
 The message body is encrypted with AES-256-GCM using the message key derived from the sending chain key (`KDF_CK`). The associated data for body encryption is the concatenation of the ratchet associated data and the encoded encrypted header.
 
+`KDF_CK(CK)` is HKDF-SHA512 with empty salt, `CK` as input key material and info `"SimpleXChainRatchet"`, producing 96 bytes split into the next chain key (32 bytes), the message key (32 bytes), the message body IV (16 bytes, not transmitted) and `headerIV` (16 bytes). Both IVs are used as 16-byte AES-256-GCM IVs, not the 12-byte IVs recommended by NIST SP 800-38D, so the initial counter block is J0 = GHASH(IV || 0^64 || [128]_64) as defined there for non-96-bit IVs. WebCrypto and other conforming implementations compute it when given the full 16-byte IV; truncating the IV to 12 bytes produces different ciphertext.
+
 ```abnf
 encRatchetMessage = versionedLength encMessageHeader msgAuthTag encMsgBody
 ; encMessageHeader is used as associated data for body decryption: AD = rcAD || encMessageHeader
