@@ -34,7 +34,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType, LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
@@ -43,6 +43,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
@@ -57,7 +58,6 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
-import Simplex.Messaging.Server.QueueStore.Types
 import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
 #endif
 
@@ -101,6 +101,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should write/ack messages" testWriteAckMessages
       it "should not fail on EOF when changing read journal" testChangeReadJournal
+      it "should not add link data to secured messaging queue" testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -266,6 +267,33 @@ testChangeReadJournal ms = do
     Just (Message {msgId = mId5}, True) <- write "message 5"
     (Msg "message 5", Nothing) <- tryDelPeekMsg ms q mId5
     void $ ExceptT $ deleteQueue ms q
+
+testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
+testLinkDataSecuredQueue ms = do
+  g <- C.newRandom
+  (sKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+      ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+      rndId = atomically $ EntityId <$> C.randomBytes 24 g
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  (cId, cqr) <- testNewQueueRec g QMContact
+  lnkId <- rndId
+  cLnkId <- rndId
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    -- the handle is read before SKEY, as in a command that raced with it
+    staleQ <- ExceptT $ getQueue ms SRecipient rId
+    ExceptT $ secureQueue st q sKey
+    liftIO $ addQueueLinkData st staleQ lnkId ld `shouldReturn` Left AUTH
+    freshQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ getQueueLinkData st freshQ lnkId `shouldReturn` Left AUTH
+    cq <- ExceptT $ addQueue ms cId cqr
+    ExceptT $ secureQueue st cq sKey
+    ExceptT $ addQueueLinkData st cq cLnkId ld
+    ld' <- ExceptT $ getQueueLinkData st cq cLnkId
+    liftIO $ ld' `shouldBe` ld
+    void $ ExceptT $ deleteQueue ms q
+    void $ ExceptT $ deleteQueue ms cq
 
 testExportImportStore :: JournalMsgStore 'QSMemory -> IO ()
 testExportImportStore ms = do
