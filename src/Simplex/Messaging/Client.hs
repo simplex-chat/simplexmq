@@ -142,7 +142,6 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
-import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64 as B64
@@ -163,7 +162,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parseAll, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -1116,10 +1115,10 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
+connectSMPProxiedRelay c@ProtocolClient {thParams = THandleParams {thServerVRange}, client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
   sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
     PKEY sId vr (CertChainPubKey chain key) ->
-      case supportedClientSMPRelayVRange `compatibleVersion` vr of
+      case thServerVRange `compatibleVersion` vr of
         Nothing -> throwE $ transportErr TEVersion
         Just (Compatible v) -> do
           relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
@@ -1170,7 +1169,7 @@ instance StrEncoding ProxyClientError where
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
--- receives PRES :: EncResponse -> BrokerMsg -- proxy to client
+-- receives PRES :: Maybe C.CbNonce -> EncResponse -> BrokerMsg -- proxy to client
 
 -- When client sends message via proxy, there may be one successful scenario and 9 error scenarios
 -- as shown below (WTF stands for unexpected response, ??? for response that failed to parse).
@@ -1234,12 +1233,9 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   let tOut = Just $ 2 * netTimeoutInt tcpTimeout nm
   tryE (sendProtocolCommand_ c nm (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
-      PRES (EncResponse er) -> do
+      PRES nonce_ (EncResponse er) -> do
         -- server interaction errors are thrown directly
-        let (respNonce, er')
-              | v >= fwdNoncesSMPVersion = first C.cbNonce $ B.splitAt 24 er
-              | otherwise = (C.reverseNonce nonce, er)
-        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret respNonce er'
+        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (fromMaybe (C.reverseNonce nonce) nonce_) er
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeClient serverThParams t'' of
             (_, _, cmd) -> case cmd of
@@ -1260,7 +1256,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 -- receives RRES :: EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
 -- Always uses background timeout mode
-forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
 forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
@@ -1275,8 +1271,8 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
     RRES (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
-      FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
-      pure fwdResponse
+      FwdResponse {fwdCorrId = _, fwdNonce, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ parseAll (fwdResponseP fwdVersion) r'
+      pure (fwdNonce, fwdResponse)
     r -> throwE $ unexpectedResponse r
 
 -- get queue information - always sent interactively

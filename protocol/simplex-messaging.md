@@ -1145,7 +1145,7 @@ Having received the `RRES` response from the destination router, proxy router wi
 
 ```abnf
 proxyResponse = %s"PRES" SP [responseNonce] <encrypted padded(forwardedResponse, 16226)>
-responseNonce = 24*24 OCTET ; from v23
+responseNonce = %s"0" / (%s"1" 24*24 OCTET) ; from v23
 forwardedResponse = *OCTET ; client-encrypted SMP response, decrypted by client using per-command DH secret
 ```
 
@@ -1173,8 +1173,9 @@ The shared secret for encrypting transmission bodies between proxy router and de
 
 ```abnf
 relayResponse = %s"RRES" SP <encrypted(responseTransmission)>
-responseTransmission = fwdCorrId forwardedResponse
+responseTransmission = fwdCorrId [fwdResponseNonce] forwardedResponse
   ; fwdCorrId and forwardedResponse defined above in RFWD section
+fwdResponseNonce = 24*24 OCTET ; when fwdSmpVersion is 23 or higher
 ```
 
 ### Short link commands

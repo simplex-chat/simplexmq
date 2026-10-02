@@ -1462,7 +1462,7 @@ client
             inc own pRequests
             forkProxiedCmd $ do
               liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ inc own pSuccesses
+                Right (nonce_, r) -> PRES nonce_ r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
                   PCEProtocolError {} -> inc own pSuccesses
                   _ -> inc own pErrorsOther
@@ -2144,15 +2144,13 @@ client
                   TBError _ _ : _ -> throwE BLOCK
                   TBTransmission b' _ : _ -> pure b'
                   TBTransmissions b' _ _ : _ -> pure b'
-                let encrypt nonce = liftEitherWith (const BLOCK) $ C.cbEncrypt clientSecret nonce r' paddedProxiedTLength
-                r2 <-
+                fwdNonce <-
                   if fwdVersion >= fwdNoncesSMPVersion
-                    then do
-                      nonce <- atomically . C.randomCbNonce =<< asks random
-                      EncResponse . (smpEncode nonce <>) <$> encrypt nonce
-                    else EncResponse <$> encrypt (C.reverseNonce clientNonce)
-                let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+                    then Just <$> (atomically . C.randomCbNonce =<< asks random)
+                    else pure Nothing
+                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) fwdNonce) r' paddedProxiedTLength
+                let fr = FwdResponse {fwdCorrId, fwdNonce, fwdResponse = r2}
+                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (encodeFwdResponse fr)
           -- the inner response, or Nothing if forked (RSLV).
           r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
