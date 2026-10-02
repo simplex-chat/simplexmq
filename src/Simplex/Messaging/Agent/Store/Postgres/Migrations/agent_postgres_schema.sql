@@ -1245,6 +1245,10 @@ CREATE INDEX idx_skipped_messages_conn_id ON smp_agent_test_protocol_schema.skip
 
 
 
+CREATE INDEX idx_skipped_messages_conn_id_skipped_message_id ON smp_agent_test_protocol_schema.skipped_messages USING btree (conn_id, skipped_message_id);
+
+
+
 CREATE INDEX idx_snd_file_chunk_replica_recipients_snd_file_chunk_replica_id ON smp_agent_test_protocol_schema.snd_file_chunk_replica_recipients USING btree (snd_file_chunk_replica_id);
 
 

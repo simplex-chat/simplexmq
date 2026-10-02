@@ -4386,7 +4386,7 @@ agentRatchetDecrypt g db connId encAgentMsg = do
 
 agentRatchetDecrypt' :: TVar ChaChaDRG -> DB.Connection -> ConnId -> CR.RatchetX448 -> ByteString -> ExceptT StoreError IO (ByteString, PQEncryption)
 agentRatchetDecrypt' g db connId rc encAgentMsg = do
-  skipped <- liftIO $ getSkippedMsgKeys db connId
+  skipped <- liftIO $ getSkippedMsgKeys db connId CR.maxSkippedMsgKeys
   (agentMsgBody_, rc', skippedDiff) <- withExceptT (SEAgentError . cryptoError) $ CR.rcDecrypt g rc skipped encAgentMsg
   agentMsgBody <- liftEither $ first (SEAgentError . cryptoError) agentMsgBody_
   liftIO $ updateRatchet db connId rc' skippedDiff

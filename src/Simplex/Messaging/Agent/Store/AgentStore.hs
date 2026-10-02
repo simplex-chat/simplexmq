@@ -1594,12 +1594,16 @@ getRatchet_ q db connId =
   where
     ratchet = maybe (Left SERatchetNotFound) Right . fromOnly
 
-getSkippedMsgKeys :: DB.Connection -> ConnId -> IO SkippedMsgKeys
-getSkippedMsgKeys db connId =
-  skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
+getSkippedMsgKeys :: DB.Connection -> ConnId -> Int -> IO SkippedMsgKeys
+getSkippedMsgKeys db connId maxKeys = do
+  (keys, oldKeys) <- splitAt maxKeys <$> DB.query db "SELECT skipped_message_id, header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ? ORDER BY skipped_message_id DESC LIMIT ?" (connId, maxKeys + 1)
+  case oldKeys of
+    (skippedMsgId :: Int64, _, _, _) : _ -> DB.execute db "DELETE FROM skipped_messages WHERE conn_id = ? AND skipped_message_id <= ?" (connId, skippedMsgId)
+    [] -> pure ()
+  pure $ skipped keys
   where
     skipped = foldl' addSkippedKey M.empty
-    addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
+    addSkippedKey smks (_, hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
       where
         addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
 
