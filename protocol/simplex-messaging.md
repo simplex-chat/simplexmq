@@ -1172,10 +1172,9 @@ The shared secret for encrypting transmission bodies between proxy router and de
 
 
 ```abnf
-relayResponse = %s"RRES" SP <encrypted(responseTransmission)>
-responseTransmission = fwdCorrId [fwdResponseNonce] forwardedResponse
+relayResponse = %s"RRES" SP [responseNonce] <encrypted(responseTransmission)>
+responseTransmission = fwdCorrId forwardedResponse
   ; fwdCorrId and forwardedResponse defined above in RFWD section
-fwdResponseNonce = 24*24 OCTET ; when fwdSmpVersion is 23 or higher
 ```
 
 ### Short link commands

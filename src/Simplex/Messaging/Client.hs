@@ -162,7 +162,7 @@ import Numeric.Natural
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, parseAll, sumTypeJSON)
+import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON, sumTypeJSON)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
@@ -1259,7 +1259,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
--- receives RRES :: EncFwdResponse -> BrokerMsg
+-- receives RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
 -- Always uses background timeout mode
 forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
@@ -1274,11 +1274,11 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
   sendProtocolCommand_ c NRMBackground (Just nonce) Nothing Nothing NoEntity (Cmd SProxyService (RFWD eft)) >>= \case
-    RRES (EncFwdResponse efr) -> do
+    RRES nonce_ (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
-      FwdResponse {fwdCorrId = _, fwdNonce, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ parseAll (fwdResponseP fwdVersion) r'
-      pure (fwdNonce, fwdResponse)
+      FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
+      pure (nonce_, fwdResponse)
     r -> throwE $ unexpectedResponse r
 
 -- get queue information - always sent interactively

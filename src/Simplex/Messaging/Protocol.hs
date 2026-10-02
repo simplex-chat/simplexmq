@@ -170,8 +170,6 @@ module Simplex.Messaging.Protocol
     EncTransmission (..),
     encTransmissionNonce,
     FwdResponse (..),
-    encodeFwdResponse,
-    fwdResponseP,
     FwdTransmission (..),
     NameRecord (..),
     MsgFlags (..),
@@ -745,7 +743,7 @@ data BrokerMsg where
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
   PKEY :: SessionId -> VersionRangeSMP -> CertChainPubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
-  RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
+  RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg -- relay to proxy
   PRES :: Maybe C.CbNonce -> EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   ENDS :: Int64 -> IdsHash -> BrokerMsg
@@ -769,20 +767,15 @@ newtype EncFwdResponse = EncFwdResponse ByteString
 
 data FwdResponse = FwdResponse
   { fwdCorrId :: CorrId,
-    fwdNonce :: Maybe C.CbNonce,
     fwdResponse :: EncResponse
   }
 
-encodeFwdResponse :: FwdResponse -> ByteString
-encodeFwdResponse FwdResponse {fwdCorrId = CorrId corrId, fwdNonce, fwdResponse = EncResponse t} =
-  smpEncode corrId <> maybe "" smpEncode fwdNonce <> smpEncode (Tail t)
-
-fwdResponseP :: VersionSMP -> Parser FwdResponse
-fwdResponseP v = do
-  corrId <- smpP
-  fwdNonce <- if v >= fwdNoncesSMPVersion then Just <$> smpP else pure Nothing
-  Tail t <- smpP
-  pure FwdResponse {fwdCorrId = CorrId corrId, fwdNonce, fwdResponse = EncResponse t}
+instance Encoding FwdResponse where
+  smpEncode FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t} =
+    smpEncode (corrId, Tail t)
+  smpP = do
+    (corrId, Tail t) <- smpP
+    pure FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t}
 
 newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
@@ -1998,7 +1991,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
-    RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
+    RRES nonce_ (EncFwdResponse encBlock)
+      | v >= fwdNoncesSMPVersion -> e (RRES_, ' ', nonce_, Tail encBlock)
+      | otherwise -> e (RRES_, ' ', Tail encBlock)
     PRES nonce_ (EncResponse encBlock)
       | v >= fwdNoncesSMPVersion -> e (PRES_, ' ', nonce_, Tail encBlock)
       | otherwise -> e (PRES_, ' ', Tail encBlock)
@@ -2056,7 +2051,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
-    RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
+    RRES_
+      | v >= fwdNoncesSMPVersion -> RRES <$> _smpP <*> (EncFwdResponse . unTail <$> smpP)
+      | otherwise -> RRES Nothing . EncFwdResponse . unTail <$> _smpP
     PRES_
       | v >= fwdNoncesSMPVersion -> PRES <$> _smpP <*> (EncResponse . unTail <$> smpP)
       | otherwise -> PRES Nothing . EncResponse . unTail <$> _smpP
@@ -2092,7 +2089,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     -- PONG response must not have queue ID
     PONG -> noEntityMsg
     PKEY {} -> noEntityMsg
-    RRES _ -> noEntityMsg
+    RRES {} -> noEntityMsg
     ALLS -> noEntityMsg
     RNAME {} -> noEntityMsg
     -- other broker responses must have queue ID
