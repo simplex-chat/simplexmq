@@ -97,6 +97,7 @@ serverTests = do
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
+  describe "Authenticator nonce" testAuthenticatorCorrIdSize
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
@@ -1302,9 +1303,9 @@ testTiming =
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
+      Resp "abcdabcdabcdabcdabcdabcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcdabcdabcdabcdabcdabcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-      Resp "cdab" _ resp <- signSendRecv rh rKey ("cdab", rId, SUB)
+      Resp "cdabcdabcdabcdabcdabcdab" _ resp <- signSendRecv rh rKey ("cdabcdabcdabcdabcdabcdab", rId, SUB)
       case resp of
         OK -> pure ()
         SOK Nothing -> pure ()
@@ -1314,9 +1315,9 @@ testTiming =
       runTimingTest rh badKey rId SUB
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
-      Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
+      Resp "dabcdabcdabcdabcdabcdabc" _ OK <- signSendRecv rh rKey ("dabcdabcdabcdabcdabcdabc", rId, KEY sPub)
 
-      Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, _SEND "hello")
+      Resp "bcdabcdabcdabcdabcdabcda" _ OK <- signSendRecv sh sKey ("bcdabcdabcdabcdabcdabcda", sId, _SEND "hello")
       Resp "" _ (Msg mId msg) <- tGet1 rh
       (dec mId msg, Right "hello") #== "delivered from queue"
 
@@ -1327,15 +1328,15 @@ testTiming =
           threadDelay 100000
           _ <- timeRepeat n $ do
             -- "warm up" the server
-            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", EntityId "1234", cmd)
+            Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           threadDelay 100000
           timeWrongKey <- timeRepeat n $ do
-            Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
+            Resp "cdabcdabcdabcdabcdabcdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdabcdabcdabcdabcdabcdab", qId, cmd)
             return ()
           threadDelay 100000
           timeNoQueue <- timeRepeat n $ do
-            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", EntityId "1234", cmd)
+            Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey msType
           unless ok . putStrLn . unwords $
@@ -1346,6 +1347,35 @@ testTiming =
               show $ timeWrongKey / timeNoQueue - 1
             ]
           ok `shouldBe` True
+
+testAuthenticatorCorrIdSize :: SpecWith (ASrvTransport, AStoreType)
+testAuthenticatorCorrIdSize =
+  it "should reject X25519 authenticator unless corrId is 24 bytes" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      let newCorrId = atomically $ C.randomBytes 24 g
+          rejected cId entId = (CorrId cId, entId, Right (ERR $ CMD SYNTAX))
+      badCorrIds <- wrongSizeCorrIds <$> newCorrId
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      forM_ badCorrIds $ \cId ->
+        signSendRecv r rKey (cId, NoEntity, New rPub dhPub) `shouldReturn` rejected cId NoEntity
+      corrId1 <- newCorrId
+      Resp _ NoEntity (Ids rId sId srvDh) <- signSendRecv r rKey (corrId1, NoEntity, New rPub dhPub)
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      corrId2 <- newCorrId
+      Resp _ _ OK <- signSendRecv r rKey (corrId2, rId, KEY sPub)
+      Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND "hello")
+      Resp "" _ (Msg mId msg) <- tGet1 r
+      (decryptMsgV3 (C.dh' srvDh dhPriv) mId msg, Right "hello") #== "delivered from queue"
+      forM_ badCorrIds $ \cId ->
+        signSendRecv r rKey (cId, rId, ACK mId) `shouldReturn` rejected cId rId
+      corrId3 <- newCorrId
+      Resp _ _ OK <- signSendRecv r rKey (corrId3, rId, ACK mId)
+      pure ()
+
+wrongSizeCorrIds :: ByteString -> [ByteString]
+wrongSizeCorrIds corrId = ["", B.take 4 corrId, corrId <> "x"]
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =
