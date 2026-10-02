@@ -16,6 +16,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260411_service_certs
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260712_address_dr_rpc
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260823_snd_files_entitlement
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260919_ratchet_verify_codes
+import Simplex.Messaging.Agent.Store.Postgres.Migrations.M20261001_ratchet_key_hashes_unique
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Text, Maybe Text)]
@@ -31,7 +32,8 @@ schemaMigrations =
     ("20260411_service_certs", m20260411_service_certs, Just down_m20260411_service_certs),
     ("20260712_address_dr_rpc", m20260712_address_dr_rpc, Just down_m20260712_address_dr_rpc),
     ("20260823_snd_files_entitlement", m20260823_snd_files_entitlement, Just down_m20260823_snd_files_entitlement),
-    ("20260919_ratchet_verify_codes", m20260919_ratchet_verify_codes, Just down_m20260919_ratchet_verify_codes)
+    ("20260919_ratchet_verify_codes", m20260919_ratchet_verify_codes, Just down_m20260919_ratchet_verify_codes),
+    ("20261001_ratchet_key_hashes_unique", m20261001_ratchet_key_hashes_unique, Just down_m20261001_ratchet_key_hashes_unique)
   ]
 
 -- | The list of migrations in ascending order by date

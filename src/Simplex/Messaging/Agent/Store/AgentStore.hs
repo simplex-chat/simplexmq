@@ -2797,9 +2797,15 @@ setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
 setConnRatchetSync db connId ratchetSyncState =
   DB.execute db "UPDATE connections SET ratchet_sync_state = ? WHERE conn_id = ?" (ratchetSyncState, connId)
 
-addProcessedRatchetKeyHash :: DB.Connection -> ConnId -> ByteString -> IO ()
-addProcessedRatchetKeyHash db connId hash =
-  DB.execute db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?)" (connId, Binary hash)
+-- | Returns False if the hash was already processed for this connection.
+addProcessedRatchetKeyHash :: DB.Connection -> ConnId -> ByteString -> IO Bool
+addProcessedRatchetKeyHash db connId hash = do
+  (rs :: [Only Int]) <-
+    DB.query
+      db
+      "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (?,?) ON CONFLICT (conn_id, hash) DO NOTHING RETURNING 1"
+      (connId, Binary hash)
+  pure $ not $ null rs
 
 checkRatchetKeyHashExists :: DB.Connection -> ConnId -> ByteString -> IO Bool
 checkRatchetKeyHashExists db connId hash =

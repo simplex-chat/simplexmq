@@ -48,6 +48,7 @@ schemaDumpTest = do
   it "verify strict tables" testVerifyStrict
   it "should NOT create user record for new database" testUsersMigrationNew
   it "should create user record for old database" testUsersMigrationOld
+  it "should remove duplicate ratchet key hashes before adding unique index" testRatchetKeyHashesUniqueMigration
 
 testVerifySchemaDump :: IO ()
 testVerifySchemaDump = do
@@ -114,12 +115,28 @@ testUsersMigrationOld = do
     `shouldReturn` ([Only (1 :: Int)])
   closeDBStore st'
 
+testRatchetKeyHashesUniqueMigration :: IO ()
+testRatchetKeyHashesUniqueMigration = do
+  let beforeUnique = takeWhile (("m20261001_ratchet_key_hashes_unique" /=) . name) appMigrations
+  Right st <- createDBStore (DBOpts testDB [] "" False True TQOff) beforeUnique (MigrationConfig MCError Nothing)
+  withTransaction' st $ \db -> do
+    SQL.execute_ db "INSERT INTO users (user_id) VALUES (1)"
+    SQL.execute_ db "INSERT INTO connections (conn_id, conn_mode, user_id) VALUES (x'01', 'INV', 1), (x'02', 'INV', 1)"
+    SQL.execute_ db "INSERT INTO processed_ratchet_key_hashes (conn_id, hash) VALUES (x'01', x'aa'), (x'01', x'aa'), (x'01', x'bb'), (x'02', x'aa'), (x'01', x'aa')"
+  closeDBStore st
+  Right st' <- createDBStore (DBOpts testDB [] "" False True TQOff) appMigrations (MigrationConfig MCYesUp Nothing)
+  withTransaction' st' (`SQL.query_` "SELECT processed_ratchet_key_hash_id FROM processed_ratchet_key_hashes ORDER BY processed_ratchet_key_hash_id")
+    `shouldReturn` [Only (1 :: Int), Only 3, Only 4]
+  closeDBStore st'
+
 skipComparisonForDownMigrations :: [String]
 skipComparisonForDownMigrations =
   [ -- on down migration idx_messages_internal_snd_id_ts index moves down to the end of the file
     "m20230814_indexes",
     -- snd_secure and last_broker_ts columns swap order on down migration
-    "m20250322_short_links"
+    "m20250322_short_links",
+    -- on down migration idx_processed_ratchet_key_hashes_hash index moves down to the end of the file
+    "m20261001_ratchet_key_hashes_unique"
   ]
 
 getSchema :: FilePath -> FilePath -> IO String
