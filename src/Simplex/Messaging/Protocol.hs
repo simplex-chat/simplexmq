@@ -168,6 +168,7 @@ module Simplex.Messaging.Protocol
     EncFwdTransmission (..),
     EncResponse (..),
     EncTransmission (..),
+    encTransmissionNonce,
     FwdResponse (..),
     FwdTransmission (..),
     NameRecord (..),
@@ -280,7 +281,7 @@ import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, packZipWith, safeDecodeUtf8, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 
@@ -702,6 +703,11 @@ instance Encoding NewNtfCreds where
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
 
+encTransmissionNonce :: VersionSMP -> C.CbNonce -> C.CbNonce
+encTransmissionNonce v nonce@(C.CbNonce s)
+  | v >= fwdNoncesSMPVersion = C.cbNonce $ packZipWith xor (smpEncode v) s <> BS.drop 2 s
+  | otherwise = nonce
+
 data FwdTransmission = FwdTransmission
   { fwdCorrId :: CorrId,
     fwdVersion :: VersionSMP,
@@ -737,8 +743,8 @@ data BrokerMsg where
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
   PKEY :: SessionId -> VersionRangeSMP -> CertChainPubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
-  RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
-  PRES :: EncResponse -> BrokerMsg -- proxy to client
+  RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg -- relay to proxy
+  PRES :: Maybe C.CbNonce -> EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   ENDS :: Int64 -> IdsHash -> BrokerMsg
   DELD :: BrokerMsg
@@ -1985,8 +1991,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
-    RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
-    PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
+    RRES nonce_ (EncFwdResponse encBlock) -> fwdResp RRES_ nonce_ encBlock
+    PRES nonce_ (EncResponse encBlock) -> fwdResp PRES_ nonce_ encBlock
     END -> e END_
     ENDS n idsHash -> serviceResp ENDS_ n idsHash
     DELD -> e DELD_
@@ -2010,6 +2016,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       serviceResp tag n idsHash
         | v >= rcvServiceSMPVersion = e (tag, ' ', n, idsHash)
         | otherwise = e (tag, ' ', n)
+      fwdResp tag nonce_ encBlock
+        | v >= fwdNoncesSMPVersion = e (tag, ' ', nonce_, Tail encBlock)
+        | otherwise = e (tag, ' ', Tail encBlock)
 
   protocolP v = \case
     MSG_ -> do
@@ -2041,8 +2050,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
-    RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
-    PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
+    RRES_ -> fwdRespP RRES EncFwdResponse
+    PRES_ -> fwdRespP PRES EncResponse
     END_ -> pure END
     ENDS_ -> serviceRespP ENDS
     DELD_ -> pure DELD
@@ -2059,6 +2068,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
+      fwdRespP :: (Maybe C.CbNonce -> a -> BrokerMsg) -> (ByteString -> a) -> Parser BrokerMsg
+      fwdRespP resp enc = resp <$> (A.space *> nonceP) <*> (enc <$> A.takeByteString)
+      nonceP = if v >= fwdNoncesSMPVersion then smpP else pure Nothing
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX
@@ -2075,7 +2087,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     -- PONG response must not have queue ID
     PONG -> noEntityMsg
     PKEY {} -> noEntityMsg
-    RRES _ -> noEntityMsg
+    RRES {} -> noEntityMsg
     ALLS -> noEntityMsg
     RNAME {} -> noEntityMsg
     -- other broker responses must have queue ID

@@ -1,15 +1,30 @@
 #!/usr/bin/env python3
 """Unit tests for snrc-resolve helpers.
 
-Run with `python3 -m unittest scripts/resolver/service/test_snrc_resolve.py`.
+Run with `uv run pytest` from scripts/resolver/service.
 """
 
 import contextlib
+import http.client
 import importlib.util
 import io
+import ipaddress
+import json
+import logging
 import os
+import queue
+import re
+import signal
+import socket
+import subprocess
+import sys
+import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 # snrc-resolve.py has a hyphen, so import it via importlib instead of `import`.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -636,6 +651,25 @@ class PricingTests(unittest.TestCase):
         self.assertEqual(body["basePrice"], self.BASE)
 
 
+class DecodePricesTests(unittest.TestCase):
+    def test_a_count_longer_than_the_answer_is_refused(self):
+        """The count comes from the oracle; decoding it unchecked could loop for ever."""
+        huge = "0x" + snrc.encode_uint(200) + snrc.encode_uint(0x40) + snrc.encode_uint(2**64)
+        outcome = []
+
+        def decode():
+            try:
+                snrc.decode_prices(huge)
+            except RuntimeError as e:
+                outcome.append(e)
+
+        worker = threading.Thread(target=decode, daemon=True)
+        worker.start()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), "decoding did not stop")
+        self.assertRegex(str(outcome[0]), "short response")
+
+
 class EnsOracleTests(unittest.TestCase):
     """.testing runs an ENS-shaped oracle: it prices in attoUSD per second and
     charges a premium on lapsed names that it does not expose."""
@@ -777,13 +811,17 @@ class ErrorCodeTests(unittest.TestCase):
                 self.assertNotEqual(body["error"], body["message"])
 
     def test_an_upstream_failure_does_not_echo_the_exception(self):
-        with contextlib.redirect_stderr(io.StringIO()) as log:
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
             body = snrc.upstream_error(
                 {"name": "alice.testing"},
                 RuntimeError("http://user:secret@rpc.example/kEy8 refused"),
             )
         # the operator still sees the detail in the log
-        self.assertIn("secret", log.getvalue())
+        [record] = logs.records
+        self.assertEqual(record.getMessage(), "upstream_error")
+        self.assertEqual(record.fields["name"], "alice.testing")
+        self.assertEqual(record.fields["error"], "RuntimeError")
+        self.assertIn("secret", record.fields["message"])
         self.assertEqual(body["error"], "upstreamError")
         self.assertIn("RuntimeError", body["message"])
         self.assertNotIn("secret", body["message"])
@@ -1035,5 +1073,797 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(res["lastBlockTs"], self.now)
         self.assertEqual(res["registration"]["type"], "available")
 
-if __name__ == "__main__":
-    unittest.main()
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux drops SYNs on a full accept queue")
+class ListenBacklogTests(unittest.TestCase):
+    """The smp-server opens a connection per lookup and gives up after 3 s, so a
+    burst the accept queue cannot hold fails: TCP retries a dropped SYN after 1 s."""
+
+    BURST = 50
+
+    def test_a_burst_of_connections_is_queued_while_the_server_is_busy(self):
+        # never accepts, so every connection must wait in the queue
+        server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        clients = []
+        try:
+            for i in range(self.BURST):
+                c = socket.socket()
+                clients.append(c)
+                c.settimeout(0.5)
+                try:
+                    c.connect(server.server_address)
+                except TimeoutError:
+                    self.fail(f"connection {i + 1} of {self.BURST} was not queued")
+        finally:
+            for c in clients:
+                c.close()
+            server.server_close()
+
+
+def _word(value: int) -> bytes:
+    return value.to_bytes(32, "big")
+
+
+def _decode_aggregate3_calls(data: str):
+    """Multicall3.aggregate3 calldata back to (to, data) pairs, written apart
+    from the resolver's encoder so the two check each other."""
+    raw = bytes.fromhex(data[len(snrc.AGGREGATE3):])
+
+    def word(at):
+        return int.from_bytes(raw[at:at + 32], "big")
+
+    array = word(0)
+    base = array + 32
+    calls = []
+    for i in range(word(array)):
+        item = base + word(base + 32 * i)
+        call = item + word(item + 64)
+        calls.append(("0x" + raw[item + 12:item + 32].hex(), "0x" + raw[call + 32:call + 32 + word(call)].hex()))
+    return calls
+
+
+def _encode_aggregate3_results(results) -> str:
+    tuples = [
+        _word(int(ok)) + _word(0x40) + _word(len(data)) + data + b"\x00" * ((-len(data)) % 32)
+        for ok, data in results
+    ]
+    offsets, at = b"", 32 * len(tuples)
+    for t in tuples:
+        offsets += _word(at)
+        at += len(t)
+    return "0x" + (_word(0x20) + _word(len(tuples)) + offsets + b"".join(tuples)).hex()
+
+
+class FakeChain:
+    """Contract state for one registered name and one free name. Any other
+    call reverts, as a view function asked for something unset does."""
+
+    REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
+    REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
+    CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
+    OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
+    RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
+    GRACE = 90 * 86400
+    TEXTS = {"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
+
+    def __init__(self):
+        self.now = int(time.time())
+        acme, free = snrc.label_token("acme"), snrc.label_token("free")
+        node = snrc.node_of("acme.testing")
+        abi_bytes = RegistrationV2Tests._abi_bytes
+        prices = RegistrationV2Tests._prices_return(RegistrationV2Tests())
+        self.answers = {
+            snrc.expires_call(self.REGISTRAR, acme): "0x" + snrc.encode_uint(self.now + 3600),
+            snrc.expires_call(self.REGISTRAR, free): "0x" + snrc.encode_uint(0),
+            snrc.grace_call(self.REGISTRAR): "0x" + snrc.encode_uint(self.GRACE),
+            snrc.label_call(self.REGISTRAR, acme): abi_bytes(b"acme"),
+            snrc.reserved_call(self.CONTROLLER, acme): "0x" + snrc.encode_uint(0),
+            snrc.reserved_call(self.CONTROLLER, free): "0x" + snrc.encode_uint(0),
+            snrc.resolver_call(self.REGISTRY, node): "0x" + snrc.encode_uint(int(self.RESOLVER, 16)),
+            snrc.owner_call(self.REGISTRY, node): "0x" + snrc.encode_uint(int(self.OWNER, 16)),
+            snrc.addr_call(self.RESOLVER, node, snrc.COIN_ETH): abi_bytes(bytes.fromhex(self.OWNER[2:])),
+            snrc.prices_call(self.CONTROLLER): "0x" + snrc.encode_uint(int(self.ORACLE, 16)),
+            snrc.prices_call(self.ORACLE): prices,
+            snrc.min_length_call(self.CONTROLLER): "0x" + snrc.encode_uint(3),
+        }
+        for key, value in self.TEXTS.items():
+            self.answers[snrc.text_call(self.RESOLVER, node, key)] = abi_bytes(value.encode())
+
+    def call(self, to, data):
+        answer = self.answers.get((to.lower(), data))
+        if answer is None:
+            raise RuntimeError("execution reverted")
+        return answer
+
+
+class FakeNode(ThreadingHTTPServer):
+    """A JSON-RPC node over HTTP/1.1 keep-alive, serving FakeChain, with
+    batches and Multicall3, each of which a test can take away."""
+
+    daemon_threads = True
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), _FakeNodeHandler)
+        self.chain = FakeChain()
+        self.block = 100
+        self.requests = 0
+        self.connections = 0
+        self.batch = True
+        self.multicall = True
+        self.multicall_null = False
+        self.status = 200
+        self.hang_up = False
+        self.drop_after_reply = False
+        threading.Thread(target=self.serve_forever, args=(0.05,), daemon=True).start()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server_address[1]}/"
+
+    def stop(self):
+        self.shutdown()
+        self.server_close()
+
+    def answer(self, req):
+        out = {"jsonrpc": "2.0", "id": req.get("id")}
+        method, params = req["method"], req["params"]
+        if method == "eth_blockNumber":
+            out["result"] = hex(self.block)
+        elif method == "eth_getBlockByNumber":
+            out["result"] = {"number": hex(self.block), "timestamp": hex(self.chain.now)}
+        elif method == "eth_call" and params[0]["to"].lower() == snrc.MULTICALL.lower():
+            if not self.multicall:
+                out["error"] = {"code": -32000, "message": "no contract code"}
+            elif self.multicall_null:
+                out["result"] = None
+            else:
+                results = []
+                for to, data in _decode_aggregate3_calls(params[0]["data"]):
+                    try:
+                        results.append((True, bytes.fromhex(self.chain.call(to, data)[2:])))
+                    except RuntimeError:
+                        results.append((False, b""))
+                out["result"] = _encode_aggregate3_results(results)
+        elif method == "eth_call":
+            try:
+                out["result"] = self.chain.call(params[0]["to"], params[0]["data"])
+            except RuntimeError:
+                out["error"] = {"code": 3, "message": "execution reverted"}
+        else:
+            out["error"] = {"code": -32601, "message": "method not found"}
+        return out
+
+
+class _FakeNodeHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        # headers and body go out in separate writes, which Nagle holds for the client's delayed ACK
+        self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.server.connections += 1
+
+    def do_POST(self):  # noqa: N802 - http.server contract
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        node = self.server
+        node.requests += 1
+        if node.hang_up:
+            self.close_connection = True
+            return
+        if node.status != 200:
+            reply = {"error": "unavailable"}
+        elif isinstance(request, list):
+            reply = [node.answer(r) for r in request] if node.batch else {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}}
+        else:
+            reply = node.answer(request)
+        data = json.dumps(reply).encode()
+        self.send_response(node.status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        # closes without `Connection: close`, as a node dropping an idle connection does
+        self.close_connection = node.drop_after_reply
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+class FakeNodeTestCase(unittest.TestCase):
+    """Points the resolver at a FakeNode and at FakeChain's contracts."""
+
+    def setUp(self):
+        self.node = FakeNode()
+        self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS)
+        snrc.RPC = self.node.url
+        snrc.RPC_URL = urlparse(snrc.RPC)
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
+        snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
+        snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
+        snrc._multicall_failed_logged = False
+        self._drain_pool()
+
+    def tearDown(self):
+        self._drain_pool()
+        snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS = self._saved
+        self.node.stop()
+
+    def _drain_pool(self):
+        while not snrc._rpc_pool.empty():
+            snrc._rpc_pool.get_nowait().close()
+
+    def requests_made(self, action):
+        before = self.node.requests
+        result = action()
+        return result, self.node.requests - before
+
+
+class RpcTransportTests(FakeNodeTestCase):
+    """A lookup makes several reads, and a new connection per read costs CPU
+    and leaves a TIME_WAIT socket each, which exhausts local ports under load."""
+
+    def test_reads_share_one_connection(self):
+        for _ in range(18):
+            self.assertEqual(snrc.rpc("eth_blockNumber", []), hex(self.node.block))
+        self.assertEqual(self.node.connections, 1)
+
+    def test_a_connection_the_node_closed_is_replaced(self):
+        self.node.drop_after_reply = True
+        for _ in range(3):
+            self.assertEqual(snrc.rpc("eth_blockNumber", []), hex(self.node.block))
+        self.assertEqual(self.node.connections, 3)
+
+    def test_a_fresh_connection_that_fails_is_not_retried(self):
+        """Only a pooled connection can be stale; a new one failing means the
+        node is down, and resending would only double the wait."""
+        self.node.hang_up = True
+        with self.assertRaises(ConnectionError):
+            snrc.rpc("eth_blockNumber", [])
+        self.assertEqual(self.node.requests, 1)
+
+    def test_a_node_failure_is_not_a_reverted_call(self):
+        """Callers read RuntimeError as the call reverting and fall back to an
+        empty value, so a node failure must not look like one."""
+        self.node.status = 502
+        with self.assertRaises(HTTPError) as cm:
+            snrc.rpc("eth_blockNumber", [])
+        self.assertNotIsInstance(cm.exception, RuntimeError)
+        self.assertEqual(cm.exception.code, 502)
+
+    def test_a_reverted_call_is_a_runtime_error_and_keeps_the_connection(self):
+        with self.assertRaises(RuntimeError):
+            snrc.eth_call("0x" + "11" * 20, "0xdeadbeef")
+        snrc.rpc("eth_blockNumber", [])
+        self.assertEqual(self.node.connections, 1)
+
+
+class RpcPoolTests(FakeNodeTestCase):
+    def test_connections_beyond_the_pool_are_closed_after_use(self):
+        """Every worker would otherwise keep its peak concurrency open to the node."""
+        saved, snrc._rpc_pool = snrc._rpc_pool, queue.LifoQueue(maxsize=1)
+        try:
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}).encode()
+            kept, extra = snrc._new_rpc_connection(), snrc._new_rpc_connection()
+            snrc._post_pooled(kept, body)
+            # returning a connection to a full pool must not wait for a free slot
+            done = threading.Thread(target=snrc._post_pooled, args=(extra, body), daemon=True)
+            done.start()
+            done.join(5)
+            self.assertFalse(done.is_alive(), "returning a connection to a full pool blocked")
+            self.assertEqual(snrc._rpc_pool.qsize(), 1)
+            self.assertIsNotNone(kept.sock)
+            self.assertIsNone(extra.sock)
+        finally:
+            while not snrc._rpc_pool.empty():
+                snrc._rpc_pool.get_nowait().close()
+            snrc._rpc_pool = saved
+
+
+class BatchedReadsTests(FakeNodeTestCase):
+    """Inside a request a round of reads is one round trip, and its contract
+    reads one multicall, because a node runs the calls of a JSON-RPC batch one
+    after another. Answers must be exactly those of reading one call at a time."""
+
+    def batched(self, answer, name):
+        def action():
+            with snrc.request_reads():
+                return answer(name)
+        return self.requests_made(action)
+
+    def assert_same_answer(self, answer, name, round_trips):
+        one_by_one, one_by_one_trips = self.requests_made(lambda: answer(name))
+        batched, batched_trips = self.batched(answer, name)
+        self.assertEqual(batched, one_by_one)
+        self.assertEqual(batched_trips, round_trips)
+        self.assertGreater(one_by_one_trips, round_trips)
+        return batched
+
+    def test_a_registered_name_takes_two_round_trips(self):
+        status, body = self.assert_same_answer(snrc.registration, "acme.testing", 2)
+        record = body["registration"]["nameRecord"]
+        self.assertEqual(record["nickname"], "Acme")
+        self.assertEqual(record["simplexChannel"], ["https://a.example/c#1", "https://b.example/c#2"])
+        self.assertIsNone(record["btc"])
+
+    def test_a_hashed_query_is_named_from_the_same_round_trip(self):
+        hashed = "[" + snrc.keccak(b"acme").hex() + "].testing"
+        status, body = self.assert_same_answer(snrc.registration, hashed, 2)
+        self.assertEqual(body["registration"]["nameRecord"]["name"], "acme.testing")
+
+    def test_an_available_name_is_priced_in_three_round_trips(self):
+        status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
+        self.assertEqual(body["registration"]["type"], "available")
+
+    def test_v1_answers_the_same(self):
+        self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+
+    def test_without_multicall_a_round_is_still_one_batch(self):
+        self.node.multicall = False
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assert_same_answer(snrc.registration, "acme.testing", 4)
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["fallback"]), ("multicall_unavailable", "batch"))
+
+    def test_a_multicall_without_a_result_falls_back_to_a_batch(self):
+        self.node.multicall_null = True
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assert_same_answer(snrc.registration, "acme.testing", 4)
+        self.assertEqual([r.getMessage() for r in logs.records], ["multicall_unavailable"])
+
+    def test_an_answer_with_neither_result_nor_error_is_not_taken_as_one(self):
+        reads = {}
+        snrc._remember(reads, [("eth_blockNumber", [])], [{"jsonrpc": "2.0", "id": 0}])
+        self.assertEqual(reads, {})
+
+    def test_a_node_that_does_not_batch_is_read_one_call_at_a_time(self):
+        self.node.batch = False
+        one_by_one, one_by_one_trips = self.requests_made(lambda: snrc.registration("acme.testing"))
+        with self.assertNoLogs("snrc_resolve"):
+            batched, batched_trips = self.batched(snrc.registration, "acme.testing")
+        self.assertEqual(batched, one_by_one)
+        # one refused batch per round, then the reads the batch would have made
+        self.assertEqual(batched_trips, one_by_one_trips + 2)
+
+    def test_a_read_reverted_in_the_multicall_is_a_reverted_call(self):
+        with snrc.request_reads():
+            snrc.prefetch([snrc.eth_call_read(*snrc.grace_call(FakeChain.REGISTRAR)), snrc.eth_call_read(FakeChain.REGISTRY, "0xdeadbeef")])
+            _, trips = self.requests_made(lambda: self.assertRaises(RuntimeError, snrc.eth_call, FakeChain.REGISTRY, "0xdeadbeef"))
+        self.assertEqual(trips, 0)
+
+    def test_outside_a_request_nothing_is_prefetched(self):
+        _, trips = self.requests_made(lambda: snrc.prefetch(snrc.lookup_reads("acme.testing")))
+        self.assertEqual(trips, 0)
+
+
+class Aggregate3Tests(unittest.TestCase):
+    def test_calls_are_encoded_as_multicall3_reads_them(self):
+        calls = [(FakeChain.REGISTRY, "0x0178b8bf" + "11" * 32), (FakeChain.RESOLVER, "0x59d1d43c" + "22" * 100)]
+        data = snrc.encode_aggregate3(calls)
+        self.assertTrue(data.startswith(snrc.AGGREGATE3))
+        self.assertEqual(_decode_aggregate3_calls(data), calls)
+
+    def test_results_are_decoded_with_their_success_flags(self):
+        results = [(True, b"\x01" * 40), (False, b""), (True, b"")]
+        self.assertEqual(snrc.decode_aggregate3(_encode_aggregate3_results(results)), results)
+
+    def test_a_truncated_answer_is_refused(self):
+        whole = _encode_aggregate3_results([(True, b"\x01" * 40)])
+        with self.assertRaises(ValueError):
+            snrc.decode_aggregate3(whole[:-64])
+        with self.assertRaises(ValueError):
+            snrc.decode_aggregate3("0x")
+
+
+class RequestLogTests(unittest.TestCase):
+    """Each request is one event with the client it came from, behind a reverse
+    proxy the client the proxy names rather than the proxy itself."""
+
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True).start()
+        self._saved = snrc.TRUSTED_PROXIES
+
+    def tearDown(self):
+        snrc.TRUSTED_PROXIES = self._saved
+        self.server.shutdown()
+        self.server.server_close()
+
+    def request(self, path, headers=None, level="INFO"):
+        url = f"http://127.0.0.1:{self.server.server_address[1]}{path}"
+        with self.assertLogs("snrc_resolve", level) as logs:
+            try:
+                urlopen(Request(url, headers=headers or {}), timeout=5).read()
+            except HTTPError:
+                pass
+            deadline = time.monotonic() + 2
+            while not any(r.getMessage() == "request" for r in logs.records) and time.monotonic() < deadline:
+                time.sleep(0.01)
+        [record] = [r for r in logs.records if r.getMessage() == "request"]
+        return record
+
+    def test_a_request_is_logged_with_its_outcome(self):
+        record = self.request("/v2/resolve/x.simplex")
+        fields = record.fields
+        self.assertEqual(record.levelname, "INFO")
+        self.assertEqual(
+            (fields["client"], fields["method"], fields["path"], fields["status"], fields["worker"]),
+            ("127.0.0.1", "GET", "/v2/resolve/x.simplex", 400, os.getpid()),
+        )
+        self.assertGreater(fields["bytes"], 0)
+        self.assertGreaterEqual(fields["ms"], 0)
+
+    def test_a_trusted_proxy_names_the_client(self):
+        snrc.TRUSTED_PROXIES = (ipaddress.ip_network("127.0.0.1/32"),)
+        record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(record.fields["client"], "203.0.113.7")
+
+    def test_any_other_peer_cannot_name_itself(self):
+        record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(record.fields["client"], "127.0.0.1")
+
+    def test_a_bad_request_is_not_logged_with_the_previous_ones_fields(self):
+        """On a kept-alive connection the handler still held the last request's path and size."""
+        with self.assertLogs("snrc_resolve", "INFO") as logs:
+            with socket.create_connection(self.server.server_address, timeout=5) as sock:
+                sock.sendall(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\n\r\n")
+                sock.recv(65536)
+                sock.sendall(b"BOGUS\r\n\r\n")
+                while sock.recv(65536):
+                    pass
+        first, second = [r for r in logs.records if r.getMessage() == "request"]
+        self.assertEqual(first.fields["path"], "/v2/resolve/x.simplex")
+        self.assertEqual((second.fields["status"], second.fields["path"], second.fields["bytes"], second.fields["ms"]), (400, None, None, None))
+
+    def test_health_checks_are_logged_only_at_debug(self):
+        """The container checks /health every 30 s."""
+        record = self.request("/health", level="DEBUG")
+        self.assertEqual(record.levelname, "DEBUG")
+
+
+class RequestBodyTests(unittest.TestCase):
+    """Behind a reverse proxy that reuses connections, a body left unread would be
+    answered as another request, and that answer given to the proxy's next client."""
+
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True).start()
+        self._log = contextlib.redirect_stderr(io.StringIO())
+        self._log.__enter__()
+
+    def tearDown(self):
+        self._log.__exit__(None, None, None)
+        self.server.shutdown()
+        self.server.server_close()
+
+    def exchange(self, head: bytes, body: bytes = b"") -> bytes:
+        with socket.create_connection(self.server.server_address, timeout=5) as sock:
+            sock.sendall(head + body)
+            data = b""
+            while chunk := sock.recv(65536):
+                data += chunk
+                if data.count(b"HTTP/1.1 ") > 1:
+                    break
+            return data
+
+    SMUGGLED = b"GET /v2/resolve/y.simplex HTTP/1.1\r\nHost: x\r\n\r\n"
+
+    def test_a_body_is_refused_and_the_connection_closed(self):
+        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)
+        self.assertIn(b"HTTP/1.1 400 ", data)
+        self.assertIn(b"Connection: close", data)
+        self.assertNotIn(b"y.simplex", data)
+
+    def test_a_length_after_a_malformed_header_line_is_still_seen(self):
+        """Python stops parsing headers at a malformed line and keeps the rest as payload."""
+        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nX-Junk : 1\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)
+        self.assertIn(b"unexpectedBody", data)
+        self.assertNotIn(b"y.simplex", data)
+
+    def test_a_chunked_body_is_refused_and_the_connection_closed(self):
+        chunked = b"%x\r\n" % len(self.SMUGGLED) + self.SMUGGLED + b"\r\n0\r\n\r\n"
+        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", chunked)
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)
+        self.assertNotIn(b"y.simplex", data)
+
+    def test_an_empty_body_keeps_the_connection(self):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        answers = []
+        for _ in range(2):
+            conn.request("GET", "/v2/resolve/x.simplex", headers={"Content-Length": "0"})
+            res = conn.getresponse()
+            answers.append((res.status, json.loads(res.read())["error"], conn.sock))
+        conn.close()
+        self.assertEqual([a[:2] for a in answers], [(400, "tldNotConfigured")] * 2)
+        self.assertIs(answers[0][2], answers[1][2])
+
+
+class PublicEndpointTests(unittest.TestCase):
+    def test_credentials_path_and_query_are_not_shown(self):
+        self.assertEqual(snrc.public_endpoint("https://user:pw@rpc.example:8443/v2/KEY?apikey=K"), "https://rpc.example:8443")
+
+    def test_a_plain_endpoint_is_unchanged(self):
+        self.assertEqual(snrc.public_endpoint("http://reth:8545"), "http://reth:8545")
+
+    def test_an_ipv6_host_keeps_its_brackets(self):
+        self.assertEqual(snrc.public_endpoint("http://u:p@[::1]:8545/key"), "http://[::1]:8545")
+
+    def test_a_malformed_port_does_not_break_health(self):
+        self.assertEqual(snrc.public_endpoint("http://reth:port"), "http://reth:port")
+
+
+class ClientAddressTests(unittest.TestCase):
+    PROXY = "172.18.0.1"
+
+    def setUp(self):
+        self._saved = snrc.TRUSTED_PROXIES
+        snrc.TRUSTED_PROXIES = (ipaddress.ip_network("172.16.0.0/12"),)
+
+    def tearDown(self):
+        snrc.TRUSTED_PROXIES = self._saved
+
+    def test_a_peer_that_is_no_proxy_is_the_client(self):
+        self.assertEqual(snrc.client_address("198.51.100.9", "203.0.113.7"), "198.51.100.9")
+
+    def test_without_the_header_the_proxy_is_the_client(self):
+        self.assertEqual(snrc.client_address(self.PROXY, None), self.PROXY)
+
+    def test_the_address_the_proxy_added_is_the_client(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "203.0.113.7"), "203.0.113.7")
+
+    def test_addresses_a_client_sent_itself_are_not_believed(self):
+        """A proxy appends the address it saw, so only the last untrusted one is known."""
+        self.assertEqual(snrc.client_address(self.PROXY, "6.6.6.6, 203.0.113.7"), "203.0.113.7")
+
+    def test_trusted_proxies_in_a_chain_are_skipped(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "203.0.113.7, 172.18.0.5"), "203.0.113.7")
+
+    def test_an_address_that_does_not_parse_is_not_believed(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "203.0.113.7, not-an-ip"), self.PROXY)
+
+    def test_an_ipv4_mapped_peer_is_matched_as_ipv4(self):
+        self.assertEqual(snrc.client_address("::ffff:172.18.0.1", "203.0.113.7"), "203.0.113.7")
+
+    def test_an_ipv6_client_is_kept(self):
+        self.assertEqual(snrc.client_address(self.PROXY, "2001:db8::7"), "2001:db8::7")
+
+
+class RequestErrorTests(unittest.TestCase):
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+
+    def tearDown(self):
+        self.server.server_close()
+
+    def test_a_client_that_hung_up_is_a_warning_without_a_traceback(self):
+        """What an smp-server that gave up after its timeout leaves behind."""
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            try:
+                raise BrokenPipeError
+            except BrokenPipeError:
+                self.server.handle_error(None, ("198.51.100.9", 4000))
+        [record] = logs.records
+        self.assertEqual((record.levelname, record.getMessage(), record.fields["error"]), ("WARNING", "client_gone", "BrokenPipeError"))
+        self.assertIsNone(record.exc_info)
+
+    def test_a_failure_is_an_error_with_its_traceback(self):
+        with self.assertLogs("snrc_resolve", "ERROR") as logs:
+            try:
+                raise KeyError("boom")
+            except KeyError:
+                self.server.handle_error(None, ("198.51.100.9", 4000))
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["client"]), ("request_failed", "198.51.100.9"))
+        self.assertIsNotNone(record.exc_info)
+
+
+class KeepAliveTests(unittest.TestCase):
+    """The smp-server keeps a resolver connection only after an HTTP/1.1
+    response, and otherwise connects for every lookup."""
+
+    def setUp(self):
+        self.server = snrc.ResolverServer(("127.0.0.1", 0), snrc.Handler)
+        threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True).start()
+        self._saved_timeout = snrc.Handler.timeout
+        self._log = contextlib.redirect_stderr(io.StringIO())
+        self._log.__enter__()
+
+    def tearDown(self):
+        self._log.__exit__(None, None, None)
+        snrc.Handler.timeout = self._saved_timeout
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_requests_share_one_connection_without_delay(self):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        start = time.monotonic()
+        for i in range(20):
+            conn.request("GET", "/v2/resolve/x.simplex")
+            res = conn.getresponse()
+            res.read()
+            self.assertEqual((res.version, res.status), (11, 400))
+            if i == 0:
+                sock = conn.sock
+            self.assertIs(conn.sock, sock)
+        conn.close()
+        # a response held by Nagle for the delayed ACK takes ~40 ms, 20 of them over 0.8 s
+        self.assertLess(time.monotonic() - start, 0.5)
+
+    def test_idle_connections_outlast_the_smp_servers(self):
+        """http-client drops a connection idle for 30 s, checked every 5 s. A
+        resolver that closed sooner would race the client reusing it, and one
+        that never closed would keep a thread per dead connection."""
+        self.assertIsNotNone(self._saved_timeout)
+        self.assertGreater(self._saved_timeout, 35)
+
+    def test_an_idle_connection_is_closed(self):
+        snrc.Handler.timeout = 0.2
+        with socket.create_connection(self.server.server_address, timeout=5) as sock:
+            time.sleep(0.5)
+            self.assertEqual(sock.recv(1), b"")
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")
+class WorkerProcessesTests(unittest.TestCase):
+    """Workers share the port, and the service stops as a whole, so the
+    container restarts rather than serving on fewer workers."""
+
+    def setUp(self):
+        self.node = FakeNode()
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            self.port = s.getsockname()[1]
+        env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
+                   SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
+        self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
+        self.workers = self._wait_for_workers(2)
+
+    def tearDown(self):
+        if self.service.poll() is None:
+            self.service.kill()
+            self.service.wait()
+        self.service.stderr.close()
+        for pid in self.workers:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        self.node.stop()
+
+    def _wait_for_workers(self, count):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            workers = [int(p) for p in os.listdir("/proc") if p.isdigit() and self._parent(p) == self.service.pid]
+            if len(workers) == count and self._serving():
+                return workers
+            time.sleep(0.05)
+        self.fail("workers did not start")
+
+    @staticmethod
+    def _parent(pid):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return int(f.read().rsplit(")", 1)[1].split()[1])
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+
+    def _serving(self):
+        try:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=1):
+                return True
+        except OSError:
+            return False
+
+    def _gone(self, pid):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self._parent(pid) != self.service.pid:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_workers_answer_on_the_shared_port(self):
+        for _ in range(20):
+            with urlopen(f"http://127.0.0.1:{self.port}/v2/resolve/acme.testing", timeout=5) as res:
+                self.assertEqual(json.loads(res.read())["registration"]["type"], "registered")
+
+    def test_stopping_the_service_stops_every_worker(self):
+        self.service.send_signal(signal.SIGTERM)
+        self.assertEqual(self.service.wait(timeout=5), 0)
+        self.assertTrue(all(self._gone(pid) for pid in self.workers))
+        self.assertRegex(self.service.stderr.read(), r"INFO  stopping  signal=SIGTERM")
+
+    def test_a_worker_exiting_stops_the_service(self):
+        os.kill(self.workers[0], signal.SIGKILL)
+        self.assertEqual(self.service.wait(timeout=5), 1)
+        self.assertTrue(self._gone(self.workers[1]))
+
+
+TIME = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z"
+
+
+class LogTestCase(unittest.TestCase):
+    def setUp(self):
+        self._saved = (snrc.LOG_FORMAT, snrc.LOG_COLOR, snrc.LOG_LEVEL)
+        snrc.LOG_FORMAT, snrc.LOG_COLOR, snrc.LOG_LEVEL = "text", "never", "info"
+        self.out = io.StringIO()
+
+    def tearDown(self):
+        snrc.LOG_FORMAT, snrc.LOG_COLOR, snrc.LOG_LEVEL = self._saved
+        snrc.LOGGER.handlers[:] = []
+        snrc.LOGGER.setLevel(logging.NOTSET)
+        snrc.LOGGER.propagate = True
+
+    def emit(self, level=logging.INFO, name="request", **fields):
+        snrc.setup_logging(self.out)
+        snrc.log_event(level, name, **fields)
+        return self.out.getvalue()
+
+
+class TextFormatTests(LogTestCase):
+    def test_a_line_is_utc_time_level_event_and_fields(self):
+        line = self.emit(client="203.0.113.7", path="/v2/resolve/[4fdd].testing", status=200, ms=7)
+        self.assertRegex(line, rf"^{TIME} INFO  request  client=203\.0\.113\.7 path=/v2/resolve/\[4fdd\]\.testing status=200 ms=7\n$")
+
+    def test_values_that_would_be_misread_are_quoted(self):
+        line = self.emit(message='says "hi" here', empty="", missing=None, eq="a=b")
+        self.assertIn('message="says \\"hi\\" here" empty="" missing=- eq="a=b"', line)
+
+    def test_levels_are_named_in_five_columns(self):
+        self.assertRegex(self.emit(logging.WARNING, "upstream_error"), rf"^{TIME} WARN  upstream_error\n$")
+
+    def test_below_the_configured_level_nothing_is_written(self):
+        self.assertEqual(self.emit(logging.DEBUG), "")
+
+    def test_an_exception_follows_its_line(self):
+        snrc.setup_logging(self.out)
+        try:
+            raise KeyError("boom")
+        except KeyError:
+            snrc.log_event(logging.ERROR, "request_failed", exc_info=True)
+        self.assertRegex(self.out.getvalue(), rf"(?s)^{TIME} ERROR request_failed\nTraceback .*KeyError: 'boom'\n$")
+
+
+class ColorTests(LogTestCase):
+    def test_colours_mark_the_level_and_the_status_class(self):
+        snrc.LOG_COLOR = "always"
+        line = self.emit(status=503)
+        self.assertIn("\033[32mINFO ", line)
+        self.assertIn("\033[31m503\033[0m", line)
+
+    def test_auto_leaves_output_that_is_no_terminal_plain(self):
+        snrc.LOG_COLOR = "auto"
+        self.assertNotIn("\033[", self.emit(status=200))
+
+    def test_never_is_plain(self):
+        self.assertNotIn("\033[", self.emit(status=200))
+
+
+class JsonFormatTests(LogTestCase):
+    def test_a_line_is_one_json_object(self):
+        snrc.LOG_FORMAT = "json"
+        record = json.loads(self.emit(client="203.0.113.7", status=200, missing=None))
+        self.assertRegex(record.pop("time"), rf"^{TIME}$")
+        self.assertEqual(record, {"level": "info", "event": "request", "client": "203.0.113.7", "status": 200, "missing": None})
+
+    def test_an_exception_is_a_field(self):
+        snrc.LOG_FORMAT = "json"
+        snrc.setup_logging(self.out)
+        try:
+            raise KeyError("boom")
+        except KeyError:
+            snrc.log_event(logging.ERROR, "request_failed", exc_info=True)
+        self.assertIn("KeyError: 'boom'", json.loads(self.out.getvalue())["exception"])
+
+
+class SetupTests(LogTestCase):
+    def test_unknown_settings_are_refused_at_start(self):
+        for setting, value in (("LOG_FORMAT", "yaml"), ("LOG_COLOR", "sometimes"), ("LOG_LEVEL", "loud")):
+            with self.subTest(setting=setting):
+                saved = getattr(snrc, setting)
+                setattr(snrc, setting, value)
+                try:
+                    with self.assertRaisesRegex(ValueError, re.escape(f"SNRC_{setting}")):
+                        snrc.setup_logging(self.out)
+                finally:
+                    setattr(snrc, setting, saved)
