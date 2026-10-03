@@ -931,6 +931,8 @@ data CryptoError
     CERatchetEarlierMessage Word32
   | -- | duplicate message number
     CERatchetDuplicateMessage
+  | -- | KEM key generation failed, indicating a broken RNG
+    CryptoKEMKeyGenError
   deriving (Eq, Show, Exception)
 
 aesKeySize :: Int
