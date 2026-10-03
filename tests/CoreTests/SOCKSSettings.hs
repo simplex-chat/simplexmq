@@ -107,12 +107,9 @@ testIPAddressProtected = do
   it "should not be protected if SOCKS proxy is not used for the chosen host" $ do
     protected SMOnion HMOnionViaSocks [testPublicHost] `shouldBe` False
     protected SMOnion HMPublic [testPublicHost, testOnionHost] `shouldBe` False
-  it "should be protected if SOCKS proxy is specified and required host is not available" $ do
-    protectedCfg defaultNetworkConfig {requiredHostMode = True} SMOnion HMOnionViaSocks [testPublicHost] `shouldBe` True
   where
-    protected = protectedCfg defaultNetworkConfig
-    protectedCfg cfg socksMode hostMode hosts =
-      ipAddressProtected cfg {socksProxy = Just defaultSocksProxyWithAuth, socksMode, hostMode} (SMPServer hosts "" (C.KeyHash ""))
+    protected socksMode hostMode hosts =
+      ipAddressProtected defaultNetworkConfig {socksProxy = Just defaultSocksProxyWithAuth, socksMode, hostMode} (SMPServer hosts "" (C.KeyHash ""))
 
 testSocksProxyEncoding :: Spec
 testSocksProxyEncoding = do
