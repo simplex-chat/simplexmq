@@ -212,21 +212,21 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       loadRcvQueue = do
         (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
         liftIO $ cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
-      loadSndQueue = loadSndQueue_ " WHERE sender_id = ?"
-      loadLinkQueue = loadSndQueue_ " WHERE link_id = ?"
+      loadSndQueue = loadSndQueue_ senders " WHERE sender_id = ?"
+      loadLinkQueue = loadSndQueue_ links " WHERE link_id = ?"
       loadNtfQueue = do
         (rId, qRec) <- loadQueue " WHERE notifier_id = ?"
         liftIO $
           TM.lookupIO rId queues -- checking recipient map first, not creating lock in map, not caching queue
             >>= maybe (mkQ False rId qRec) pure
-      loadSndQueue_ condition = do
+      loadSndQueue_ refs condition = do
         (rId, qRec) <- loadQueue condition
         liftIO $
           TM.lookupIO rId queues -- checking recipient map first
-            >>= maybe (cacheQueue rId qRec cacheSender) (atomically (cacheSender rId) $>)
+            >>= maybe (cacheQueue rId qRec $ cacheRef refs) (atomically (cacheRef refs rId) $>)
       loadQueueNoCache cond = mask $ loadQueue cond >>= liftIO . uncurry (mkQ True)
       mask = E.uninterruptibleMask_ . runExceptT
-      cacheSender rId = TM.insert qId rId senders
+      cacheRef refs rId = TM.insert qId rId refs
       loadQueue condition =
         withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
           DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
@@ -329,9 +329,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
     withQueueRec sq "deleteQueueLinkData" $ \q -> case queueData q of
-      Just _ -> do
+      Just (lnkId, _) -> do
         assertUpdated $ withDB' "deleteQueueLinkData" st $ \db ->
           DB.execute db "UPDATE msg_queues SET link_id = NULL, fixed_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
+        when (useCache st) $ atomically $ TM.delete lnkId $ links st
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Nothing}
         withLog "deleteQueueLinkData" st (`logDeleteLink` rId)
       _ -> throwE AUTH
@@ -457,7 +458,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (ts, rId)
     atomically $ writeTVar qr Nothing
     when (useCache st) $ do
+      atomically $ TM.delete rId $ queues st
       atomically $ TM.delete (senderId q) $ senders st
+      forM_ (queueData q) $ \(lnkId, _) -> atomically $ TM.delete lnkId $ links st
       forM_ (notifier q) $ \NtfCreds {notifierId} -> do
         atomically $ TM.delete notifierId $ notifiers st
         atomically $ TM.delete notifierId $ notifierLocks st

@@ -48,18 +48,6 @@ import Simplex.Messaging.Server.Main
 testPublicAuthKey :: C.APublicAuthKey
 testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
 
-testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
-testNtfCreds g = do
-  (notifierKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
-  pure
-    NtfCreds
-      { notifierId = EntityId "ijkl",
-        notifierKey,
-        rcvNtfDhSecret = C.dh' k pk,
-        ntfServiceId = Nothing
-      }
-
 data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, compacted :: [r]}
 
 type SMPStoreLogTestCase = StoreLogTestCase StoreLogRecord (M.Map RecipientId QueueRec)
