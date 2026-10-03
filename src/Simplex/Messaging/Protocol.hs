@@ -281,7 +281,7 @@ import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
-import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
+import Simplex.Messaging.Util (bshow, eitherToMaybe, packZipWith, safeDecodeUtf8, (<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 
@@ -705,7 +705,7 @@ newtype EncTransmission = EncTransmission ByteString
 
 encTransmissionNonce :: VersionSMP -> C.CbNonce -> C.CbNonce
 encTransmissionNonce v nonce@(C.CbNonce s)
-  | v >= fwdNoncesSMPVersion = C.cbNonce $ BS.pack (BS.zipWith xor (smpEncode v) s) <> BS.drop 2 s
+  | v >= fwdNoncesSMPVersion = C.cbNonce $ packZipWith xor (smpEncode v) s <> BS.drop 2 s
   | otherwise = nonce
 
 data FwdTransmission = FwdTransmission
