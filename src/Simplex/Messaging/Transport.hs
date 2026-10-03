@@ -54,6 +54,7 @@ module Simplex.Messaging.Transport
     namesSMPVersion,
     serverInfoSMPVersion,
     nameAvailSMPVersion,
+    fwdNoncesSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -177,6 +178,7 @@ smpBlockSize = 16384
 -- 20 - public namespaces resolver, RSLV command (6/20/2026)
 -- 21 - server public information in handshake (7/5/2026)
 -- 22 - RNAME answers name availability as well as the record (7/25/2026)
+-- 23 - version in forwarded command nonce, random nonce in forwarded responses (10/2/2026)
 
 data SMPVersion
 
@@ -218,6 +220,9 @@ serverInfoSMPVersion = VersionSMP 21
 nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
+fwdNoncesSMPVersion :: VersionSMP
+fwdNoncesSMPVersion = VersionSMP 23
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 14
 
@@ -225,20 +230,20 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 14
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 22
+currentClientSMPRelayVersion = VersionSMP 23
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 22
+currentServerSMPRelayVersion = VersionSMP 23
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (22)
--- for this release because a proxied RSLV only carries availability from
--- nameAvailSMPVersion (22), so the one-version anti-fingerprinting buffer does
--- not apply yet; it reappears once the current version advances past 22.
+-- when clients upgrade at different times. Pinned to the current version (23)
+-- for this release because forwarded commands use the nonces from
+-- fwdNoncesSMPVersion (23), so the one-version anti-fingerprinting buffer does
+-- not apply yet; it reappears once the current version advances past 23.
 proxiedSMPRelayVersion :: VersionSMP
-proxiedSMPRelayVersion = VersionSMP 22
+proxiedSMPRelayVersion = VersionSMP 23
 
 -- minimal supported protocol version is 14
 supportedClientSMPRelayVRange :: VersionRangeSMP
@@ -865,7 +870,6 @@ forceCertChain :: CertChainPubKey -> CertChainPubKey
 forceCertChain cert@(CertChainPubKey (X.CertificateChain cc) signedKey) = length (show cc) `seq` show signedKey `seq` cert
 {-# INLINE forceCertChain #-}
 
--- This function is only used with v >= 8, so currently it's a simple record update.
 -- * Note: it requires updating version-based parameters, to be consistent with smpTHandle_.
 smpTHParamsSetVersion :: VersionSMP -> THandleParams SMPVersion p -> THandleParams SMPVersion p
 smpTHParamsSetVersion v params =

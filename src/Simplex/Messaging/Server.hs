@@ -1092,6 +1092,7 @@ controlPortAuth h user admin role auth = do
   readTVarIO role >>= \case
     CPRNone -> do
       atomically $ writeTVar role $! newRole
+      when (newRole == CPRNone) $ logWarn "ControlPort: failed auth"
       hPutStrLn h $ currentRole newRole
     r -> hPutStrLn h $ currentRole r <> if r == newRole then "" else ", start new session to change."
   where
@@ -1461,7 +1462,7 @@ client
             inc own pRequests
             forkProxiedCmd $ do
               liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ inc own pSuccesses
+                Right (nonce_, r) -> PRES nonce_ r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
                   PCEProtocolError {} -> inc own pSuccesses
                   _ -> inc own pErrorsOther
@@ -2127,9 +2128,10 @@ client
           let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
           let clientSecret = C.dh' fwdKey serverPrivKey
               clientNonce = C.cbNonce $ bs fwdCorrId
-          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
+          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
@@ -2142,9 +2144,13 @@ client
                   TBError _ _ : _ -> throwE BLOCK
                   TBTransmission b' _ : _ -> pure b'
                   TBTransmissions b' _ _ : _ -> pure b'
-                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
+                nonce_ <-
+                  if fwdVersion >= fwdNoncesSMPVersion
+                    then Just <$> (atomically . C.randomCbNonce =<< asks random)
+                    else pure Nothing
+                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+                pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           -- the inner response, or Nothing if forked (RSLV).
           r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
             -- rejectOrVerify filters allowed commands, no need to repeat it here.

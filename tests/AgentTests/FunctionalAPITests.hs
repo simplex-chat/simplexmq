@@ -231,7 +231,11 @@ pattern Rcvd' :: AgentMsgId -> AgentMsgId -> AEvent 'AEConn
 pattern Rcvd' aMsgId rcvdMsgId <- RCVD MsgMeta {integrity = MsgOk, recipient = (aMsgId, _)} [MsgReceipt {agentMsgId = rcvdMsgId, msgRcptStatus = MROk}]
 
 smpCfgVPrev :: ProtocolClientConfig SMPVersion
-smpCfgVPrev = (smpCfg agentCfg) {serverVRange = prevRange $ serverVRange $ smpCfg agentCfg}
+smpCfgVPrev =
+  (smpCfg agentCfg)
+    { serverVRange = prevRange $ serverVRange $ smpCfg agentCfg,
+      proxiedRelayVRange = prevRange $ proxiedRelayVRange $ smpCfg agentCfg
+    }
 
 -- ntfCfgVPrev :: ProtocolClientConfig NTFVersion
 -- ntfCfgVPrev = (ntfCfg agentCfg) {clientALPN = Nothing, serverVRange = V.mkVersionRange (VersionNTF 1) (VersionNTF 1)}
