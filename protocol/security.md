@@ -15,7 +15,7 @@ This document describes the cryptographic primitives and threat model for the Si
   - [SimpleX Messaging Protocol router that proxies the messages to another SMP router](#simplex-messaging-protocol-router-that-proxies-the-messages-to-another-smp-router)
   - [An attacker who obtained Alice's (decrypted) chat database](#an-attacker-who-obtained-alices-decrypted-chat-database)
   - [A user's contact](#a-users-contact)
-  - [An attacker who observes Alice showing an introduction message to Bob](#an-attacker-who-observes-alice-showing-an-introduction-message-to-bob)
+  - [An attacker who observes the initiating party showing an introduction message to the joining party](#an-attacker-who-observes-the-initiating-party-showing-an-introduction-message-to-the-joining-party)
   - [An attacker with Internet access](#an-attacker-with-internet-access)
 
 
@@ -192,15 +192,15 @@ All primitives in use, their lengths, domain-separation strings and the policy f
 
 - cannot collaborate with another of the user's contacts to confirm they are communicating with the same user.
 
-### An attacker who observes Alice showing an introduction message to Bob
+### An attacker who observes the initiating party showing an introduction message to the joining party
 
 *can:*
 
-- Impersonate Bob to Alice.
+- Impersonate the joining party to the initiating party.
 
 *cannot:*
 
-- Impersonate Alice to Bob.
+- Impersonate the initiating party to the joining party.
 
 ### An attacker with Internet access
 
