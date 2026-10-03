@@ -122,7 +122,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseE, parseE')
-import Simplex.Messaging.Util (($>>=), (<$?>))
+import Simplex.Messaging.Util ((<$?>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import UnliftIO.STM
@@ -330,9 +330,13 @@ instance StrEncoding AnyE2ERatchetParamsUri where
             Nothing -> pure $ AnyE2ERatchetParamsUri SRKSProposed a $ E2ERatchetParamsUri vr k1 k2 Nothing
       _ -> fail "bad e2e params"
     where
-      kemP query =
-        queryParam_ "kem_key" query
-          $>>= \k -> Just . kemParams k <$> queryParam_ "kem_ct" query
+      kemP query = do
+        k_ <- queryParam_ "kem_key" query
+        ct_ <- queryParam_ "kem_ct" query
+        case (k_, ct_) of
+          (Just k, _) -> pure $ Just $ kemParams k ct_
+          (Nothing, Nothing) -> pure Nothing
+          (Nothing, Just _) -> fail "bad e2e params: kem_ct without kem_key"
       kemParams k = \case
         Nothing -> ARKP SRKSProposed $ RKParamsProposed k
         Just ct -> ARKP SRKSAccepted $ RKParamsAccepted ct k

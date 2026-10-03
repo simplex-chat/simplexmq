@@ -122,18 +122,22 @@ closeListener subscribers sock =
 joinMulticast :: TMVar Int -> N.Socket -> N.HostAddress -> IO ()
 joinMulticast subscribers sock group = do
   now <- atomically $ takeTMVar subscribers
-  when (now == 0) $ do
-    setMembership sock group True >>= \case
-      Left e -> atomically (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
-      Right () -> atomically $ putTMVar subscribers (now + 1)
+  if now == 0
+    then
+      setMembership sock group True >>= \case
+        Left e -> atomically (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
+        Right () -> atomically $ putTMVar subscribers (now + 1)
+    else atomically $ putTMVar subscribers (now + 1)
 
 partMulticast :: TMVar Int -> N.Socket -> N.HostAddress -> IO ()
 partMulticast subscribers sock group = do
   now <- atomically $ takeTMVar subscribers
-  when (now == 1) $
-    setMembership sock group False >>= \case
-      Left e -> atomically (putTMVar subscribers now) >> logError ("setMembership failed " <> tshow e)
-      Right () -> atomically $ putTMVar subscribers (now - 1)
+  if now == 1
+    then
+      setMembership sock group False >>= \case
+        Left e -> atomically (putTMVar subscribers (now - 1)) >> logError ("setMembership failed " <> tshow e)
+        Right () -> atomically $ putTMVar subscribers (now - 1)
+    else atomically $ putTMVar subscribers (max 0 (now - 1))
 
 listenerHostAddr4 :: UDP.ListenSocket -> N.HostAddress
 listenerHostAddr4 sock = case UDP.mySockAddr sock of
