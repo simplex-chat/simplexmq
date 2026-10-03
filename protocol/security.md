@@ -37,6 +37,8 @@ This document describes the cryptographic primitives and threat model for the Si
   - AES-GCM AEAD cipher,
   - SHA512-based HKDF for key derivation.
 
+All primitives in use, their lengths, domain-separation strings and the policy for new code are listed in the [cryptographic primitive registry](./crypto-registry.md).
+
 
 ## Threat Model
 
