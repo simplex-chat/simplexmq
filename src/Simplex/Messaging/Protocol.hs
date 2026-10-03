@@ -1991,12 +1991,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
-    RRES nonce_ (EncFwdResponse encBlock)
-      | v >= fwdNoncesSMPVersion -> e (RRES_, ' ', nonce_, Tail encBlock)
-      | otherwise -> e (RRES_, ' ', Tail encBlock)
-    PRES nonce_ (EncResponse encBlock)
-      | v >= fwdNoncesSMPVersion -> e (PRES_, ' ', nonce_, Tail encBlock)
-      | otherwise -> e (PRES_, ' ', Tail encBlock)
+    RRES nonce_ (EncFwdResponse encBlock) -> fwdResp RRES_ nonce_ encBlock
+    PRES nonce_ (EncResponse encBlock) -> fwdResp PRES_ nonce_ encBlock
     END -> e END_
     ENDS n idsHash -> serviceResp ENDS_ n idsHash
     DELD -> e DELD_
@@ -2020,6 +2016,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       serviceResp tag n idsHash
         | v >= rcvServiceSMPVersion = e (tag, ' ', n, idsHash)
         | otherwise = e (tag, ' ', n)
+      fwdResp tag nonce_ encBlock
+        | v >= fwdNoncesSMPVersion = e (tag, ' ', nonce_, Tail encBlock)
+        | otherwise = e (tag, ' ', Tail encBlock)
 
   protocolP v = \case
     MSG_ -> do
@@ -2051,12 +2050,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
-    RRES_
-      | v >= fwdNoncesSMPVersion -> RRES <$> _smpP <*> (EncFwdResponse . unTail <$> smpP)
-      | otherwise -> RRES Nothing . EncFwdResponse . unTail <$> _smpP
-    PRES_
-      | v >= fwdNoncesSMPVersion -> PRES <$> _smpP <*> (EncResponse . unTail <$> smpP)
-      | otherwise -> PRES Nothing . EncResponse . unTail <$> _smpP
+    RRES_ -> fwdRespP RRES EncFwdResponse
+    PRES_ -> fwdRespP PRES EncResponse
     END_ -> pure END
     ENDS_ -> serviceRespP ENDS
     DELD_ -> pure DELD
@@ -2073,6 +2068,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
+      fwdRespP :: (Maybe C.CbNonce -> a -> BrokerMsg) -> (ByteString -> a) -> Parser BrokerMsg
+      fwdRespP resp enc = resp <$> (A.space *> nonceP) <*> (enc <$> A.takeByteString)
+      nonceP = if v >= fwdNoncesSMPVersion then smpP else pure Nothing
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX
