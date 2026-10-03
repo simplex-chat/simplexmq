@@ -102,6 +102,7 @@ module Simplex.Messaging.Client
     defaultSMPClientConfig,
     defaultNetworkConfig,
     transportClientConfig,
+    useSocksProxy,
     clientSocksCredentials,
     chooseTransportHost,
     temporaryClientError,
@@ -170,7 +171,7 @@ import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxy, SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts, x509validate)
@@ -441,15 +442,19 @@ defaultNetworkConfig =
     }
 
 transportClientConfig :: NetworkConfig -> NetworkRequestMode -> TransportHost -> Bool -> Maybe [ALPN] -> TransportClientConfig
-transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} nm host useSNI clientALPN =
-  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout = tOut, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, clientALPN, useSNI}
+transportClientConfig cfg@NetworkConfig {tcpConnectTimeout, tcpKeepAlive, logTLSErrors} nm host useSNI clientALPN =
+  TransportClientConfig {socksProxy = useSocksProxy cfg host, tcpConnectTimeout = tOut, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, clientALPN, useSNI}
   where
     tOut = netTimeoutInt tcpConnectTimeout nm
+
+useSocksProxy :: NetworkConfig -> TransportHost -> Maybe SocksProxy
+useSocksProxy NetworkConfig {socksProxy, socksMode} host = case socksMode of
+  SMAlways -> socksProxy'
+  SMOnion -> case host of
+    THOnionHost _ -> socksProxy'
+    _ -> Nothing
+  where
     socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
-    useSocksProxy SMAlways = socksProxy'
-    useSocksProxy SMOnion = case host of
-      THOnionHost _ -> socksProxy'
-      _ -> Nothing
 
 clientSocksCredentials :: ProtocolTypeI (ProtoType msg) => NetworkConfig -> UTCTime -> TransportSession msg -> Maybe SocksCredentials
 clientSocksCredentials NetworkConfig {socksProxy, sessionMode} proxySessTs (userId, srv, entityId_) = case socksProxy of
