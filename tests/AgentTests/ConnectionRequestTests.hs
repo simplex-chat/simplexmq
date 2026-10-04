@@ -363,9 +363,9 @@ connectionRequestTests =
       smpEncodingTest $ AgentServiceResponse "service response payload"
       smpEncodingTest $ AgentRejection "rejected: not allowed"
     it "should serialize and parse ratchet key info" $ do
-      smpDecode "R" `shouldBe` Right (AgentRatchetInfo "")
-      smpDecode "R\3abcdef" `shouldBe` Right (AgentRatchetInfo "abc")
-      smpEncodingTest $ AgentRatchetInfo "0123456789abcdef0123456789abcdef"
+      smpDecode "R" `shouldBe` Right (AgentRatchetInfo RatchetInfo {answeredKeyHash = Nothing})
+      smpDecode "R1\3abcdef" `shouldBe` Right (AgentRatchetInfo RatchetInfo {answeredKeyHash = Just "abc"})
+      smpEncodingTest $ AgentRatchetInfo RatchetInfo {answeredKeyHash = Just "0123456789abcdef0123456789abcdef"}
   where
     smpEncodingTest :: (Encoding a, Eq a, Show a, HasCallStack) => a -> Expectation
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a

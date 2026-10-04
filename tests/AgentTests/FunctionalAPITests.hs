@@ -70,7 +70,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf)
+import Data.List (find, isPrefixOf, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
@@ -92,7 +92,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAg
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (addProcessedRatchetKeyHash, checkRatchetKeyHashExists, deleteRatchetKeyHashesExpired, getConn, getRatchetX3dhKeys)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -469,10 +469,6 @@ functionalAPITests ps = do
         testRatchetSyncRepeated ps
       it "should not mark ratchet key as processed when ratchet recreation fails" $
         testRatchetSyncFailedKeyNotProcessed ps
-      it "should not store reply ratchet key when ratchet recreation fails" $
-        testRatchetSyncFailedRecreationNoReply ps
-      it "should not store ratchet key when starting synchronization fails" $
-        testRatchetSyncStartFailedNoKey ps
 #endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
@@ -601,9 +597,6 @@ functionalAPITests ps = do
   describe "getConnectionVerifyCodes" $
     it "should return the same codes for both peers" $
       withSmpServer ps testConnectionVerifyCodes
-  describe "processed ratchet key hashes" $
-    it "should add ratchet key hash once per connection" $
-      withSmpServer ps testAddProcessedRatchetKeyHash
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
@@ -2822,41 +2815,6 @@ testRatchetSyncFailedKeyNotProcessed ps = withAgentClients2 $ \alice bob -> do
       (_, cId', AEvt SAEConn (ERR (A.INTERNAL e))) -> cId' == cId && "SEX3dhKeysNotFound" `isPrefixOf` e
       _ -> False
 
-testRatchetSyncFailedRecreationNoReply :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
-testRatchetSyncFailedRecreationNoReply ps = withAgentClients2 $ \alice bob -> do
-  (_, bobId, bob2) <- startRatchetSyncOffline ps alice bob
-  aliceSndMsgs <- sndMessages alice
-  withTransaction (store $ agentEnv alice) $ \db ->
-    DB.execute_ db "CREATE TRIGGER fail_ratchet_insert BEFORE INSERT ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet insert failed'); END"
-
-  withSmpServerStoreMsgLogOn ps testPort $ \_ ->
-    concurrently_
-      (getInAnyOrder alice [ratchetInsertFailedP bobId, serverUpP])
-      (getInAnyOrder bob2 [serverUpP])
-  processedRatchetKeyHashes alice `shouldReturn` []
-  sndMessages alice `shouldReturn` aliceSndMsgs
-  disposeAgentClient bob2
-  where
-    ratchetInsertFailedP :: ConnId -> ATransmission -> Bool
-    ratchetInsertFailedP cId = \case
-      (_, cId', AEvt SAEConn (ERR (A.INTERNAL e))) -> cId' == cId && "ratchet insert failed" `isInfixOf` e
-      _ -> False
-
-testRatchetSyncStartFailedNoKey :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
-testRatchetSyncStartFailedNoKey ps = withAgentClients2 $ \alice bob -> do
-  (aliceId, _, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
-    setupDesynchronizedRatchet alice bob
-  bobSndMsgs <- sndMessages bob2
-  withTransaction (store $ agentEnv bob2) $ \db ->
-    DB.execute_ db "CREATE TRIGGER fail_ratchet_update BEFORE UPDATE ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet update failed'); END"
-  Left (A.INTERNAL e) <- runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOff False
-  e `shouldContain` "ratchet update failed"
-  ConnectionStats {ratchetSyncState} <- runRight $ getConnectionServers bob2 aliceId
-  ratchetSyncState `shouldBe` RSRequired
-  withTransaction (store $ agentEnv bob2) (`DB.query_` "SELECT conn_id, pq_support FROM connections") `shouldReturn` [(aliceId, PQSupportOn)]
-  sndMessages bob2 `shouldReturn` bobSndMsgs
-  disposeAgentClient bob2
-
 startRatchetSyncOffline :: HasCallStack => (ASrvTransport, AStoreType) -> AgentClient -> AgentClient -> IO (ConnId, ConnId, AgentClient)
 startRatchetSyncOffline ps alice bob = do
   (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
@@ -2869,9 +2827,6 @@ startRatchetSyncOffline ps alice bob = do
 
 processedRatchetKeyHashes :: AgentClient -> IO [(ConnId, ByteString)]
 processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, hash FROM processed_ratchet_key_hashes")
-
-sndMessages :: AgentClient -> IO [(ConnId, Int64)]
-sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
@@ -4215,23 +4170,6 @@ testConnectionVerifyCodes =
       DB.execute_ db "UPDATE ratchets SET ratchet_state = NULL"
     codes1'' <- getConnectionVerifyCodes a bId
     liftIO $ codes1'' `shouldBe` codes1
-
-testAddProcessedRatchetKeyHash :: HasCallStack => IO ()
-testAddProcessedRatchetKeyHash =
-  withAgentClients2 $ \a b -> do
-    (bId1, bId2) <- runRight $ do
-      (_, bId1) <- makeConnection a b
-      (_, bId2) <- makeConnection a b
-      pure (bId1, bId2)
-    withTransaction (store $ agentEnv a) $ \db -> do
-      checkRatchetKeyHashExists db bId1 "hash1" `shouldReturn` False
-      addProcessedRatchetKeyHash db bId1 "hash1" `shouldReturn` True
-      addProcessedRatchetKeyHash db bId1 "hash1" `shouldReturn` False
-      addProcessedRatchetKeyHash db bId1 "hash2" `shouldReturn` True
-      addProcessedRatchetKeyHash db bId2 "hash1" `shouldReturn` True
-      checkRatchetKeyHashExists db bId1 "hash1" `shouldReturn` True
-      DB.query_ db "SELECT conn_id, hash FROM processed_ratchet_key_hashes ORDER BY processed_ratchet_key_hash_id"
-        `shouldReturn` [(bId1, "hash1" :: ByteString), (bId1, "hash2"), (bId2, "hash1")]
 
 testDeliveryReceipts :: HasCallStack => IO ()
 testDeliveryReceipts =

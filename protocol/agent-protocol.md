@@ -234,7 +234,7 @@ agentConnInfoReply = %s"D" smpQueues connInfo
 smpQueues = length 1*newQueueInfo ; NonEmpty list of reply queues
 agentRatchetInfo = %s"R" ratchetInfo
 ratchetInfo = [answeredKeyHash *OCTET] ; bytes after answeredKeyHash are ignored
-answeredKeyHash = shortString ; empty in a key that starts renegotiation, otherwise SHA-256 of the two raw public keys of the answered key
+answeredKeyHash = %s"0" / (%s"1" shortString) ; "0" in a key that starts renegotiation, otherwise SHA-256 of the two raw public keys of the answered key
 
 agentMessage = %s"M" agentMsgHeader aMessage
 agentMsgHeader = agentMsgId prevMsgHash

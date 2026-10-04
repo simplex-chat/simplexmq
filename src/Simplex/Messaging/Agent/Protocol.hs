@@ -79,6 +79,7 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
+    RatchetInfo (..),
     RequestSignature (..),
     AgentMessageType (..),
     APrivHeader (..),
@@ -928,7 +929,7 @@ data AgentMessage
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
-  | AgentRatchetInfo ByteString
+  | AgentRatchetInfo RatchetInfo
   | AgentMessage APrivHeader AMessage
   | AgentServiceRequest (NonEmpty SMPQueueInfo) (Maybe RequestSignature) MsgBody
   | AgentServiceResponse MsgBody
@@ -939,7 +940,7 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
-    AgentRatchetInfo keyHash -> smpEncode ('R', keyHash)
+    AgentRatchetInfo info -> smpEncode ('R', info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
     AgentServiceRequest qs sig_ body -> smpEncode ('A', qs, sig_, Tail body)
     AgentServiceResponse body -> smpEncode ('P', Tail body)
@@ -948,12 +949,22 @@ instance Encoding AgentMessage where
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
-      'R' -> AgentRatchetInfo <$> (smpP <|> pure "") <* A.takeByteString
+      'R' -> AgentRatchetInfo <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       'A' -> AgentServiceRequest <$> smpP <*> smpP <*> (unTail <$> smpP)
       'P' -> AgentServiceResponse . unTail <$> smpP
       'J' -> AgentRejection . unTail <$> smpP
       _ -> fail "bad AgentMessage"
+
+data RatchetInfo = RatchetInfo {answeredKeyHash :: Maybe ByteString}
+  deriving (Eq, Show)
+
+instance Encoding RatchetInfo where
+  smpEncode RatchetInfo {answeredKeyHash} = smpEncode answeredKeyHash
+  smpP = do
+    answeredKeyHash <- smpP <|> pure Nothing
+    _ <- A.takeByteString
+    pure RatchetInfo {answeredKeyHash}
 
 -- internal type for storing message type in the database
 data AgentMessageType
