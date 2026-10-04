@@ -72,6 +72,7 @@ module Simplex.Messaging.Crypto.Ratchet
     rcEncryptHeader,
     rcEncryptMsg,
     rcDecrypt,
+    maxSkippedMsgKeys,
     -- used in tests
     MsgHeader (..),
     RatchetInitParams (..),
@@ -961,6 +962,9 @@ type DecryptResult a = (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff
 
 maxSkip :: Word32
 maxSkip = 512
+
+maxSkippedMsgKeys :: Int
+maxSkippedMsgKeys = 2000
 
 rcDecrypt ::
   forall a.
