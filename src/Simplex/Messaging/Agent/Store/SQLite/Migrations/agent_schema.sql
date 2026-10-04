@@ -641,6 +641,10 @@ CREATE INDEX idx_connections_deleted ON connections(deleted);
 CREATE INDEX idx_connections_service_request_expires_at ON connections(
   service_request_expires_at
 );
+CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_hashes(
+  conn_id,
+  processed_ratchet_key_hash_id
+);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW
@@ -685,7 +689,3 @@ BEGIN
   WHERE user_id = (SELECT user_id FROM connections WHERE conn_id = NEW.conn_id)
     AND host = NEW.host AND port = NEW.port;
 END;
-CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_hashes(
-  conn_id,
-  processed_ratchet_key_hash_id
-);
