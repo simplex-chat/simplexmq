@@ -266,7 +266,7 @@ import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Async (mapConcurrently)
-import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
+import UnliftIO.Concurrent (forkFinally, forkIO, forkIOWithUnmask, killThread, mkWeakThreadId, threadDelay)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -713,14 +713,39 @@ setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
   when changed $ liftIO $ reconnectAllServers c
 
 setUserNetworkInfo :: AgentClient -> UserNetworkInfo -> IO ()
-setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated} ni = withAgentEnv' c $ do
+setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated, networkEventSeq} ni = withAgentEnv' c $ do
   ts' <- liftIO getCurrentTime
   i <- asks $ userOfflineDelay . config
   -- if network offline event happens in less than `userOfflineDelay` after the previous event, it is ignored
-  atomically . whenM ((isOnline ni ||) <$> notRecentlyChanged ts' i) $ do
-    writeTVar userNetworkInfo ni
-    writeTVar userNetworkUpdated $ Just ts'
+  -- mask, so that the thread restoring the deferred online network info is always forked
+  liftIO $ E.mask_ $ do
+    event <- atomically $ do
+      update <- (isOnline ni ||) <$> notRecentlyChanged ts' i
+      if update
+        then do
+          writeTVar userNetworkUpdated $ Just ts'
+          -- when the agent was offline the reported info is applied when the clients are closed,
+          -- so that the workers waiting for the network do not resume before then
+          wasOnline <- isOnline <$> readTVar userNetworkInfo
+          writeTVar userNetworkInfo $ if wasOnline || not (isOnline ni) then ni else ni {online = False}
+          modifyTVar' networkEventSeq (+ 1)
+          Just <$> readTVar networkEventSeq
+        else pure Nothing
+    -- The client reports online network when it changes. The connections to the servers made via
+    -- the previous network are likely to be dead, but the OS may only report it after several minutes.
+    forM_ event $ \e -> when (isOnline ni) $ void $ forkIOWithUnmask $ \unmask ->
+      unmask (closeClients e) `E.finally` networkOnline e
   where
+    -- skipped when a newer info superseded this one - it closes the clients itself, and the ones
+    -- that stay connected while the network is offline are closed by the next online info
+    closeClients e = do
+      whenCurrent $ closeNetworkClients c smpClients
+      whenCurrent $ closeNetworkClients c ntfClients
+      whenCurrent $ closeProtocolServerClients c xftpClients
+      where
+        whenCurrent = whenM (atomically $ isCurrent e)
+    networkOnline e = atomically $ whenM (isCurrent e) $ writeTVar userNetworkInfo ni
+    isCurrent e = (e ==) <$> readTVar networkEventSeq
     notRecentlyChanged ts' i =
       maybe True (\ts -> diffUTCTime ts' ts > i) <$> readTVar userNetworkUpdated
 

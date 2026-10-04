@@ -21,6 +21,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Simplex.Messaging.Agent.Client
   ( AgentClient (..),
@@ -148,6 +149,7 @@ module Simplex.Messaging.Agent.Client
     UserNetworkType (..),
     getFastNetworkConfig,
     waitForUserNetwork,
+    closeNetworkClients,
     isNetworkOnline,
     isOnline,
     throwWhenInactive,
@@ -363,6 +365,8 @@ data AgentClient = AgentClient
     presetServers :: [SMPServer],
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
+    -- incremented for each accepted network info, to identify the most recent one
+    networkEventSeq :: TVar Int,
     subscrConns :: TVar (Set ConnId),
     currentSubs :: TSessionSubs,
     removedSubs :: TMap (UserId, SMPServer) (TMap SMP.RecipientId SMPClientError),
@@ -535,6 +539,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   useNetworkConfig <- newTVarIO (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVarIO $ UserNetworkInfo UNOther True
   userNetworkUpdated <- newTVarIO Nothing
+  networkEventSeq <- newTVarIO 0
   subscrConns <- newTVarIO S.empty
   currentSubs <- SS.emptyIO
   removedSubs <- TM.emptyIO
@@ -579,6 +584,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         presetServers,
         userNetworkInfo,
         userNetworkUpdated,
+        networkEventSeq,
         subscrConns,
         currentSubs,
         removedSubs,
@@ -767,8 +773,12 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       smp <- liftError (protocolClientError SMP $ B.unpack $ strEncode srv) $ do
         ts <- readTVarIO proxySessTs
         ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
-      atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
-      updateClientService service smp
+      -- the client removed from the map while it was connecting (see newProtocolClient) must not
+      -- replace the session or the service of the client that is current now
+      current <- atomically $ do
+        cur <- currentSessVar v' tSess smpClients
+        cur <$ when cur (SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c)
+      when current $ updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
     updateClientService service smp = case (service, smpClientServiceId smp) of
       (Just (_, serviceId_), Just serviceId) -> withStore' c $ \db -> do
@@ -954,8 +964,18 @@ newProtocolClient ::
 newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
   tryAllErrors (connectClient v) >>= \case
     Right client -> do
+      -- the client removed from the map while it was connecting, e.g. when the network changed, must
+      -- not be used - the requests made on it would wait for the responses that will not arrive; it is
+      -- published and rejected in one transaction, so that the caller always receives the one in the map
+      let e = BROKER (B.unpack $ strEncode srv) (NETWORK NEFailedError)
+      current <- atomically $ do
+        cur <- currentSessVar v tSess clients
+        cur <$ putTMVar (sessionVar v) (if cur then Right client else Left (e, Nothing))
+      unless current $ do
+        -- closed in another thread, as closing an XFTP client waits for its thread to terminate
+        void $ liftIO $ forkIO $ closeProtocolServerClient (protocolClient client) `catchAll_` pure ()
+        throwE e
       logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
-      atomically $ putTMVar (sessionVar v) (Right client)
       liftIO $ nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
     Left e -> do
@@ -1048,6 +1068,32 @@ closeProtocolServerClients c clientsSel =
 reconnectServerClients :: ProtocolServerClient v err msg => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
 reconnectServerClients c clientsSel =
   readTVarIO (clientsSel c) >>= mapM_ (forkIO . closeClient_ c)
+
+-- The pending requests of the clients that are closed fail before this function returns, so that
+-- the workers that resume do not wait for the responses that will not arrive; the requests of
+-- a client that did not terminate within the timeout are left to time out as before.
+closeNetworkClients :: (ProtocolServerClient v err msg, ProtoClient msg ~ ProtocolClient v err msg) => AgentClient -> (AgentClient -> TMap (TransportSession msg) (ClientVar msg)) -> IO ()
+closeNetworkClients c clientsSel = do
+  closed <- readTVarIO (clientsSel c) >>= fmap catMaybes . mapM closeNetworkClient . M.toList
+  void $ 1000000 `timeout` atomically (mapM_ (\pc -> whenM (clientConnected pc) retry) closed)
+  -- the requests are failed after the client threads terminate, so that the responses that arrive
+  -- before that are processed as usual rather than as the responses to the failed requests
+  forM_ closed $ \pc -> unlessM (atomically $ clientConnected pc) $ failPendingRequests pc
+  where
+    closeNetworkClient (tSess, v) =
+      atomically (tryReadTMVar (sessionVar v) >>= \r -> r <$ removeUnconnected r) >>= \case
+        Just (Right client) -> do
+          let pc = protocolClient client
+          Just pc <$ forkIO (closeProtocolServerClient pc `catchAll_` pure ())
+        _ -> pure Nothing
+      where
+        -- the client that failed to connect is removed so that the resumed workers do not get its cached
+        -- error, and the one that is connecting - so that they create a new client instead of waiting for
+        -- the connection made via the previous network; it is read and removed in one transaction, so that
+        -- it cannot publish itself in between - newProtocolClient then rejects and closes it
+        removeUnconnected = \case
+          Just (Right _) -> pure ()
+          _ -> removeSessVar v tSess (clientsSel c)
 
 reconnectSMPServer :: AgentClient -> UserId -> SMPServer -> IO ()
 reconnectSMPServer c userId srv = do
