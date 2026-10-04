@@ -573,10 +573,6 @@ CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hash
   conn_id,
   hash
 );
-CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
-  conn_id,
-  hash
-);
 CREATE INDEX idx_snd_messages_rcpt_internal_id ON snd_messages(
   conn_id,
   rcpt_internal_id
@@ -640,6 +636,10 @@ CREATE UNIQUE INDEX idx_address_ratchet_keys ON address_ratchet_keys(
 CREATE INDEX idx_connections_deleted ON connections(deleted);
 CREATE INDEX idx_connections_service_request_expires_at ON connections(
   service_request_expires_at
+);
+CREATE UNIQUE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
+  conn_id,
+  hash
 );
 CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_hashes(
   conn_id,

@@ -76,6 +76,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getExpiredServiceConns,
     deleteExpiredServiceRequests,
     getDeletedWaitingDeliveryConnIds,
+    getConnRatchetSync,
     setConnRatchetSync,
     addProcessedRatchetKeyHash,
     checkRatchetKeyHashExists,
@@ -2796,6 +2797,11 @@ deleteExpiredServiceRequests db expireTs =
 getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =
   map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted_at_wait_delivery IS NOT NULL"
+
+getConnRatchetSync :: DB.Connection -> ConnId -> IO (Either StoreError RatchetSyncState)
+getConnRatchetSync db connId =
+  firstRow fromOnly SEConnNotFound $
+    DB.query db "SELECT ratchet_sync_state FROM connections WHERE conn_id = ?" (Only connId)
 
 setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
 setConnRatchetSync db connId ratchetSyncState =
