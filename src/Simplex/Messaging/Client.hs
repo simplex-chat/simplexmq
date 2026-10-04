@@ -1263,14 +1263,14 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 -- proxy should send PRES to the client with EncResponse
 -- Always uses background timeout mode
 forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
-forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
+forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} (CorrId corrId) fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
     Nothing -> throwE $ PCETransportError TENoServerAuth
     Just THAuthClient {sessSecret} -> maybe (throwE $ PCETransportError TENoServerAuth) pure sessSecret
   nonce <- liftIO . atomically $ C.randomCbNonce g
   -- wrap
-  let fwdT = FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission}
+  let fwdT = FwdTransmission {fwdCorrId = C.StrictCbNonce corrId, fwdVersion, fwdKey, fwdTransmission}
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
   sendProtocolCommand_ c NRMBackground (Just nonce) Nothing Nothing NoEntity (Cmd SProxyService (RFWD eft)) >>= \case

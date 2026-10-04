@@ -21,12 +21,13 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
 import SMPAgentClient
 import SMPClient
-import ServerTests (decryptMsgV3, sendRecv, wrongSizeCorrIds)
+import ServerTests (decryptMsgV3, sendRecv)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
@@ -36,13 +37,11 @@ import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
-import Simplex.Messaging.Encoding (smpEncode)
 import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, QueueReqData (..), RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
 import Simplex.Messaging.Transport
-import qualified Simplex.Messaging.Transport.Client as TC
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
@@ -60,9 +59,6 @@ smpProxyTests = do
   describe "server configuration" $ do
     it "refuses proxy handshake unless enabled" testNoProxy
     it "checks basic auth in proxy requests" testProxyAuth
-  describe "corrId used as nonce" $ do
-    it "proxy rejects PFWD with corrId of wrong size" testPFWDCorrIdSize
-    it "relay rejects RFWD with corrId of wrong size" testRFWDCorrIdSize
   describe "relay reconnection" $ do
     it "recovers when unresponsive relay restarts (control, no disconnect)" $ \_ ->
       testProxyRecoversWithoutDisconnect
@@ -80,6 +76,8 @@ smpProxyTests = do
     xit "batching proxy requests" todo
     it "relay rejects forwarded command with changed version" $ \_ ->
       testChangedFwdVersion
+    it "relay rejects forwarded corrId of wrong size" $ \_ ->
+      testFwdCorrIdSize
   describe "deliver message via SMP proxy" $ do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
@@ -459,48 +457,6 @@ testProxyAuth msType = do
   where
     proxyCfgAuth = updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth = Just "correct"}
 
-testPFWDCorrIdSize :: AStoreType -> IO ()
-testPFWDCorrIdSize msType =
-  withSmpServerConfigOn (transport @TLS) (proxyCfgMS msType) testPort $ \_ ->
-    testSMPClient_ "127.0.0.1" testPort supportedServerSMPRelayVRange Nothing $ \(th@THandle {params} :: THandleSMP TLS 'TClient) -> do
-      g <- C.newRandom
-      (cmdKey, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      let pfwd corrId = do
-            (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId "unknown session", SMP.PFWD (thVersion params) cmdKey $ SMP.EncTransmission "invalid")
-            pure reply
-      corrId <- atomically $ C.randomBytes 24 g
-      pfwd corrId `shouldReturn` Right (SMP.ERR $ SMP.PROXY SMP.NO_SESSION)
-      forM_ (wrongSizeCorrIds corrId) $ \badCorrId ->
-        pfwd badCorrId `shouldReturn` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
-
-testRFWDCorrIdSize :: AStoreType -> IO ()
-testRFWDCorrIdSize msType =
-  withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ ->
-    testProxyModeClient $ \th@THandle {params = THandleParams {thVersion, thAuth}} -> do
-      Just THAuthClient {sessSecret = Just sessSecret} <- pure thAuth
-      g <- C.newRandom
-      (fwdKey, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      let rfwd corrId fwdCorrId = do
-            let fwdT = SMP.FwdTransmission {fwdCorrId = SMP.CorrId fwdCorrId, fwdVersion = thVersion, fwdKey, fwdTransmission = SMP.EncTransmission "invalid"}
-                eft = SMP.EncFwdTransmission $ C.cbEncryptNoPad sessSecret (C.cbNonce corrId) (smpEncode fwdT)
-            (_, _, reply) <- sendRecv th (Nothing, corrId, NoEntity, SMP.RFWD eft)
-            pure reply
-      corrId <- atomically $ C.randomBytes 24 g
-      fwdCorrId <- atomically $ C.randomBytes 24 g
-      rfwd corrId fwdCorrId `shouldReturn` Right (SMP.ERR SMP.CRYPTO)
-      forM_ (wrongSizeCorrIds corrId) $ \badCorrId -> do
-        rfwd badCorrId fwdCorrId `shouldReturn` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
-        rfwd corrId badCorrId `shouldReturn` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
-
--- Connect to the relay on testPort2 the same way the proxy does, with the session secret.
-testProxyModeClient :: (THandleSMP TLS 'TClient -> IO a) -> IO a
-testProxyModeClient client = do
-  g <- C.newRandom
-  ks <- atomically $ C.generateKeyPair g
-  let tcConfig = TC.defaultTransportClientConfig {TC.clientALPN = Just alpnSupportedSMPHandshakes}
-  TC.runTransportClient tcConfig Nothing "127.0.0.1" testPort2 (Just testKeyHash) $ \h ->
-    runExceptT (smpClientHandshake h (Just ks) testKeyHash supportedClientSMPRelayVRange True Nothing) >>= either (fail . show) client
-
 -- Connect a sender client to the proxy and request a relay session to testSMPServer2 (PRXY).
 -- On success the reply is PKEY; otherwise it is the proxy error for the relay connection.
 requestRelaySession :: IO (Either SMP.ErrorType SMP.BrokerMsg)
@@ -522,6 +478,22 @@ testChangedFwdVersion =
     let forward fwdVersion = forwardSMPTransmission rc (SMP.CorrId corrId) fwdVersion cmdPubKey et
     _ <- runExceptT' $ forward v
     runExceptT (forward $ prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+
+testFwdCorrIdSize :: IO ()
+testFwdCorrIdSize =
+  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    THAuthClient {peerServerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams rc
+    (cmdPubKey, cmdPrivKey) <- atomically $ C.generateKeyPair g
+    nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+    let v = currentClientSMPRelayVersion
+    et <- either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) (SMP.encTransmissionNonce v nonce) "" SMP.paddedProxiedTLength
+    let forward cId = runExceptT $ forwardSMPTransmission rc (SMP.CorrId cId) v cmdPubKey et
+    Right _ <- forward corrId
+    forM_ (["", B.take 23 corrId, corrId <> "x"] :: [ByteString]) $ \cId ->
+      forward cId `shouldReturn` Left (PCEProtocolError $ SMP.CMD SMP.SYNTAX)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,

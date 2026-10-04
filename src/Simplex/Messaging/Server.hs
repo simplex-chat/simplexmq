@@ -64,7 +64,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
-import Data.Either (fromRight, isLeft, partitionEithers)
+import Data.Either (fromRight, partitionEithers)
 import Data.Foldable (foldrM)
 import Data.Functor (($>), (<&>))
 import Data.IORef
@@ -1453,22 +1453,20 @@ client
                         Just THAuthClient {peerServerCertKey} -> PKEY srvSessId vr peerServerCertKey
                         Nothing -> ERR $ transportErr TENoServerAuth
                       _ -> ERR $ transportErr TEVersion
-      PFWD fwdV pubKey encBlock
-        | isLeft (corrIdNonce corrId) -> pure $ Just $ ERR $ CMD SYNTAX
-        | otherwise -> do
-            ProxyAgent {smpAgent = a} <- asks proxyAgent
-            ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
-            let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-            liftIO (lookupSMPServerClient a sessId) >>= \case
-              Just (own, smp) -> do
-                inc own pRequests
-                forkProxiedCmd $ do
-                  liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                    Right (nonce_, r) -> PRES nonce_ r <$ inc own pSuccesses
-                    Left e -> ERR (smpProxyError e) <$ case e of
-                      PCEProtocolError {} -> inc own pSuccesses
-                      _ -> inc own pErrorsOther
-              Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
+      PFWD fwdV pubKey encBlock -> do
+        ProxyAgent {smpAgent = a} <- asks proxyAgent
+        ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
+        let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
+        liftIO (lookupSMPServerClient a sessId) >>= \case
+          Just (own, smp) -> do
+            inc own pRequests
+            forkProxiedCmd $ do
+              liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
+                Right (nonce_, r) -> PRES nonce_ r <$ inc own pSuccesses
+                Left e -> ERR (smpProxyError e) <$ case e of
+                  PCEProtocolError {} -> inc own pSuccesses
+                  _ -> inc own pErrorsOther
+          Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
@@ -2127,12 +2125,12 @@ client
         processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
-          proxyNonce <- liftEitherWith (const $ CMD SYNTAX) $ corrIdNonce corrId
+          let proxyNonce = C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
           unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
-          clientNonce <- liftEitherWith (const $ CMD SYNTAX) $ corrIdNonce fwdCorrId
           let clientSecret = C.dh' fwdKey serverPrivKey
+              clientNonce = C.cbNonce $ C.unStrictCbNonce fwdCorrId
           b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions

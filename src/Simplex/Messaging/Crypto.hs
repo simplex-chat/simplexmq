@@ -142,6 +142,7 @@ module Simplex.Messaging.Crypto
     -- * NaCl crypto_box
     CbNonce (unCbNonce),
     pattern CbNonce,
+    StrictCbNonce (..),
     cbEncrypt,
     cbEncryptNoPad,
     cbEncryptMaxLenBS,
@@ -1425,6 +1426,14 @@ reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
 instance Encoding CbNonce where
   smpEncode = unCbNonce
   smpP = CryptoBoxNonce <$> A.take 24
+
+-- | Length-prefixed nonce that fails to parse unless it is 24 bytes, unlike cbNonce that pads or truncates.
+newtype StrictCbNonce = StrictCbNonce {unStrictCbNonce :: ByteString}
+  deriving (Eq, Show)
+
+instance Encoding StrictCbNonce where
+  smpEncode (StrictCbNonce s) = smpEncode s
+  smpP = smpP >>= \s -> if B.length s == 24 then pure (StrictCbNonce s) else fail "bad nonce length"
 
 newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
   deriving (Eq, Show)

@@ -125,7 +125,6 @@ module Simplex.Messaging.Protocol
     SrvLoc (..),
     CorrId (..),
     pattern NoCorrId,
-    corrIdNonce,
     EntityId (..),
     pattern NoEntity,
     QueueId,
@@ -251,7 +250,6 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
-import Data.Either (isLeft)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Kind
@@ -711,18 +709,18 @@ encTransmissionNonce v nonce@(C.CbNonce s)
   | otherwise = nonce
 
 data FwdTransmission = FwdTransmission
-  { fwdCorrId :: CorrId,
+  { fwdCorrId :: C.StrictCbNonce,
     fwdVersion :: VersionSMP,
     fwdKey :: C.PublicKeyX25519,
     fwdTransmission :: EncTransmission
   }
 
 instance Encoding FwdTransmission where
-  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
-    smpEncode (corrId, fwdVersion, fwdKey, Tail t)
+  smpEncode FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
+    smpEncode (fwdCorrId, fwdVersion, fwdKey, Tail t)
   smpP = do
-    (corrId, fwdVersion, fwdKey, Tail t) <- smpP
-    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
+    (fwdCorrId, fwdVersion, fwdKey, Tail t) <- smpP
+    pure FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
@@ -768,16 +766,16 @@ newtype EncFwdResponse = EncFwdResponse ByteString
   deriving (Eq, Show)
 
 data FwdResponse = FwdResponse
-  { fwdCorrId :: CorrId,
+  { fwdCorrId :: C.StrictCbNonce,
     fwdResponse :: EncResponse
   }
 
 instance Encoding FwdResponse where
-  smpEncode FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t} =
-    smpEncode (corrId, Tail t)
+  smpEncode FwdResponse {fwdCorrId, fwdResponse = EncResponse t} =
+    smpEncode (fwdCorrId, Tail t)
   smpP = do
-    (corrId, Tail t) <- smpP
-    pure FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t}
+    (fwdCorrId, Tail t) <- smpP
+    pure FwdResponse {fwdCorrId, fwdResponse = EncResponse t}
 
 newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
@@ -1434,10 +1432,6 @@ pattern NoCorrId = CorrId ""
 instance IsString CorrId where
   fromString = CorrId . fromString
   {-# INLINE fromString #-}
-
--- | Fails unless corrId is exactly 24 bytes, so it is never padded or truncated.
-corrIdNonce :: CorrId -> Either String C.CbNonce
-corrIdNonce = smpDecode . bs
 
 instance StrEncoding CorrId where
   strEncode (CorrId cId) = strEncode cId
@@ -2427,12 +2421,7 @@ tDecodeServer THandleParams {sessionId, thVersion = v, implySessId} = \case
     | implySessId || sessId == sessionId -> case decodeTAuthBytes authenticator serviceSig of
         Right tAuth -> bimap t ((tAuth,authorized,) . t) cmdOrErr
           where
-            cmdOrErr
-              | invalidAuthNonce = Left $ fromProtocolError @v @err @cmd PECmdSyntax
-              | otherwise = parseProtocol @v @err @cmd v command >>= checkCredentials tAuth entityId
-            invalidAuthNonce = case tAuth of
-              Just (TAAuthenticator _, _) -> isLeft $ corrIdNonce corrId
-              _ -> False
+            cmdOrErr = parseProtocol @v @err @cmd v command >>= checkCredentials tAuth entityId
             t :: a -> (CorrId, EntityId, a)
             t = (corrId,entityId,)
         Left _ -> tError corrId PEBlock
