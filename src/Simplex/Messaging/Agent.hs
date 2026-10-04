@@ -2865,7 +2865,6 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
     SomeConn _ (DuplexConnection cData@ConnData {pqSupport} rqs sqs)
       | ratchetSyncAllowed cData || force -> do
           -- check queues are not switching?
-          when (pqSupport' /= pqSupport) $ withStore' c $ \db -> setConnPQSupport db connId pqSupport'
           let cData' = cData {pqSupport = pqSupport'} :: ConnData
           cfg@AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
@@ -2873,6 +2872,7 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
           sqs' <- withStore c $ \db -> runExceptT $ do
             msgId <- storeRatchetKeyMsg db cfg connId e2eParams Nothing
             liftIO $ do
+              when (pqSupport' /= pqSupport) $ setConnPQSupport db connId pqSupport'
               setConnRatchetSync db connId RSStarted
               setRatchetX3dhKeys db connId pks
               createMsgDeliveries db cData' sqs msgId
@@ -3617,7 +3617,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   (Just e2eDh, Nothing) -> do
                     decryptClientMessage e2eDh clientMsg >>= \case
                       (SMP.PHEmpty, AgentRatchetKey {agentVersion, e2eEncryption, info}) -> do
-                        conn' <- updateConnVersion conn cData agentVersion
+                        void $ updateConnVersion conn cData agentVersion
+                        SomeConn _ conn' <- withStore c (`getConn` connId)
                         qDuplex conn' "AgentRatchetKey" $ \a -> newRatchetKey e2eEncryption info a >> ack
                       (SMP.PHEmpty, AgentMsgEnvelope {agentVersion, encAgentMessage}) -> do
                         conn' <- updateConnVersion conn cData agentVersion
@@ -4161,13 +4162,13 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   let rkHash = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2
                   withStore' c $ \db -> not <$> addProcessedRatchetKeyHash db connId rkHash
 
-          qDuplex :: Connection c -> String -> (Connection 'CDuplex -> AM a) -> AM a
+          qDuplex :: Connection d -> String -> (Connection 'CDuplex -> AM a) -> AM a
           qDuplex conn' name action = case conn' of
             DuplexConnection {} -> action conn'
             _ -> qError $ name <> ": message must be sent to duplex connection"
 
           newRatchetKey :: CR.RcvE2ERatchetParams 'C.X448 -> ByteString -> Connection 'CDuplex -> AM ()
-          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv _) info conn'@(DuplexConnection cData'@ConnData {lastExternalSndId, pqSupport} _ sqs) =
+          newRatchetKey e2eOtherPartyParams@(CR.E2ERatchetParams e2eVersion k1Rcv k2Rcv _) info conn'@(DuplexConnection cData'@ConnData {lastExternalSndId, pqSupport, ratchetSyncState} _ sqs) =
             unlessM ratchetExists $ do
               AgentConfig {e2eEncryptVRange} <- asks config
               unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwE $ AGENT A_VERSION)
@@ -4187,7 +4188,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               markKeyProcessed db changeState =
                 ifM (addProcessedRatchetKeyHash db connId rkHashRcv) (Just <$> (runExceptT changeState >>= either E.throwIO pure)) (pure Nothing)
               getSendRatchetKeys :: AM (Maybe (CR.RcvE2EPrivRatchetParams 'C.X448, Maybe (CR.RcvE2ERatchetParams 'C.X448)))
-              getSendRatchetKeys = getRatchetSyncState >>= \rss' -> case (rss', answeredKeyHash_) of
+              getSendRatchetKeys = case (ratchetSyncState, answeredKeyHash_) of
                 (RSStarted, Nothing) -> Just . (,Nothing) <$> withStore c (`getRatchetX3dhKeys` connId) -- initiating client
                 (RSStarted, Just h) -> withStore c (`getRatchetX3dhKeys` connId) >>= answeredKeys h
                 (_, Nothing) -> Just . second Just <$> generateReplyKey -- receiving client

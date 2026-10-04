@@ -2784,14 +2784,7 @@ testRatchetSyncReplayedKey ps = withAgentClients2 $ \alice bob -> do
 
 testRatchetSyncRepeated :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testRatchetSyncRepeated ps = withAgentClients2 $ \alice bob -> do
-  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
-    setupDesynchronizedRatchet alice bob
-
-  ("", "", DOWN _ _) <- nGet alice
-  ("", "", DOWN _ _) <- nGet bob2
-
-  ConnectionStats {ratchetSyncState = rss1} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
-  rss1 `shouldBe` RSStarted
+  (aliceId, bobId, bob2) <- startRatchetSyncOffline ps alice bob
   ConnectionStats {ratchetSyncState = rss2} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn True
   rss2 `shouldBe` RSStarted
 
@@ -2812,14 +2805,7 @@ testRatchetSyncRepeated ps = withAgentClients2 $ \alice bob -> do
 
 testRatchetSyncFailedKeyNotProcessed :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testRatchetSyncFailedKeyNotProcessed ps = withAgentClients2 $ \alice bob -> do
-  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
-    setupDesynchronizedRatchet alice bob
-
-  ("", "", DOWN _ _) <- nGet alice
-  ("", "", DOWN _ _) <- nGet bob2
-
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
-  ratchetSyncState `shouldBe` RSStarted
+  (aliceId, bobId, bob2) <- startRatchetSyncOffline ps alice bob
   withTransaction (store $ agentEnv bob2) $ \db ->
     DB.execute_ db "UPDATE ratchets SET x3dh_priv_key_1 = NULL"
 
@@ -2838,14 +2824,7 @@ testRatchetSyncFailedKeyNotProcessed ps = withAgentClients2 $ \alice bob -> do
 
 testRatchetSyncFailedRecreationNoReply :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testRatchetSyncFailedRecreationNoReply ps = withAgentClients2 $ \alice bob -> do
-  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
-    setupDesynchronizedRatchet alice bob
-
-  ("", "", DOWN _ _) <- nGet alice
-  ("", "", DOWN _ _) <- nGet bob2
-
-  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
-  ratchetSyncState `shouldBe` RSStarted
+  (_, bobId, bob2) <- startRatchetSyncOffline ps alice bob
   aliceSndMsgs <- sndMessages alice
   withTransaction (store $ agentEnv alice) $ \db ->
     DB.execute_ db "CREATE TRIGGER fail_ratchet_insert BEFORE INSERT ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet insert failed'); END"
@@ -2870,12 +2849,23 @@ testRatchetSyncStartFailedNoKey ps = withAgentClients2 $ \alice bob -> do
   bobSndMsgs <- sndMessages bob2
   withTransaction (store $ agentEnv bob2) $ \db ->
     DB.execute_ db "CREATE TRIGGER fail_ratchet_update BEFORE UPDATE ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet update failed'); END"
-  Left (A.INTERNAL e) <- runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  Left (A.INTERNAL e) <- runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOff False
   e `shouldContain` "ratchet update failed"
   ConnectionStats {ratchetSyncState} <- runRight $ getConnectionServers bob2 aliceId
   ratchetSyncState `shouldBe` RSRequired
+  withTransaction (store $ agentEnv bob2) (`DB.query_` "SELECT conn_id, pq_support FROM connections") `shouldReturn` [(aliceId, PQSupportOn)]
   sndMessages bob2 `shouldReturn` bobSndMsgs
   disposeAgentClient bob2
+
+startRatchetSyncOffline :: HasCallStack => (ASrvTransport, AStoreType) -> AgentClient -> AgentClient -> IO (ConnId, ConnId, AgentClient)
+startRatchetSyncOffline ps alice bob = do
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  ratchetSyncState `shouldBe` RSStarted
+  pure (aliceId, bobId, bob2)
 
 processedRatchetKeyHashes :: AgentClient -> IO [(ConnId, ByteString)]
 processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, hash FROM processed_ratchet_key_hashes")
