@@ -2870,12 +2870,12 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
           g <- asks random
           (pks, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqSupport'
           sqs' <- withStore c $ \db -> runExceptT $ do
-            msgId <- storeRatchetKeyMsg db cfg connId e2eParams Nothing
+            sqs' <- enqueueRatchetKeyMsgs db cfg cData' sqs e2eParams Nothing
             liftIO $ do
               when (pqSupport' /= pqSupport) $ setConnPQSupport db connId pqSupport'
               setConnRatchetSync db connId RSStarted
               setRatchetX3dhKeys db connId pks
-              createMsgDeliveries db cData' sqs msgId
+            pure sqs'
           lift $ mapM_ (submitPendingMsg c) sqs'
           let cData'' = cData' {ratchetSyncState = RSStarted} :: ConnData
               conn' = DuplexConnection cData'' rqs sqs
@@ -4226,9 +4226,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               recreateRatchet replyKey_ eready_ rc = do
                 cfg <- asks config
                 sqs_ <- withStore' c $ \db -> markKeyProcessed db $ do
-                  replySqs <- forM replyKey_ $ \e2eParams -> do
-                    msgId <- storeRatchetKeyMsg db cfg connId e2eParams (Just rkHashRcv)
-                    liftIO $ createMsgDeliveries db cData' sqs msgId
+                  replySqs <- forM replyKey_ $ \e2eParams -> enqueueRatchetKeyMsgs db cfg cData' sqs e2eParams (Just rkHashRcv)
                   liftIO $ do
                     setConnRatchetSync db connId RSAgreed
                     deleteRatchet db connId
@@ -4363,19 +4361,27 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
     liftIO $ createSndMsg db connId msgData
     liftIO $ createSndMsgDelivery db sq internalId
 
-storeRatchetKeyMsg :: DB.Connection -> AgentConfig -> ConnId -> CR.RcvE2ERatchetParams 'C.X448 -> Maybe ByteString -> ExceptT StoreError IO InternalId
-storeRatchetKeyMsg db AgentConfig {smpAgentVRange} connId e2eEncryption answeredKeyHash_ = do
-  internalTs <- liftIO getCurrentTime
-  (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
-  let agentMsg = AgentRatchetInfo $ fromMaybe "" answeredKeyHash_
-      agentMsgStr = smpEncode agentMsg
-      internalHash = C.sha256Hash agentMsgStr
-  let msgBody = smpEncode $ AgentRatchetKey {agentVersion = maxVersion smpAgentVRange, e2eEncryption, info = agentMsgStr}
-      msgType = agentMessageType agentMsg
-      -- this message is e2e encrypted with queue key, not with double ratchet
-      msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
-  liftIO $ createSndMsg db connId msgData
-  pure internalId
+enqueueRatchetKeyMsgs :: DB.Connection -> AgentConfig -> ConnData -> NonEmpty SndQueue -> CR.RcvE2ERatchetParams 'C.X448 -> Maybe ByteString -> ExceptT StoreError IO [SndQueue]
+enqueueRatchetKeyMsgs db cfg cData sqs@(sq :| _) e2eEncryption answeredKeyHash_ = do
+  msgId <- enqueueRatchetKey db cfg sq e2eEncryption answeredKeyHash_
+  liftIO $ createMsgDeliveries db cData sqs msgId
+
+enqueueRatchetKey :: DB.Connection -> AgentConfig -> SndQueue -> CR.RcvE2ERatchetParams 'C.X448 -> Maybe ByteString -> ExceptT StoreError IO InternalId
+enqueueRatchetKey db AgentConfig {smpAgentVRange} SndQueue {connId} e2eEncryption answeredKeyHash_ = storeRatchetKey $ maxVersion smpAgentVRange
+  where
+    storeRatchetKey :: VersionSMPA -> ExceptT StoreError IO InternalId
+    storeRatchetKey agentVersion = do
+      internalTs <- liftIO getCurrentTime
+      (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
+      let agentMsg = AgentRatchetInfo $ fromMaybe "" answeredKeyHash_
+          agentMsgStr = smpEncode agentMsg
+          internalHash = C.sha256Hash agentMsgStr
+      let msgBody = smpEncode $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
+          msgType = agentMessageType agentMsg
+          -- this message is e2e encrypted with queue key, not with double ratchet
+          msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
+      liftIO $ createSndMsg db connId msgData
+      pure internalId
 
 createMsgDeliveries :: DB.Connection -> ConnData -> NonEmpty SndQueue -> InternalId -> IO [SndQueue]
 createMsgDeliveries db cData (sq :| sqs) msgId = do
