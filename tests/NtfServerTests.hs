@@ -70,8 +70,8 @@ ntfSyntaxTests (ATransport t) = do
   where
     (>#>) ::
       Encoding smp =>
-      (Maybe TAuthorizations, ByteString, ByteString, smp) ->
-      (Maybe TAuthorizations, ByteString, ByteString, NtfResponse) ->
+      (Maybe TAuthorizations, CorrId, ByteString, smp) ->
+      (Maybe TAuthorizations, CorrId, ByteString, NtfResponse) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
@@ -95,13 +95,13 @@ deriving instance Eq NtfResponse
 
 sendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, NtfEntityId, NtfCommand e) -> IO (Transmission (Either ErrorType NtfResponse))
 sendRecvNtf h@THandle {params} (sgn, corrId, qId, cmd) = do
-  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (testCorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
 signSendRecvNtf :: forall c e. (Transport c, NtfEntityI e) => THandleNTF c 'TClient -> C.APrivateAuthKey -> (ByteString, NtfEntityId, NtfCommand e) -> IO (Transmission (Either ErrorType NtfResponse))
 signSendRecvNtf h@THandle {params} (C.APrivateAuthKey a pk) (corrId, qId, cmd) = do
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (testCorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   tGet1 h
   where
@@ -136,7 +136,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           let dhSecret = C.dh' ntfDh dhPriv
               decryptCode nd =
                 let Right verification = nd .-> "verification"
-                    Right nonce = C.cbNonce <$> nd .-> "nonce"
+                    Right nonce = C.cbNonce =<< nd .-> "nonce"
                     Right pt = C.cbDecrypt dhSecret nonce verification
                  in NtfRegCode pt
           let code = decryptCode ntfData
@@ -160,7 +160,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           -- receive notification
           APNSMockRequest {notification} <- getMockNotification apns tkn
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
-              Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
+              Right nonce' = C.cbNonce =<< ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
               Right pnMsgs1 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
@@ -171,7 +171,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           notifierId `shouldBe` nId
           -- receive message
           Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
+          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.unsafeCbNonce mId1) body)
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"
@@ -183,7 +183,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
             getMockNotification apns tkn'
           let Right verification2 = ntfData2 .-> "verification"
-              Right nonce2 = C.cbNonce <$> ntfData2 .-> "nonce"
+              Right nonce2 = C.cbNonce =<< ntfData2 .-> "nonce"
               Right code2 = NtfRegCode <$> C.cbDecrypt dhSecret nonce2 verification2
           RespNtf "8" _ NROk <- signSendRecvNtf nh tknKey ("8", tId, TVFY code2)
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
@@ -191,7 +191,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
           APNSMockRequest {notification = notification3} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
-              Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
+              Right nonce3 = C.cbNonce =<< ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"
               Right ntfDataDecrypted3 = C.cbDecrypt dhSecret nonce3 message3
               Right pnMsgs2 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
@@ -199,7 +199,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
           Resp "" _ (MSG RcvMessage {msgId = mId2, msgBody = EncRcvMsgBody body2}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgBody = "hello 2"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId2) body2)
+          Right ClientRcvMsgBody {msgBody = "hello 2"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.unsafeCbNonce mId2) body2)
           Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId2)
 
           q2 <- createQueue rh sPub nPub
@@ -218,7 +218,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           Resp "14" _ OK <- signSendRecv sh sKey ("14", sId, _SEND' "hello 3")
           APNSMockRequest {notification = notification4} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData4} = notification4
-              Right nonce4 = C.cbNonce <$> ntfData4 .-> "nonce"
+              Right nonce4 = C.cbNonce =<< ntfData4 .-> "nonce"
               Right message4 = ntfData4 .-> "message"
               Right ntfDataDecrypted4 = C.cbDecrypt dhSecret nonce4 message4
               Right pnMsgs4 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted4
@@ -226,14 +226,14 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           smpServer4 `shouldBe` srv
           notifierId4 `shouldBe` nId
           Resp "" _ (MSG RcvMessage {msgId = mId3, msgBody = EncRcvMsgBody body3}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgBody = "hello 3"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId3) body3)
+          Right ClientRcvMsgBody {msgBody = "hello 3"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.unsafeCbNonce mId3) body3)
           Resp "15" _ OK <- signSendRecv rh rKey ("15", rId, ACK mId3)
 
           -- deliver to queue with ntf sub created while SMP was offline
           Resp "16" _ OK <- signSendRecv sh sKey ("16", sId', _SEND' "hello 4")
           APNSMockRequest {notification = notification5} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData5} = notification5
-              Right nonce5 = C.cbNonce <$> ntfData5 .-> "nonce"
+              Right nonce5 = C.cbNonce =<< ntfData5 .-> "nonce"
               Right message5 = ntfData5 .-> "message"
               Right ntfDataDecrypted5 = C.cbDecrypt dhSecret nonce5 message5
               Right pnMsgs5 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted5
@@ -241,7 +241,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           smpServer5 `shouldBe` srv
           notifierId5 `shouldBe` nId'
           Resp "" _ (MSG RcvMessage {msgId = mId4, msgBody = EncRcvMsgBody body4}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgBody = "hello 4"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret' (C.cbNonce mId4) body4)
+          Right ClientRcvMsgBody {msgBody = "hello 4"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret' (C.unsafeCbNonce mId4) body4)
           Resp "17" _ OK <- signSendRecv rh rKey' ("17", rId', ACK mId4)
           pure ()
 
@@ -307,7 +307,7 @@ registerToken nh apns token = do
   let dhSecret = C.dh' ntfDh dhPriv
       decryptCode nd =
         let Right verification = nd .-> "verification"
-            Right nonce = C.cbNonce <$> nd .-> "nonce"
+            Right nonce = C.cbNonce =<< nd .-> "nonce"
             Right pt = C.cbDecrypt dhSecret nonce verification
          in NtfRegCode pt
   let code = decryptCode ntfData

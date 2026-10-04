@@ -12,13 +12,16 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module SMPClient where
 
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
+import Data.String (IsString (..))
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket
@@ -437,21 +440,32 @@ runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c
     run 0 hs = test hs
     run n hs = testSMPClientVR clntVR $ \h -> run (n - 1) (h : hs)
 
+instance IsString CorrId where
+  fromString = testCorrId . B.pack
+
+testCorrId :: ByteString -> CorrId
+testCorrId s
+  | B.null s = NoCorrId
+  | otherwise = CorrId $ testNonce s
+
+testNonce :: ByteString -> C.CbNonce
+testNonce s = C.unsafeCbNonce $ s <> B.replicate (24 - B.length s) '\0'
+
 smpServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c 'TServer ->
-  (Maybe TAuthorizations, ByteString, ByteString, smp) ->
-  IO (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg)
+  (Maybe TAuthorizations, CorrId, ByteString, smp) ->
+  IO (Maybe TAuthorizations, CorrId, ByteString, BrokerMsg)
 smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleSMP c 'TClient -> (Maybe TAuthorizations, CorrId, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
+      [(corrId, EntityId qId, Right cmd)] <- tGetClient h
       pure (Nothing, corrId, qId, cmd)
 
 smpTest :: (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation

@@ -31,7 +31,6 @@ import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
     Command (..),
-    CorrId (..),
     ErrorType (..),
     NameQuery (..),
     NameRegistration (..),
@@ -74,7 +73,7 @@ withProxyAndResolver (st, body) runTest =
 
 sendRslv :: Transport c => THandleSMP c 'TClient -> B.ByteString -> SimplexDomain -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRslv h@THandle {params} corrId d = do
-  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, NoEntity, Cmd SResolver (RSLV (NQDomain d)))
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (testCorrId corrId, NoEntity, Cmd SResolver (RSLV (NQDomain d)))
   [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
   r :| _ <- tGetClient h
   pure r
@@ -110,7 +109,7 @@ testRslvBackendNotFound =
   withResolverServer (status404, "{}") $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs01" (domain "ghost.simplex")
-      corrId `shouldBe` CorrId "rs01"
+      corrId `shouldBe` "rs01"
       resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 404")))
 
 testRslvBackendHttpErr :: IO ()
@@ -172,7 +171,7 @@ testRslvSuccess =
   withResolverServer (status200, registeredBody testNameRecord) $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "rs07" (domain "alice.simplex")
-      corrId `shouldBe` CorrId "rs07"
+      corrId `shouldBe` "rs07"
       case resp of
         Right (RNAME NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
         _ -> expectationFailure $ "expected Right (RNAME NRRegistered), got: " <> show resp
@@ -182,7 +181,7 @@ testRslvAvailable =
   withResolverServer (status200, availableBody) $
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "na01" (domain "ghost.simplex")
-      corrId `shouldBe` CorrId "na01"
+      corrId `shouldBe` "na01"
       resp `shouldBe` Right (RNAME (resolved (NRAvailable testPricing)))
 
 testRslvReserved :: IO ()

@@ -62,7 +62,7 @@ import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), EntitlementProof 
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BlockingInfo, CommandError (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
+import Simplex.Messaging.Protocol (BlockingInfo, CommandError (..), CorrId (..), EntityId (..), RcvPublicAuthKey, RcvPublicDhKey, RecipientId, SignedTransmission, pattern NoEntity)
 import Simplex.Messaging.Server (controlPortAuth, dummyVerifyCmd, verifyCmdAuthorization)
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Expiration
@@ -421,7 +421,7 @@ data ServerFile = ServerFile
 
 processRequest :: FileStoreClass s => XFTPTransportRequest -> M s ()
 processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS}
-  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
+  | B.length bodyHead /= xftpBlockSize = sendXFTPResponse (NoCorrId, NoEntity, FRErr BLOCK) Nothing
   | otherwise =
       case xftpDecodeTServer thParams bodyHead of
         Right (Right t@(_, _, (corrId, fId, _))) -> do
@@ -433,7 +433,7 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
         Right (Left (corrId, fId, e)) -> sendXFTPResponse (corrId, fId, FRErr e) Nothing
-        Left e -> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
+        Left e -> sendXFTPResponse (NoCorrId, NoEntity, FRErr e) Nothing
   where
     sendXFTPResponse t' serverFile_ = do
       let t_ = xftpEncodeTransmission thParams t'

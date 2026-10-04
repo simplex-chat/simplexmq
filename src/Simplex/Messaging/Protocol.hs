@@ -124,7 +124,7 @@ module Simplex.Messaging.Protocol
     BasicAuth (..),
     SrvLoc (..),
     CorrId (..),
-    pattern NoCorrId,
+    corrIdBytes,
     EntityId (..),
     pattern NoEntity,
     QueueId,
@@ -705,7 +705,7 @@ newtype EncTransmission = EncTransmission ByteString
 
 encTransmissionNonce :: VersionSMP -> C.CbNonce -> C.CbNonce
 encTransmissionNonce v nonce@(C.CbNonce s)
-  | v >= fwdNoncesSMPVersion = C.cbNonce $ packZipWith xor (smpEncode v) s <> BS.drop 2 s
+  | v >= fwdNoncesSMPVersion = C.unsafeCbNonce $ packZipWith xor (smpEncode v) s <> BS.drop 2 s
   | otherwise = nonce
 
 data FwdTransmission = FwdTransmission
@@ -716,11 +716,11 @@ data FwdTransmission = FwdTransmission
   }
 
 instance Encoding FwdTransmission where
-  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
-    smpEncode (corrId, fwdVersion, fwdKey, Tail t)
+  smpEncode FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
+    smpEncode (fwdCorrId, fwdVersion, fwdKey, Tail t)
   smpP = do
-    (corrId, fwdVersion, fwdKey, Tail t) <- smpP
-    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
+    (fwdCorrId, fwdVersion, fwdKey, Tail t) <- smpP
+    pure FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
@@ -771,11 +771,11 @@ data FwdResponse = FwdResponse
   }
 
 instance Encoding FwdResponse where
-  smpEncode FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t} =
-    smpEncode (corrId, Tail t)
+  smpEncode FwdResponse {fwdCorrId, fwdResponse = EncResponse t} =
+    smpEncode (fwdCorrId, Tail t)
   smpP = do
-    (corrId, Tail t) <- smpP
-    pure FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t}
+    (fwdCorrId, Tail t) <- smpP
+    pure FwdResponse {fwdCorrId, fwdResponse = EncResponse t}
 
 newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
@@ -1422,28 +1422,20 @@ serverStrP = do
     portP = show <$> (A.char ':' *> (A.decimal :: Parser Int))
 
 -- | Transmission correlation ID.
-newtype CorrId = CorrId {bs :: ByteString}
+data CorrId = NoCorrId | CorrId C.CbNonce
   deriving (Eq, Ord, Show)
-  deriving newtype (Encoding)
 
-pattern NoCorrId :: CorrId
-pattern NoCorrId = CorrId ""
+corrIdBytes :: CorrId -> ByteString
+corrIdBytes = \case
+  NoCorrId -> ""
+  CorrId nonce -> C.unCbNonce nonce
 
-instance IsString CorrId where
-  fromString = CorrId . fromString
-  {-# INLINE fromString #-}
-
-instance StrEncoding CorrId where
-  strEncode (CorrId cId) = strEncode cId
-  strDecode s = CorrId <$> strDecode s
-  strP = CorrId <$> strP
-
-instance ToJSON CorrId where
-  toJSON = strToJSON
-  toEncoding = strToJEncoding
-
-instance FromJSON CorrId where
-  parseJSON = strParseJSON "CorrId"
+instance Encoding CorrId where
+  smpEncode = smpEncode . corrIdBytes
+  smpP =
+    smpP >>= \case
+      "" -> pure NoCorrId
+      s -> either fail (pure . CorrId) $ C.cbNonce s
 
 -- | Queue IDs and keys
 data QueueIdsKeys = QIK
@@ -2378,7 +2370,7 @@ encodeTransmission THandleParams {thVersion = v, sessionId, implySessId} t =
 {-# INLINE encodeTransmission #-}
 
 encodeTransmission_ :: ProtocolEncoding v e c => Version v -> Transmission c -> ByteString
-encodeTransmission_ v (CorrId corrId, queueId, command) =
+encodeTransmission_ v (corrId, queueId, command) =
   smpEncode (corrId, queueId) <> encodeProtocol v command
 {-# INLINE encodeTransmission_ #-}
 
@@ -2426,7 +2418,7 @@ tDecodeServer THandleParams {sessionId, thVersion = v, implySessId} = \case
             t = (corrId,entityId,)
         Left _ -> tError corrId PEBlock
     | otherwise -> tError corrId PESession
-  Left _ -> tError "" PEBlock
+  Left _ -> tError NoCorrId PEBlock
   where
     tError :: CorrId -> ProtocolErrorType -> SignedTransmissionOrError err cmd
     tError corrId err = Left (corrId, NoEntity, fromProtocolError @v @err @cmd err)
@@ -2438,7 +2430,7 @@ tDecodeClient THandleParams {sessionId, thVersion = v, implySessId} = \case
     | otherwise -> tError corrId PESession
     where
       cmdOrErr = parseProtocol @v @err @cmd v command >>= checkCredentials Nothing entityId
-  Left _ -> tError "" PEBlock
+  Left _ -> tError NoCorrId PEBlock
   where
     tError :: CorrId -> ProtocolErrorType -> Transmission (Either err cmd)
     tError corrId err = (corrId, NoEntity, Left $ fromProtocolError @v @err @cmd err)

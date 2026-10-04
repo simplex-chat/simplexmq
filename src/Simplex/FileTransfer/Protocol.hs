@@ -380,10 +380,10 @@ checkParty' c = case testEquality (sFileParty @p) (sFileParty @p') of
   Just Refl -> Just c
   _ -> Nothing
 
-xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion XFTPErrorType c => THandleParams XFTPVersion 'TClient -> C.APrivateAuthKey -> Transmission c -> Either TransportError ByteString
-xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey t@(corrId, _, _) = do
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams t
-  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth False (Just pKey) (C.cbNonce $ bs corrId) tForAuth
+xftpEncodeAuthTransmission :: ProtocolEncoding XFTPVersion XFTPErrorType c => THandleParams XFTPVersion 'TClient -> C.APrivateAuthKey -> C.CbNonce -> (EntityId, c) -> Either TransportError ByteString
+xftpEncodeAuthTransmission thParams@THandleParams {thAuth} pKey nonce (entId, cmd) = do
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId nonce, entId, cmd)
+  xftpEncodeBatch1 . (,tToSend) =<< authTransmission thAuth False (Just pKey) nonce tForAuth
 
 xftpEncodeTransmission :: ProtocolEncoding XFTPVersion XFTPErrorType c => THandleParams XFTPVersion p -> Transmission c -> Either TransportError ByteString
 xftpEncodeTransmission thParams t = xftpEncodeBatch1 (Nothing, encodeTransmission thParams t)

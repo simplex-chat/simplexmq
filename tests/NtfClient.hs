@@ -197,17 +197,17 @@ ntfServerTest ::
   forall c smp.
   (Transport c, Encoding smp) =>
   TProxy c 'TServer ->
-  (Maybe TAuthorizations, ByteString, ByteString, smp) ->
-  IO (Maybe TAuthorizations, ByteString, ByteString, NtfResponse)
+  (Maybe TAuthorizations, CorrId, ByteString, smp) ->
+  IO (Maybe TAuthorizations, CorrId, ByteString, NtfResponse)
 ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
   where
-    tPut' :: THandleNTF c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
+    tPut' :: THandleNTF c 'TClient -> (Maybe TAuthorizations, CorrId, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
       let t' = if implySessId then smpEncode (corrId, queueId, smp) else smpEncode (sessionId, corrId, queueId, smp)
       [Right ()] <- tPut h [Right (sig, t')]
       pure ()
     tGet' h = do
-      [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
+      [(corrId, EntityId qId, Right cmd)] <- tGetClient h
       pure (Nothing, corrId, qId, cmd)
 
 ntfTest :: Transport c => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation

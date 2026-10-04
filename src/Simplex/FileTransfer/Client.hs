@@ -80,6 +80,7 @@ import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
   ( BasicAuth,
+    CorrId (..),
     NetworkError (..),
     Protocol (..),
     ProtocolServer (..),
@@ -103,7 +104,8 @@ data XFTPClient = XFTPClient
   { http2Client :: HTTP2Client,
     transportSession :: TransportSession FileResponse,
     thParams :: THandleParams XFTPVersion 'TClient,
-    config :: XFTPClientConfig
+    config :: XFTPClientConfig,
+    clientCorrId :: TVar ChaChaDRG
   }
 
 data XFTPClientConfig = XFTPClientConfig
@@ -152,7 +154,8 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
           xftpClientHandshakeV1 serverVRange keyHash http2Client mkEntitlementProof thParams0
     _ -> pure thParams0
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
-  let c = XFTPClient {http2Client, thParams, transportSession, config}
+  clientCorrId <- liftIO C.newRandom
+  let c = XFTPClient {http2Client, thParams, transportSession, config, clientCorrId}
   atomically $ writeTVar clientVar $ Just c
   pure c
 
@@ -221,12 +224,11 @@ xftpClientError = \case
   HCIOError e -> PCEIOError e
 
 sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
-  -- TODO random corrId
-  let corrIdUsedAsNonce = ""
+sendXFTPCommand c@XFTPClient {thParams, clientCorrId} pKey fId cmd chunkSpec_ = do
+  nonce <- atomically $ C.randomCbNonce clientCorrId
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeAuthTransmission thParams pKey (corrIdUsedAsNonce, fId, FileCmd (sFileParty @p) cmd)
+      xftpEncodeAuthTransmission thParams pKey nonce (fId, FileCmd (sFileParty @p) cmd)
   sendXFTPTransmission c t chunkSpec_
 
 sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
@@ -315,7 +317,7 @@ pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
 pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
-      xftpEncodeTransmission thParams ("", NoEntity, FileCmd SFRecipient PING)
+      xftpEncodeTransmission thParams (NoCorrId, NoEntity, FileCmd SFRecipient PING)
   (r, _) <- sendXFTPTransmission c t Nothing
   case r of
     FRPong -> pure ()

@@ -3175,7 +3175,7 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
           redirect = Nothing,
           -- updated later with updateRcvFileRedirect
           key = C.unsafeSbKey $ B.replicate 32 '#',
-          nonce = C.cbNonce "",
+          nonce = C.unsafeCbNonce $ B.replicate 24 '\0',
           chunkSize = FileSize 0,
           chunks = []
         }

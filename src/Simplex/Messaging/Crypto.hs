@@ -152,6 +152,7 @@ module Simplex.Messaging.Crypto
     sbEncryptNoPad,
     sbDecryptNoPad,
     cbNonce,
+    unsafeCbNonce,
     randomCbNonce,
     reverseNonce,
 
@@ -1384,7 +1385,7 @@ cbVerify :: PublicKeyX25519 -> PrivateKeyX25519 -> CbNonce -> CbAuthenticator ->
 cbVerify k pk nonce (CbAuthenticator s) authorized = cbDecryptNoPad (dh' k pk) nonce s == Right (sha512Hash authorized)
 
 newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
   deriving newtype (FromField)
 
 instance ToField CbNonce where toField (CryptoBoxNonce s) = toField $ Binary s
@@ -1396,7 +1397,7 @@ pattern CbNonce s <- CryptoBoxNonce s
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s
-  strP = cbNonce <$> strP
+  strP = cbNonce <$?> strP
 
 instance ToJSON CbNonce where
   toJSON = strToJSON
@@ -1405,13 +1406,13 @@ instance ToJSON CbNonce where
 instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
-cbNonce :: ByteString -> CbNonce
+cbNonce :: ByteString -> Either String CbNonce
 cbNonce s
-  | len == 24 = CryptoBoxNonce s
-  | len > 24 = CryptoBoxNonce . fst $ B.splitAt 24 s
-  | otherwise = CryptoBoxNonce $ s <> B.replicate (24 - len) (toEnum 0)
-  where
-    len = B.length s
+  | B.length s == 24 = Right $ CryptoBoxNonce s
+  | otherwise = Left "CbNonce: invalid length"
+
+unsafeCbNonce :: ByteString -> CbNonce
+unsafeCbNonce s = either error id $ cbNonce s
 
 randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24

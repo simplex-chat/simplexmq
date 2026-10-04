@@ -1984,7 +1984,7 @@ decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
   liftEither $ parse SMP.clientRcvMsgBodyP (AGENT $ A_MESSAGE "decrypt message") =<< decrypt body
   where
-    decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
+    decrypt b = first (AGENT . A_MESSAGE) (C.cbNonce msgId) >>= \nonce -> agentCbDecrypt (rcvDhSecret rq) nonce b
 
 secureQueue :: AgentClient -> NetworkRequestMode -> RcvQueue -> SndPublicAuthKey -> AM ()
 secureQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =

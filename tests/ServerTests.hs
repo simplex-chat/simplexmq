@@ -128,7 +128,7 @@ pattern Msg msgId body <- MSG RcvMessage {msgId, msgBody = EncRcvMsgBody body}
 
 sendRecv :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, EntityId, Command p) -> IO (Transmission (Either ErrorType BrokerMsg))
 sendRecv h@THandle {params} (sgn, corrId, qId, cmd) = do
-  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (testCorrId corrId, qId, cmd)
   Right () <- tPut1 h (sgn, tToSend)
   tGet1 h
 
@@ -159,14 +159,14 @@ signSendRecv_ h pk serviceKey_ t = do
 
 signSend_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO ()
 signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (testCorrId corrId, qId, cmd)
   Right () <- tPut1 h (authorize tForAuth, tToSend)
   pure ()
   where
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t'
-      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t') <$> thAuth params
+      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (testNonce corrId) t') <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif
@@ -195,11 +195,11 @@ _SEND' :: MsgBody -> Command 'Sender
 _SEND' = SEND MsgFlags {notification = True}
 
 decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.CryptoError ByteString
-decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
+decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.unsafeCbNonce
 
 decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
 decryptMsgV3 dhShared nonce body =
-  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
+  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.unsafeCbNonce nonce) body) of
     Right ClientRcvMsgBody {msgBody} -> Right msgBody
     Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
     Left e -> Left e
@@ -670,8 +670,8 @@ testConcurrentSendDelivery =
       (sId, rId, rKey, dhShared) <- createAndSecureQueue rh sPub
       let dec = decryptMsgV3 dhShared
           sndMsg sh n = do
-            Resp (CorrId n') _ OK <- signSendRecv sh sKey (n, sId, _SEND ("msg " <> n))
-            n' `shouldBe` n
+            Resp n' _ OK <- signSendRecv sh sKey (n, sId, _SEND ("msg " <> n))
+            n' `shouldBe` testCorrId n
           isMsg1or2 mId msg = dec mId msg == Right "msg 1" || dec mId msg == Right "msg 2" `shouldBe` True
       replicateM_ 50 $ do
         concurrently_ (sndMsg sh1 "1") (sndMsg sh2 "2")
@@ -1625,7 +1625,7 @@ testInvQueueLinkData =
       Resp corrId' NoEntity (IDS (QIK rId sId' _srvDh (Just QMMessaging) (Just lnkId) Nothing Nothing)) <-
         signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
       (sId', sId) #== "should return the same sender ID"
-      corrId' `shouldBe` CorrId corrId
+      corrId' `shouldBe` testCorrId corrId
       -- can't read link data with LGET
       Resp "2" lnkId' (ERR AUTH) <- sendRecv s ("", "2", lnkId, LGET)
       lnkId' `shouldBe` lnkId
@@ -1683,7 +1683,7 @@ testContactQueueLinkData =
         signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just qrd) Nothing))
       (lnkId', lnkId) #== "should return the same link ID"
       (sId', sId) #== "should return the same sender ID"
-      corrId' `shouldBe` CorrId corrId
+      corrId' `shouldBe` testCorrId corrId
       -- can't secure queue and read link data with LKEY
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       Resp "2" _ (ERR AUTH) <- signSendRecv s sKey ("2", lnkId, LKEY sPub)
@@ -1831,7 +1831,7 @@ serverSyntaxTests (ATransport t) = do
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
       Encoding smp =>
-      (Maybe TAuthorizations, ByteString, ByteString, smp) ->
-      (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
+      (Maybe TAuthorizations, CorrId, ByteString, smp) ->
+      (Maybe TAuthorizations, CorrId, ByteString, BrokerMsg) ->
       Expectation
     command >#> response = withFrozenCallStack $ smpServerTest t command `shouldReturn` response

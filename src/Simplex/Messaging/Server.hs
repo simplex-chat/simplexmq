@@ -1333,9 +1333,9 @@ verifyCmdAuthorization thAuth tAuth authorized corrId key = maybe False (verify 
         _ -> verifyCmdAuth thAuth dummyKeyX25519 s authorized corrId `seq` False
 
 verifyCmdAuth :: Maybe (THandleAuth 'TServer) -> C.PublicKeyX25519 -> C.CbAuthenticator -> ByteString -> CorrId -> Bool
-verifyCmdAuth thAuth k authenticator authorized (CorrId corrId) = case thAuth of
-  Just THAuthServer {serverPrivKey = pk} -> C.cbVerify k pk (C.cbNonce corrId) authenticator authorized
-  Nothing -> False
+verifyCmdAuth thAuth k authenticator authorized corrId = case (thAuth, corrId) of
+  (Just THAuthServer {serverPrivKey = pk}, CorrId nonce) -> C.cbVerify k pk nonce authenticator authorized
+  _ -> False
 
 dummyVerifyCmd :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> Bool
 dummyVerifyCmd thAuth tAuth authorized corrId = maybe False verify tAuth
@@ -1576,7 +1576,7 @@ client
                 pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
               let randId = EntityId <$> atomically (C.randomBytes idSize g)
                   -- the remaining 24 bytes are reserved, possibly for notifier ID in the new notifications protocol
-                  sndId' = B.take 24 $ C.sha3_384 (bs corrId)
+                  sndId' = B.take 24 $ C.sha3_384 (corrIdBytes corrId)
                   tryCreate 0 = pure $ ERR INTERNAL
                   tryCreate n = do
                     (sndId, clntIds, queueData) <- case queueReqData of
@@ -2120,13 +2120,13 @@ client
         processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
-          let proxyNonce = C.cbNonce $ bs corrId
+          proxyNonce <- corrIdNonce corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
           unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
+          clientNonce <- corrIdNonce fwdCorrId
           let clientSecret = C.dh' fwdKey serverPrivKey
-              clientNonce = C.cbNonce $ bs fwdCorrId
-          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
+          b <-liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
@@ -2163,6 +2163,9 @@ client
           incStat $ pMsgFwdsRecv stats
           traverse encodeResp r_
           where
+            corrIdNonce = \case
+              CorrId nonce -> pure nonce
+              NoCorrId -> throwE $ CMD SYNTAX
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
               Left (corrId', entId', e) -> pure $ Left (corrId', entId', ERR e)
@@ -2187,7 +2190,7 @@ client
           MessageQuota {} -> RcvMsgQuota msgTs'
           where
             encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
-            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.unsafeCbNonce msgId') body
             msgId' = messageId msg
             msgTs' = messageTs msg
 

@@ -700,7 +700,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
 
     processMsg :: ProtocolClient v err msg -> Transmission (Either err msg) -> IO (Maybe (EntityId, ServerTransmission err msg))
     processMsg ProtocolClient {client_ = PClient {sentCommands}} (corrId, entId, respOrErr)
-      | B.null $ bs corrId = sendMsg $ STEvent clientResp
+      | corrId == NoCorrId = sendMsg $ STEvent clientResp
       | otherwise =
           TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
@@ -1224,9 +1224,9 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
       serverThParams = smpTHParamsSetVersion v proxyThParams {sessionId, thAuth = serverThAuth}
   (cmdPubKey, cmdPrivKey) <- liftIO . atomically $ C.generateKeyPair @'C.X25519 g
   let cmdSecret = C.dh' serverKey cmdPrivKey
-  nonce@(C.CbNonce corrId) <- liftIO . atomically $ C.randomCbNonce g
+  nonce <- liftIO . atomically $ C.randomCbNonce g
   -- encode
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId nonce, sId, Cmd (sParty @p) command)
   -- serviceAuth is False here – proxied commands are not used with service certificates
   auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey nonce tForAuth
   b <- case batchTransmissions serverThParams [Right (auth, tToSend)] of
@@ -1398,10 +1398,10 @@ mkTransmission c = mkTransmission_ c Nothing
 
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
-  nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
-  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
+  nonce <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId nonce, entityId, command)
       auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ nonce tForAuth
-  r <- mkRequest (CorrId corrId)
+  r <- mkRequest (CorrId nonce)
   pure ((,tToSend) <$> auth, r)
   where
     mkRequest :: CorrId -> IO (Request err msg)
