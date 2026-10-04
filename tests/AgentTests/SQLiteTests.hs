@@ -138,6 +138,7 @@ storeTests = do
           testCreateSndMsg
           testCreateRcvAndSndMsgs
       describe "deleteRatchetKeyHashesExpired" testDeleteRatchetKeyHashesExpired
+      describe "deleteOldRatchetKeyHashes" testDeleteOldRatchetKeyHashes
       it "should keep only the newest skipped message keys" testGetSkippedMsgKeys
       describe "Work items" $ do
         it "should getPendingQueueMsg" testGetPendingQueueMsg
@@ -614,6 +615,20 @@ testDeleteRatchetKeyHashesExpired =
     deleteRatchetKeyHashesExpired db 0 100
     checkRatchetKeyHashExists db duplexConnId "hash" `shouldReturn` True
     checkRatchetKeyHashExists db addressConnId "hash" `shouldReturn` False
+
+testDeleteOldRatchetKeyHashes :: SpecWith DBStore
+testDeleteOldRatchetKeyHashes =
+  it "should keep only the newest ratchet key hashes of the connection" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right connId' <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    let hashes = ["h1", "h2", "h3", "h4", "h5", "h6"]
+    forM_ hashes $ \h -> addProcessedRatchetKeyHash db connId' h >> addProcessedRatchetKeyHash db connId h
+    deleteOldRatchetKeyHashes db connId 4
+    mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` [False, False, True, True, True, True]
+    mapM (checkRatchetKeyHashExists db connId') hashes `shouldReturn` replicate 6 True
+    deleteOldRatchetKeyHashes db connId' 10
+    mapM (checkRatchetKeyHashExists db connId') hashes `shouldReturn` replicate 6 True
 
 testGetSkippedMsgKeys :: DBStore -> Expectation
 testGetSkippedMsgKeys st = do

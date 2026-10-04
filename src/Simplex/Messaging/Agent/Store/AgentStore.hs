@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     addProcessedRatchetKeyHash,
     checkRatchetKeyHashExists,
     deleteRatchetKeyHashesExpired,
+    deleteOldRatchetKeyHashes,
     getRcvConn,
     getRcvQueueById,
     getSndQueueById,
@@ -2833,6 +2834,22 @@ deleteRatchetKeyHashesExpired db ttl limit = do
       )
     |]
     (cutoffTs, CMContact, limit)
+
+deleteOldRatchetKeyHashes :: DB.Connection -> ConnId -> Int -> IO ()
+deleteOldRatchetKeyHashes db connId maxHashes =
+  DB.execute
+    db
+    [sql|
+      DELETE FROM processed_ratchet_key_hashes
+      WHERE conn_id = ? AND processed_ratchet_key_hash_id <= (
+        SELECT processed_ratchet_key_hash_id
+        FROM processed_ratchet_key_hashes
+        WHERE conn_id = ?
+        ORDER BY processed_ratchet_key_hash_id DESC
+        LIMIT 1 OFFSET ?
+      )
+    |]
+    (connId, connId, maxHashes)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))

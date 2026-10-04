@@ -4175,7 +4175,9 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               ratchetExists :: AM Bool
               ratchetExists = withStore' c $ \db -> do
                 exists <- checkRatchetKeyHashExists db connId rkHashRcv
-                unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
+                unless exists $ do
+                  addProcessedRatchetKeyHash db connId rkHashRcv
+                  deleteOldRatchetKeyHashes db connId maxRatchetKeyHashes
                 pure exists
               getSendRatchetKeys :: AM (CR.RcvE2EPrivRatchetParams 'C.X448)
               getSendRatchetKeys = case rss of
@@ -4335,6 +4337,9 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
         msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
     liftIO $ createSndMsg db connId msgData
     liftIO $ createSndMsgDelivery db sq internalId
+
+maxRatchetKeyHashes :: Int
+maxRatchetKeyHashes = 100
 
 enqueueRatchetKeyMsgs :: AgentClient -> ConnData -> NonEmpty SndQueue -> CR.RcvE2ERatchetParams 'C.X448 -> AM ()
 enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
