@@ -2826,22 +2826,20 @@ deleteRatchetKeyHashesExpired db ttl maxConnHashes limit = do
       DELETE FROM processed_ratchet_key_hashes
       WHERE processed_ratchet_key_hash_id IN (
         SELECT processed_ratchet_key_hash_id
-        FROM processed_ratchet_key_hashes
-        WHERE created_at < ? AND conn_id IN (SELECT conn_id FROM connections WHERE conn_mode = ?)
+        FROM processed_ratchet_key_hashes h
+        WHERE created_at < ?
+          AND processed_ratchet_key_hash_id NOT IN (
+            SELECT processed_ratchet_key_hash_id
+            FROM processed_ratchet_key_hashes
+            WHERE conn_id = h.conn_id
+            ORDER BY processed_ratchet_key_hash_id DESC
+            LIMIT ?
+          )
         ORDER BY created_at ASC
         LIMIT ?
       )
     |]
-    (cutoffTs, CMContact, limit)
-  DB.execute
-    db
-    [sql|
-      DELETE FROM processed_ratchet_key_hashes
-      WHERE created_at < ? AND conn_id IN (
-        SELECT conn_id FROM processed_ratchet_key_hashes GROUP BY conn_id HAVING COUNT(*) > ?
-      )
-    |]
-    (cutoffTs, maxConnHashes)
+    (cutoffTs, maxConnHashes, limit)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
