@@ -3416,7 +3416,7 @@ cleanupManager c@AgentClient {subQ} = do
     run ERR deleteConns
     run ERR $ withStore' c $ \db -> deleteRcvMsgHashesExpired db ttl limit
     run ERR $ withStore' c $ \db -> deleteSndMsgsExpired db ttl limit
-    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl maxRatchetKeyHashes limit
+    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl maxRatchetKeyHashes
     run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted

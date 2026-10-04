@@ -2765,7 +2765,7 @@ testRatchetSyncReplayedKey ps = withAgentClients2 $ \alice bob -> do
       (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
     get alice =##> ratchetSyncP bobId RSOk
     get bob2 =##> ratchetSyncP aliceId RSOk
-    withTransaction (store $ agentEnv alice) $ \db -> deleteRatchetKeyHashesExpired db 0 100 100
+    withTransaction (store $ agentEnv alice) $ \db -> deleteRatchetKeyHashesExpired db 0 100
     let keyMsg = AgentRatchetKey {agentVersion = currentSMPAgentVersion, e2eEncryption = CR.mkRcvE2ERatchetParams CR.currentE2EEncryptVersion pks, info = ""}
     Right _ <- runReaderT (runExceptT $ sendAgentMessage bob2 sq SMP.noMsgFlags $ smpEncode keyMsg) (agentEnv bob2)
     runRight_ $ exchangeGreetingsMsgIds alice bobId 10 bob2 aliceId 7

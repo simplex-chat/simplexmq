@@ -612,9 +612,9 @@ testDeleteRatchetKeyHashesExpired =
     let hashes = ["h1", "h2", "h3", "h4", "h5", "h6"]
     forM_ hashes $ addProcessedRatchetKeyHash db connId
     forM_ (take 4 hashes) $ addProcessedRatchetKeyHash db connId'
-    deleteRatchetKeyHashesExpired db 86400 4 100
+    deleteRatchetKeyHashesExpired db 86400 4
     mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` replicate 6 True
-    deleteRatchetKeyHashesExpired db 0 4 100
+    deleteRatchetKeyHashesExpired db 0 4
     mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` [False, False, True, True, True, True]
     mapM (checkRatchetKeyHashExists db connId') (take 4 hashes) `shouldReturn` replicate 4 True
 

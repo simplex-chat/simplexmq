@@ -2817,29 +2817,23 @@ checkRatchetKeyHashExists db connId hash =
       )
       (connId, Binary hash)
 
-deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> Int -> Int -> IO ()
-deleteRatchetKeyHashesExpired db ttl maxConnHashes limit = do
+deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> Int -> IO ()
+deleteRatchetKeyHashesExpired db ttl maxConnHashes = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
   DB.execute
     db
     [sql|
-      DELETE FROM processed_ratchet_key_hashes
-      WHERE processed_ratchet_key_hash_id IN (
-        SELECT processed_ratchet_key_hash_id
-        FROM processed_ratchet_key_hashes h
-        WHERE created_at < ?
-          AND processed_ratchet_key_hash_id NOT IN (
-            SELECT processed_ratchet_key_hash_id
-            FROM processed_ratchet_key_hashes
-            WHERE conn_id = h.conn_id
-            ORDER BY processed_ratchet_key_hash_id DESC
-            LIMIT ?
-          )
-        ORDER BY created_at ASC
-        LIMIT ?
-      )
+      DELETE FROM processed_ratchet_key_hashes AS h
+      WHERE created_at < ?
+        AND processed_ratchet_key_hash_id NOT IN (
+          SELECT processed_ratchet_key_hash_id
+          FROM processed_ratchet_key_hashes
+          WHERE conn_id = h.conn_id
+          ORDER BY processed_ratchet_key_hash_id DESC
+          LIMIT ?
+        )
     |]
-    (cutoffTs, maxConnHashes, limit)
+    (cutoffTs, maxConnHashes)
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
