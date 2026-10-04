@@ -5,6 +5,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260929_ratchet_indexes
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
+-- idx_skipped_messages_conn_id is not changed: SQLite index entries include rowid (skipped_message_id)
 m20260929_ratchet_indexes :: Query
 m20260929_ratchet_indexes =
   [sql|
