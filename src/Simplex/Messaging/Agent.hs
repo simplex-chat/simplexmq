@@ -3404,6 +3404,9 @@ subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
     run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
     notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
+maxRatchetKeyHashes :: Int
+maxRatchetKeyHashes = 100
+
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
   AgentConfig {initialCleanupDelay, cleanupInterval = int, storedMsgDataTTL = ttl, cleanupBatchSize = limit} <-
@@ -3413,7 +3416,7 @@ cleanupManager c@AgentClient {subQ} = do
     run ERR deleteConns
     run ERR $ withStore' c $ \db -> deleteRcvMsgHashesExpired db ttl limit
     run ERR $ withStore' c $ \db -> deleteSndMsgsExpired db ttl limit
-    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl limit
+    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl maxRatchetKeyHashes limit
     run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted
@@ -4175,9 +4178,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               ratchetExists :: AM Bool
               ratchetExists = withStore' c $ \db -> do
                 exists <- checkRatchetKeyHashExists db connId rkHashRcv
-                unless exists $ do
-                  addProcessedRatchetKeyHash db connId rkHashRcv
-                  deleteOldRatchetKeyHashes db connId maxRatchetKeyHashes
+                unless exists $ addProcessedRatchetKeyHash db connId rkHashRcv
                 pure exists
               getSendRatchetKeys :: AM (CR.RcvE2EPrivRatchetParams 'C.X448)
               getSendRatchetKeys = case rss of
@@ -4337,9 +4338,6 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
         msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
     liftIO $ createSndMsg db connId msgData
     liftIO $ createSndMsgDelivery db sq internalId
-
-maxRatchetKeyHashes :: Int
-maxRatchetKeyHashes = 100
 
 enqueueRatchetKeyMsgs :: AgentClient -> ConnData -> NonEmpty SndQueue -> CR.RcvE2ERatchetParams 'C.X448 -> AM ()
 enqueueRatchetKeyMsgs c cData (sq :| sqs) e2eEncryption = do
