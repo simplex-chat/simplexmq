@@ -1319,11 +1319,6 @@ isContactQueue QueueRec {queueMode, senderKey} = case queueMode of
   Just QMContact -> True
   Nothing -> isNothing senderKey -- for backward compatibility with pre-SKEY contact addresses
 
-isSecuredMsgQueue :: QueueRec -> Bool
-isSecuredMsgQueue QueueRec {queueMode, senderKey} = case queueMode of
-  Just QMContact -> False
-  _ -> isJust senderKey
-
 -- Random correlation ID is used as a nonce in case crypto_box authenticator is used to authorize transmission
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization thAuth tAuth authorized corrId key = maybe False (verify key) tAuth
