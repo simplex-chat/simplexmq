@@ -471,6 +471,8 @@ functionalAPITests ps = do
         testRatchetSyncFailedKeyNotProcessed ps
       it "should not store reply ratchet key when ratchet recreation fails" $
         testRatchetSyncFailedRecreationNoReply ps
+      it "should not store ratchet key when starting synchronization fails" $
+        testRatchetSyncStartFailedNoKey ps
 #endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
@@ -2860,11 +2862,26 @@ testRatchetSyncFailedRecreationNoReply ps = withAgentClients2 $ \alice bob -> do
     ratchetInsertFailedP cId = \case
       (_, cId', AEvt SAEConn (ERR (A.INTERNAL e))) -> cId' == cId && "ratchet insert failed" `isInfixOf` e
       _ -> False
-    sndMessages :: AgentClient -> IO [(ConnId, Int64)]
-    sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
+
+testRatchetSyncStartFailedNoKey :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncStartFailedNoKey ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, _, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+  bobSndMsgs <- sndMessages bob2
+  withTransaction (store $ agentEnv bob2) $ \db ->
+    DB.execute_ db "CREATE TRIGGER fail_ratchet_update BEFORE UPDATE ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet update failed'); END"
+  Left (A.INTERNAL e) <- runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  e `shouldContain` "ratchet update failed"
+  ConnectionStats {ratchetSyncState} <- runRight $ getConnectionServers bob2 aliceId
+  ratchetSyncState `shouldBe` RSRequired
+  sndMessages bob2 `shouldReturn` bobSndMsgs
+  disposeAgentClient bob2
 
 processedRatchetKeyHashes :: AgentClient -> IO [(ConnId, ByteString)]
 processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, hash FROM processed_ratchet_key_hashes")
+
+sndMessages :: AgentClient -> IO [(ConnId, Int64)]
+sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do

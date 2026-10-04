@@ -2867,13 +2867,16 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
           -- check queues are not switching?
           when (pqSupport' /= pqSupport) $ withStore' c $ \db -> setConnPQSupport db connId pqSupport'
           let cData' = cData {pqSupport = pqSupport'} :: ConnData
-          AgentConfig {e2eEncryptVRange} <- asks config
+          cfg@AgentConfig {e2eEncryptVRange} <- asks config
           g <- asks random
           (pks, e2eParams) <- liftIO $ CR.generateRcvE2EParams g (maxVersion e2eEncryptVRange) pqSupport'
-          enqueueRatchetKeyMsgs c cData' sqs e2eParams
-          withStore' c $ \db -> do
-            setConnRatchetSync db connId RSStarted
-            setRatchetX3dhKeys db connId pks
+          sqs' <- withStore c $ \db -> runExceptT $ do
+            msgId <- storeRatchetKeyMsg db cfg connId e2eParams Nothing
+            liftIO $ do
+              setConnRatchetSync db connId RSStarted
+              setRatchetX3dhKeys db connId pks
+              createMsgDeliveries db cData' sqs msgId
+          lift $ mapM_ (submitPendingMsg c) sqs'
           let cData'' = cData' {ratchetSyncState = RSStarted} :: ConnData
               conn' = DuplexConnection cData'' rqs sqs
           connectionStats c conn'
@@ -4170,9 +4173,7 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               unless (e2eVersion `isCompatible` e2eEncryptVRange) (throwE $ AGENT A_VERSION)
               keys_ <- getSendRatchetKeys
               let rcVs = CR.RatchetVersions {current = e2eVersion, maxSupported = maxVersion e2eEncryptVRange}
-              case keys_ of
-                Just (keys, replyKey_) -> whenM (initRatchet rcVs keys replyKey_) notifyAgreed
-                Nothing -> withStore' c $ \db -> void $ addProcessedRatchetKeyHash db connId rkHashRcv
+              forM_ keys_ $ \(keys, replyKey_) -> initRatchet rcVs keys replyKey_
             where
               rkHashRcv = rkHash k1Rcv k2Rcv
               rkHash k1 k2 = C.sha256Hash $ C.pubKeyBytes k1 <> C.pubKeyBytes k2
@@ -4188,10 +4189,8 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
               getSendRatchetKeys :: AM (Maybe (CR.RcvE2EPrivRatchetParams 'C.X448, Maybe (CR.RcvE2ERatchetParams 'C.X448)))
               getSendRatchetKeys = getRatchetSyncState >>= \rss' -> case (rss', answeredKeyHash_) of
                 (RSStarted, Nothing) -> Just . (,Nothing) <$> withStore c (`getRatchetX3dhKeys` connId) -- initiating client
-                (RSStarted, Just h) -> fmap (,Nothing) . answeredKeys h <$> withStore c (`getRatchetX3dhKeys` connId)
-                (_, Nothing) -> do -- receiving client
-                  g <- asks random
-                  Just . second Just <$> liftIO (CR.generateRcvE2EParams g e2eVersion pqSupport)
+                (RSStarted, Just h) -> withStore c (`getRatchetX3dhKeys` connId) >>= answeredKeys h
+                (_, Nothing) -> Just . second Just <$> generateReplyKey -- receiving client
                 (RSAgreed, Just _) -> do
                   marked <- withStore' c $ \db -> isJust <$> markKeyProcessed db (liftIO $ setConnRatchetSync db connId RSRequired)
                   when marked notifyRatchetSyncError
@@ -4199,11 +4198,15 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                   -- - need to add new AgentMsgEnvelope, AgentMessage, AgentMessageType
                   -- - need to deduplicate on receiving side
                   throwE $ AGENT (A_CRYPTO RATCHET_SYNC)
-                (_, Just _) -> pure Nothing
+                (_, Just _) -> ignoreKey
                 where
                   answeredKeys h keys@(pk1, pk2, _)
-                    | rkHash (C.publicKey pk1) (C.publicKey pk2) == h = Just keys
-                    | otherwise = Nothing
+                    | rkHash (C.publicKey pk1) (C.publicKey pk2) == h = pure $ Just (keys, Nothing)
+                    | otherwise = ignoreKey
+                  ignoreKey = Nothing <$ withStore' c (\db -> addProcessedRatchetKeyHash db connId rkHashRcv)
+                  generateReplyKey = do
+                    g <- asks random
+                    liftIO $ CR.generateRcvE2EParams g e2eVersion pqSupport
                   notifyRatchetSyncError = do
                     let cData'' = cData' {ratchetSyncState = RSRequired} :: ConnData
                         conn'' = updateConnection cData'' conn'
@@ -4215,12 +4218,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     conn'' = updateConnection cData'' conn'
                 cStats <- connectionStats c conn''
                 notify $ RSYNC RSAgreed Nothing cStats
-              recreateRatchet :: Maybe (CR.RcvE2ERatchetParams 'C.X448) -> Maybe AMessage -> CR.Ratchet 'C.X448 -> AM Bool
+              recreateRatchet :: Maybe (CR.RcvE2ERatchetParams 'C.X448) -> Maybe AMessage -> CR.Ratchet 'C.X448 -> AM ()
               recreateRatchet replyKey_ eready_ rc = do
-                cfg@AgentConfig {smpAgentVRange} <- asks config
+                cfg <- asks config
                 sqs_ <- withStore' c $ \db -> markKeyProcessed db $ do
                   replySqs <- forM replyKey_ $ \e2eParams -> do
-                    msgId <- storeRatchetKeyMsg db connId (maxVersion smpAgentVRange) e2eParams (Just rkHashRcv)
+                    msgId <- storeRatchetKeyMsg db cfg connId e2eParams (Just rkHashRcv)
                     liftIO $ createMsgDeliveries db cData' sqs msgId
                   liftIO $ do
                     setConnRatchetSync db connId RSAgreed
@@ -4231,11 +4234,12 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     (msgId, _) <- storeSndMsg db cfg cData' Nothing SMP.MsgFlags {notification = True} msgBodyId msg
                     liftIO $ createMsgDeliveries db cData' sqs msgId
                   pure $ fromMaybe [] replySqs <> fromMaybe [] ereadySqs
-                forM_ sqs_ $ lift . mapM_ (submitPendingMsg c)
-                pure $ isJust sqs_
+                forM_ sqs_ $ \sqs' -> do
+                  lift $ mapM_ (submitPendingMsg c) sqs'
+                  notifyAgreed
               -- compare public keys `k1` in AgentRatchetKey messages sent by self and other party
               -- to determine ratchet initilization ordering
-              initRatchet :: CR.RatchetVersions -> CR.RcvE2EPrivRatchetParams 'C.X448 -> Maybe (CR.RcvE2ERatchetParams 'C.X448) -> AM Bool
+              initRatchet :: CR.RatchetVersions -> CR.RcvE2EPrivRatchetParams 'C.X448 -> Maybe (CR.RcvE2ERatchetParams 'C.X448) -> AM ()
               initRatchet rcVs (pk1, pk2, pKem) replyKey_
                 | rkHash (C.publicKey pk1) (C.publicKey pk2) <= rkHashRcv = do
                     rcParams <- liftError cryptoError $ CR.pqX3dhRcv (pk1, pk2, pKem) e2eOtherPartyParams
@@ -4356,22 +4360,14 @@ storeConfirmation c cData@ConnData {connId, pqSupport, connAgentVersion = v} sq 
     liftIO $ createSndMsg db connId msgData
     liftIO $ createSndMsgDelivery db sq internalId
 
-enqueueRatchetKeyMsgs :: AgentClient -> ConnData -> NonEmpty SndQueue -> CR.RcvE2ERatchetParams 'C.X448 -> AM ()
-enqueueRatchetKeyMsgs c cData@ConnData {connId} sqs e2eEncryption = do
-  aVRange <- asks $ smpAgentVRange . config
-  sqs' <- withStore c $ \db -> runExceptT $ do
-    msgId <- storeRatchetKeyMsg db connId (maxVersion aVRange) e2eEncryption Nothing
-    liftIO $ createMsgDeliveries db cData sqs msgId
-  lift $ mapM_ (submitPendingMsg c) sqs'
-
-storeRatchetKeyMsg :: DB.Connection -> ConnId -> VersionSMPA -> CR.RcvE2ERatchetParams 'C.X448 -> Maybe ByteString -> ExceptT StoreError IO InternalId
-storeRatchetKeyMsg db connId agentVersion e2eEncryption answeredKeyHash_ = do
+storeRatchetKeyMsg :: DB.Connection -> AgentConfig -> ConnId -> CR.RcvE2ERatchetParams 'C.X448 -> Maybe ByteString -> ExceptT StoreError IO InternalId
+storeRatchetKeyMsg db AgentConfig {smpAgentVRange} connId e2eEncryption answeredKeyHash_ = do
   internalTs <- liftIO getCurrentTime
   (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
   let agentMsg = AgentRatchetInfo $ fromMaybe "" answeredKeyHash_
       agentMsgStr = smpEncode agentMsg
       internalHash = C.sha256Hash agentMsgStr
-  let msgBody = smpEncode $ AgentRatchetKey {agentVersion, e2eEncryption, info = agentMsgStr}
+  let msgBody = smpEncode $ AgentRatchetKey {agentVersion = maxVersion smpAgentVRange, e2eEncryption, info = agentMsgStr}
       msgType = agentMessageType agentMsg
       -- this message is e2e encrypted with queue key, not with double ratchet
       msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgBody, pqEncryption = PQEncOff, msgFlags = SMP.MsgFlags {notification = True}, internalHash, prevMsgHash, sndMsgPrepData_ = Nothing}
