@@ -3404,6 +3404,9 @@ subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
     run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
     notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
+maxRatchetKeyHashes :: Int
+maxRatchetKeyHashes = 100
+
 cleanupManager :: AgentClient -> AM' ()
 cleanupManager c@AgentClient {subQ} = do
   AgentConfig {initialCleanupDelay, cleanupInterval = int, storedMsgDataTTL = ttl, cleanupBatchSize = limit} <-
@@ -3413,7 +3416,7 @@ cleanupManager c@AgentClient {subQ} = do
     run ERR deleteConns
     run ERR $ withStore' c $ \db -> deleteRcvMsgHashesExpired db ttl limit
     run ERR $ withStore' c $ \db -> deleteSndMsgsExpired db ttl limit
-    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl limit
+    run ERR $ withStore' c $ \db -> deleteRatchetKeyHashesExpired db ttl maxRatchetKeyHashes
     run ERR $ withStore' c (`deleteExpiredNtfTokensToDelete` ttl)
     run RFERR deleteRcvFilesExpired
     run RFERR deleteRcvFilesDeleted

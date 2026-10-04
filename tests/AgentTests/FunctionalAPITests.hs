@@ -71,7 +71,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (find, isPrefixOf, isSuffixOf)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
@@ -87,12 +87,12 @@ import SMPAgentClient
 import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (getConn)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -463,6 +463,8 @@ functionalAPITests ps = do
         testRatchetSyncSuspendForeground ps
       it "should synchronize ratchets when clients start synchronization simultaneously" $
         testRatchetSyncSimultaneous ps
+      it "should ignore replayed ratchet key after expired hashes are deleted" $
+        testRatchetSyncReplayedKey ps
 #endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
@@ -2746,6 +2748,27 @@ testRatchetSyncSimultaneous ps = do
       exchangeGreetingsMsgIds alice bobId 10 bob2 aliceId 7
   disposeAgentClient alice
   disposeAgentClient bob
+  disposeAgentClient bob2
+
+testRatchetSyncReplayedKey :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncReplayedKey ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+  _ <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  Right pks <- withTransaction (store $ agentEnv bob2) (`getRatchetX3dhKeys` aliceId)
+  Right (SomeConn _ (DuplexConnection _ _ (sq :| _))) <- withTransaction (store $ agentEnv bob2) (`getConn` aliceId)
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
+    get alice =##> ratchetSyncP bobId RSOk
+    get bob2 =##> ratchetSyncP aliceId RSOk
+    withTransaction (store $ agentEnv alice) $ \db -> deleteRatchetKeyHashesExpired db 0 100
+    let keyMsg = AgentRatchetKey {agentVersion = currentSMPAgentVersion, e2eEncryption = CR.mkRcvE2ERatchetParams CR.currentE2EEncryptVersion pks, info = ""}
+    Right _ <- runReaderT (runExceptT $ sendAgentMessage bob2 sq SMP.noMsgFlags $ smpEncode keyMsg) (agentEnv bob2)
+    runRight_ $ exchangeGreetingsMsgIds alice bobId 10 bob2 aliceId 7
   disposeAgentClient bob2
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a

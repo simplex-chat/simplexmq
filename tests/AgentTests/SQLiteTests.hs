@@ -137,6 +137,7 @@ storeTests = do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs
+      describe "deleteRatchetKeyHashesExpired" testDeleteRatchetKeyHashesExpired
       it "should keep only the newest skipped message keys" testGetSkippedMsgKeys
       describe "Work items" $ do
         it "should getPendingQueueMsg" testGetPendingQueueMsg
@@ -601,6 +602,21 @@ testCreateRcvAndSndMsgs =
       testCreateRcvMsg_ db 2 "rcv_hash_2" connId rq $ mkRcvMsgData (InternalId 4) (InternalRcvId 3) 3 "3" "rcv_hash_3"
       testCreateSndMsg_ db "snd_hash_1" connId sq $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId sq $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
+
+testDeleteRatchetKeyHashesExpired :: SpecWith DBStore
+testDeleteRatchetKeyHashesExpired =
+  it "should delete expired ratchet key hashes except the newest in each connection" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right connId' <- createNewConn db g cData1 {connId = ""} SCMContact
+    let hashes = ["h1", "h2", "h3", "h4", "h5", "h6"]
+    forM_ hashes $ addProcessedRatchetKeyHash db connId
+    forM_ (take 4 hashes) $ addProcessedRatchetKeyHash db connId'
+    deleteRatchetKeyHashesExpired db 86400 4
+    mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` replicate 6 True
+    deleteRatchetKeyHashesExpired db 0 4
+    mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` [False, False, True, True, True, True]
+    mapM (checkRatchetKeyHashExists db connId') (take 4 hashes) `shouldReturn` replicate 4 True
 
 testGetSkippedMsgKeys :: DBStore -> Expectation
 testGetSkippedMsgKeys st = do

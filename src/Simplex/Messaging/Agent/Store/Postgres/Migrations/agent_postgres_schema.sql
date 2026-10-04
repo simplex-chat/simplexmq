@@ -1169,6 +1169,10 @@ CREATE INDEX idx_ntf_tokens_ntf_host_ntf_port ON smp_agent_test_protocol_schema.
 
 
 
+CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON smp_agent_test_protocol_schema.processed_ratchet_key_hashes USING btree (conn_id, processed_ratchet_key_hash_id);
+
+
+
 CREATE INDEX idx_processed_ratchet_key_hashes_created_at ON smp_agent_test_protocol_schema.processed_ratchet_key_hashes USING btree (created_at);
 
 
