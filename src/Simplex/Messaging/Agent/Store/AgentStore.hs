@@ -2820,20 +2820,33 @@ checkRatchetKeyHashExists db connId hash =
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> Int -> IO ()
 deleteRatchetKeyHashesExpired db ttl maxConnHashes = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+#if defined(dbPostgres)
   DB.execute
     db
-    [sql|
-      DELETE FROM processed_ratchet_key_hashes AS h
-      WHERE created_at < ?
-        AND processed_ratchet_key_hash_id <= (
+    ("DELETE FROM processed_ratchet_key_hashes h USING (" <> maxExcessIdsQuery <> ") e WHERE h.conn_id = e.conn_id AND h.processed_ratchet_key_hash_id <= e.max_excess_id AND h.created_at < ?")
+    (maxConnHashes, maxConnHashes, cutoffTs)
+#else
+  maxExcessIds <- DB.query db maxExcessIdsQuery (maxConnHashes, maxConnHashes)
+  DB.executeMany
+    db
+    "DELETE FROM processed_ratchet_key_hashes WHERE conn_id = ? AND processed_ratchet_key_hash_id <= ? AND created_at < ?"
+    (map (\(connId :: ConnId, maxExcessId :: Int64) -> (connId, maxExcessId, cutoffTs)) maxExcessIds)
+#endif
+  where
+    maxExcessIdsQuery :: Query
+    maxExcessIdsQuery =
+      [sql|
+        SELECT conn_id, (
           SELECT processed_ratchet_key_hash_id
           FROM processed_ratchet_key_hashes
-          WHERE conn_id = h.conn_id
+          WHERE conn_id = c.conn_id
           ORDER BY processed_ratchet_key_hash_id DESC
           LIMIT 1 OFFSET ?
-        )
-    |]
-    (cutoffTs, maxConnHashes)
+        ) AS max_excess_id
+        FROM processed_ratchet_key_hashes c
+        GROUP BY conn_id
+        HAVING COUNT(*) > ?
+      |]
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
