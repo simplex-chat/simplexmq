@@ -75,6 +75,7 @@ msgStoreTests = do
     journalMsgStoreTests
     it "should export and import journal store" testExportImportStore
     it "should remove deleted queues from queue store maps" $ testDeleteQueueMaps stmQueueMapSizes (Just stmLinksSize)
+    it "should not leave queue lock when queue is not added" testAddDuplicateQueueLock
 #if defined(dbServerPostgres)
   around_ (postgressBracket testServerDBConnectInfo) $ do
     around (withMsgStore $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg) $
@@ -83,6 +84,7 @@ msgStoreTests = do
         journalMsgStoreTests
         it "should remove deleted queues from queue cache maps" $ testDeleteQueueMaps postgresQueueMapSizes Nothing
         it "should not cache queue deleted while loading" testDeletedQueueNotCached
+        it "should not leave queue lock when queue is not added" testAddDuplicateQueueLock
         it "should not keep link data in queue records" testQueueRecNoLinkData
     around (withMsgStore testPostgresStoreConfig) $
       describe "Postgres-only message store" $ do
@@ -366,13 +368,11 @@ testDeleteQueueMaps :: forall s. MsgStoreClass s => (s -> IO QueueMapSizes) -> M
 testDeleteQueueMaps mapSizes linksSize_ ms = do
   g <- C.newRandom
   ntfCreds <- testNtfCreds g
-  let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
-      newLinkId = atomically $ EntityId <$> C.randomBytes 24 g
-  lnkId1 <- newLinkId
-  lnkId2 <- newLinkId
-  lnkId3 <- newLinkId
+  lnkId1 <- testLinkId g
+  lnkId2 <- testLinkId g
+  lnkId3 <- testLinkId g
   (rId1, qr1) <- testNewQueueRec g QMMessaging
-  (rId2, qr2) <- testNewQueueRecData g QMContact (Just (lnkId1, qd))
+  (rId2, qr2) <- testNewQueueRecData g QMContact (Just (lnkId1, testLinkData))
   (rId3, qr3) <- testNewQueueRec g QMMessaging
   (rId4, qr4) <- testNewQueueRec g QMMessaging
   let rIds = [rId1, rId2, rId3, rId4] :: [RecipientId]
@@ -384,8 +384,8 @@ testDeleteQueueMaps mapSizes linksSize_ ms = do
     q2 <- ExceptT $ addQueue ms rId2 qr2
     q3 <- ExceptT $ addQueue ms rId3 qr3
     q4 <- ExceptT $ addQueue ms rId4 qr4
-    ExceptT $ addQueueLinkData (queueStore ms) q3 lnkId2 qd
-    ExceptT $ addQueueLinkData (queueStore ms) q4 lnkId3 qd
+    ExceptT $ addQueueLinkData (queueStore ms) q3 lnkId2 testLinkData
+    ExceptT $ addQueueLinkData (queueStore ms) q4 lnkId3 testLinkData
     forM_ sIds $ void . ExceptT . getQueue ms SSender
     forM_ lnkIds $ void . ExceptT . getQueue ms SSenderLink
     liftIO $ sizesShouldBe (4, 4, 1) 3
@@ -403,6 +403,26 @@ testDeleteQueueMaps mapSizes linksSize_ ms = do
       mapSizes ms `shouldReturn` sizes
       forM_ linksSize_ $ \f -> f ms `shouldReturn` linksSize
 
+testAddDuplicateQueueLock :: JournalMsgStore s -> IO ()
+testAddDuplicateQueueLock ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  (rId', qr') <- testNewQueueRec g QMMessaging
+  void $ runRight $ ExceptT $ addQueue ms rId qr
+  -- duplicate sender ID
+  addQueue ms rId' qr >>= expectError
+  -- duplicate recipient ID, the lock of the existing queue is kept
+  addQueue ms rId qr' >>= expectError
+  queueLockCount <$> loadedQueueCounts ms `shouldReturn` 1
+  where
+    expectError = either (\_ -> pure ()) (\_ -> expectationFailure "duplicate queue is added")
+
+testLinkId :: TVar ChaChaDRG -> IO LinkId
+testLinkId g = atomically $ EntityId <$> C.randomBytes 24 g
+
+testLinkData :: QueueLinkData
+testLinkData = (EncDataBytes "fixed data", EncDataBytes "user data")
+
 testLinkIdSenderIdCollision :: MsgStoreClass s => s -> IO ()
 testLinkIdSenderIdCollision ms = do
   g <- C.newRandom
@@ -412,7 +432,7 @@ testLinkIdSenderIdCollision ms = do
   runRight_ $ do
     void $ ExceptT $ addQueue ms rIdV qrV
     qA <- ExceptT $ addQueue ms rIdA qrA
-    ExceptT $ addQueueLinkData (queueStore ms) qA sIdV (EncDataBytes "fixed data", EncDataBytes "user data")
+    ExceptT $ addQueueLinkData (queueStore ms) qA sIdV testLinkData
     qA' <- ExceptT $ getQueue ms SSenderLink sIdV
     liftIO $ recipientId qA' `shouldBe` rIdA
     qV <- ExceptT $ getQueue ms SSender sIdV
@@ -421,22 +441,20 @@ testLinkIdSenderIdCollision ms = do
 testQueueRecNoLinkData :: MsgStoreClass s => s -> IO ()
 testQueueRecNoLinkData ms = do
   g <- C.newRandom
-  let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
-      qd' = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+  let qd' = (EncDataBytes "fixed data", EncDataBytes "updated user data")
       noData = (EncDataBytes "", EncDataBytes "")
-      newLinkId = atomically $ EntityId <$> C.randomBytes 24 g
-  lnkId1 <- newLinkId
-  lnkId2 <- newLinkId
-  (rId1, qr1) <- testNewQueueRecData g QMContact (Just (lnkId1, qd))
+  lnkId1 <- testLinkId g
+  lnkId2 <- testLinkId g
+  (rId1, qr1) <- testNewQueueRecData g QMContact (Just (lnkId1, testLinkData))
   (rId2, qr2) <- testNewQueueRec g QMContact
   runRight_ $ do
     q1 <- ExceptT $ addQueue ms rId1 qr1
     q2 <- ExceptT $ addQueue ms rId2 qr2
-    ExceptT $ addQueueLinkData (queueStore ms) q2 lnkId2 qd
+    ExceptT $ addQueueLinkData (queueStore ms) q2 lnkId2 testLinkData
     liftIO $ queueLinkData q1 `shouldReturn` Just (lnkId1, noData)
     liftIO $ queueLinkData q2 `shouldReturn` Just (lnkId2, noData)
-    ExceptT (getQueueLinkData (queueStore ms) q1 lnkId1) >>= liftIO . (`shouldBe` qd)
-    ExceptT (getQueueLinkData (queueStore ms) q2 lnkId2) >>= liftIO . (`shouldBe` qd)
+    ExceptT (getQueueLinkData (queueStore ms) q1 lnkId1) >>= liftIO . (`shouldBe` testLinkData)
+    ExceptT (getQueueLinkData (queueStore ms) q2 lnkId2) >>= liftIO . (`shouldBe` testLinkData)
     ExceptT $ addQueueLinkData (queueStore ms) q2 lnkId2 qd'
     liftIO $ queueLinkData q2 `shouldReturn` Just (lnkId2, noData)
     ExceptT (getQueueLinkData (queueStore ms) q2 lnkId2) >>= liftIO . (`shouldBe` qd')
@@ -464,7 +482,7 @@ testDeletedQueueNotCached ms = do
     evictQueue rId sId = TM.delete rId queues >> TM.delete sId senders
     loadWhileDeleting g load evict = replicateM_ 100 $ do
       (rId, qr) <- testNewQueueRec g QMMessaging
-      q <- either (fail . show) pure =<< addQueue ms rId qr
+      q <- runRight $ ExceptT $ addQueue ms rId qr
       atomically $ evict rId (senderId qr)
       (q_, deleted) <- concurrently (load rId (senderId qr)) (deleteQueue ms q)
       deleted `shouldSatisfy` isRight

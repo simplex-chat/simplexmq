@@ -303,7 +303,7 @@ instance StoreQueueClass (JournalQueue s) where
   {-# INLINE withQueueLock #-}
   removeQueueLock :: JournalQueue s -> IO ()
   removeQueueLock JournalQueue {recipientId', queueLock, queueLocks'} =
-    atomically $ TM.lookup recipientId' queueLocks' >>= \l -> when (l == Just queueLock) $ TM.delete recipientId' queueLocks'
+    atomically $ whenM ((Just queueLock ==) <$> TM.lookup recipientId' queueLocks') $ TM.delete recipientId' queueLocks'
 
 instance QueueStoreClass (JournalQueue s) (QStore s) where
   type QueueStoreCfg (QStore s) = QStoreCfg s

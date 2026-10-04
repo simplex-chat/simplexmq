@@ -47,7 +47,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
+import Simplex.Messaging.Util (anyM, ifM, tshow, unlessM, ($>>), ($>>=), (<$$), (<$$>))
 import System.IO
 import UnliftIO.STM
 
@@ -119,7 +119,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
     sq <- mkQ rId qr
-    add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
+    add sq >>= \case
+      Right () -> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
+      -- the lock is kept when another queue has the same recipient ID
+      Left e -> Left e <$ unlessM (TM.memberIO rId queues) (removeQueueLock sq)
     where
       STMQueueStore {queues, senders, notifiers, links} = st
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
