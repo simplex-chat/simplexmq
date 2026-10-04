@@ -685,3 +685,7 @@ BEGIN
   WHERE user_id = (SELECT user_id FROM connections WHERE conn_id = NEW.conn_id)
     AND host = NEW.host AND port = NEW.port;
 END;
+CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_hashes(
+  conn_id,
+  processed_ratchet_key_hash_id
+);

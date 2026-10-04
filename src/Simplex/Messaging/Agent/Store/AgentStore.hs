@@ -2825,12 +2825,12 @@ deleteRatchetKeyHashesExpired db ttl maxConnHashes = do
     [sql|
       DELETE FROM processed_ratchet_key_hashes AS h
       WHERE created_at < ?
-        AND processed_ratchet_key_hash_id NOT IN (
+        AND processed_ratchet_key_hash_id <= (
           SELECT processed_ratchet_key_hash_id
           FROM processed_ratchet_key_hashes
           WHERE conn_id = h.conn_id
           ORDER BY processed_ratchet_key_hash_id DESC
-          LIMIT ?
+          LIMIT 1 OFFSET ?
         )
     |]
     (cutoffTs, maxConnHashes)
