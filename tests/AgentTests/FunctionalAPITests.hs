@@ -608,6 +608,7 @@ functionalAPITests ps = do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
     it "should reconnect to servers when network changes" $ testNetworkChangeReconnect ps
+    it "should retry delivery and subscription immediately when network changes" $ testNetworkChangeRetry ps
     it "should resume multiple threads" testResumeMultipleThreads
   describe "SMP queue info" $ do
     it "server should respond with queue and subscription information" $
@@ -4816,6 +4817,27 @@ testNetworkChangeReconnect ps =
     nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
     nGet a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
     runRight_ $ exchangeGreetings a bId b aId
+
+testNetworkChangeRetry :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testNetworkChangeRetry ps =
+  withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
+    (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ makeConnection a b
+    nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    nGet b =##> \case ("", "", DOWN _ [c]) -> c == aId; _ -> False
+    -- the first delivery attempt fails, and the delivery worker waits for the configured 60 seconds
+    2 <- runRight $ sendMessage a bId SMP.noMsgFlags "hello"
+    threadDelay 500000
+    withSmpServerStoreLogOn ps testPort $ \_ -> do
+      -- without network change event both the message delivery and the subscription
+      -- would be retried in 60 seconds, the test would fail with timeout
+      setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+      runRight_ $ do
+        withUP a bId $ \case ("", c, SENT 2) -> c == bId; _ -> False
+        withUP b aId $ \case ("", c, Msg "hello") -> c == aId; _ -> False
+        ackMessage b aId 2 Nothing
+  where
+    slowRI = RetryInterval {initialInterval = 60_000000, increaseAfter = 0, maxInterval = 60_000000}
+    aCfg = agentCfg {reconnectInterval = slowRI, messageRetryInterval = RetryInterval2 {riSlow = slowRI, riFast = slowRI}}
 
 testDoNotResetOnlineToOffline :: IO ()
 testDoNotResetOnlineToOffline = withAgent 1 aCfg initAgentServers testDB $ \a -> do
