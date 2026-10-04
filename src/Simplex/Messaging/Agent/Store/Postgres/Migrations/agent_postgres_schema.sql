@@ -1241,11 +1241,7 @@ CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON smp_agent_test_protoco
 
 
 
-CREATE INDEX idx_skipped_messages_conn_id ON smp_agent_test_protocol_schema.skipped_messages USING btree (conn_id);
-
-
-
-CREATE INDEX idx_skipped_messages_conn_id_skipped_message_id ON smp_agent_test_protocol_schema.skipped_messages USING btree (conn_id, skipped_message_id);
+CREATE INDEX idx_skipped_messages_conn_id ON smp_agent_test_protocol_schema.skipped_messages USING btree (conn_id, skipped_message_id);
 
 
 
