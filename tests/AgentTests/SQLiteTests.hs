@@ -605,21 +605,20 @@ testCreateRcvAndSndMsgs =
 
 testDeleteRatchetKeyHashesExpired :: SpecWith DBStore
 testDeleteRatchetKeyHashesExpired =
-  it "should delete expired ratchet key hashes of contact addresses and above the limit of other connections" . withStoreTransaction $ \db -> do
+  it "should delete expired ratchet key hashes of connections with more hashes than the limit" . withStoreTransaction $ \db -> do
     g <- C.newRandom
     Right duplexConnId <- createNewConn db g cData1 {connId = ""} SCMInvitation
     Right duplexConnId' <- createNewConn db g cData1 {connId = ""} SCMInvitation
     Right addressConnId <- createNewConn db g cData1 {connId = ""} SCMContact
     let hashes = ["h1", "h2", "h3", "h4", "h5", "h6"]
-        connIds = [duplexConnId, duplexConnId', addressConnId] :: [ConnId]
-    forM_ hashes $ \h -> forM_ connIds $ \connId -> addProcessedRatchetKeyHash db connId h
+    forM_ hashes $ \h -> addProcessedRatchetKeyHash db duplexConnId h >> addProcessedRatchetKeyHash db addressConnId h
+    forM_ (take 4 hashes) $ addProcessedRatchetKeyHash db duplexConnId'
     deleteRatchetKeyHashesExpired db 86400 4 100
-    forM_ connIds $ \connId ->
-      mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` replicate 6 True
+    mapM (checkRatchetKeyHashExists db duplexConnId) hashes `shouldReturn` replicate 6 True
     deleteRatchetKeyHashesExpired db 0 4 100
-    mapM (checkRatchetKeyHashExists db duplexConnId) hashes `shouldReturn` [False, False, True, True, True, True]
-    mapM (checkRatchetKeyHashExists db duplexConnId') hashes `shouldReturn` [False, False, True, True, True, True]
+    mapM (checkRatchetKeyHashExists db duplexConnId) hashes `shouldReturn` replicate 6 False
     mapM (checkRatchetKeyHashExists db addressConnId) hashes `shouldReturn` replicate 6 False
+    mapM (checkRatchetKeyHashExists db duplexConnId') (take 4 hashes) `shouldReturn` replicate 4 True
 
 testGetSkippedMsgKeys :: DBStore -> Expectation
 testGetSkippedMsgKeys st = do
