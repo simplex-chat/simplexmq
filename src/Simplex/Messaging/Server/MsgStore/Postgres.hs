@@ -83,6 +83,8 @@ instance StoreQueueClass PostgresQueue where
   {-# INLINE queueRec #-}
   withQueueLock PostgresQueue {} _ = id -- TODO [messages] maybe it's just transaction?
   {-# INLINE withQueueLock #-}
+  removeQueueLock _ = pure ()
+  {-# INLINE removeQueueLock #-}
 
 newtype DBTransaction = DBTransaction {dbConn :: DB.Connection}
 

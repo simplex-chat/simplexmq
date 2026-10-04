@@ -63,6 +63,8 @@ instance StoreQueueClass STMQueue where
   {-# INLINE queueRec #-}
   withQueueLock _ _ = id
   {-# INLINE withQueueLock #-}
+  removeQueueLock _ = pure ()
+  {-# INLINE removeQueueLock #-}
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM

@@ -161,6 +161,7 @@ data QStoreCfg s where
 data JournalQueue (s :: QSType) = JournalQueue
   { recipientId' :: RecipientId,
     queueLock :: Lock,
+    queueLocks' :: TMap RecipientId Lock,
     sharedLock :: TMVar RecipientId,
     -- To avoid race conditions and errors when restoring queues,
     -- Nothing is written to TVar when queue is deleted.
@@ -300,6 +301,9 @@ instance StoreQueueClass (JournalQueue s) where
   withQueueLock JournalQueue {recipientId', queueLock, sharedLock} =
     withLockWaitShared recipientId' queueLock sharedLock
   {-# INLINE withQueueLock #-}
+  removeQueueLock :: JournalQueue s -> IO ()
+  removeQueueLock JournalQueue {recipientId', queueLock, queueLocks'} =
+    atomically $ TM.lookup recipientId' queueLocks' >>= \l -> when (l == Just queueLock) $ TM.delete recipientId' queueLocks'
 
 instance QueueStoreClass (JournalQueue s) (QStore s) where
   type QueueStoreCfg (QStore s) = QStoreCfg s
@@ -361,7 +365,7 @@ instance QueueStoreClass (JournalQueue s) (QStore s) where
   {-# INLINE getServiceQueueCountHash #-}
 
 makeQueue_ :: JournalMsgStore s -> RecipientId -> QueueRec -> Lock -> IO (JournalQueue s)
-makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
+makeQueue_ JournalMsgStore {queueLocks, sharedLock} rId qr queueLock = do
   queueRec' <- newTVarIO $ Just qr
   msgQueue' <- newTVarIO Nothing
   activeAt <- newTVarIO 0
@@ -370,6 +374,7 @@ makeQueue_ JournalMsgStore {sharedLock} rId qr queueLock = do
     JournalQueue
       { recipientId' = rId,
         queueLock,
+        queueLocks' = queueLocks,
         sharedLock,
         queueRec',
         msgQueue',

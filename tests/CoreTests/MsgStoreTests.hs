@@ -18,6 +18,7 @@ module CoreTests.MsgStoreTests where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad
@@ -26,10 +27,11 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List (isPrefixOf, isSuffixOf)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isNothing)
 import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
@@ -48,6 +50,7 @@ import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
 import System.IO (IOMode (..), withFile)
@@ -71,20 +74,23 @@ msgStoreTests = do
     someMsgStoreTests
     journalMsgStoreTests
     it "should export and import journal store" testExportImportStore
-    it "should remove deleted queues from queue store maps" $ testDeleteQueueMaps stmQueueMapSizes
+    it "should remove deleted queues from queue store maps" $ testDeleteQueueMaps stmQueueMapSizes (Just stmLinksSize)
 #if defined(dbServerPostgres)
   around_ (postgressBracket testServerDBConnectInfo) $ do
     around (withMsgStore $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg) $
       describe "Postgres+journal message store" $ do
         someMsgStoreTests
         journalMsgStoreTests
-        it "should remove deleted queues from queue cache maps" $ testDeleteQueueMaps postgresQueueMapSizes
+        it "should remove deleted queues from queue cache maps" $ testDeleteQueueMaps postgresQueueMapSizes Nothing
+        it "should not cache queue deleted while loading" testDeletedQueueNotCached
+        it "should not keep link data in queue records" testQueueRecNoLinkData
     around (withMsgStore testPostgresStoreConfig) $
       describe "Postgres-only message store" $ do
         someMsgStoreTests
         it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
         it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" testResetMessageCounts
         it "should expire messages across commit batches" testExpireMessagesInBatches
+        it "should not keep link data in queue records" testQueueRecNoLinkData
 #endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
@@ -106,6 +112,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should write/ack messages" testWriteAckMessages
       it "should not fail on EOF when changing read journal" testChangeReadJournal
+      it "should resolve sender ID equal to link ID of another queue" testLinkIdSenderIdCollision
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -336,22 +343,27 @@ testExportImportStore ms = do
   exportMessages False (StoreMemory stmStore) testStoreMsgsFile False
   (B.sort <$> B.readFile testStoreMsgsFile `shouldReturn`) =<< (B.sort <$> B.readFile (testStoreMsgsFile2 <> ".bak"))
 
--- sizes of queues, senders, links and notifiers maps
-type QueueMapSizes = (Int, Int, Int, Int)
+-- sizes of queues, senders and notifiers maps
+type QueueMapSizes = (Int, Int, Int)
 
 stmQueueMapSizes :: JournalMsgStore 'QSMemory -> IO QueueMapSizes
-stmQueueMapSizes ms = queueMapSizes queues senders links notifiers
+stmQueueMapSizes ms = queueMapSizes queues senders notifiers
   where
-    STMQueueStore {queues, senders, links, notifiers} = stmQueueStore ms
+    STMQueueStore {queues, senders, notifiers} = stmQueueStore ms
 
-queueMapSizes :: TMap RecipientId q -> TMap SenderId RecipientId -> TMap LinkId RecipientId -> TMap NotifierId RecipientId -> IO QueueMapSizes
-queueMapSizes qs ss ls ns = (,,,) <$> size qs <*> size ss <*> size ls <*> size ns
+stmLinksSize :: JournalMsgStore 'QSMemory -> IO Int
+stmLinksSize ms = mapSize links
   where
-    size :: TMap k v -> IO Int
-    size = fmap M.size . readTVarIO
+    STMQueueStore {links} = stmQueueStore ms
 
-testDeleteQueueMaps :: forall s. MsgStoreClass s => (s -> IO QueueMapSizes) -> s -> IO ()
-testDeleteQueueMaps mapSizes ms = do
+queueMapSizes :: TMap RecipientId q -> TMap SenderId RecipientId -> TMap NotifierId RecipientId -> IO QueueMapSizes
+queueMapSizes qs ss ns = (,,) <$> mapSize qs <*> mapSize ss <*> mapSize ns
+
+mapSize :: TMap k v -> IO Int
+mapSize = fmap M.size . readTVarIO
+
+testDeleteQueueMaps :: forall s. MsgStoreClass s => (s -> IO QueueMapSizes) -> Maybe (s -> IO Int) -> s -> IO ()
+testDeleteQueueMaps mapSizes linksSize_ ms = do
   g <- C.newRandom
   ntfCreds <- testNtfCreds g
   let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
@@ -366,7 +378,7 @@ testDeleteQueueMaps mapSizes ms = do
   let rIds = [rId1, rId2, rId3, rId4] :: [RecipientId]
       sIds = map senderId [qr1, qr2, qr3, qr4]
       lnkIds = [lnkId1, lnkId2, lnkId3] :: [LinkId]
-  mapSizes ms `shouldReturn` (0, 0, 0, 0)
+  sizesShouldBe (0, 0, 0) 0
   runRight_ $ do
     q1 <- ExceptT $ addQueue ms rId1 qr1 {notifier = Just ntfCreds}
     q2 <- ExceptT $ addQueue ms rId2 qr2
@@ -376,23 +388,90 @@ testDeleteQueueMaps mapSizes ms = do
     ExceptT $ addQueueLinkData (queueStore ms) q4 lnkId3 qd
     forM_ sIds $ void . ExceptT . getQueue ms SSender
     forM_ lnkIds $ void . ExceptT . getQueue ms SSenderLink
-    liftIO $ mapSizes ms `shouldReturn` (4, 4, 3, 1)
+    liftIO $ sizesShouldBe (4, 4, 1) 3
     ExceptT $ deleteQueueLinkData (queueStore ms) q3
-    liftIO $ mapSizes ms `shouldReturn` (4, 4, 2, 1)
+    liftIO $ sizesShouldBe (4, 4, 1) 2
     forM_ ([q1, q2, q3, q4] :: [StoreQueue s]) $ void . ExceptT . deleteQueue ms
-  mapSizes ms `shouldReturn` (0, 0, 0, 0)
+  sizesShouldBe (0, 0, 0) 0
   forM_ rIds $ \rId -> getQueue ms SRecipient rId >>= expectAuth
   forM_ sIds $ \sId -> getQueue ms SSender sId >>= expectAuth
   forM_ lnkIds $ \lnkId -> getQueue ms SSenderLink lnkId >>= expectAuth
-  mapSizes ms `shouldReturn` (0, 0, 0, 0)
+  sizesShouldBe (0, 0, 0) 0
   where
     expectAuth = either (`shouldBe` AUTH) (\_ -> expectationFailure "deleted queue is still found")
+    sizesShouldBe sizes linksSize = do
+      mapSizes ms `shouldReturn` sizes
+      forM_ linksSize_ $ \f -> f ms `shouldReturn` linksSize
+
+testLinkIdSenderIdCollision :: MsgStoreClass s => s -> IO ()
+testLinkIdSenderIdCollision ms = do
+  g <- C.newRandom
+  (rIdV, qrV) <- testNewQueueRec g QMContact
+  (rIdA, qrA) <- testNewQueueRec g QMContact
+  let sIdV = senderId qrV
+  runRight_ $ do
+    void $ ExceptT $ addQueue ms rIdV qrV
+    qA <- ExceptT $ addQueue ms rIdA qrA
+    ExceptT $ addQueueLinkData (queueStore ms) qA sIdV (EncDataBytes "fixed data", EncDataBytes "user data")
+    qA' <- ExceptT $ getQueue ms SSenderLink sIdV
+    liftIO $ recipientId qA' `shouldBe` rIdA
+    qV <- ExceptT $ getQueue ms SSender sIdV
+    liftIO $ recipientId qV `shouldBe` rIdV
+
+testQueueRecNoLinkData :: MsgStoreClass s => s -> IO ()
+testQueueRecNoLinkData ms = do
+  g <- C.newRandom
+  let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
+      qd' = (EncDataBytes "fixed data", EncDataBytes "updated user data")
+      noData = (EncDataBytes "", EncDataBytes "")
+      newLinkId = atomically $ EntityId <$> C.randomBytes 24 g
+  lnkId1 <- newLinkId
+  lnkId2 <- newLinkId
+  (rId1, qr1) <- testNewQueueRecData g QMContact (Just (lnkId1, qd))
+  (rId2, qr2) <- testNewQueueRec g QMContact
+  runRight_ $ do
+    q1 <- ExceptT $ addQueue ms rId1 qr1
+    q2 <- ExceptT $ addQueue ms rId2 qr2
+    ExceptT $ addQueueLinkData (queueStore ms) q2 lnkId2 qd
+    liftIO $ queueLinkData q1 `shouldReturn` Just (lnkId1, noData)
+    liftIO $ queueLinkData q2 `shouldReturn` Just (lnkId2, noData)
+    ExceptT (getQueueLinkData (queueStore ms) q1 lnkId1) >>= liftIO . (`shouldBe` qd)
+    ExceptT (getQueueLinkData (queueStore ms) q2 lnkId2) >>= liftIO . (`shouldBe` qd)
+    ExceptT $ addQueueLinkData (queueStore ms) q2 lnkId2 qd'
+    liftIO $ queueLinkData q2 `shouldReturn` Just (lnkId2, noData)
+    ExceptT (getQueueLinkData (queueStore ms) q2 lnkId2) >>= liftIO . (`shouldBe` qd')
+  where
+    queueLinkData q = (queueData =<<) <$> readTVarIO (queueRec q)
 
 #if defined(dbServerPostgres)
 postgresQueueMapSizes :: JournalMsgStore 'QSPostgres -> IO QueueMapSizes
-postgresQueueMapSizes ms = queueMapSizes queues senders links notifiers
+postgresQueueMapSizes ms = queueMapSizes queues senders notifiers
   where
-    PostgresQueueStore {queues, senders, links, notifiers} = postgresQueueStore ms
+    PostgresQueueStore {queues, senders, notifiers} = postgresQueueStore ms
+
+testDeletedQueueNotCached :: JournalMsgStore 'QSPostgres -> IO ()
+testDeletedQueueNotCached ms = do
+  g <- C.newRandom
+  -- the queue is cached without sender reference, as after subscription
+  loadWhileDeleting g getSndQueue $ \_ sId -> TM.delete sId senders
+  -- the queue is only in the database, as after server restart
+  loadWhileDeleting g getSndQueue evictQueue
+  loadWhileDeleting g getRcvQueues evictQueue
+  where
+    PostgresQueueStore {queues, senders} = postgresQueueStore ms
+    getSndQueue _ sId = getQueue ms SSender sId
+    getRcvQueues rId _ = head <$> getQueues ms SRecipient [rId]
+    evictQueue rId sId = TM.delete rId queues >> TM.delete sId senders
+    loadWhileDeleting g load evict = replicateM_ 100 $ do
+      (rId, qr) <- testNewQueueRec g QMMessaging
+      q <- either (fail . show) pure =<< addQueue ms rId qr
+      atomically $ evict rId (senderId qr)
+      (q_, deleted) <- concurrently (load rId (senderId qr)) (deleteQueue ms q)
+      deleted `shouldSatisfy` isRight
+      forM_ q_ $ \q' -> readTVarIO (queueRec q') >>= (`shouldSatisfy` isNothing)
+      TM.memberIO rId queues `shouldReturn` False
+      TM.lookupIO (senderId qr) senders `shouldReturn` Nothing
+      queueLockCount <$> loadedQueueCounts ms `shouldReturn` 0
 
 testUpdateMessageCounts :: PostgresMsgStore -> IO ()
 testUpdateMessageCounts ms = do

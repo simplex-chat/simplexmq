@@ -27,6 +27,8 @@ class StoreQueueClass q where
   recipientId :: q -> RecipientId
   queueRec :: q -> TVar (Maybe QueueRec)
   withQueueLock :: q -> Text -> IO a -> IO a
+  -- must only be called for deleted queues
+  removeQueueLock :: q -> IO ()
 
 class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s

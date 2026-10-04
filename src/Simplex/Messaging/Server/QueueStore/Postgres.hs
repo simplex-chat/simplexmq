@@ -107,7 +107,6 @@ data PostgresQueueStore q = PostgresQueueStore
     queues :: TMap RecipientId q,
     -- this map only cashes the queues that were attempted to send messages to,
     senders :: TMap SenderId RecipientId,
-    links :: TMap LinkId RecipientId,
     -- this map only cashes the queues that were attempted to be subscribed to,
     notifiers :: TMap NotifierId RecipientId,
     notifierLocks :: TMap NotifierId Lock,
@@ -127,11 +126,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     dbStoreLog <- mapM (openWriteStoreLog True) dbStoreLogPath
     queues <- TM.emptyIO
     senders <- TM.emptyIO
-    links <- TM.emptyIO
     notifiers <- TM.emptyIO
     notifierLocks <- TM.emptyIO
     serviceLocks <- TM.emptyIO
-    pure PostgresQueueStore {dbStore, dbStoreLog, queues, senders, links, notifiers, notifierLocks, serviceLocks, deletedTTL, useCache}
+    pure PostgresQueueStore {dbStore, dbStoreLog, queues, senders, notifiers, notifierLocks, serviceLocks, deletedTTL, useCache}
     where
       err e = do
         logError $ "STORE: newQueueStore, error opening PostgreSQL database, " <> tshow e
@@ -174,7 +172,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   -- and relies on unique constraints in the database to prevent duplicate IDs.
   addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr = do
-    sq <- mkQ rId qr
+    sq <- mkQ rId qr {queueData = withoutLinkData . fst <$> queueData qr}
     withQueueLock sq "addQueue_" $ E.uninterruptibleMask_ $ runExceptT $ do
       void $ withDB "addQueue_" st $ \db ->
         E.try (DB.execute db insertQueueQuery $ queueRecToRow (rId, qr))
@@ -183,11 +181,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ TM.insert rId sq queues
         atomically $ TM.insert (senderId qr) rId senders
         forM_ (notifier qr) $ \NtfCreds {notifierId = nId} -> atomically $ TM.insert nId rId notifiers
-        forM_ (queueData qr) $ \(lnkId, _) -> atomically $ TM.insert lnkId rId links
       withLog "addStoreQueue" st $ \s -> logCreateQueue s rId qr
       pure sq
     where
-      PostgresQueueStore {queues, senders, links, notifiers, useCache} = st
+      PostgresQueueStore {queues, senders, notifiers, useCache} = st
       -- Not doing duplicate checks in maps as the probability of duplicates is very low.
       -- It needs to be reconsidered when IDs are supplied by the users.
       -- hasId = anyM [TM.memberIO rId queues, TM.memberIO senderId senders, hasNotifier]
@@ -198,7 +195,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     | useCache = case party of
         SRecipient -> getRcvQueue qId
         SSender -> TM.lookupIO qId senders >>= maybe (mask loadSndQueue) getRcvQueue
-        SSenderLink -> TM.lookupIO qId links >>= maybe (mask loadLinkQueue) getRcvQueue
+        SSenderLink -> mask loadLinkQueue
         -- loaded queue is deleted from notifiers map to reduce cache size after queue was subscribed to by ntf server
         SNotifier -> TM.lookupIO qId notifiers >>= maybe (mask loadNtfQueue) (getRcvQueue >=> (atomically (TM.delete qId notifiers) $>))
     | otherwise = case party of
@@ -207,44 +204,53 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         SSenderLink -> loadQueueNoCache " WHERE link_id = ?"
         SNotifier -> loadQueueNoCache " WHERE notifier_id = ?"
     where
-      PostgresQueueStore {queues, senders, links, notifiers, useCache} = st
+      PostgresQueueStore {queues, senders, notifiers, useCache} = st
       getRcvQueue rId = TM.lookupIO rId queues >>= maybe (mask loadRcvQueue) (pure . Right)
       loadRcvQueue = do
         (rId, qRec) <- loadQueue " WHERE recipient_id = ?"
-        liftIO $ cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
-      loadSndQueue = loadSndQueue_ senders " WHERE sender_id = ?"
-      loadLinkQueue = loadSndQueue_ links " WHERE link_id = ?"
+        cacheQueue rId qRec $ \_ -> pure () -- recipient map already checked, not caching sender ref
+      loadSndQueue = do
+        (rId, qRec) <- loadQueue " WHERE sender_id = ?"
+        -- checking recipient map first, sender ref is only cached for a queue in the map
+        atomically (TM.lookup rId queues >>= mapM (\sq -> sq <$ cacheSender rId))
+          >>= maybe (cacheQueue rId qRec cacheSender) pure
+      -- link IDs are supplied by clients, they are not cached to prevent collisions with sender IDs
+      loadLinkQueue = do
+        (rId, qRec) <- loadQueue " WHERE link_id = ?"
+        liftIO (TM.lookupIO rId queues) >>= maybe (cacheQueue rId qRec $ \_ -> pure ()) pure
       loadNtfQueue = do
         (rId, qRec) <- loadQueue " WHERE notifier_id = ?"
         liftIO $
           TM.lookupIO rId queues -- checking recipient map first, not creating lock in map, not caching queue
             >>= maybe (mkQ False rId qRec) pure
-      loadSndQueue_ refs condition = do
-        (rId, qRec) <- loadQueue condition
-        liftIO $
-          TM.lookupIO rId queues -- checking recipient map first
-            >>= maybe (cacheQueue rId qRec $ cacheRef refs) (atomically (cacheRef refs rId) $>)
       loadQueueNoCache cond = mask $ loadQueue cond >>= liftIO . uncurry (mkQ True)
       mask = E.uninterruptibleMask_ . runExceptT
-      cacheRef refs rId = TM.insert qId rId refs
-      loadQueue condition =
+      cacheSender rId = TM.insert qId rId senders
+      loadQueue condition = loadQueueBy condition qId
+      loadQueueBy condition qId' =
         withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
-          DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
+          DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId')
       cacheQueue rId qRec insertRef = do
-        sq <- mkQ True rId qRec -- loaded queue
+        sq <- liftIO $ mkQ True rId qRec -- loaded queue
         -- This lock prevents the scenario when the queue is added to cache,
         -- while another thread is proccessing the same queue in withAllMsgQueues
         -- without adding it to cache, possibly trying to open the same files twice.
         -- Alse see comment in idleDeleteExpiredMsgs.
-        withQueueLock sq "getQueue_" $ atomically $
-          -- checking the cache again for concurrent reads,
-          -- use previously loaded queue if exists.
-          TM.lookup rId queues >>= \case
-            Just sq' -> pure sq'
-            Nothing -> do
-              insertRef rId
-              TM.insert rId sq queues
-              pure sq
+        ExceptT $ withQueueLock sq "getQueue_" $ runExceptT $ do
+          -- the queue could have been deleted after it was loaded and before the lock was taken
+          (_, qRec') <- loadQueueBy " WHERE recipient_id = ?" rId `catchE` \case
+            AUTH -> liftIO (removeQueueLock sq) >> throwE AUTH
+            e -> throwE e
+          atomically $
+            -- checking the cache again for concurrent reads,
+            -- use previously loaded queue if exists.
+            TM.lookup rId queues >>= \case
+              Just sq' -> pure sq'
+              Nothing -> do
+                writeTVar (queueRec sq) $ Just qRec'
+                insertRef rId
+                TM.insert rId sq queues
+                pure sq
 
   getQueues_ :: forall p. BatchParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueues_ st mkQ party qIds
@@ -253,7 +259,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         SRecipient -> do
           qs <- readTVarIO queues
           let qs' = map (\qId -> get qs qId qId) qIds
-          E.uninterruptibleMask_ $ loadQueues qs' " WHERE recipient_id IN ?" cacheRcvQueue
+          E.uninterruptibleMask_ $ loadQueues qs' " WHERE recipient_id IN ?" cacheRcvQueue >>= uncacheDeleted (lefts qs')
         SNotifier -> do
           ns <- readTVarIO notifiers
           qs <- readTVarIO queues
@@ -294,6 +300,21 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
             Just sq' -> pure sq'
             Nothing -> sq <$ TM.insert rId sq queues
         pure $ Just (rId, sq')
+      -- the queues could have been deleted after they were loaded and before they were cached
+      uncacheDeleted :: [RecipientId] -> [Either ErrorType q] -> IO [Either ErrorType q]
+      uncacheDeleted qIds' rs = case filter (`S.member` S.fromList qIds') [recipientId sq | Right sq <- rs] of
+        [] -> pure rs
+        rIds ->
+          runExceptT (withDB' "getQueues_" st $ \db -> DB.query db "SELECT recipient_id FROM msg_queues WHERE recipient_id IN ? AND deleted_at IS NULL" (Only (In rIds))) >>= \case
+            Right live -> mapM (uncache $ S.fromList rIds `S.difference` S.fromList (map fromOnly live)) rs
+            Left _ -> pure rs
+      uncache deleted = \case
+        Right sq | S.member (recipientId sq) deleted -> do
+          withQueueLock sq "getQueues_" $ do
+            atomically $ writeTVar (queueRec sq) Nothing >> TM.delete (recipientId sq) queues
+            removeQueueLock sq
+          pure $ Left AUTH
+        r -> pure r
       loadQueuesNoCache cond mkQueue' = do
         qs_ <- dbLoadQueues qIds cond mkQueue'
         pure $ map (result qs_) qIds
@@ -322,17 +343,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
       addLink q update = do
         assertUpdated $ withDB' "addQueueLinkData" st update
-        atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
+        atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just $ withoutLinkData lnkId}
         withLog "addQueueLinkData" st $ \s -> logCreateLink s rId lnkId d
       qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL"
 
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
     withQueueRec sq "deleteQueueLinkData" $ \q -> case queueData q of
-      Just (lnkId, _) -> do
+      Just _ -> do
         assertUpdated $ withDB' "deleteQueueLinkData" st $ \db ->
           DB.execute db "UPDATE msg_queues SET link_id = NULL, fixed_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
-        when (useCache st) $ atomically $ TM.delete lnkId $ links st
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Nothing}
         withLog "deleteQueueLinkData" st (`logDeleteLink` rId)
       _ -> throwE AUTH
@@ -458,9 +478,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (ts, rId)
     atomically $ writeTVar qr Nothing
     when (useCache st) $ do
-      atomically $ TM.delete rId $ queues st
-      atomically $ TM.delete (senderId q) $ senders st
-      forM_ (queueData q) $ \(lnkId, _) -> atomically $ TM.delete lnkId $ links st
+      atomically $ do
+        TM.delete rId $ queues st
+        TM.delete (senderId q) $ senders st
       forM_ (notifier q) $ \NtfCreds {notifierId} -> do
         atomically $ TM.delete notifierId $ notifiers st
         atomically $ TM.delete notifierId $ notifierLocks st
@@ -728,7 +748,7 @@ queueDataColumns = \case
 rowToQueueRec :: QueueRecRow -> (RecipientId, QueueRec)
 rowToQueueRec (rId, recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, notifierId_, notifierKey_, rcvNtfDhSecret_, ntfServiceId, status, updatedAt, linkId_, rcvServiceId) =
   let notifier = mkNotifier (notifierId_, notifierKey_, rcvNtfDhSecret_) ntfServiceId
-      queueData = (,(EncDataBytes "", EncDataBytes "")) <$> linkId_
+      queueData = withoutLinkData <$> linkId_
    in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId})
 
 rowToQueueRecWithData :: QueueRecRow :. (Maybe EncDataBytes, Maybe EncDataBytes) -> (RecipientId, QueueRec)
@@ -737,6 +757,10 @@ rowToQueueRecWithData ((rId, recipientKeys, rcvDhSecret, senderId, senderKey, qu
       encData =  fromMaybe (EncDataBytes "")
       queueData = (,(encData immutableData_, encData userData_)) <$> linkId_
    in (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, queueMode, queueData, notifier, status, updatedAt, rcvServiceId})
+
+-- link data is read from the database when requested
+withoutLinkData :: LinkId -> (LinkId, QueueLinkData)
+withoutLinkData = (,(EncDataBytes "", EncDataBytes ""))
 
 mkNotifier :: (Maybe NotifierId, Maybe NtfPublicAuthKey, Maybe RcvNtfDhSecret) -> Maybe ServiceId -> Maybe NtfCreds
 mkNotifier (Just notifierId, Just notifierKey, Just rcvNtfDhSecret) ntfServiceId =
