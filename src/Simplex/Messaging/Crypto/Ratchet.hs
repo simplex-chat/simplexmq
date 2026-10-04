@@ -83,13 +83,16 @@ module Simplex.Messaging.Crypto.Ratchet
     RatchetKEM (..),
     RatchetKEMAccepted (..),
     RatchetKey (..),
+    EncMessageHeader (..),
+    EncRatchetMessage (..),
+    paddedHeaderLen,
     fullHeaderLen,
     applySMDiff,
   )
 where
 
 import Control.Applicative ((<|>))
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Control.Monad.Except
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except
@@ -468,7 +471,7 @@ pqX3dhSnd :: DhAlgorithm a => AE2EPrivRatchetParams a -> E2ERatchetParams 'RKSPr
 --        3. replied       2. received
 pqX3dhSnd (spk1, spk2, spKem_) (E2ERatchetParams _ rk1 rk2 rKem_) = do
   (ks_, kem_) <- sndPq
-  let initParams = pqX3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2) kem_
+  initParams <- pqX3dh (publicKey spk1, rk1) (dh' rk1 spk2) (dh' rk2 spk1) (dh' rk2 spk2) kem_
   pure (initParams, ks_)
   where
     sndPq :: Either CryptoError (Maybe KEMKeyPair, Maybe RatchetKEMAccepted)
@@ -484,7 +487,7 @@ pqX3dhRcv :: forall s a. (RatchetKEMStateI s, DhAlgorithm a) => RcvE2EPrivRatche
 --        1. sent          4. received in reply
 pqX3dhRcv (rpk1, rpk2, rpKem_) (E2ERatchetParams _ sk1 sk2 sKem_) = do
   kem_ <- rcvPq
-  let initParams = pqX3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2) (snd <$> kem_)
+  initParams <- liftEither $ pqX3dh (sk1, publicKey rpk1) (dh' sk2 rpk1) (dh' sk1 rpk2) (dh' sk2 rpk2) (snd <$> kem_)
   pure (initParams, fst <$> kem_)
   where
     rcvPq :: ExceptT CryptoError IO (Maybe (KEMKeyPair, RatchetKEMAccepted))
@@ -496,9 +499,10 @@ pqX3dhRcv (rpk1, rpk2, rpKem_) (E2ERatchetParams _ sk1 sk2 sKem_) = do
         Nothing -> throwE CERatchetKEMState
       _ -> pure Nothing -- both parties can send "proposal" in case of ratchet renegotiation
 
-pqX3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> RatchetInitParams
+pqX3dh :: DhAlgorithm a => (PublicKey a, PublicKey a) -> DhSecret a -> DhSecret a -> DhSecret a -> Maybe RatchetKEMAccepted -> Either CryptoError RatchetInitParams
 pqX3dh (sk1, rk1) dh1 dh2 dh3 kemAccepted =
-  RatchetInitParams {assocData, rcVerifyCodePQ = Str vcPQ, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk, kemAccepted}
+  mapM_ checkDhSecret [dh1, dh2, dh3]
+    $> RatchetInitParams {assocData, rcVerifyCodePQ = Str vcPQ, ratchetKey = RatchetKey sk, sndHK = Key hk, rcvNextHK = Key nhk, kemAccepted}
   where
     assocData = Str $ pubKeyBytes sk1 <> pubKeyBytes rk1
     dhs = dhBytes' dh1 <> dhBytes' dh2 <> dhBytes' dh3 <> pq
@@ -643,30 +647,31 @@ instance FromField MessageKey where fromField = blobFieldDecoder smpDecode
 -- // above added for KEM
 -- @
 initSndRatchet ::
-  forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PublicKey a -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> Ratchet a
+  forall a. (AlgorithmI a, DhAlgorithm a) => RatchetVersions -> PublicKey a -> PrivateKey a -> (RatchetInitParams, Maybe KEMKeyPair) -> Either CryptoError (Ratchet a)
 initSndRatchet rcVersion rcDHRr rcDHRs (RatchetInitParams {assocData, rcVerifyCodePQ, ratchetKey, sndHK, rcvNextHK, kemAccepted}, rcPQRs_) = do
   -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(SK, DH(state.DHRs, state.DHRr) || state.PQRss)
-  let (rcRK, rcCKs, rcNHKs) = rootKdf ratchetKey rcDHRr rcDHRs (rcPQRss <$> kemAccepted)
-      pqOn = isJust rcPQRs_
-   in Ratchet
-        { rcVersion,
-          rcAD = assocData,
-          rcVCPQ = Just rcVerifyCodePQ,
-          rcDHRs,
-          rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
-          rcSupportKEM = PQSupport pqOn,
-          rcEnableKEM = PQEncryption pqOn,
-          rcSndKEM = PQEncryption $ isJust kemAccepted,
-          rcRcvKEM = PQEncOff,
-          rcRK,
-          rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK},
-          rcRcv = Nothing,
-          rcPN = 0,
-          rcNs = 0,
-          rcNr = 0,
-          rcNHKs,
-          rcNHKr = rcvNextHK
-        }
+  (rcRK, rcCKs, rcNHKs) <- rootKdf ratchetKey rcDHRr rcDHRs (rcPQRss <$> kemAccepted)
+  let pqOn = isJust rcPQRs_
+  pure
+    Ratchet
+      { rcVersion,
+        rcAD = assocData,
+        rcVCPQ = Just rcVerifyCodePQ,
+        rcDHRs,
+        rcKEM = (`RatchetKEM` kemAccepted) <$> rcPQRs_,
+        rcSupportKEM = PQSupport pqOn,
+        rcEnableKEM = PQEncryption pqOn,
+        rcSndKEM = PQEncryption $ isJust kemAccepted,
+        rcRcvKEM = PQEncOff,
+        rcRK,
+        rcSnd = Just SndRatchet {rcDHRr, rcCKs, rcHKs = sndHK},
+        rcRcv = Nothing,
+        rcPN = 0,
+        rcNs = 0,
+        rcNr = 0,
+        rcNHKs,
+        rcNHKr = rcvNextHK
+      }
 
 -- | Receiving ratchet initialization, equivalent to RatchetInitBobPQ2HE in double ratchet spec
 --
@@ -1021,10 +1026,10 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
           -- state.DHRs = GENERATE_DH()
           (_, rcDHRs') <- atomically $ generateKeyPair @a g
           -- state.RK, state.CKr, state.NHKr = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || ss)
-          let (rcRK', rcCKr', rcNHKr') = rootKdf rcRK msgDHRs rcDHRs kemSS
-              -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
-              (rcRK'', rcCKs', rcNHKs') = rootKdf rcRK' msgDHRs rcDHRs' kemSS'
-              sndKEM = isJust kemSS'
+          (rcRK', rcCKr', rcNHKr') <- liftEither $ rootKdf rcRK msgDHRs rcDHRs kemSS
+          -- state.RK, state.CKs, state.NHKs = KDF_RK_HE(state.RK, DH(state.DHRs, state.DHRr) || state.PQRss)
+          (rcRK'', rcCKs', rcNHKs') <- liftEither $ rootKdf rcRK' msgDHRs rcDHRs' kemSS'
+          let sndKEM = isJust kemSS'
               rcvKEM = isJust kemSS
               rcEnableKEM' = PQEncryption $ sndKEM || rcvKEM || isJust rcKEM'
           pure
@@ -1131,14 +1136,21 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))
       tryE $ decryptAEAD mk iv (rcAD <> emHeader) emBody emAuthTag
 
-rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> Maybe KEMSharedKey -> (RatchetKey, RatchetKey, Key)
+rootKdf :: (AlgorithmI a, DhAlgorithm a) => RatchetKey -> PublicKey a -> PrivateKey a -> Maybe KEMSharedKey -> Either CryptoError (RatchetKey, RatchetKey, Key)
 rootKdf (RatchetKey rk) k pk kemSecret_ =
-  let dhOut = dhBytes' (dh' k pk)
+  let dhSecret = dh' k pk
+      dhOut = dhBytes' dhSecret
       ss = case kemSecret_ of
         Just (KEMSharedKey s) -> dhOut <> BA.convert s
         Nothing -> dhOut
       (rk', ck, nhk) = hkdf3 rk ss "SimpleXRootRatchet"
-   in (RatchetKey rk', RatchetKey ck, Key nhk)
+   in checkDhSecret dhSecret $> (RatchetKey rk', RatchetKey ck, Key nhk)
+
+-- RFC 7748 section 6.2: X25519 and X448 produce the all-zero secret for low-order public keys
+checkDhSecret :: DhSecret a -> Either CryptoError ()
+checkDhSecret s = when (BA.constEq dhOut $ B.replicate (B.length dhOut) '\0') $ Left $ CryptoHeaderError "all-zero DH secret"
+  where
+    dhOut = dhBytes' s
 
 chainKdf :: RatchetKey -> (RatchetKey, Key, IV, IV)
 chainKdf (RatchetKey ck) =
