@@ -1481,10 +1481,13 @@ newConnToAccept c userId connId enableNtfs invId pqSup = do
       pure (connId', CRBRatchet $ ratchetVerifyCodes ratchetState)
 
 newConnToAcceptDR :: AgentClient -> UserId -> ConnId -> DRInvitation -> Bool -> AM ConnData
-newConnToAcceptDR c userId connId DRInvitation {agentVersion, pqSupport} enableNtfs = do
+newConnToAcceptDR c userId connId DRInvitation {ratchetState, agentVersion, pqSupport} enableNtfs = do
   g <- asks random
   let cData = ConnData {userId, connId, connAgentVersion = agentVersion, enableNtfs, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport, serviceRequestExpiresAt = Nothing}
-  connId' <- withStore c $ \db -> createNewConn db g cData SCMInvitation
+  connId' <- withStore c $ \db -> runExceptT $ do
+    connId' <- ExceptT $ createNewConn db g cData SCMInvitation
+    liftIO $ createRatchet db connId' ratchetState
+    pure connId'
   pure (cData {connId = connId'} :: ConnData)
 
 joinConn :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> ConnectionRequestUri c -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
@@ -1544,7 +1547,7 @@ startJoinInvitationDR c userId ConnData {connId} DRInvitation {ratchetState, rep
   (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
   withStore c $ \db -> runExceptT $ do
     liftIO $ lockConnForUpdate db connId
-    liftIO $ createRatchet db connId ratchetState
+    liftIO $ unlessM (isRight <$> getRatchet db connId) $ createRatchet db connId ratchetState
     ExceptT $ updateNewConnSnd db connId q
 
 connRequestAgentVersion :: AgentClient -> ConnectionRequestUri c -> IO (Maybe VersionSMPA)

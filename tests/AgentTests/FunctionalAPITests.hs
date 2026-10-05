@@ -371,6 +371,10 @@ functionalAPITests ps = do
       testAddDRViaSetConnShortLink ps
     it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
       testAcceptContactDRResumeAfterOffline ps
+    it "should store the ratchet when DR accept is prepared" $
+      withSmpServer ps $ testAcceptContactDRPrepared False
+    it "should create the ratchet at DR accept when the prepared connection has none" $
+      withSmpServer ps $ testAcceptContactDRPrepared True
     it "should support rejecting contact request" $
       withSmpServer ps testRejectContactRequest
     it "should communicate rejection reason via double ratchet" $
@@ -1239,6 +1243,30 @@ testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
     _ <- acceptContact alice 1 bobId True invId "alice's connInfo" (CR.connPQEncryption addrIK) SMSubscribe
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc
+
+testAcceptContactDRPrepared :: HasCallStack => Bool -> IO ()
+testAcceptContactDRPrepared ratchetDeleted =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+        pqEnc = PQEncryption $ pqConnectionMode IKPQOn PQSupportOn
+    (_, CCLink connReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing IKPQOn True SMSubscribe
+    (aliceId, CRBRatchet codes) <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo" (CRBRatchet reqCodes) _) <- get alice
+    (bobId, CRBRatchet acceptCodes) <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+    liftIO $ do
+      reqCodes `shouldBe` codes
+      acceptCodes `shouldBe` codes
+    if ratchetDeleted
+      then do
+        liftIO $ withTransaction (store $ agentEnv alice) (`DB.execute_` "DELETE FROM ratchets")
+        Left (CONN NOT_FOUND _) <- tryError $ getConnectionVerifyCodes alice bobId
+        pure ()
+      else getConnectionVerifyCodes alice bobId >>= liftIO . (`shouldBe` codes)
+    void $ acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
+    allowConfirmGreet alice bobId bob aliceId confId IKPQOn pqEnc
+    getConnectionVerifyCodes alice bobId >>= liftIO . (`shouldBe` codes)
 
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
