@@ -9,6 +9,9 @@ module Simplex.Messaging.Agent.RetryInterval
     RI2State (..),
     withRetryInterval,
     withRetryIntervalCount,
+    withRetryEpoch,
+    withRetryEpochCount,
+    withRetryEpoch2,
     withRetryForeground,
     withRetryInterval2,
     withRetryLock2,
@@ -66,20 +69,50 @@ withRetryIntervalCount ri action = callAction 0 0 $ initialInterval ri
           let elapsed' = elapsed + delay
           callAction (n + 1) elapsed' $ nextRetryDelay elapsed' delay ri
 
-withRetryForeground :: forall m a. MonadIO m => RetryInterval -> STM Bool -> STM Bool -> (Int64 -> m a -> m a) -> m a
-withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInterval ri
+-- The delay restarts from the initial interval when the epoch changes (the agent increments it when the network changes)
+-- while the loop waits; when it changed while the action was running the next attempt is made without any delay.
+withRetryEpoch :: forall m a. MonadIO m => RetryInterval -> STM Int -> (Int64 -> m a -> m a) -> m a
+withRetryEpoch ri getEpoch = withRetryEpochCount ri getEpoch . const
+
+withRetryEpochCount :: forall m a. MonadIO m => RetryInterval -> STM Int -> (Int -> Int64 -> m a -> m a) -> m a
+withRetryEpochCount ri getEpoch action = callAction 0 0 $ initialInterval ri
+  where
+    callAction :: Int -> Int64 -> Int64 -> m a
+    callAction n elapsed delay = do
+      epoch <- atomically getEpoch
+      action n delay $ do
+        reset <- waitEpoch' epoch delay
+        let (elapsed', delay')
+              | reset = (0, initialInterval ri)
+              | otherwise = (elapsed + delay, nextRetryDelay elapsed' delay ri)
+        callAction (n + 1) elapsed' delay'
+    waitEpoch' = waitEpoch getEpoch
+
+-- returns True when the epoch changed before the delay expired
+waitEpoch :: MonadIO m => STM Int -> Int -> Int64 -> m Bool
+waitEpoch getEpoch epoch delay = do
+  -- limit delay to max Int value (~36 minutes on for 32 bit architectures)
+  d <- registerDelay $ fromIntegral $ min delay (fromIntegral (maxBound :: Int))
+  atomically $ do
+    changed <- (epoch /=) <$> getEpoch
+    unlessM ((changed ||) <$> readTVar d) retry
+    pure changed
+
+withRetryForeground :: forall m a. MonadIO m => RetryInterval -> STM Bool -> STM Bool -> STM Int -> (Int64 -> m a -> m a) -> m a
+withRetryForeground ri isForeground isOnline getEpoch action = callAction 0 $ initialInterval ri
   where
     callAction :: Int64 -> Int64 -> m a
-    callAction elapsed delay = action delay loop
+    callAction elapsed delay = action delay . loop =<< atomically getEpoch
       where
-        loop = do
+        loop epoch = do
           -- limit delay to max Int value (~36 minutes on for 32 bit architectures)
           d <- registerDelay $ fromIntegral $ min delay (fromIntegral (maxBound :: Int))
           (wasForeground, wasOnline) <- atomically $ (,) <$> isForeground <*> isOnline
           reset <- atomically $ do
             foreground <- isForeground
             online <- isOnline
-            let reset = (not wasForeground && foreground) || (not wasOnline && online)
+            epochChanged <- (epoch /=) <$> getEpoch
+            let reset = (not wasForeground && foreground) || (not wasOnline && online) || epochChanged
             unlessM ((reset ||) <$> readTVar d) retry
             pure reset
           let (elapsed', delay')
@@ -88,35 +121,55 @@ withRetryForeground ri isForeground isOnline action = callAction 0 $ initialInte
           callAction elapsed' delay'
 
 withRetryInterval2 :: forall m. MonadIO m => RetryInterval2 -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
-withRetryInterval2 = withRetryWait2 $ liftIO . threadDelay'
+withRetryInterval2 = withRetryWait2 (pure ()) $ \_ _ delay -> False <$ liftIO (threadDelay' delay)
 
 -- This function allows action to toggle between slow and fast retry intervals.
-withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> TMVar () -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
-withRetryLock2 ri lock = withRetryWait2 wait ri
+-- The fast interval restarts on the epoch change, as in withRetryEpoch; once the action chose the slow
+-- interval (recipient queue quota) the epoch change is not applied to the fast interval - neither the one
+-- that happened during that action nor during the wait.
+withRetryLock2 :: forall m. MonadIO m => RetryInterval2 -> STM Int -> TMVar () -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
+withRetryLock2 ri getEpoch lock = withRetryWait2 (atomically getEpoch) wait ri
   where
-    wait delay = do
+    wait mode epoch delay = do
       waiting <- newTVarIO True
       _ <- liftIO . forkIO $ do
         threadDelay' delay
         atomically $ whenM (readTVar waiting) $ void $ tryPutTMVar lock ()
       atomically $ do
-        takeTMVar lock
+        reset <- (epochChanged <* tryTakeTMVar lock) `orElse` (False <$ takeTMVar lock)
         writeTVar waiting False
+        pure reset
+      where
+        epochChanged = case mode of
+          RIFast -> unlessM ((epoch /=) <$> getEpoch) retry >> pure True
+          RISlow -> retry
 
-withRetryWait2 :: forall m. Monad m => (Int64 -> m ()) -> RetryInterval2 -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
-withRetryWait2 wait RetryInterval2 {riSlow, riFast} action =
+-- As withRetryLock2, without the lock: the fast interval restarts on the epoch change, the slow one
+-- (recipient queue quota) does not.
+withRetryEpoch2 :: forall m. MonadIO m => RetryInterval2 -> STM Int -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
+withRetryEpoch2 ri getEpoch = withRetryWait2 (atomically getEpoch) wait ri
+  where
+    wait mode epoch delay = case mode of
+      RISlow -> False <$ liftIO (threadDelay' delay)
+      RIFast -> waitEpoch getEpoch epoch delay
+
+-- the value sampled before the action is passed to wait, so that a change that happened during the
+-- action resets the interval as one during the wait does
+withRetryWait2 :: forall m e. Monad m => m e -> (RetryIntervalMode -> e -> Int64 -> m Bool) -> RetryInterval2 -> (RI2State -> (RetryIntervalMode -> m ()) -> m ()) -> m ()
+withRetryWait2 sample wait RetryInterval2 {riSlow, riFast} action =
   callAction (0, initialInterval riSlow) (0, initialInterval riFast)
   where
     callAction :: (Int64, Int64) -> (Int64, Int64) -> m ()
-    callAction slow fast = action (RI2State (snd slow) (snd fast)) loop
+    callAction slow fast = sample >>= \e -> action (RI2State (snd slow) (snd fast)) (loop e)
       where
-        loop = \case
-          RISlow -> run slow riSlow (`callAction` fast)
-          RIFast -> run fast riFast (callAction slow)
-        run (elapsed, delay) ri call = do
-          wait delay
-          let elapsed' = elapsed + delay
-              delay' = nextRetryDelay elapsed' delay ri
+        loop e = \case
+          RISlow -> run RISlow e slow riSlow (`callAction` fast)
+          RIFast -> run RIFast e fast riFast (callAction slow)
+        run mode e (elapsed, delay) ri call = do
+          reset <- wait mode e delay
+          let (elapsed', delay')
+                | reset = (0, initialInterval ri)
+                | otherwise = (elapsed + delay, nextRetryDelay elapsed' delay ri)
           call (elapsed', delay')
 
 nextRetryDelay :: Int64 -> Int64 -> RetryInterval -> Int64

@@ -456,7 +456,7 @@ retrySubActions _ [] _ = pure ()
 retrySubActions c subs action = do
   v <- newTVarIO subs
   ri <- asks $ reconnectInterval . config
-  withRetryInterval ri $ \_ loop -> do
+  withRetryEpoch ri (readTVar $ networkEpoch c) $ \_ loop -> do
     liftIO $ waitWhileSuspended c
     liftIO $ waitForUserNetwork c
     subs' <- readTVarIO v
@@ -563,7 +563,7 @@ runNtfTknDelWorker c srv Worker {doWork} =
         \nextTknToDelete -> do
           logInfo $ "runNtfTknDelWorker, nextTknToDelete " <> tshow nextTknToDelete
           ri <- asks $ reconnectInterval . config
-          withRetryInterval ri $ \_ loop -> do
+          withRetryEpoch ri (readTVar $ networkEpoch c) $ \_ loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             processTknToDelete nextTknToDelete `catchAllErrors` retryTmpError loop nextTknToDelete

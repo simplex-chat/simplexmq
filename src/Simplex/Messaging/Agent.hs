@@ -744,7 +744,7 @@ setUserNetworkInfo c@AgentClient {userNetworkInfo, userNetworkUpdated, networkEv
       whenCurrent $ closeProtocolServerClients c xftpClients
       where
         whenCurrent = whenM (atomically $ isCurrent e)
-    networkOnline e = atomically $ whenM (isCurrent e) $ writeTVar userNetworkInfo ni
+    networkOnline e = atomically $ whenM (isCurrent e) $ writeTVar userNetworkInfo ni >> modifyTVar' (networkEpoch c) (+ 1)
     isCurrent e = (e ==) <$> readTVar networkEventSeq
     notRecentlyChanged ts' i =
       maybe True (\ts -> diffUTCTime ts' ts > i) <$> readTVar userNetworkUpdated
@@ -2398,7 +2398,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             SomeConn _ conn@DuplexConnection {} -> a conn
             _ -> internalErr "command requires duplex connection"
         tryCommand action = tryMoveableCommand (action $> CCCompleted)
-        tryMoveableCommand action = withRetryInterval2 ri $ \_ loop -> do
+        tryMoveableCommand action = withRetryEpoch2 ri (readTVar $ networkEpoch c) $ \_ loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           tryAllErrors action >>= \case
@@ -2576,7 +2576,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
         atomically $ endAgentOperation c AOMsgDelivery -- this operation begins in submitPendingMsg
         let mId = unId msgId
             ri' = maybe id updateRetryInterval2 msgRetryState ri
-        withRetryLock2 ri' qLock $ \riState loop -> do
+        withRetryLock2 ri' (readTVar $ networkEpoch c) qLock $ \riState loop -> do
           liftIO $ waitWhileSuspended c
           liftIO $ waitForUserNetwork c
           resp <- tryAllErrors $ case msgType of

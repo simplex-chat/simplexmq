@@ -207,7 +207,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ (Just fileTmpPath) (INTERNAL "chunk has no replicas")
         (fc@RcvFileChunk {userId, rcvFileId, rcvFileEntityId, digest, fileTmpPath, replicas = replica@RcvFileChunkReplica {rcvChunkReplicaId, server, delay} : _}, approvedRelays, redirectEntityId_) -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+          withRetryIntervalLimit xftpConsecutiveRetries ri' (readTVar $ networkEpoch c) $ \delay' loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv downloadAttempts
@@ -265,9 +265,9 @@ runXFTPRcvWorker c srv Worker {doWork} = do
         chunkReceived RcvFileChunk {replicas} = any received replicas
 
 -- The first call of action has n == 0, maxN is max number of retries
-withRetryIntervalLimit :: forall m. MonadIO m => Int -> RetryInterval -> (Int64 -> m () -> m ()) -> m ()
-withRetryIntervalLimit maxN ri action =
-  withRetryIntervalCount ri $ \n delay loop ->
+withRetryIntervalLimit :: forall m. MonadIO m => Int -> RetryInterval -> STM Int -> (Int64 -> m () -> m ()) -> m ()
+withRetryIntervalLimit maxN ri getEpoch action =
+  withRetryEpochCount ri getEpoch $ \n delay loop ->
     when (n < maxN) $ action delay loop
 
 retryOnError :: Text -> AM a -> AM a -> AgentErrorType -> AM a
@@ -490,7 +490,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               triedHosts <- newTVarIO S.empty
               let AgentClient {xftpServers} = c
               userSrvCount <- liftIO $ length <$> TM.lookupIO userId xftpServers
-              withRetryIntervalCount (riFast ri) $ \n _ loop -> do
+              withRetryEpochCount (riFast ri) (readTVar $ networkEpoch c) $ \n _ loop -> do
                 liftIO $ waitWhileSuspended c
                 liftIO $ waitForUserNetwork c
                 let triedAllSrvs = n > userSrvCount
@@ -530,7 +530,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
         SndFileChunk {sndFileId, sndFileEntityId, filePrefixPath, replicas = []} -> sndWorkerInternalError c sndFileId sndFileEntityId (Just filePrefixPath) (INTERNAL "chunk has no replicas")
         fc@SndFileChunk {userId, sndFileId, sndFileEntityId, filePrefixPath, digest, replicas = replica@SndFileChunkReplica {sndChunkReplicaId, server, delay} : _} -> do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+          withRetryIntervalLimit xftpConsecutiveRetries ri' (readTVar $ networkEpoch c) $ \delay' loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv uploadAttempts
@@ -708,7 +708,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
       where
         processDeletedReplica replica@DeletedSndChunkReplica {deletedSndChunkReplicaId, userId, server, chunkDigest, delay} = do
           let ri' = maybe ri (\d -> ri {initialInterval = d, increaseAfter = 0}) delay
-          withRetryIntervalLimit xftpConsecutiveRetries ri' $ \delay' loop -> do
+          withRetryIntervalLimit xftpConsecutiveRetries ri' (readTVar $ networkEpoch c) $ \delay' loop -> do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             atomically $ incXFTPServerStat c userId srv deleteAttempts
