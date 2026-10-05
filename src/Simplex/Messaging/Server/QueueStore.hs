@@ -13,12 +13,14 @@ module Simplex.Messaging.Server.QueueStore
     ServiceRec (..),
     CertFingerprint,
     ServerEntityStatus (..),
+    isSecuredMsgQueue,
   ) where
 
 import Control.Applicative (optional, (<|>))
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty)
+import Data.Maybe (isJust)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Encoding
@@ -47,6 +49,11 @@ data QueueRec = QueueRec
     rcvServiceId :: Maybe ServiceId
   }
   deriving (Show)
+
+isSecuredMsgQueue :: QueueRec -> Bool
+isSecuredMsgQueue QueueRec {queueMode, senderKey} = case queueMode of
+  Just QMContact -> False
+  _ -> isJust senderKey
 
 data NtfCreds = NtfCreds
   { notifierId :: NotifierId,

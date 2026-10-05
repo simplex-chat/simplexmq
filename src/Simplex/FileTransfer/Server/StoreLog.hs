@@ -17,6 +17,7 @@ module Simplex.FileTransfer.Server.StoreLog
     logDeleteFile,
     logBlockFile,
     logAckFile,
+    serverFileName,
   )
 where
 
@@ -24,6 +25,7 @@ import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import qualified Data.ByteString.Base64.URL as B64
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Composition ((.:), (.::.))
@@ -35,10 +37,11 @@ import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (BlockingInfo, RcvPublicAuthKey, RecipientId, SenderId)
+import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (bshow)
+import System.FilePath (takeFileName)
 import System.IO
 
 data FileStoreLogRecord
@@ -99,6 +102,9 @@ logBlockFile s fId = logFileStoreRecord s . BlockFile fId
 logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
 
+serverFileName :: SenderId -> FilePath
+serverFileName = B.unpack . B64.encode . unEntityId
+
 readWriteFileStore :: FilePath -> STMFileStore -> IO (StoreLog 'WriteMode)
 readWriteFileStore = readWriteStoreLog readFileStore writeFileStore
 
@@ -115,7 +121,9 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
       AddFile sId file createdAt expiresAt status
         | size file > 0 -> addFile st sId file createdAt expiresAt status
         | otherwise -> pure $ Left SIZE
-      PutFile qId path -> setFilePath st qId path
+      PutFile qId path
+        | takeFileName path == serverFileName qId -> setFilePath st qId path
+        | otherwise -> pure $ Left AUTH
       AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
       DeleteFile sId -> deleteFile st sId
       BlockFile sId info -> blockFile st sId info True

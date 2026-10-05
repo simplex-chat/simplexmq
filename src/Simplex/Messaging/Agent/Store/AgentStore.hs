@@ -76,6 +76,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getExpiredServiceConns,
     deleteExpiredServiceRequests,
     getDeletedWaitingDeliveryConnIds,
+    getConnRatchetSync,
     setConnRatchetSync,
     addProcessedRatchetKeyHash,
     checkRatchetKeyHashExists,
@@ -1594,12 +1595,16 @@ getRatchet_ q db connId =
   where
     ratchet = maybe (Left SERatchetNotFound) Right . fromOnly
 
-getSkippedMsgKeys :: DB.Connection -> ConnId -> IO SkippedMsgKeys
-getSkippedMsgKeys db connId =
-  skipped <$> DB.query db "SELECT header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ?" (Only connId)
+getSkippedMsgKeys :: DB.Connection -> ConnId -> Int -> IO SkippedMsgKeys
+getSkippedMsgKeys db connId maxKeys = do
+  (keys, oldKeys) <- splitAt maxKeys <$> DB.query db "SELECT skipped_message_id, header_key, msg_n, msg_key FROM skipped_messages WHERE conn_id = ? ORDER BY skipped_message_id DESC LIMIT ?" (connId, maxKeys + 1)
+  case oldKeys of
+    (skippedMsgId :: Int64, _, _, _) : _ -> DB.execute db "DELETE FROM skipped_messages WHERE conn_id = ? AND skipped_message_id <= ?" (connId, skippedMsgId)
+    [] -> pure ()
+  pure $ skipped keys
   where
     skipped = foldl' addSkippedKey M.empty
-    addSkippedKey smks (hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
+    addSkippedKey smks (_, hk, msgN, mk) = M.alter (Just . addMsgKey) hk smks
       where
         addMsgKey = maybe (M.singleton msgN mk) (M.insert msgN mk)
 
@@ -2793,6 +2798,11 @@ getDeletedWaitingDeliveryConnIds :: DB.Connection -> IO [ConnId]
 getDeletedWaitingDeliveryConnIds db =
   map fromOnly <$> DB.query_ db "SELECT conn_id FROM connections WHERE deleted_at_wait_delivery IS NOT NULL"
 
+getConnRatchetSync :: DB.Connection -> ConnId -> IO (Either StoreError RatchetSyncState)
+getConnRatchetSync db connId =
+  firstRow fromOnly SEConnNotFound $
+    DB.query db "SELECT ratchet_sync_state FROM connections WHERE conn_id = ?" (Only connId)
+
 setConnRatchetSync :: DB.Connection -> ConnId -> RatchetSyncState -> IO ()
 setConnRatchetSync db connId ratchetSyncState =
   DB.execute db "UPDATE connections SET ratchet_sync_state = ? WHERE conn_id = ?" (ratchetSyncState, connId)
@@ -2814,21 +2824,35 @@ checkRatchetKeyHashExists db connId hash =
       (connId, Binary hash)
 
 deleteRatchetKeyHashesExpired :: DB.Connection -> NominalDiffTime -> Int -> IO ()
-deleteRatchetKeyHashesExpired db ttl limit = do
+deleteRatchetKeyHashesExpired db ttl maxConnHashes = do
   cutoffTs <- addUTCTime (-ttl) <$> getCurrentTime
+#if defined(dbPostgres)
   DB.execute
     db
-    [sql|
-      DELETE FROM processed_ratchet_key_hashes
-      WHERE processed_ratchet_key_hash_id IN (
-        SELECT processed_ratchet_key_hash_id
-        FROM processed_ratchet_key_hashes
-        WHERE created_at < ?
-        ORDER BY created_at ASC
-        LIMIT ?
-      )
-    |]
-    (cutoffTs, limit)
+    ("DELETE FROM processed_ratchet_key_hashes h USING (" <> maxExcessIdsQuery <> ") e WHERE h.conn_id = e.conn_id AND h.processed_ratchet_key_hash_id <= e.max_excess_id AND h.created_at < ?")
+    (maxConnHashes, maxConnHashes, cutoffTs)
+#else
+  maxExcessIds <- DB.query db maxExcessIdsQuery (maxConnHashes, maxConnHashes)
+  DB.executeMany
+    db
+    "DELETE FROM processed_ratchet_key_hashes WHERE conn_id = ? AND processed_ratchet_key_hash_id <= ? AND created_at < ?"
+    (map (\(connId :: ConnId, maxExcessId :: Int64) -> (connId, maxExcessId, cutoffTs)) maxExcessIds)
+#endif
+  where
+    maxExcessIdsQuery :: Query
+    maxExcessIdsQuery =
+      [sql|
+        SELECT conn_id, (
+          SELECT processed_ratchet_key_hash_id
+          FROM processed_ratchet_key_hashes
+          WHERE conn_id = c.conn_id
+          ORDER BY processed_ratchet_key_hash_id DESC
+          LIMIT 1 OFFSET ?
+        ) AS max_excess_id
+        FROM processed_ratchet_key_hashes c
+        GROUP BY conn_id
+        HAVING COUNT(*) > ?
+      |]
 
 -- | returns all connection queues, the first queue is the primary one
 getRcvQueuesByConnId_ :: DB.Connection -> ConnId -> IO (Maybe (NonEmpty RcvQueue))
