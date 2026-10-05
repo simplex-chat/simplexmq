@@ -72,9 +72,10 @@ newtype Secp256k1Context = Secp256k1Context (Ptr Ctx)
 data PubKeyFormat = Compressed | Uncompressed
   deriving (Eq, Show)
 
--- | @r || s@, 64 bytes big-endian, and the recovery id, EIP-1559's @yParity@.
+-- | @r@ and @s@, 32 bytes big-endian each, and the recovery id, EIP-1559's @yParity@.
 data RecoverableSignature = RecoverableSignature
-  { rsCompact :: ByteString,
+  { rsR :: ByteString,
+    rsS :: ByteString,
     rsRecId :: Word8
   }
   deriving (Eq, Show)
@@ -176,15 +177,18 @@ privateKeyTweakAdd (Secp256k1PrivateKey sk) tweak
         pure $ if rc == 1 then Just (Secp256k1PrivateKey sk') else Nothing
 
 -- | Signs a 32-byte digest, deterministically (RFC 6979) and always low-@s@, as EIP-2 requires.
-signRecoverable :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ByteString -> IO RecoverableSignature
+signRecoverable :: TVar ChaChaDRG -> Secp256k1PrivateKey -> ByteString -> IO (Either String RecoverableSignature)
 signRecoverable g (Secp256k1PrivateKey sk) digest
-  | B.length digest /= digestSize = throwIO $ userError $ "digest: expected 32 bytes, got " <> show (B.length digest)
+  | B.length digest /= digestSize = pure $ Left $ "digest: expected 32 bytes, got " <> show (B.length digest)
   | otherwise = withContext g $ \(Secp256k1Context ctx) ->
       allocaBytes recSigInternalSize $ \sigPtr -> do
         rc <- BA.withByteArray digest $ \msgPtr -> BA.withByteArray sk $ \skPtr -> c_ecdsa_sign_recoverable ctx sigPtr msgPtr skPtr nullPtr nullPtr
-        when (rc /= 1) $ throwIO (userError "secp256k1_ecdsa_sign_recoverable failed on a validated key")
-        (recId, compact) <- BA.allocRet compactSigSize $ \outPtr ->
-          alloca $ \recIdPtr -> do
-            void $ c_ecdsa_recoverable_signature_serialize_compact ctx outPtr recIdPtr sigPtr
-            peek recIdPtr
-        pure RecoverableSignature {rsCompact = compact, rsRecId = fromIntegral recId}
+        if rc /= 1
+          then pure $ Left "secp256k1_ecdsa_sign_recoverable failed"
+          else do
+            (recId, compact) <- BA.allocRet compactSigSize $ \outPtr ->
+              alloca $ \recIdPtr -> do
+                void $ c_ecdsa_recoverable_signature_serialize_compact ctx outPtr recIdPtr sigPtr
+                peek recIdPtr
+            let (r, s) = B.splitAt (compactSigSize `div` 2) compact
+            pure $ Right RecoverableSignature {rsR = r, rsS = s, rsRecId = fromIntegral recId}

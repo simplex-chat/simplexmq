@@ -214,7 +214,8 @@ c-sources:    cbits/libsecp256k1/src/{secp256k1,precomputed_ecmult,precomputed_e
 No `include-dirs` are needed: every libsecp256k1 include is quoted and relative
 to the including file. The embedded wordlist makes `file-embed` a library
 dependency; before this change only the `smp-server` and `xftp-server`
-executables and the test suite used it.
+executables and the test suite used it. `wide-word` provides `Word128` and
+`Word256` for transaction fields, each as narrow as both geth and reth accept.
 
 Built with one `-D` of our own, `ENABLE_MODULE_RECOVERY=1`, for recoverable
 signatures. The table-size settings (`ECMULT_WINDOW_SIZE`, `COMB_BLOCKS`,
@@ -273,7 +274,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 105 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 104 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:

@@ -4,14 +4,14 @@
 module Simplex.Messaging.Eth.RLP
   ( RLPItem (..),
     rlpEncode,
-    rlpNatural,
+    scalarItem,
   )
 where
 
-import Crypto.Number.Serialize (i2osp)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
-import Numeric.Natural (Natural)
+import Data.Word (Word32)
+import Simplex.Messaging.Encoding (smpEncode)
 
 data RLPItem = RLPBytes ByteString | RLPList [RLPItem]
 
@@ -27,9 +27,8 @@ rlpEncode = \case
       | otherwise = B.cons (offset + 55 + fromIntegral (B.length lenBytes)) lenBytes <> payload
       where
         len = B.length payload
-        lenBytes = i2osp $ toInteger len
+        lenBytes = B.dropWhile (== 0) $ smpEncode (fromIntegral len :: Word32)
 
 -- | Big-endian with no leading zeros, and zero as the empty string.
-rlpNatural :: Natural -> RLPItem
-rlpNatural 0 = RLPBytes B.empty
-rlpNatural n = RLPBytes $ i2osp $ toInteger n
+scalarItem :: ByteString -> RLPItem
+scalarItem = RLPBytes . B.dropWhile (== 0)
