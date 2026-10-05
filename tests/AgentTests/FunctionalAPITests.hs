@@ -133,9 +133,7 @@ import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscri
 import qualified Database.PostgreSQL.Simple as PSQL
 import qualified Simplex.Messaging.Agent.Store.Postgres as Postgres
 import qualified Simplex.Messaging.Agent.Store.Postgres.Common as Postgres
-import Simplex.Messaging.Server.MsgStore.Journal (JournalQueue)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresQueue)
-import Simplex.Messaging.Server.MsgStore.Types (QSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations
 import Simplex.Messaging.Server.QueueStore.Types (QueueStoreClass (..))
@@ -671,8 +669,8 @@ testProxyMatrixWithPrev ps@(t, msType@(ASType qs _ms)) runTest = do
   it "2 servers, via proxy, prev clients, curr servers" $ withSmpServersProxy2 ps $ withAgentClientsServers2 (agentCfgVPrevPQ, initAgentServersProxy) (agentCfgVPrevPQ, initAgentServersProxy2) $ runTest True False
   where
     prev cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {smpServerVRange = prevRange supportedServerSMPRelayVRange}
-    withSmpServers2Prev a = withServers2 (prev $ cfgMS msType) (prev $ cfgJ2QS qs) a
-    withSmpServersProxy2Prev a = withServers2 (prev $ proxyCfgMS msType) (prev $ proxyCfgJ2QS qs) a
+    withSmpServers2Prev a = withServers2 (prev $ cfgMS msType) (prev $ cfgS2QS qs) a
+    withSmpServersProxy2Prev a = withServers2 (prev $ proxyCfgMS msType) (prev $ proxyCfgS2QS qs) a
     withServers2 cfg1 cfg2 a =
       withSmpServerConfigOn t cfg1 testPort $ \_ -> withSmpServerConfigOn t cfg2 testPort2 $ \_ -> a
 
@@ -1554,7 +1552,7 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
   bob <- getSMPAgentClient' 2 agentCfg initAgentServersSrv2 testDB2
   withSmpServerStoreLogOn ps testPort $ \_ -> do
     (aliceId, bobId, confId) <-
-      withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ -> do
+      withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
         runRight $ do
           (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
           (aliceId, sqSecured) <- joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
@@ -1576,7 +1574,7 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
     alice2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
     runRight_ $ subscribeConnection alice2 bobId
     threadDelay 500000
-    withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ -> do
+    withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
       runRight $ do
         ("", "", UP _ _) <- nGet bob
         get alice2 ##> ("", bobId, CON)
@@ -1739,7 +1737,7 @@ withServer1 :: (ASrvTransport, AStoreType) -> IO a -> IO a
 withServer1 ps = withSmpServerStoreLogOn ps testPort . const
 
 withServer2 :: (ASrvTransport, AStoreType) -> IO a -> IO a
-withServer2 (t, ASType qsType _) = withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 . const
+withServer2 (t, ASType qsType _) = withSmpServerConfigOn t (cfgS2QS qsType) testPort2 . const
 
 testInvitationShortLink :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
 testInvitationShortLink viaProxy a b =
@@ -1987,18 +1985,11 @@ testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
 #endif
   () <- case testServerStoreConfig msType of
     ASSCfg _ _ (SSCMemory sp_) -> mapM_ (\StorePaths {storeLogFile} -> updateStoreLog storeLogFile) sp_
-    ASSCfg _ _ SSCMemoryJournal {storeLogFile} -> updateStoreLog storeLogFile
 #if defined(dbServerPostgres)
-    ASSCfg _ _ SSCDatabaseJournal {storeCfg} -> do
-      st :: PostgresQueueStore (JournalQueue 'QSPostgres) <- newQueueStore @(JournalQueue 'QSPostgres) (storeCfg, True)
-      updateDbStore st
-      closeQueueStore @(JournalQueue 'QSPostgres) st
     ASSCfg _ _ (SSCDatabase storeCfg) -> do
-      st :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue (storeCfg, False)
+      st :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
       updateDbStore st
       closeQueueStore @PostgresQueue st
-#else
-    ASSCfg _ _ SSCDatabaseJournal {} -> error "no dbServerPostgres flag"
 #endif
 
   withSmpServer ps $ do
@@ -2446,7 +2437,7 @@ testExpireMessageQuota (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ 
     ackMessage b' aId 4 Nothing
   disposeAgentClient a
   where
-    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
 
 testExpireManyMessagesQuota :: (ASrvTransport, AStoreType) -> IO ()
 testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
@@ -2485,7 +2476,7 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort 
     ackMessage b' aId 4 Nothing
   disposeAgentClient a
   where
-    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
 
 testJoinFullContactAsync :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testJoinFullContactAsync (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
@@ -2504,7 +2495,7 @@ testJoinFullContactAsync (t, msType) = withSmpServerConfigOn t cfg' testPort $ \
       ("", _, A.REQ _ _ _ "bob's connInfo" _ _) <- get alice
       pure ()
   where
-    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
 
 testJoinFullContactAsyncExpire :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testJoinFullContactAsyncExpire (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
@@ -2518,7 +2509,7 @@ testJoinFullContactAsyncExpire (t, msType) = withSmpServerConfigOn t cfg' testPo
     noMessages bob "joining should be retried until quota exceeded timeout"
     get bob =##> \case ("2", c, ERR (SMP _ QUOTA)) -> c == aliceId; _ -> False
   where
-    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1, maxJournalMsgCount = 2}
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
 
 fillContactAddress :: HasCallStack => IO (ConnId, ConnectionRequestUri 'CMContact)
 fillContactAddress = do
@@ -2985,7 +2976,7 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn ps testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res
@@ -3492,7 +3483,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
         ConnectionStats {rcvQueuesInfo = [], sndQueuesInfo = [SndQueueInfo {}]} <- getConnectionServers b aId
         pure (aId, bId)
       nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
-      withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ -> do
+      withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
         confId <- withSmpServerStoreLogOn ps testPort $ \_ -> do
           -- both servers need to be online for connection to progress because of SKEY
           get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && sqSecured; _ -> False
@@ -3625,7 +3616,7 @@ fastSwitchComplete a bId b aId = do
 testFastSwitchDeadOldServer :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
   let bServers = initAgentServers {smp = userServers [testSMPServer2]}
-  withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ ->
+  withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ ->
     withAgent 1 agentCfg initAgentServers testDB $ \a ->
       withAgent 2 agentCfg bServers testDB2 $ \b -> do
         (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
@@ -4119,7 +4110,7 @@ testDeliveryReceiptsConcurrent (t, msType) =
       liftIO $ noMessages a "nothing else should be delivered to alice"
       liftIO $ noMessages b "nothing else should be delivered to bob"
   where
-    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 256, maxJournalMsgCount = 512}
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 256}
     runClient :: String -> AgentClient -> ConnId -> IO ()
     runClient _cName client connId = do
       concurrently_ send receive

@@ -20,7 +20,7 @@ import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ASubscriberParty (..), ErrorType, RecipientId, SParty (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..), withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow, ($>>=))
@@ -65,7 +65,7 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
         printError :: String -> IO ()
         printError e = B.putStrLn $ "Error parsing log: " <> B.pack e <> " - " <> s
         withQueue :: forall a. RecipientId -> T.Text -> (q -> IO (Either ErrorType a)) -> IO ()
-        withQueue qId op a = (getQueue_ st (\_ -> mkQ) SRecipient qId $>>= a) >>= qError qId op
+        withQueue qId op a = (getQueue_ st mkQ SRecipient qId $>>= a) >>= qError qId op
         qError qId op = \case
           Left e -> logError $ logPfx qId op <> tshow e
           Right _ -> pure ()

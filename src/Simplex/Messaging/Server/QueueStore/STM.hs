@@ -18,6 +18,7 @@ module Simplex.Messaging.Server.QueueStore.STM
   ( STMQueueStore (..),
     STMService (..),
     foldRcvServiceQueues,
+    withLoadedQueues,
     setStoreLog,
     withLog',
     readQueueRecIO,
@@ -47,7 +48,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (anyM, ifM, tshow, unlessM, ($>>), ($>>=), (<$$), (<$$>))
+import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.IO
 import UnliftIO.STM
 
@@ -91,8 +92,6 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     atomically $ TM.clear senders
     atomically $ TM.clear notifiers
 
-  loadedQueues = queues
-  {-# INLINE loadedQueues #-}
   compactQueues _ = pure 0
   {-# INLINE compactQueues #-}
 
@@ -119,10 +118,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
     sq <- mkQ rId qr
-    add sq >>= \case
-      Right () -> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
-      -- the lock is kept when another queue has the same recipient ID
-      Left e -> Left e <$ unlessM (TM.memberIO rId queues) (removeQueueLock sq)
+    add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
     where
       STMQueueStore {queues, senders, notifiers, links} = st
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
@@ -137,7 +133,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
       hasLink = maybe (pure False) (\(lnkId, _) -> TM.member lnkId links) queueData
 
-  getQueue_ :: QueueParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
@@ -147,7 +143,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       STMQueueStore {queues, senders, notifiers, links} = st
 
-  getQueues_ :: BatchParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueues_ :: BatchParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueues_ st _ party qIds = case party of
     SRecipient -> do
       qs <- readTVarIO queues
@@ -382,6 +378,11 @@ foldRcvServiceQueues st serviceId f acc =
         >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc . fst
   where
     get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
+
+withLoadedQueues :: Monoid a => STMQueueStore q -> (q -> IO a) -> IO a
+withLoadedQueues st f = readTVarIO (queues st) >>= foldM run mempty
+  where
+    run !acc = fmap (acc <>) . f
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

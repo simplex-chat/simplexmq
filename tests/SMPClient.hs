@@ -33,7 +33,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
@@ -51,6 +50,7 @@ import Util
 
 #if defined(dbServerPostgres)
 import Database.PostgreSQL.Simple (defaultConnectInfo)
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -122,12 +122,6 @@ testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
 
 testStoreMsgsFile2 :: FilePath
 testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
-
-testStoreMsgsDir :: FilePath
-testStoreMsgsDir = "tests/tmp/messages"
-
-testStoreMsgsDir2 :: FilePath
-testStoreMsgsDir2 = "tests/tmp/messages.2"
 
 testStoreNtfsFile :: FilePath
 testStoreNtfsFile = "tests/tmp/smp-server-ntfs.log"
@@ -212,24 +206,35 @@ ntfTestServerCredentials =
     }
 
 cfg :: AServerConfig
-cfg = cfgMS (ASType SQSMemory SMSJournal)
+cfg = cfgMS (ASType SQSMemory SMSMemory)
 
-cfgJ2 :: AServerConfig
-cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
+cfgS2 :: AServerConfig
+cfgS2 = memoryCfg cfg testStoreLogFile2 testStoreMsgsFile2
 
-cfgJ2QS :: SQSType s -> AServerConfig
-cfgJ2QS = \case
-  SQSMemory -> journalCfg (cfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
-  SQSPostgres -> journalCfgDB (cfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
+cfgS2QS :: SQSType s -> AServerConfig
+cfgS2QS = \case
+  SQSMemory -> memoryCfg (cfgMS $ ASType SQSMemory SMSMemory) testStoreLogFile2 testStoreMsgsFile2
+  SQSPostgres -> databaseCfg (cfgMS postgresStoreType) testStoreDBOpts2
 
-journalCfg :: AServerConfig -> FilePath -> FilePath -> AServerConfig
-journalCfg (ASrvCfg _ _ cfg') storeLogFile storeMsgsPath =
-  ASrvCfg SQSMemory SMSJournal cfg' {serverStoreCfg = SSCMemoryJournal {storeLogFile, storeMsgsPath}}
+memoryCfg :: AServerConfig -> FilePath -> FilePath -> AServerConfig
+memoryCfg (ASrvCfg _ _ cfg') storeLogFile storeMsgsFile =
+  ASrvCfg SQSMemory SMSMemory cfg' {serverStoreCfg = SSCMemory $ Just StorePaths {storeLogFile, storeMsgsFile = Just storeMsgsFile}}
 
-journalCfgDB :: AServerConfig -> DBOpts -> FilePath -> AServerConfig
-journalCfgDB (ASrvCfg _ _ cfg') dbOpts storeMsgsPath' =
+databaseCfg :: AServerConfig -> DBOpts -> AServerConfig
+#if defined(dbServerPostgres)
+databaseCfg (ASrvCfg _ _ cfg') dbOpts =
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCYesUp, deletedTTL = 86400}
-   in ASrvCfg SQSPostgres SMSJournal cfg' {serverStoreCfg = SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
+   in ASrvCfg SQSPostgres SMSPostgres cfg' {serverStoreCfg = SSCDatabase storeCfg}
+#else
+databaseCfg _ _ = error "no dbServerPostgres flag"
+#endif
+
+postgresStoreType :: AStoreType
+#if defined(dbServerPostgres)
+postgresStoreType = ASType SQSPostgres SMSPostgres
+#else
+postgresStoreType = error "no dbServerPostgres flag"
+#endif
 
 cfgMS :: AStoreType -> AServerConfig
 cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
@@ -238,8 +243,6 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       smpHandshakeTimeout = 60000000,
       tbqSize = 4,
       msgQueueQuota = 4,
-      maxJournalMsgCount = 5,
-      maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
       serverStoreCfg,
@@ -252,7 +255,6 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       messageExpiration = Just defaultMessageExpiration,
       expireMessagesOnStart = True,
       expireMessagesOnSend = False,
-      idleQueueInterval = defaultIdleQueueInterval,
       notificationExpiration = defaultNtfExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
@@ -292,20 +294,21 @@ testServerStoreConfig :: AStoreType -> AServerStoreCfg
 testServerStoreConfig = serverStoreConfig_ False
 
 serverStoreConfig_ :: Bool -> AStoreType -> AServerStoreCfg
+#if defined(dbServerPostgres)
 serverStoreConfig_ useDbStoreLog = \case
+#else
+serverStoreConfig_ _ = \case
+#endif
   ASType SQSMemory SMSMemory ->
     ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
-  ASType SQSMemory SMSJournal ->
-    ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
-  ASType SQSPostgres SMSJournal ->
-    ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
 #if defined(dbServerPostgres)
   ASType SQSPostgres SMSPostgres ->
-    ASSCfg SQSPostgres SMSPostgres $ SSCDatabase storeCfg
+    let dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
+        storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
+     in ASSCfg SQSPostgres SMSPostgres $ SSCDatabase storeCfg
+#else
+  ASType SQSPostgres _ -> error "no dbServerPostgres flag"
 #endif
-  where
-    dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
-    storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
 
 cfgVPrev :: AStoreType -> AServerConfig
 cfgVPrev msType = updateCfg (cfgMS msType) $ \cfg' -> cfg' {smpServerVRange = prevRange $ smpServerVRange cfg'}
@@ -320,7 +323,7 @@ nextVersion :: Version v -> Version v
 nextVersion (Version v) = Version (v + 1)
 
 proxyCfg :: AServerConfig
-proxyCfg = proxyCfgMS (ASType SQSMemory SMSJournal)
+proxyCfg = proxyCfgMS (ASType SQSMemory SMSMemory)
 
 proxyCfgMS :: AStoreType -> AServerConfig
 proxyCfgMS msType =
@@ -331,13 +334,13 @@ proxyCfgMS msType =
             smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
           }
 
-proxyCfgJ2 :: AServerConfig
-proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
+proxyCfgS2 :: AServerConfig
+proxyCfgS2 = memoryCfg proxyCfg testStoreLogFile2 testStoreMsgsFile2
 
-proxyCfgJ2QS :: SQSType qs -> AServerConfig
-proxyCfgJ2QS = \case
-  SQSMemory -> journalCfg (proxyCfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
-  SQSPostgres -> journalCfgDB (proxyCfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
+proxyCfgS2QS :: SQSType qs -> AServerConfig
+proxyCfgS2QS = \case
+  SQSMemory -> memoryCfg (proxyCfgMS $ ASType SQSMemory SMSMemory) testStoreLogFile2 testStoreMsgsFile2
+  SQSPostgres -> databaseCfg (proxyCfgMS postgresStoreType) testStoreDBOpts2
 
 -- Proxy config with a short relay-connection timeout, to bound how long a failing
 -- proxy->relay connection attempt blocks in the relay reconnection tests.
@@ -409,10 +412,10 @@ withSmpServerProxy :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO 
 withSmpServerProxy (t, msType) = withSmpServerConfigOn t (proxyCfgMS msType) testPort . const
 
 withSmpServers2 :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO a
-withSmpServers2 ps@(t, ASType qs _ms) = withSmpServer ps . withSmpServerConfigOn t (cfgJ2QS qs) testPort2 . const
+withSmpServers2 ps@(t, ASType qs _ms) = withSmpServer ps . withSmpServerConfigOn t (cfgS2QS qs) testPort2 . const
 
 withSmpServersProxy2 :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO a
-withSmpServersProxy2 ps@(t, ASType qs _ms) = withSmpServerProxy ps . withSmpServerConfigOn t (proxyCfgJ2QS qs) testPort2 . const
+withSmpServersProxy2 ps@(t, ASType qs _ms) = withSmpServerProxy ps . withSmpServerConfigOn t (proxyCfgS2QS qs) testPort2 . const
 
 runSmpTest :: forall c a. (HasCallStack, Transport c) => AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest msType test = withSmpServerConfigOn (transport @c) (cfgMS msType) testPort $ \_ -> testSMPClient test
@@ -433,7 +436,7 @@ smpServerTest ::
   TProxy c 'TServer ->
   (Maybe TAuthorizations, ByteString, ByteString, smp) ->
   IO (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg)
-smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >> tGet' h
+smpServerTest _ t = runSmpTest (ASType SQSMemory SMSMemory) $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do

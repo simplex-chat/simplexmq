@@ -28,7 +28,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types (ClientNotice (..))
 import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
-import Simplex.Messaging.Server.MsgStore.Journal
+import Simplex.Messaging.Server.MsgStore.STM (STMMsgStore (..), STMStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
@@ -165,10 +165,10 @@ testSMPStoreLog testSuite tests =
     closeStoreLog l
     replicateM_ 3 $ testReadWrite t
 #if defined(dbServerPostgres)
-    (sCnt, qCnt) <- importStoreLogToDatabase "tests/tmp/" testStoreLogFile testStoreDBOpts
+    (sCnt, qCnt) <- importStoreLogToDatabase testStoreLogFile testStoreDBOpts
     fromIntegral (sCnt + qCnt) `shouldBe` length (compacted t)
     imported <- B.readFile $ testStoreLogFile <> ".bak"
-    (sCnt', qCnt') <- exportDatabaseToStoreLog "tests/tmp/" testStoreDBOpts testStoreLogFile
+    (sCnt', qCnt') <- exportDatabaseToStoreLog testStoreDBOpts testStoreLogFile
     sCnt' `shouldBe` fromIntegral sCnt
     qCnt' `shouldBe` fromIntegral qCnt
     exported <- B.readFile testStoreLogFile
@@ -176,14 +176,14 @@ testSMPStoreLog testSuite tests =
 #endif
   where
     testReadWrite SLTC {compacted, state} = do
-      st <- newMsgStore $ testJournalStoreCfg MQStoreCfg
-      l <- readWriteQueueStore True (mkQueue st True) testStoreLogFile $ stmQueueStore st
+      st <- newMsgStore STMStoreConfig {storePath = Nothing, quota = 3}
+      l <- readWriteQueueStore True (mkQueue st) testStoreLogFile $ queueStore st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
-    storeState :: JournalMsgStore 'QSMemory -> IO (M.Map RecipientId QueueRec)
-    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ stmQueueStore st) >>= mapM (readTVarIO . queueRec))
+    storeState :: STMMsgStore -> IO (M.Map RecipientId QueueRec)
+    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ queueStore st) >>= mapM (readTVarIO . queueRec))
 
 type FileRecState = (FileInfo, RoundedFileTime, Maybe RoundedFileTime, ServerEntityStatus)
 

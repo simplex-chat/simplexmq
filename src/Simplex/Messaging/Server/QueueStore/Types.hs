@@ -1,5 +1,4 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -9,37 +8,29 @@ module Simplex.Messaging.Server.QueueStore.Types
   ( StoreQueueClass (..),
     QueueStoreClass (..),
     EntityCounts (..),
-    withLoadedQueues,
   ) where
 
 import Control.Concurrent.STM
-import Control.Monad
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
-import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.SystemTime
-import Simplex.Messaging.TMap (TMap)
 
 class StoreQueueClass q where
   recipientId :: q -> RecipientId
   queueRec :: q -> TVar (Maybe QueueRec)
-  withQueueLock :: q -> Text -> IO a -> IO a
-  -- must only be called for deleted or not added queues
-  removeQueueLock :: q -> IO ()
 
 class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s
   newQueueStore :: QueueStoreCfg s -> IO s
   closeQueueStore :: s -> IO ()
   getEntityCounts :: s -> IO EntityCounts
-  loadedQueues :: s -> TMap RecipientId q
   compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  getQueue_ :: QueueParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
-  getQueues_ :: BatchParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueue_ :: QueueParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueues_ :: BatchParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueueLinkData :: s -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   addQueueLinkData :: s -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
   deleteQueueLinkData :: s -> q -> IO (Either ErrorType ())
@@ -66,8 +57,3 @@ data EntityCounts = EntityCounts
     rcvServiceQueuesCount :: Int,
     ntfServiceQueuesCount :: Int
   }
-
-withLoadedQueues :: (Monoid a, QueueStoreClass q s) => s -> (q -> IO a) -> IO a
-withLoadedQueues st f = readTVarIO (loadedQueues st) >>= foldM run mempty
-  where
-    run !acc = fmap (acc <>) . f
