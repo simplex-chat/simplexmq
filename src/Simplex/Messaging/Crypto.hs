@@ -1395,10 +1395,11 @@ class CbNonceI n where
 
 newtype CbNonce = CryptoBoxNonce ByteString
   deriving (Eq, Show)
-  deriving newtype (FromField)
 
 instance CbNonceI CbNonce where
   unCbNonce (CryptoBoxNonce s) = s
+
+instance FromField CbNonce where fromField = blobFieldDecoder cbNonce
 
 instance ToField CbNonce where toField (CryptoBoxNonce s) = toField $ Binary s
 

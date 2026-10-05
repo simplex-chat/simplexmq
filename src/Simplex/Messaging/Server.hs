@@ -1997,9 +1997,8 @@ client
                       when (isJust (queueData qr) && isSecuredMsgQueue qr) $ void $ liftIO $
                         deleteQueueLinkData (queueStore ms) q
                       ServerConfig {messageExpiration, expireMessagesOnSend, msgIdBytes} <- asks config
-                      msgId_ <- mkMsgId <$> randomId' msgIdBytes
+                      msgId <- atomically . randomMsgId msgIdBytes =<< asks random
                       msg_ <- liftIO $ runExceptT $ do
-                        msgId <- liftEitherWith (const INTERNAL) msgId_
                         when expireMessagesOnSend $ mapM_ (expireMessages stats) messageExpiration
                         msg <- liftIO $ mkMessage msgId body
                         writeMsg ms q True msg

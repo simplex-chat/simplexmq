@@ -148,6 +148,7 @@ module Simplex.Messaging.Protocol
     MsgId (unMsgId),
     mkMsgId,
     unsafeMsgId,
+    randomMsgId,
     MsgBody,
     IdsHash (..),
     ServiceSub (..),
@@ -235,8 +236,10 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Concurrent.STM (STM, TVar)
 import Control.Exception (Exception, SomeException, displayException, fromException)
 import Control.Monad.Except
+import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
@@ -1526,6 +1529,9 @@ mkMsgId s
 
 unsafeMsgId :: ByteString -> MsgId
 unsafeMsgId s = either error id $ mkMsgId s
+
+randomMsgId :: Int -> TVar ChaChaDRG -> STM MsgId
+randomMsgId n = fmap MsgId . C.randomBytes (max 24 n)
 
 -- | SMP message body.
 type MsgBody = ByteString
