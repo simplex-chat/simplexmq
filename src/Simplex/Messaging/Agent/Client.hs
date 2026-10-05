@@ -271,7 +271,7 @@ import Simplex.Messaging.Protocol
     ErrorType,
     NetworkError (..),
     MsgFlags (..),
-    MsgId (..),
+    MsgId,
     NameResponse,
     NtfServer,
     NtfServerWithAuth,
@@ -2084,7 +2084,7 @@ disableQueuesNtfs c = sendTSessionBatches "NDEL" (mkSMPTSession . snd) disableQu
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
-  withSMPClient c NRMBackground rq ("ACK:" <> logSecret' (unMsgId msgId)) $ \smp ->
+  withSMPClient c NRMBackground rq ("ACK:" <> logSecret' (SMP.unMsgId msgId)) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 hasGetLock :: SomeRcvQueue q => AgentClient -> q -> IO Bool

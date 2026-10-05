@@ -259,7 +259,7 @@ testNtfTokenRepeatRegistration apns = do
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
       getMockNotification apns tkn
     _ <- ntfData' .-> "verification"
-    _ <- either error id . C.cbNonce <$> ntfData' .-> "nonce"
+    _ <- C.cbNonce <$> ntfData' .-> "nonce"
     -- can still use the first verification code, it is the same after decryption
     verifyNtfToken a tkn nonce verification
     NTActive <- checkNtfToken a tkn

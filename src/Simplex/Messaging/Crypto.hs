@@ -158,6 +158,7 @@ module Simplex.Messaging.Crypto
     randomCbNonce,
     reverseNonce,
     xorNonce,
+    toCbNonce,
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
@@ -1341,7 +1342,7 @@ cryptoBox secret nonce s = BA.convert tag <> c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: CbNonceI n => DhSecret X25519 -> n -> ByteString -> Either CryptoError ByteString
-cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret . CryptoBoxNonce . unCbNonce
+cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret . toCbNonce
 {-# INLINE cbDecrypt #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
@@ -1437,6 +1438,9 @@ xorNonce :: CbNonceI n => ByteString -> n -> CbNonce
 xorNonce s nonce = CryptoBoxNonce $ packZipWith xor s n <> B.drop (B.length s) n
   where
     n = unCbNonce nonce
+
+toCbNonce :: CbNonceI n => n -> CbNonce
+toCbNonce = CryptoBoxNonce . unCbNonce
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce

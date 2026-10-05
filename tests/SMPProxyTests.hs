@@ -21,7 +21,6 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
@@ -487,7 +486,7 @@ testFwdCorrIdSize =
         (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
         g <- C.newRandom
         (cmdPubKey, _) <- atomically $ C.generateKeyPair g
-        forM_ (["", "2", B.replicate 25 '3'] :: [ByteString]) $ \corrId -> do
+        forM_ (["", "2", "3333333333333333333333333"] :: [ByteString]) $ \corrId -> do
           (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
           reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
 
