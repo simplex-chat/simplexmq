@@ -1547,7 +1547,7 @@ startJoinInvitationDR c userId ConnData {connId} DRInvitation {ratchetState, rep
   (q, _) <- lift $ newSndQueue userId connId qInfo Nothing
   withStore c $ \db -> runExceptT $ do
     liftIO $ lockConnForUpdate db connId
-    liftIO $ unlessM (isRight <$> getRatchet db connId) $ createRatchet db connId ratchetState
+    liftIO $ createRatchetIfNotExists db connId ratchetState
     ExceptT $ updateNewConnSnd db connId q
 
 connRequestAgentVersion :: AgentClient -> ConnectionRequestUri c -> IO (Maybe VersionSMPA)
