@@ -247,7 +247,7 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE commands(
-  command_id INTEGER PRIMARY KEY,
+  command_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   host TEXT,
   port TEXT,
@@ -261,6 +261,7 @@ CREATE TABLE commands(
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) STRICT;
+CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE snd_message_deliveries(
   snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -269,7 +270,6 @@ CREATE TABLE snd_message_deliveries(
   failed INTEGER DEFAULT 0,
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
-CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE users(
   user_id INTEGER PRIMARY KEY AUTOINCREMENT
   ,

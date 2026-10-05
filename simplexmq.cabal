@@ -250,6 +250,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr_rpc
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260823_snd_files_entitlement
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260919_ratchet_verify_codes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260928_commands_autoincrement
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:
