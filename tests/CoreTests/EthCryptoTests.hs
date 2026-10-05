@@ -32,6 +32,9 @@ import Simplex.Messaging.Crypto.BIP44
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
+import Simplex.Messaging.Eth.RLP
+import Simplex.Messaging.Eth.Transaction
+import Simplex.Messaging.Util ((<$$>))
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -44,6 +47,9 @@ ethCryptoTests = do
   describe "BIP-32" $ bip32Tests g
   describe "BIP-44 derivation" $ derivationTests g
   describe "EIP-55 addresses" eip55Tests
+  describe "RLP" rlpTests
+  describe "recoverable signing" $ signingTests g
+  describe "EIP-1559 transactions" $ transactionTests g
 
 -- helpers
 
@@ -307,3 +313,58 @@ eip55Tests = do
         "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
         "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
       ]
+
+rlpTests :: Spec
+rlpTests = do
+  forM_ rlpVectors $ \(name, item, expected) ->
+    it ("encodes " <> name) $ toHex (rlpEncode item) `shouldBe` expected
+  it "encodes scalars without leading zeros" $ do
+    toHex (rlpEncode $ scalarItem $ B.replicate 32 0) `shouldBe` "80"
+    toHex (rlpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
+    toHex (rlpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
+  where
+    rlpVectors =
+      [ ("the empty string", RLPBytes "", "80"),
+        ("the empty list", RLPList [], "c0"),
+        ("dog", RLPBytes "dog", "83646f67"),
+        ("[cat, dog]", RLPList [RLPBytes "cat", RLPBytes "dog"], "c88363617483646f67"),
+        ("the set-theoretic three", RLPList [RLPList [], RLPList [RLPList []], RLPList [RLPList [], RLPList [RLPList []]]], "c7c0c1c0c3c0c1c0"),
+        ("a 56-byte string", RLPBytes (B.replicate 56 0x61), "b838" <> B.concat (replicate 56 "61"))
+      ]
+
+-- expected signatures and transactions are viem's for the same key and inputs
+signingTests :: TVar ChaChaDRG -> Spec
+signingTests g = do
+  it "derives the EIP-155 example address" $
+    (strEncode <$> addressFromPrivateKey g txKey) `shouldReturn` "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+  it "signs a digest as viem does" $
+    S.signRecoverable g txKey (C.keccak256 "simplex")
+      `shouldReturn` Right
+        S.RecoverableSignature
+          { S.rsR = hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b0",
+            S.rsS = hx "3eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb1",
+            S.rsRecId = 1
+          }
+  it "refuses a digest that is not 32 bytes" $
+    (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
+
+transactionTests :: TVar ChaChaDRG -> Spec
+transactionTests g = do
+  it "signs a contract call as viem does" $
+    (toHex <$$> signEip1559Tx g txKey contractCall)
+      `shouldReturn` Right "02f89383aa36a709843b9aca008506fc23ac00830186a094353535353535353535353535353535353535353580a4f14fcbc81111111111111111111111111111111111111111111111111111111111111111c001a08be78ee2e58a62763be161e3c4440c74c3b6ae56d667b143554e12239a6328e5a0790d86c0398a5295d981d12f4abc10d61b58917b7b7fd21215f7686457aafc19"
+  it "signs a value transfer with zero fields as viem does" $
+    (toHex <$$> signEip1559Tx g txKey transfer)
+      `shouldReturn` Right "02f86a01808001825208943535353535353535353535353535353535353535880de0b6b3a764000080c001a0d04dbcdcfa4c64fe9deb8f0fea4d7a1f07407e80fd2b066b8f6d58a9baf6af0ba074c14688697464225bbe29301db1df7f0c1b9484a52eaf76162524baba2f2791"
+  it "encodes every word of fields wider than 64 bits" $
+    (B.isInfixOf wideFields . toHex <$$> signEip1559Tx g txKey wide)
+      `shouldReturn` Right True
+  where
+    to = right $ strDecode "0x3535353535353535353535353535353535353535"
+    contractCall = Eip1559Tx {txChainId = 11155111, txNonce = 9, txMaxPriorityFeePerGas = 1000000000, txMaxFeePerGas = 30000000000, txGasLimit = 100000, txTo = to, txValue = 0, txData = hx "f14fcbc8" <> B.replicate 32 0x11}
+    transfer = Eip1559Tx {txChainId = 1, txNonce = 0, txMaxPriorityFeePerGas = 0, txMaxFeePerGas = 1, txGasLimit = 21000, txTo = to, txValue = 1000000000000000000, txData = ""}
+    wide = Eip1559Tx {txChainId = maxBound, txNonce = maxBound - 1, txMaxPriorityFeePerGas = 0x10000000000000000000000007, txMaxFeePerGas = 0x80000000000000010000000000000003, txGasLimit = 0x10000000001, txTo = to, txValue = 0x8000000000000001000000000000000100000000000000010000000000000009, txData = ""}
+    wideFields = "88ffffffffffffffff88fffffffffffffffe8d10000000000000000000000007908000000000000001000000000000000386010000000001943535353535353535353535353535353535353535a0800000000000000100000000000000010000000000000001000000000000000980c0"
+
+txKey :: S.Secp256k1PrivateKey
+txKey = right $ S.mkPrivateKey $ BA.replicate 32 0x46

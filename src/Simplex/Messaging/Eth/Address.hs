@@ -5,6 +5,7 @@
 
 module Simplex.Messaging.Eth.Address
   ( Address,
+    unAddress,
     addressFromPublicKey,
     addressFromPrivateKey,
     deriveAddress,
@@ -47,6 +48,9 @@ instance StrEncoding Address where
 
 addressSize :: Int
 addressSize = 20
+
+unAddress :: Address -> ByteString
+unAddress (Address bs) = bs
 
 -- | The last 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
 addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address
