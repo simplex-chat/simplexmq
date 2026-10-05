@@ -13,12 +13,6 @@ module Simplex.Messaging.Crypto.BIP32
     renderPath,
     hardened,
     isHardened,
-    WalletMaster,
-    masterEntropy,
-    walletMasterKey,
-    mkWalletMaster,
-    parseWalletMaster,
-    masterBytes,
   )
 where
 
@@ -35,7 +29,6 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BC
 import Data.List (intercalate)
 import Data.Word (Word32)
-import Simplex.Messaging.Crypto.BIP39 (WalletEntropy, entropySeed, mkEntropy)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding (smpEncode)
 
@@ -106,24 +99,3 @@ renderPath is = BC.pack $ intercalate "/" ("m" : map component is)
 
 hmacSHA512 :: ScrubbedBytes -> ScrubbedBytes -> ScrubbedBytes
 hmacSHA512 key msg = BA.convert (HMAC.hmac key msg :: HMAC.HMAC H.SHA512)
-
--- | Entropy with the master key it derives.
-data WalletMaster = WalletMaster WalletEntropy ExtendedKey
-
-masterEntropy :: WalletMaster -> WalletEntropy
-masterEntropy (WalletMaster ent _) = ent
-
-walletMasterKey :: WalletMaster -> ExtendedKey
-walletMasterKey (WalletMaster _ k) = k
-
-mkWalletMaster :: WalletEntropy -> Either String WalletMaster
-mkWalletMaster ent = WalletMaster ent <$> masterKey (entropySeed ent "")
-
--- | From storage: the master bytes must be the ones the entropy derives.
-parseWalletMaster :: ScrubbedBytes -> ScrubbedBytes -> Either String WalletMaster
-parseWalletMaster entBytes mBytes = do
-  m <- mkWalletMaster =<< mkEntropy entBytes
-  if masterBytes m == mBytes then Right m else Left "wallet master: does not match the entropy"
-
-masterBytes :: WalletMaster -> ScrubbedBytes
-masterBytes (WalletMaster _ ExtendedKey {xkKey, xkChainCode}) = S.unPrivateKey xkKey <> xkChainCode
