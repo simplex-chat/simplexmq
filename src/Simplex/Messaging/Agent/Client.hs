@@ -781,7 +781,9 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       when current $ updateClientService service smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
     updateClientService service smp = case (service, smpClientServiceId smp) of
-      (Just (_, serviceId_), Just serviceId) -> withStore' c $ \db -> do
+      (Just _, Just serviceId) -> withStore' c $ \db -> do
+        -- the id read before the handshake can be stale - this transaction can commit after another client's
+        serviceId_ <- (>>= snd) <$> getClientServiceCredentials db userId srv
         setClientServiceId db userId srv serviceId
         forM_ serviceId_ $ \sId -> when (sId /= serviceId) $ removeRcvServiceAssocs db userId srv
       (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
@@ -807,9 +809,11 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
           (subs, serviceSub_) <- SS.setSubsPending mode tSess sessId $ currentSubs c
           let qs = M.elems subs
               cs = nubOrd $ map qConnId qs
-          -- this removes proxied relays that this client created sessions to
-          destSrvs <- M.keys <$> readTVar prs
-          forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, cId) smpProxiedRelays
+          -- this removes proxied relays that this client created sessions to, unless another client
+          -- replaced this one, e.g. when the network changed - those sessions are now its sessions
+          unlessM (TM.member tSess smpClients) $ do
+            destSrvs <- M.keys <$> readTVar prs
+            forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, cId) smpProxiedRelays
           pure (qs, cs, serviceSub_)
 
     serverDown :: ([RcvQueueSub], [ConnId], Maybe ServiceSub) -> IO ()

@@ -216,7 +216,9 @@ setSubsPending mode tSess@(uId, srv, connId_) sessId tss@(TSessionSubs ss)
   | entitySession == isJust connId_ =
       TM.lookup tSess ss >>= withSessSubs (`setSubsPending_` Nothing)
   | otherwise =
-      TM.lookupDelete tSess ss >>= withSessSubs setPendingChangeMode
+      -- the subscriptions are removed only when the session matches - a client that is no longer
+      -- the one in the map never set its session id, and its disconnection must not remove them
+      TM.lookup tSess ss >>= withSessSubs (\s -> TM.delete tSess ss >> setPendingChangeMode s)
   where
     entitySession = mode == TSMEntity
     sessEntId = if entitySession then Just else const Nothing
