@@ -18,7 +18,7 @@ data RLPItem = RLPBytes ByteString | RLPList [RLPItem]
 rlpEncode :: RLPItem -> ByteString
 rlpEncode = \case
   RLPBytes b
-    | [w] <- B.unpack b, w < 0x80 -> b
+    | B.length == 1 && B.head b < 0x80 -> b
     | otherwise -> lengthPrefixed 0x80 b
   RLPList items -> lengthPrefixed 0xc0 $ B.concat $ map rlpEncode items
   where
