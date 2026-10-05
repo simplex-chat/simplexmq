@@ -140,8 +140,10 @@ module Simplex.Messaging.Crypto
     gcmIV,
 
     -- * NaCl crypto_box
-    CbNonce (unCbNonce),
+    CbNonceI (..),
+    CbNonce,
     pattern CbNonce,
+    CorrCbNonce,
     cbEncrypt,
     cbEncryptNoPad,
     cbEncryptMaxLenBS,
@@ -152,8 +154,10 @@ module Simplex.Messaging.Crypto
     sbEncryptNoPad,
     sbDecryptNoPad,
     cbNonce,
+    corrCbNonce,
     randomCbNonce,
     reverseNonce,
+    xorNonce,
 
     -- * NaCl crypto_secretbox
     SbKey (unSbKey),
@@ -232,6 +236,7 @@ import Data.ASN1.Types
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
+import Data.Bits (xor)
 import Data.ByteArray (ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode)
@@ -254,7 +259,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
-import Simplex.Messaging.Util ((<$?>))
+import Simplex.Messaging.Util (packZipWith, (<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -1324,8 +1329,8 @@ sbEncryptNoPad (SbKey key) (CbNonce nonce) = cryptoBox key nonce
 {-# INLINE sbEncryptNoPad #-}
 
 -- | NaCl @crypto_box@ encrypt with a shared DH secret and 192-bit nonce.
-cbEncryptMaxLenBS :: KnownNat i => DhSecret X25519 -> CbNonce -> MaxLenBS i -> ByteString
-cbEncryptMaxLenBS (DhSecretX25519 secret) (CbNonce nonce) = cryptoBox secret nonce . unMaxLenBS . padMaxLenBS
+cbEncryptMaxLenBS :: (KnownNat i, CbNonceI n) => DhSecret X25519 -> n -> MaxLenBS i -> ByteString
+cbEncryptMaxLenBS (DhSecretX25519 secret) nonce = cryptoBox secret (unCbNonce nonce) . unMaxLenBS . padMaxLenBS
 {-# INLINE cbEncryptMaxLenBS #-}
 
 cryptoBox :: ByteArrayAccess key => key -> ByteString -> ByteString -> ByteString
@@ -1335,8 +1340,8 @@ cryptoBox secret nonce s = BA.convert tag <> c
     tag = Poly1305.auth rs c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
-cbDecrypt :: DhSecret X25519 -> CbNonce -> ByteString -> Either CryptoError ByteString
-cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret
+cbDecrypt :: CbNonceI n => DhSecret X25519 -> n -> ByteString -> Either CryptoError ByteString
+cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret . CryptoBoxNonce . unCbNonce
 {-# INLINE cbDecrypt #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).
@@ -1383,9 +1388,15 @@ cbAuthenticate k pk nonce msg = CbAuthenticator $ cbEncryptNoPad (dh' k pk) nonc
 cbVerify :: PublicKeyX25519 -> PrivateKeyX25519 -> CbNonce -> CbAuthenticator -> ByteString -> Bool
 cbVerify k pk nonce (CbAuthenticator s) authorized = cbDecryptNoPad (dh' k pk) nonce s == Right (sha512Hash authorized)
 
-newtype CbNonce = CryptoBoxNonce {unCbNonce :: ByteString}
+class CbNonceI n where
+  unCbNonce :: n -> ByteString
+
+newtype CbNonce = CryptoBoxNonce ByteString
   deriving (Eq, Show)
   deriving newtype (FromField)
+
+instance CbNonceI CbNonce where
+  unCbNonce (CryptoBoxNonce s) = s
 
 instance ToField CbNonce where toField (CryptoBoxNonce s) = toField $ Binary s
 
@@ -1396,7 +1407,7 @@ pattern CbNonce s <- CryptoBoxNonce s
 
 instance StrEncoding CbNonce where
   strEncode (CbNonce s) = strEncode s
-  strP = cbNonce <$> strP
+  strP = cbNonce <$?> strP
 
 instance ToJSON CbNonce where
   toJSON = strToJSON
@@ -1405,13 +1416,13 @@ instance ToJSON CbNonce where
 instance FromJSON CbNonce where
   parseJSON = strParseJSON "CbNonce"
 
-cbNonce :: ByteString -> CbNonce
+cbNonce :: ByteString -> Either String CbNonce
 cbNonce s
-  | len == 24 = CryptoBoxNonce s
-  | len > 24 = CryptoBoxNonce . fst $ B.splitAt 24 s
-  | otherwise = CryptoBoxNonce $ s <> B.replicate (24 - len) (toEnum 0)
-  where
-    len = B.length s
+  | B.length s == 24 = Right $ CryptoBoxNonce s
+  | otherwise = Left "CbNonce: invalid length"
+
+corrCbNonce :: ByteString -> Either String CorrCbNonce
+corrCbNonce s = CorrCbNonce . unCbNonce <$> cbNonce s
 
 randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
@@ -1419,12 +1430,26 @@ randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
 randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
 
-reverseNonce :: CbNonce -> CbNonce
-reverseNonce (CryptoBoxNonce s) = CryptoBoxNonce (B.reverse s)
+reverseNonce :: CbNonceI n => n -> CbNonce
+reverseNonce = CryptoBoxNonce . B.reverse . unCbNonce
+
+xorNonce :: CbNonceI n => ByteString -> n -> CbNonce
+xorNonce s nonce = CryptoBoxNonce $ packZipWith xor s n <> B.drop (B.length s) n
+  where
+    n = unCbNonce nonce
 
 instance Encoding CbNonce where
   smpEncode = unCbNonce
   smpP = CryptoBoxNonce <$> A.take 24
+
+newtype CorrCbNonce = CorrCbNonce ByteString
+
+instance CbNonceI CorrCbNonce where
+  unCbNonce (CorrCbNonce s) = s
+
+instance Encoding CorrCbNonce where
+  smpEncode = smpEncode . unCbNonce
+  smpP = corrCbNonce <$?> smpP
 
 newtype SbKey = SecretBoxKey {unSbKey :: ByteString}
   deriving (Eq, Show)

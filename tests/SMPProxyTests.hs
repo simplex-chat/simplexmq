@@ -21,6 +21,7 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
@@ -75,6 +76,8 @@ smpProxyTests = do
     xit "batching proxy requests" todo
     it "relay rejects forwarded command with changed version" $ \_ ->
       testChangedFwdVersion
+    it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
+      testFwdCorrIdSize
   describe "deliver message via SMP proxy" $ do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
@@ -472,9 +475,21 @@ testChangedFwdVersion =
     nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
     let v = currentClientSMPRelayVersion
     et <- either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) (SMP.encTransmissionNonce v nonce) "" SMP.paddedProxiedTLength
-    let forward fwdVersion = forwardSMPTransmission rc (SMP.CorrId corrId) fwdVersion cmdPubKey et
+    let forward fwdVersion = forwardSMPTransmission rc (either error id $ C.corrCbNonce corrId) fwdVersion cmdPubKey et
     _ <- runExceptT' $ forward v
     runExceptT (forward $ prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+
+testFwdCorrIdSize :: IO ()
+testFwdCorrIdSize =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ ->
+      testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
+        g <- C.newRandom
+        (cmdPubKey, _) <- atomically $ C.generateKeyPair g
+        forM_ (["", "2", B.replicate 25 '3'] :: [ByteString]) $ \corrId -> do
+          (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
+          reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,

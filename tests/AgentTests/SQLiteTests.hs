@@ -25,6 +25,7 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
@@ -513,7 +514,7 @@ hw = encodeUtf8 "Hello world!"
 ts :: UTCTime
 ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 
-mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> BrokerId -> MsgHash -> RcvMsgData
+mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> ByteString -> MsgHash -> RcvMsgData
 mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
   RcvMsgData
     { internalRcvId,
@@ -522,7 +523,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (brokerId, ts),
+            broker = (either error id . SMP.mkMsgId . B.concat $ replicate 24 brokerId, ts),
             pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,

@@ -1262,7 +1262,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 -- receives RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
 -- Always uses background timeout mode
-forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
+forwardSMPTransmission :: SMPClient -> C.CorrCbNonce -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
 forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of

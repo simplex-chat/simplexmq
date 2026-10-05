@@ -202,7 +202,7 @@ randomNMSGCmd :: SystemTime -> IO (Transmission BrokerMsg)
 randomNMSGCmd ts = do
   g <- C.newRandom
   nId <- atomically $ C.randomBytes 24 g
-  msgId <- atomically $ C.randomBytes 24 g
+  msgId <- either error id . mkMsgId <$> atomically (C.randomBytes 24 g)
   (k, pk) <- atomically $ C.generateKeyPair g
   nonce <- atomically $ C.randomCbNonce g
   let msgMeta = NMsgMeta {msgId, msgTs = ts}
@@ -221,7 +221,7 @@ randomMSG = do
   g <- C.newRandom
   corrId <- atomically $ C.randomBytes 24 g
   rId <- atomically $ C.randomBytes 24 g
-  msgId <- atomically $ C.randomBytes 24 g
+  msgId <- either error id . mkMsgId <$> atomically (C.randomBytes 24 g)
   msg <- atomically $ C.randomBytes maxMessageLength g
   pure (CorrId corrId, EntityId rId, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody msg})
 
