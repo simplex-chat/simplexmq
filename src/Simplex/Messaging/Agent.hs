@@ -754,6 +754,7 @@ reconnectAllServers c = do
   reconnectServerClients c smpClients
   reconnectServerClients c xftpClients
   reconnectServerClients c ntfClients
+  atomically $ modifyTVar' (networkEpoch c) (+ 1)
 
 -- | Register device notifications token
 registerNtfToken :: AgentClient -> NetworkRequestMode -> DeviceToken -> NotificationsMode -> AE NtfTknStatus
