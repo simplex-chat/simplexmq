@@ -184,7 +184,7 @@ signRecoverable g (Secp256k1PrivateKey sk) digest
       allocaBytes recSigInternalSize $ \sigPtr -> do
         rc <- BA.withByteArray digest $ \msgPtr -> BA.withByteArray sk $ \skPtr -> c_ecdsa_sign_recoverable ctx sigPtr msgPtr skPtr nullPtr nullPtr
         if rc /= 1
-          then pure $ Left "secp256k1_ecdsa_sign_recoverable failed"
+          then pure $ Left "secp256k1_ecdsa_sign_recoverable failed on a validated key"
           else do
             (recId, compact) <- BA.allocRet compactSigSize $ \outPtr ->
               alloca $ \recIdPtr -> do
