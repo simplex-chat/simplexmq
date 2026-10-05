@@ -172,6 +172,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       rId = recipientId sq
       qr = queueRec sq
       add q = case queueData q of
+        _ | isSecuredMsgQueue q -> pure $ Left AUTH
         Nothing -> addLink
         Just (lnkId', d') | lnkId' == lnkId && fst d' == fst d -> addLink
         _ -> pure $ Left AUTH

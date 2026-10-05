@@ -73,6 +73,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should write/ack messages" testWriteAckMessages
       it "should resolve sender ID equal to link ID of another queue" testLinkIdSenderIdCollision
+      it "should not add link data to secured messaging queue" testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -210,6 +211,33 @@ testWriteAckMessages ms = do
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q2 mId3
     void $ ExceptT $ deleteQueue ms q1
     void $ ExceptT $ deleteQueue ms q2
+
+testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
+testLinkDataSecuredQueue ms = do
+  g <- C.newRandom
+  (sKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+      ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+      rndId = atomically $ EntityId <$> C.randomBytes 24 g
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  (cId, cqr) <- testNewQueueRec g QMContact
+  lnkId <- rndId
+  cLnkId <- rndId
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    -- the handle is read before SKEY, as in a command that raced with it
+    staleQ <- ExceptT $ getQueue ms SRecipient rId
+    ExceptT $ secureQueue st q sKey
+    liftIO $ addQueueLinkData st staleQ lnkId ld `shouldReturn` Left AUTH
+    freshQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ getQueueLinkData st freshQ lnkId `shouldReturn` Left AUTH
+    cq <- ExceptT $ addQueue ms cId cqr
+    ExceptT $ secureQueue st cq sKey
+    ExceptT $ addQueueLinkData st cq cLnkId ld
+    ld' <- ExceptT $ getQueueLinkData st cq cLnkId
+    liftIO $ ld' `shouldBe` ld
+    void $ ExceptT $ deleteQueue ms q
+    void $ ExceptT $ deleteQueue ms cq
 
 -- sizes of queues, senders, links and notifiers maps
 type QueueMapSizes = (Int, Int, Int, Int)

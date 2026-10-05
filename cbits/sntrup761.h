@@ -19,7 +19,8 @@
 
 typedef void sntrup761_random_func (void *ctx, size_t length, uint8_t *dst);
 
-void
+/* returns 0 on success, -1 if the RNG never produced an invertible polynomial */
+int
 sntrup761_keypair (uint8_t *pk, uint8_t *sk,
                    void *random_ctx, sntrup761_random_func *random);
 

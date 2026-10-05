@@ -7,6 +7,7 @@ This file provides guidance on coding style and approaches and on building the c
 When designing code and planning implementations:
 - Apply adversarial thinking, and consider what may happen if one of the communicating parties is malicious.
 - Formulate an explicit threat model for each change - who can do which undesirable things and under which circumstances.
+- Use the default cryptographic primitive for each purpose from the [primitive registry](../protocol/crypto-registry.md); any exception requires review, and the registry must be updated with every new primitive use or domain-separation string.
 
 ## Code Quality Standards
 
