@@ -70,8 +70,8 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import Data.Int (Int64)
-import Data.List (find, isPrefixOf, isSuffixOf)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map as M
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as S
@@ -87,12 +87,12 @@ import SMPAgentClient
 import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (getConn)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -463,6 +463,16 @@ functionalAPITests ps = do
         testRatchetSyncSuspendForeground ps
       it "should synchronize ratchets when clients start synchronization simultaneously" $
         testRatchetSyncSimultaneous ps
+      it "should ignore replayed ratchet key after expired hashes are deleted" $
+        testRatchetSyncReplayedKey ps
+      it "should synchronize ratchets when synchronization is forced again" $
+        testRatchetSyncRepeated ps
+      it "should not mark ratchet key as processed when ratchet recreation fails" $
+        testRatchetSyncFailedKeyNotProcessed ps
+      it "should not store reply ratchet key when ratchet recreation fails" $
+        testRatchetSyncFailedRecreationNoReply ps
+      it "should not store ratchet key when starting synchronization fails" $
+        testRatchetSyncStartFailedNoKey ps
 #endif
     describe "Subscription mode OnlyCreate" $ do
       it "messages delivered only when polled" $
@@ -2747,6 +2757,117 @@ testRatchetSyncSimultaneous ps = do
   disposeAgentClient alice
   disposeAgentClient bob
   disposeAgentClient bob2
+
+testRatchetSyncReplayedKey :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncReplayedKey ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+  _ <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  Right pks <- withTransaction (store $ agentEnv bob2) (`getRatchetX3dhKeys` aliceId)
+  Right (SomeConn _ (DuplexConnection _ _ (sq :| _))) <- withTransaction (store $ agentEnv bob2) (`getConn` aliceId)
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
+    get alice =##> ratchetSyncP bobId RSOk
+    get bob2 =##> ratchetSyncP aliceId RSOk
+    withTransaction (store $ agentEnv alice) $ \db -> deleteRatchetKeyHashesExpired db 0 100
+    let keyMsg = AgentRatchetKey {agentVersion = currentSMPAgentVersion, e2eEncryption = CR.mkRcvE2ERatchetParams CR.currentE2EEncryptVersion pks, info = ""}
+    Right _ <- runReaderT (runExceptT $ sendAgentMessage bob2 sq SMP.noMsgFlags $ smpEncode keyMsg) (agentEnv bob2)
+    runRight_ $ exchangeGreetingsMsgIds alice bobId 10 bob2 aliceId 7
+  disposeAgentClient bob2
+
+testRatchetSyncRepeated :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncRepeated ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, bobId, bob2) <- startRatchetSyncOffline ps alice bob
+  ConnectionStats {ratchetSyncState = rss2} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn True
+  rss2 `shouldBe` RSStarted
+
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [ratchetSyncP' aliceId RSAgreed, serverUpP])
+    runRight_ $ do
+      get alice =##> ratchetSyncP bobId RSAgreed
+      get alice =##> ratchetSyncP bobId RSOk
+      get bob2 =##> ratchetSyncP aliceId RSOk
+      msgId <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT msgId)
+      get bob2 =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob2 aliceId 8 Nothing
+  map fst <$> processedRatchetKeyHashes bob2 `shouldReturn` [aliceId, aliceId]
+  disposeAgentClient bob2
+
+testRatchetSyncFailedKeyNotProcessed :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncFailedKeyNotProcessed ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, bobId, bob2) <- startRatchetSyncOffline ps alice bob
+  withTransaction (store $ agentEnv bob2) $ \db ->
+    DB.execute_ db "UPDATE ratchets SET x3dh_priv_key_1 = NULL"
+
+  withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    concurrently_
+      (getInAnyOrder alice [ratchetSyncP' bobId RSAgreed, serverUpP])
+      (getInAnyOrder bob2 [x3dhKeysNotFoundP aliceId, serverUpP])
+  map fst <$> processedRatchetKeyHashes alice `shouldReturn` [bobId]
+  processedRatchetKeyHashes bob2 `shouldReturn` []
+  disposeAgentClient bob2
+  where
+    x3dhKeysNotFoundP :: ConnId -> ATransmission -> Bool
+    x3dhKeysNotFoundP cId = \case
+      (_, cId', AEvt SAEConn (ERR (A.INTERNAL e))) -> cId' == cId && "SEX3dhKeysNotFound" `isPrefixOf` e
+      _ -> False
+
+testRatchetSyncFailedRecreationNoReply :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncFailedRecreationNoReply ps = withAgentClients2 $ \alice bob -> do
+  (_, bobId, bob2) <- startRatchetSyncOffline ps alice bob
+  aliceSndMsgs <- sndMessages alice
+  withTransaction (store $ agentEnv alice) $ \db ->
+    DB.execute_ db "CREATE TRIGGER fail_ratchet_insert BEFORE INSERT ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet insert failed'); END"
+  withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    concurrently_
+      (getInAnyOrder alice [ratchetInsertFailedP bobId, serverUpP])
+      (getInAnyOrder bob2 [serverUpP])
+  processedRatchetKeyHashes alice `shouldReturn` []
+  sndMessages alice `shouldReturn` aliceSndMsgs
+  disposeAgentClient bob2
+  where
+    ratchetInsertFailedP :: ConnId -> ATransmission -> Bool
+    ratchetInsertFailedP cId = \case
+      (_, cId', AEvt SAEConn (ERR (A.INTERNAL e))) -> cId' == cId && "ratchet insert failed" `isInfixOf` e
+      _ -> False
+
+testRatchetSyncStartFailedNoKey :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testRatchetSyncStartFailedNoKey ps = withAgentClients2 $ \alice bob -> do
+  (aliceId, _, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+  bobSndMsgs <- sndMessages bob2
+  withTransaction (store $ agentEnv bob2) $ \db ->
+    DB.execute_ db "CREATE TRIGGER fail_ratchet_update BEFORE UPDATE ON ratchets BEGIN SELECT RAISE(ABORT, 'ratchet update failed'); END"
+  Left (A.INTERNAL e) <- runExceptT $ synchronizeRatchet bob2 aliceId PQSupportOff False
+  e `shouldContain` "ratchet update failed"
+  ConnectionStats {ratchetSyncState} <- runRight $ getConnectionServers bob2 aliceId
+  ratchetSyncState `shouldBe` RSRequired
+  withTransaction (store $ agentEnv bob2) (`DB.query_` "SELECT conn_id, pq_support FROM connections") `shouldReturn` [(aliceId, PQSupportOn)]
+  sndMessages bob2 `shouldReturn` bobSndMsgs
+  disposeAgentClient bob2
+
+startRatchetSyncOffline :: HasCallStack => (ASrvTransport, AStoreType) -> AgentClient -> AgentClient -> IO (ConnId, ConnId, AgentClient)
+startRatchetSyncOffline ps alice bob = do
+  (aliceId, bobId, bob2) <- withSmpServerStoreMsgLogOn ps testPort $ \_ ->
+    setupDesynchronizedRatchet alice bob
+  ("", "", DOWN _ _) <- nGet alice
+  ("", "", DOWN _ _) <- nGet bob2
+  ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet bob2 aliceId PQSupportOn False
+  ratchetSyncState `shouldBe` RSStarted
+  pure (aliceId, bobId, bob2)
+
+processedRatchetKeyHashes :: AgentClient -> IO [(ConnId, ByteString)]
+processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, hash FROM processed_ratchet_key_hashes")
+
+sndMessages :: AgentClient -> IO [(ConnId, Int64)]
+sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
