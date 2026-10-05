@@ -312,7 +312,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), TransportPeer (..), shortLinksSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -1261,9 +1261,12 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
           Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
-ipAddressProtected NetworkConfig {socksProxy, hostMode} (ProtocolServer _ hosts _ _) = do
-  isJust socksProxy || (hostMode == HMOnion && any isOnionHost hosts)
+ipAddressProtected NetworkConfig {socksProxy, socksMode, hostMode} (ProtocolServer _ hosts _ _)
+  | isJust socksProxy = socksMode == SMAlways || if hostMode == HMPublic then allOnion else anyOnion
+  | otherwise = hostMode == HMOnion && anyOnion
   where
+    anyOnion = any isOnionHost hosts
+    allOnion = all isOnionHost hosts
     isOnionHost = \case THOnionHost _ -> True; _ -> False
 
 withNtfClient :: AgentClient -> NetworkRequestMode -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> AM a
@@ -1496,7 +1499,7 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
   let sessServiceId = (\THClientService {serviceId = sId} -> sId) <$> (clientService =<< thAuth thParams')
   when (isJust serviceId && serviceId /= sessServiceId) $ logError "incorrect service ID in NEW response"
   liftIO . logServer "<--" c srv NoEntity $ B.unwords ["IDS", logSecret rcvId, logSecret sndId]
-  shortLink <- mkShortLinkCreds thParams' qik
+  shortLink <- mkShortLinkCreds qik
   let rq =
         RcvQueue
           { userId,
@@ -1537,8 +1540,8 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
       (Just ((ntfPublicKey, ntfPrivateKey), dhpk), Just (ServerNtfCreds notifierId dhk')) ->
         Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret = C.dh' dhk' dhpk}
       _ -> Nothing
-    mkShortLinkCreds :: THandleParams SMPVersion 'TClient -> QueueIdsKeys -> AM (Maybe ShortLinkCreds)
-    mkShortLinkCreds thParams' QIK {sndId, queueMode, linkId} = case (cqrd, queueMode) of
+    mkShortLinkCreds :: QueueIdsKeys -> AM (Maybe ShortLinkCreds)
+    mkShortLinkCreds QIK {sndId, queueMode, linkId} = case (cqrd, queueMode) of
       (CQRMessaging ld, Just QMMessaging) ->
         withLinkData ld $ \lnkId CQRData {linkKey, privSigKey, srvReq = (sndId', d)} ->
           if sndId == sndId'
@@ -1552,11 +1555,9 @@ newRcvQueue_ c nm userId connId (ProtoServerWithAuth srv auth) vRange cqrd enabl
       (_, Nothing) -> newErr "unexpected link ID"
       _ -> newErr "unexpected queue mode"
       where
-        v = thVersion thParams'
         withLinkData :: Maybe d -> (SMP.LinkId -> d -> AM (Maybe ShortLinkCreds)) -> AM (Maybe ShortLinkCreds)
         withLinkData ld_ mkLink = case (ld_, linkId) of
           (Just ld, Just lnkId) -> mkLink lnkId ld
-          (Just _, Nothing) | v < shortLinksSMPVersion -> pure Nothing
           (Nothing, Nothing) -> pure Nothing
           _ -> newErr "unexpected or absent link ID"
         newErr :: String -> AM (Maybe ShortLinkCreds)

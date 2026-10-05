@@ -1,12 +1,12 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260928_commands_autoincrement where
+module Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261005_commands_autoincrement where
 
 import Database.SQLite.Simple (Query)
 import Database.SQLite.Simple.QQ (sql)
 
-m20260928_commands_autoincrement :: Query
-m20260928_commands_autoincrement =
+m20261005_commands_autoincrement :: Query
+m20261005_commands_autoincrement =
   [sql|
 INSERT INTO sqlite_sequence (name, seq)
 SELECT 'commands', MAX(ROWID) FROM commands;
@@ -19,8 +19,8 @@ WHERE name = 'commands' AND type = 'table';
 PRAGMA writable_schema=RESET;
   |]
 
-down_m20260928_commands_autoincrement :: Query
-down_m20260928_commands_autoincrement =
+down_m20261005_commands_autoincrement :: Query
+down_m20261005_commands_autoincrement =
   [sql|
 DELETE FROM sqlite_sequence WHERE name = 'commands';
 

@@ -22,7 +22,7 @@ import qualified Data.X509.Validation as XV
 import SMPClient
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store (FileRec (..), FileRecipient (..), FileStoreClass (..), RoundedFileTime, STMFileStore (..))
-import Simplex.FileTransfer.Server.StoreLog (FileStoreLogRecord (..), readWriteFileStore)
+import Simplex.FileTransfer.Server.StoreLog (FileStoreLogRecord (..), readWriteFileStore, serverFileName)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
@@ -37,6 +37,7 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Transport (SMPServiceRole (..))
 import Simplex.Messaging.Transport.Credentials (genCredentials)
+import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -269,6 +270,18 @@ fileStoreLogTests = do
           saved = [AddFile sId file createdAt Nothing EntityActive, BlockFile sId blockedWithNotice],
           compacted = [AddFile sId file createdAt Nothing (EntityBlocked blockedWithNotice)],
           state = M.fromList [(sId, (file, createdAt, Nothing, EntityBlocked blockedWithNotice))]
+        },
+      SLTC
+        { name = "put file with wrong file name",
+          saved = [AddFile sId file createdAt (Just expiresAt) EntityActive, PutFile sId "/etc/passwd"],
+          compacted = [AddFile sId file createdAt (Just expiresAt) EntityActive],
+          state = M.fromList [(sId, (file, createdAt, Just expiresAt, EntityActive))]
+        },
+      SLTC
+        { name = "put file in another directory",
+          saved = [AddFile sId file createdAt (Just expiresAt) EntityActive, PutFile sId ("/srv/xftp" </> serverFileName sId)],
+          compacted = [AddFile sId file createdAt (Just expiresAt) EntityActive, PutFile sId ("/srv/xftp" </> serverFileName sId)],
+          state = M.fromList [(sId, (file, createdAt, Just expiresAt, EntityActive))]
         }
     ]
 

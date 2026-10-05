@@ -52,7 +52,8 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260411_service_certs
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr_rpc
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260823_snd_files_entitlement
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260919_ratchet_verify_codes
-import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260928_commands_autoincrement
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260929_ratchet_indexes
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261005_commands_autoincrement
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Query, Maybe Query)]
@@ -105,7 +106,8 @@ schemaMigrations =
     ("m20260712_address_dr_rpc", m20260712_address_dr_rpc, Just down_m20260712_address_dr_rpc),
     ("m20260823_snd_files_entitlement", m20260823_snd_files_entitlement, Just down_m20260823_snd_files_entitlement),
     ("m20260919_ratchet_verify_codes", m20260919_ratchet_verify_codes, Just down_m20260919_ratchet_verify_codes),
-    ("m20260928_commands_autoincrement", m20260928_commands_autoincrement, Just down_m20260928_commands_autoincrement)
+    ("m20260929_ratchet_indexes", m20260929_ratchet_indexes, Just down_m20260929_ratchet_indexes),
+    ("m20261005_commands_autoincrement", m20261005_commands_autoincrement, Just down_m20261005_commands_autoincrement)
   ]
 
 -- | The list of migrations in ascending order by date

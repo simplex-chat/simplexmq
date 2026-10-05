@@ -314,9 +314,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   addQueueLinkData st sq lnkId d =
     withQueueRec sq "addQueueLinkData" $ \q -> case queueData q of
       Nothing ->
-        addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId))
+        addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId, QMContact))
       Just (lnkId', _) | lnkId' == lnkId ->
-        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data = ?)") (d :. (lnkId, rId, fst d))
+        addLink q $ \db -> DB.execute db (qry <> " AND (fixed_data IS NULL OR fixed_data = ?)") (d :. (lnkId, rId, QMContact, fst d))
       _ -> throwE AUTH
     where
       rId = recipientId sq
@@ -324,7 +324,8 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         assertUpdated $ withDB' "addQueueLinkData" st update
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
         withLog "addQueueLinkData" st $ \s -> logCreateLink s rId lnkId d
-      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL"
+      -- the sender key condition is checked in SQL because without cache each command reads its own copy of the queue record
+      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR queue_mode = ?)"
 
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
