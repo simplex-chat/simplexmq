@@ -147,6 +147,7 @@ module Simplex.Messaging.Protocol
     RcvMessage (..),
     MsgId (unMsgId),
     mkMsgId,
+    unsafeMsgId,
     MsgBody,
     IdsHash (..),
     ServiceSub (..),
@@ -1522,6 +1523,9 @@ mkMsgId :: ByteString -> Either String MsgId
 mkMsgId s
   | B.length s >= 24 = Right $ MsgId s
   | otherwise = Left "MsgId: invalid length"
+
+unsafeMsgId :: ByteString -> MsgId
+unsafeMsgId s = either error id $ mkMsgId s
 
 -- | SMP message body.
 type MsgBody = ByteString

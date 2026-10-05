@@ -183,7 +183,7 @@ randomSUB sessId = do
   thAuth_ <- testTHandleAuth g rKey
   let thParams = testTHandleParams sessId
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId rId, Cmd SRecipient SUB)
-  pure $ (,tToSend) <$> authTransmission thAuth_ True (Just rpKey) nonce tForAuth
+  pure $ (,tToSend) <$> authTransmission thAuth_ True (Just rpKey) (Just nonce) tForAuth
 
 randomSUBCmd :: ProtocolClient SMPVersion ErrorType BrokerMsg -> IO (PCTransmission ErrorType BrokerMsg)
 randomSUBCmd c = do
@@ -202,7 +202,7 @@ randomNMSGCmd :: SystemTime -> IO (Transmission BrokerMsg)
 randomNMSGCmd ts = do
   g <- C.newRandom
   nId <- atomically $ C.randomBytes 24 g
-  msgId <- either error id . mkMsgId <$> atomically (C.randomBytes 24 g)
+  msgId <- unsafeMsgId <$> atomically (C.randomBytes 24 g)
   (k, pk) <- atomically $ C.generateKeyPair g
   nonce <- atomically $ C.randomCbNonce g
   let msgMeta = NMsgMeta {msgId, msgTs = ts}
@@ -221,7 +221,7 @@ randomMSG = do
   g <- C.newRandom
   corrId <- atomically $ C.randomBytes 24 g
   rId <- atomically $ C.randomBytes 24 g
-  msgId <- either error id . mkMsgId <$> atomically (C.randomBytes 24 g)
+  msgId <- unsafeMsgId <$> atomically (C.randomBytes 24 g)
   msg <- atomically $ C.randomBytes maxMessageLength g
   pure (CorrId corrId, EntityId rId, MSG RcvMessage {msgId, msgBody = EncRcvMsgBody msg})
 
@@ -235,7 +235,7 @@ randomSEND sessId len = do
   msg <- atomically $ C.randomBytes len g
   let thParams = testTHandleParams sessId
       TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, EntityId sId, Cmd SSender $ SEND noMsgFlags msg)
-  pure $ (,tToSend) <$> authTransmission thAuth_ False (Just spKey) nonce tForAuth
+  pure $ (,tToSend) <$> authTransmission thAuth_ False (Just spKey) (Just nonce) tForAuth
 
 testTHandleParams :: ByteString -> THandleParams SMPVersion 'TClient
 testTHandleParams sessionId =

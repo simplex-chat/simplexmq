@@ -166,7 +166,7 @@ signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, 
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t'
-      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (either error id $ C.cbNonce corrId) t') <$> thAuth params
+      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.unsafeCbNonce corrId) t') <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif

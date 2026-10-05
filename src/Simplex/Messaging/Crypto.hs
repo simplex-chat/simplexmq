@@ -154,6 +154,7 @@ module Simplex.Messaging.Crypto
     sbEncryptNoPad,
     sbDecryptNoPad,
     cbNonce,
+    unsafeCbNonce,
     corrCbNonce,
     randomCbNonce,
     reverseNonce,
@@ -1421,6 +1422,9 @@ cbNonce :: ByteString -> Either String CbNonce
 cbNonce s
   | B.length s == 24 = Right $ CryptoBoxNonce s
   | otherwise = Left "CbNonce: invalid length"
+
+unsafeCbNonce :: ByteString -> CbNonce
+unsafeCbNonce s = either error id $ cbNonce s
 
 corrCbNonce :: ByteString -> Either String CorrCbNonce
 corrCbNonce s = CorrCbNonce . unCbNonce <$> cbNonce s

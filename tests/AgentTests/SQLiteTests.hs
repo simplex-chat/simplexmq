@@ -522,7 +522,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (either error id . SMP.mkMsgId $ mconcat (replicate 24 brokerId), ts),
+            broker = (SMP.unsafeMsgId $ mconcat (replicate 24 brokerId), ts),
             pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
