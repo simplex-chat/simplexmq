@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | FFI bindings to libsecp256k1.
@@ -190,5 +191,5 @@ signRecoverable g (Secp256k1PrivateKey sk) digest
               alloca $ \recIdPtr -> do
                 void $ c_ecdsa_recoverable_signature_serialize_compact ctx outPtr recIdPtr sigPtr
                 peek recIdPtr
-            let (r, s) = B.splitAt (compactSigSize `div` 2) compact
-            pure $ Right RecoverableSignature {rsR = r, rsS = s, rsRecId = fromIntegral recId}
+            let (rsR, rsS) = B.splitAt (compactSigSize `div` 2) compact
+            pure $ Right RecoverableSignature {rsR, rsS, rsRecId = fromIntegral recId}

@@ -20,6 +20,7 @@ import Simplex.Messaging.Crypto.Secp256k1 (RecoverableSignature (..), Secp256k1P
 import Simplex.Messaging.Encoding (smpEncode)
 import Simplex.Messaging.Eth.Address (Address, unAddress)
 import Simplex.Messaging.Eth.RLP
+import Simplex.Messaging.Util ((<$$>))
 
 -- | Each width is the narrowest that both geth and reth accept.
 data Eip1559Tx = Eip1559Tx
@@ -36,7 +37,7 @@ data Eip1559Tx = Eip1559Tx
 -- | @0x02 || rlp([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, yParity, r, s])@, signing @keccak256@ of the same without the last three.
 signEip1559Tx :: TVar ChaChaDRG -> Secp256k1PrivateKey -> Eip1559Tx -> IO (Either String ByteString)
 signEip1559Tx g sk Eip1559Tx {txChainId, txNonce, txMaxPriorityFeePerGas, txMaxFeePerGas, txGasLimit, txTo, txValue, txData} =
-  fmap signed <$> signRecoverable g sk (keccak256 $ typed fields)
+  signed <$$> signRecoverable g sk (keccak256 $ typed fields)
   where
     signed RecoverableSignature {rsR, rsS, rsRecId} = typed $ fields <> [scalarItem (B.singleton rsRecId), scalarItem rsR, scalarItem rsS]
     fields =

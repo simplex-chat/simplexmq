@@ -34,6 +34,7 @@ import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
 import Simplex.Messaging.Eth.RLP
 import Simplex.Messaging.Eth.Transaction
+import Simplex.Messaging.Util ((<$$>))
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -350,13 +351,13 @@ signingTests g = do
 transactionTests :: TVar ChaChaDRG -> Spec
 transactionTests g = do
   it "signs a contract call as viem does" $
-    (fmap toHex <$> signEip1559Tx g txKey contractCall)
+    (toHex <$$> signEip1559Tx g txKey contractCall)
       `shouldReturn` Right "02f89383aa36a709843b9aca008506fc23ac00830186a094353535353535353535353535353535353535353580a4f14fcbc81111111111111111111111111111111111111111111111111111111111111111c001a08be78ee2e58a62763be161e3c4440c74c3b6ae56d667b143554e12239a6328e5a0790d86c0398a5295d981d12f4abc10d61b58917b7b7fd21215f7686457aafc19"
   it "signs a value transfer with zero fields as viem does" $
-    (fmap toHex <$> signEip1559Tx g txKey transfer)
+    (toHex <$$> signEip1559Tx g txKey transfer)
       `shouldReturn` Right "02f86a01808001825208943535353535353535353535353535353535353535880de0b6b3a764000080c001a0d04dbcdcfa4c64fe9deb8f0fea4d7a1f07407e80fd2b066b8f6d58a9baf6af0ba074c14688697464225bbe29301db1df7f0c1b9484a52eaf76162524baba2f2791"
   it "encodes every word of fields wider than 64 bits" $
-    (fmap (B.isInfixOf wideFields . toHex) <$> signEip1559Tx g txKey wide)
+    (B.isInfixOf wideFields . toHex <$$> signEip1559Tx g txKey wide)
       `shouldReturn` Right True
   where
     to = right $ strDecode "0x3535353535353535353535353535353535353535"
