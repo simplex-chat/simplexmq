@@ -15,6 +15,10 @@ module Simplex.Messaging.Server.MsgStore.STM
   ( STMMsgStore (..),
     STMStoreConfig (..),
     STMQueue,
+    loadedQueueCounts,
+    getQueueMessages,
+    setOverQuota_,
+    deleteQuotaMsg,
   )
 where
 
@@ -24,7 +28,8 @@ import Control.Monad.Trans.Except
 import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
-import Data.Text (Text)
+import Data.Maybe (catMaybes)
+import Data.Time.Clock.System (SystemTime (systemSeconds))
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
@@ -61,12 +66,8 @@ instance StoreQueueClass STMQueue where
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  withQueueLock _ _ = id
-  {-# INLINE withQueueLock #-}
 
 instance MsgStoreClass STMMsgStore where
-  type StoreMonad STMMsgStore = STM
-  type MsgQueue STMMsgStore = STMMsgQueue
   type QueueStore STMMsgStore = STMQueueStore STMQueue
   type StoreQueue STMMsgStore = STMQueue
   type MsgStoreConfig STMMsgStore = STMStoreConfig
@@ -78,58 +79,21 @@ instance MsgStoreClass STMMsgStore where
 
   closeMsgStore = closeQueueStore @STMQueue . queueStore_
   {-# INLINE closeMsgStore #-}
-  withActiveMsgQueues = withLoadedQueues . queueStore_
-  {-# INLINE withActiveMsgQueues #-}
-  unsafeWithAllMsgQueues _ = withLoadedQueues . queueStore_
-  {-# INLINE unsafeWithAllMsgQueues #-}
 
   expireOldMessages :: Bool -> STMMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =
-    withLoadedQueues (queueStore_ ms) $ atomically . expireQueueMsgs ms now (now - ttl)
+    withLoadedQueues (queueStore_ ms) $ atomically . expireQueueMsgs (now - ttl)
 
   foldRcvServiceMessages :: STMMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO (Either ErrorType a)
   foldRcvServiceMessages ms serviceId f = fmap Right . foldRcvServiceQueues (queueStore_ ms) serviceId f'
     where
       f' a (q, qr) = runExceptT (tryPeekMsg ms q) >>= f a (recipientId q) . ((qr,) <$$>)
 
-  logQueueStates _ = pure ()
-  {-# INLINE logQueueStates #-}
-  logQueueState _ = pure ()
-  {-# INLINE logQueueState #-}
   queueStore = queueStore_
   {-# INLINE queueStore #-}
 
-  loadedQueueCounts :: STMMsgStore -> IO LoadedQueueCounts
-  loadedQueueCounts STMMsgStore {queueStore_ = st} = do
-    loadedQueueCount <- M.size <$> readTVarIO (queues st)
-    loadedNotifierCount <- M.size <$> readTVarIO (notifiers st)
-    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount = 0, queueLockCount = 0, notifierLockCount = 0}
-
-  mkQueue _ _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
-
-  getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue
-  getMsgQueue _ STMQueue {msgQueue'} _ = readTVar msgQueue' >>= maybe newQ pure
-    where
-      newQ = do
-        msgTQueue <- newTQueue
-        canWrite <- newTVar True
-        size <- newTVar 0
-        let q = STMMsgQueue {msgTQueue, canWrite, size}
-        writeTVar msgQueue' (Just q)
-        pure q
-
-  getPeekMsgQueue :: STMMsgStore -> STMQueue -> STM (Maybe (STMMsgQueue, Message))
-  getPeekMsgQueue _ q@STMQueue {msgQueue'} = readTVar msgQueue' $>>= \mq -> (mq,) <$$> tryPeekMsg_ q mq
-
-  -- does not create queue if it does not exist, does not delete it if it does (can't just close in-memory queue)
-  withIdleMsgQueue :: Int64 -> STMMsgStore -> STMQueue -> (STMMsgQueue -> STM a) -> STM (Maybe a, Int)
-  withIdleMsgQueue _ _ STMQueue {msgQueue'} action = readTVar msgQueue' >>= \case
-    Just q -> do
-      r <- action q
-      sz <- getQueueSize_ q
-      pure (Just r, sz)
-    Nothing -> pure (Nothing, 0)
 
   deleteQueue :: STMMsgStore -> STMQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms q = fst <$$> deleteQueue_ ms q
@@ -140,17 +104,9 @@ instance MsgStoreClass STMMsgStore where
     where
       getSize = maybe (pure 0) (\STMMsgQueue {size} -> readTVarIO size)
 
-  getQueueMessages_ :: Bool -> STMQueue -> STMMsgQueue -> STM [Message]
-  getQueueMessages_ drainMsgs _ = (if drainMsgs then flushTQueue else snapshotTQueue) . msgTQueue
-    where
-      snapshotTQueue q = do
-        msgs <- flushTQueue q
-        mapM_ (writeTQueue q) msgs
-        pure msgs
-
   writeMsg :: STMMsgStore -> STMQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms q' _logState msg = liftIO $ atomically $ do
-    STMMsgQueue {msgTQueue = q, canWrite, size} <- getMsgQueue ms q' True
+    STMMsgQueue {msgTQueue = q, canWrite, size} <- getMsgQueue q'
     canWrt <- readTVar canWrite
     empty <- isEmptyTQueue q
     if canWrt || empty
@@ -166,29 +122,109 @@ instance MsgStoreClass STMMsgStore where
       STMMsgStore {storeConfig = STMStoreConfig {quota}} = ms
       msgQuota = MessageQuota {msgId = messageId msg, msgTs = messageTs msg}
 
-  setOverQuota_ :: STMQueue -> IO ()
-  setOverQuota_ q = readTVarIO (msgQueue' q) >>= mapM_ (\mq -> atomically $ writeTVar (canWrite mq) False)
+  tryPeekMsg :: STMMsgStore -> STMQueue -> ExceptT ErrorType IO (Maybe Message)
+  tryPeekMsg _ q = snd <$$> withPeekMsgQueue q pure
+  {-# INLINE tryPeekMsg #-}
 
-  getQueueSize_ :: STMMsgQueue -> STM Int
-  getQueueSize_ STMMsgQueue {size} = readTVar size
+  tryPeekMsgs :: STMMsgStore -> [STMQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
+  tryPeekMsgs st qs = M.fromList . catMaybes <$> mapM (\q -> (recipientId q,) <$$> tryPeekMsg st q) qs
 
-  tryPeekMsg_ :: STMQueue -> STMMsgQueue -> STM (Maybe Message)
-  tryPeekMsg_ _ = tryPeekTQueue . msgTQueue
-  {-# INLINE tryPeekMsg_ #-}
+  tryDelMsg :: STMMsgStore -> STMQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message)
+  tryDelMsg _ q msgId' =
+    withPeekMsgQueue q $
+      maybe (pure Nothing) $ \(mq, msg) ->
+        if messageId msg == msgId'
+          then tryDeleteMsg_ mq $> Just msg
+          else pure Nothing
 
-  tryDeleteMsg_ :: STMQueue -> STMMsgQueue -> Bool -> STM ()
-  tryDeleteMsg_ _ STMMsgQueue {msgTQueue = q, size} _logState =
-    tryReadTQueue q >>= \case
-      Just _ -> modifyTVar' size (subtract 1)
-      _ -> pure ()
+  tryDelPeekMsg :: STMMsgStore -> STMQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
+  tryDelPeekMsg _ q msgId' =
+    withPeekMsgQueue q $
+      maybe (pure (Nothing, Nothing)) $ \(mq, msg) ->
+        if messageId msg == msgId'
+          then (Just msg,) <$> (tryDeleteMsg_ mq >> tryPeekMsg_ mq)
+          else pure (Nothing, Just msg)
 
-  isolateQueue :: STMMsgStore -> STMQueue -> Text -> STM a -> ExceptT ErrorType IO a
-  isolateQueue _ _ _ = liftIO . atomically
-  {-# INLINE isolateQueue #-}
+  deleteExpiredMsgs :: STMMsgStore -> STMQueue -> Int64 -> ExceptT ErrorType IO Int
+  deleteExpiredMsgs _ q old = liftIO $ atomically $ getMsgQueue q >>= deleteExpireMsgs_ old
 
-  unsafeRunStore :: STMQueue -> Text -> STM a -> IO a
-  unsafeRunStore _ _ = atomically
-  {-# INLINE unsafeRunStore #-}
+  getQueueSize :: STMMsgStore -> STMQueue -> ExceptT ErrorType IO Int
+  getQueueSize _ q = withPeekMsgQueue q $ maybe (pure 0) (getQueueSize_ . fst)
+  {-# INLINE getQueueSize #-}
+
+loadedQueueCounts :: STMMsgStore -> IO LoadedQueueCounts
+loadedQueueCounts STMMsgStore {queueStore_ = st} = do
+  loadedQueueCount <- M.size <$> readTVarIO (queues st)
+  loadedNotifierCount <- M.size <$> readTVarIO (notifiers st)
+  pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount}
+
+getMsgQueue :: STMQueue -> STM STMMsgQueue
+getMsgQueue STMQueue {msgQueue'} = readTVar msgQueue' >>= maybe newQ pure
+  where
+    newQ = do
+      msgTQueue <- newTQueue
+      canWrite <- newTVar True
+      size <- newTVar 0
+      let q = STMMsgQueue {msgTQueue, canWrite, size}
+      writeTVar msgQueue' (Just q)
+      pure q
+
+-- The action is called with Nothing when it is known that the queue is empty
+withPeekMsgQueue :: STMQueue -> (Maybe (STMMsgQueue, Message) -> STM a) -> ExceptT ErrorType IO a
+withPeekMsgQueue STMQueue {msgQueue'} a =
+  liftIO $ atomically $ (readTVar msgQueue' $>>= \mq -> (mq,) <$$> tryPeekMsg_ mq) >>= a
+
+getQueueMessages :: Bool -> STMQueue -> IO [Message]
+getQueueMessages drainMsgs q = atomically $ (if drainMsgs then flushTQueue else snapshotTQueue) . msgTQueue =<< getMsgQueue q
+  where
+    snapshotTQueue mq = do
+      msgs <- flushTQueue mq
+      mapM_ (writeTQueue mq) msgs
+      pure msgs
+
+-- can ONLY be used while restoring messages, not while server running
+setOverQuota_ :: STMQueue -> IO ()
+setOverQuota_ q = readTVarIO (msgQueue' q) >>= mapM_ (\mq -> atomically $ writeTVar (canWrite mq) False)
+
+-- if the first message in queue head is "quota", remove it
+deleteQuotaMsg :: STMQueue -> ExceptT ErrorType IO ()
+deleteQuotaMsg q =
+  withPeekMsgQueue q $ \case
+    Just (mq, MessageQuota {}) -> tryDeleteMsg_ mq
+    _ -> pure ()
+
+expireQueueMsgs :: Int64 -> STMQueue -> STM MessageStats
+expireQueueMsgs old STMQueue {msgQueue'} =
+  readTVar msgQueue' >>= \case
+    Just mq -> do
+      expiredMsgsCount <- deleteExpireMsgs_ old mq
+      storedMsgsCount <- getQueueSize_ mq
+      pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
+    -- does not create queue if it does not exist
+    Nothing -> pure newMessageStats {storedQueues = 1}
+
+deleteExpireMsgs_ :: Int64 -> STMMsgQueue -> STM Int
+deleteExpireMsgs_ old mq = loop 0
+  where
+    loop dc =
+      tryPeekMsg_ mq >>= \case
+        Just Message {msgTs}
+          | systemSeconds msgTs < old ->
+              tryDeleteMsg_ mq >> loop (dc + 1)
+        _ -> pure dc
+
+getQueueSize_ :: STMMsgQueue -> STM Int
+getQueueSize_ STMMsgQueue {size} = readTVar size
+
+tryPeekMsg_ :: STMMsgQueue -> STM (Maybe Message)
+tryPeekMsg_ = tryPeekTQueue . msgTQueue
+{-# INLINE tryPeekMsg_ #-}
+
+tryDeleteMsg_ :: STMMsgQueue -> STM ()
+tryDeleteMsg_ STMMsgQueue {msgTQueue = q, size} =
+  tryReadTQueue q >>= \case
+    Just _ -> modifyTVar' size (subtract 1)
+    _ -> pure ()
 
 deleteQueue_ :: STMMsgStore -> STMQueue -> IO (Either ErrorType (QueueRec, Maybe STMMsgQueue))
 deleteQueue_ ms q = deleteStoreQueue (queueStore_ ms) q >>= mapM remove

@@ -24,7 +24,6 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
-import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -46,17 +45,14 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SMSType (..), SQSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Util (whenM)
-import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.Directory (doesFileExist, removeFile)
 import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
 import System.Timeout
@@ -66,7 +62,11 @@ import Util
 
 #if defined(dbServerPostgres)
 import CoreTests.MsgStoreTests (testPostgresStoreConfig)
+import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
+import Simplex.Messaging.Server.MsgStore.STM (STMStoreConfig (..))
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), newMsgStore)
+import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 #endif
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
@@ -1068,7 +1068,6 @@ testRestoreMessages =
   it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
     removeFileIfExists testStoreLogFile
     removeFileIfExists testStoreMsgsFile
-    whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFileIfExists testServerStatsBackupFile
 
     g <- C.newRandom
@@ -1138,7 +1137,6 @@ testRestoreMessages =
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
     removeFileIfExists testStoreMsgsFile
-    whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFile testServerStatsBackupFile
   where
     runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
@@ -1218,28 +1216,21 @@ testRestoreExpireMessages =
   where
     exportStoreMessages :: AStoreType -> IO ()
     exportStoreMessages = \case
-      ASType _ SMSJournal -> export
       ASType _ SMSPostgres -> exportDB
       ASType _ SMSMemory -> pure ()
       where
-        export = do
-          ms <- readWriteQueues
-          exportMessages False (StoreJournal ms) testStoreMsgsFile False
-          closeMsgStore ms
 #if defined(dbServerPostgres)
         exportDB = do
-          readWriteQueues >>= closeMsgStore
+          ms <- newMsgStore STMStoreConfig {storePath = Nothing, quota = 4}
+          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          removeFileIfExists testStoreMsgsFile
+          closeMsgStore ms
           ms' <- newMsgStore (testPostgresStoreConfig {quota = 4} :: PostgresMsgStoreCfg)
           _n <- withFile testStoreMsgsFile WriteMode $ exportDbMessages False ms'
           closeMsgStore ms'
 #else
         exportDB = error "compiled without server_postgres flag"
 #endif
-        readWriteQueues = do
-          ms <- newMsgStore ((testJournalStoreCfg MQStoreCfg) {quota = 4} :: JournalStoreConfig 'QSMemory)
-          readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
-          removeFileIfExists testStoreMsgsFile
-          pure ms
     runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
@@ -1549,7 +1540,7 @@ testMsgExpireOnInterval =
   it "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}, idleQueueInterval = 1}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub

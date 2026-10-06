@@ -83,7 +83,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("enable = " <> onOff enableStoreLog <> "\n\n")
     <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
         \# `memory` - in-memory persistence, with optional append-only log (`enable = on`).\n\
-        \# `database`- PostgreSQL databass (requires `store_messages = journal`).\n\
+        \# `database`- PostgreSQL databass (requires `store_messages = database`).\n\
         \store_queues = memory\n\n\
         \# Database connection settings for PostgreSQL database (`store_queues = database`).\n"
     <> iniDbOpts dbOptions defaultDBOpts
@@ -91,7 +91,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# db_store_log = off\n\n\
         \# Time to retain deleted queues in the database, days.\n"
     <> ("# db_deleted_ttl = " <> tshow defaultDeletedTTL <> "\n\n")
-    <> "# Message storage mode: `memory` or `journal`.\n\
+    <> "# Message storage mode: `memory` or `database` (requires `store_queues = database`).\n\
         \store_messages = memory\n\n\
         \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
         \# when the server restarts, they are preserved in the .bak file until the next restart.\n"
