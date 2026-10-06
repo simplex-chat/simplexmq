@@ -688,7 +688,7 @@ hasMigrations :: DBStore -> Expectation
 hasMigrations st = getMigrations st `shouldReturn` True
 
 errorGettingMigrations :: DBStore -> Expectation
-errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
+errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "withTransaction: database closed" `isInfixOf` show e
 
 testGetPendingQueueMsg :: DBStore -> Expectation
 testGetPendingQueueMsg st = do

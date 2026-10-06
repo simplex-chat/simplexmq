@@ -136,7 +136,9 @@ skipComparisonForDownMigrations =
     -- snd_secure and last_broker_ts columns swap order on down migration
     "m20250322_short_links",
     -- on down migration idx_processed_ratchet_key_hashes_hash index moves down to the end of the file
-    "m20260929_ratchet_indexes"
+    "m20260929_ratchet_indexes",
+    -- sqlite_sequence moves after commands table after VACUUM
+    "m20261005_commands_autoincrement"
   ]
 
 getSchema :: FilePath -> FilePath -> IO String
