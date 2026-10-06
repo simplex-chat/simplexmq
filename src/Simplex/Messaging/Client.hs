@@ -675,19 +675,22 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       where
         loop :: Int64 -> IO ()
         loop delay = do
-          threadDelay' delay
+          -- the client is dropped here, so the loop cannot sleep past the next request timeout
+          threadDelay' $ if maxCnt > 0 then min delay requestTimeout else delay
           diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
-          if remaining > 1_000_000 -- delay pings only for significant time
-            then loop remaining
-            else do
-              whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (protocolPing @v @err @msg)
-              -- sendProtocolCommand/getResponse updates counter for each command
-              cnt <- readTVarIO timeoutErrorCount
-              -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
-              when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
-        recoverWindow = 15 * 60 -- seconds
+              due = remaining <= 1_000_000 -- delay pings only for significant time
+          when due $ whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (protocolPing @v @err @msg)
+          -- sendProtocolCommand/getResponse updates counter for each command
+          cnt <- readTVarIO timeoutErrorCount
+          -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
+          when (maxCnt == 0 || cnt < maxCnt || idle < recoverWindow) $ loop $ if due then smpPingInterval else remaining
+        -- the counter only changes when a request times out, so nothing is lost by checking it that often
+        requestTimeout = fromIntegral $ netTimeoutInt tcpTimeout NRMBackground
+        -- the counter requires maxCnt requests to time out, so the window only has to cover their timeouts,
+        -- with a floor, so that a low request timeout cannot drop a connection that is only slow
+        recoverWindow = max 90_000000 $ fromIntegral maxCnt * requestTimeout
         maxCnt = smpPingCount networkConfig
 
     process :: ProtocolClient v err msg -> IO ()
