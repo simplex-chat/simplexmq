@@ -106,6 +106,7 @@ serverTests = do
     testMsgExpireOnInterval
     testMsgNOTExpireOnInterval
   describe "Blocking queues" $ testBlockMessageQueue
+  describe "Inactive clients" testInactiveClientExpiration
   describe "Short links" $ do
     testInvQueueLinkData
     testContactQueueLinkData
@@ -1562,6 +1563,23 @@ testMsgExpireOnInterval =
           1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
+
+testInactiveClientExpiration :: SpecWith (ASrvTransport, AStoreType)
+testInactiveClientExpiration =
+  it "should disconnect inactive clients without subscriptions" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
+    g <- C.newRandom
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
+      testSMPClient @c $ \rh -> testSMPClient @c $ \h -> do
+        Resp "1" NoEntity (Ids _ _ _) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
+        threadDelay 2500000
+        try (timeout 2000000 $ tGet1 h) >>= \case
+          Left (_ :: SomeException) -> pure ()
+          Right r -> unexpected (r :: Maybe (Transmission (Either ErrorType BrokerMsg)))
+        Resp "2" NoEntity PONG <- sendRecv rh (Nothing, "2", NoEntity, PING)
+        pure ()
 
 testMsgNOTExpireOnInterval :: SpecWith (ASrvTransport, AStoreType)
 testMsgNOTExpireOnInterval =

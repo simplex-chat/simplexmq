@@ -465,7 +465,8 @@ data Client s = Client
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
-    sndActiveAt :: TVar SystemTime
+    sndActiveAt :: TVar SystemTime,
+    closeTransport :: IO ()
   }
 
 type VerifiedTransmission s = (Maybe (StoreQueue s, QueueRec), Transmission Cmd)
@@ -520,8 +521,8 @@ newServerSubscribers = do
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
-newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client s)
-newClient clientId qSize clientTHParams createdAt = do
+newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO () -> IO (Client s)
+newClient clientId qSize clientTHParams createdAt closeTransport = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   serviceSubscribed <- newTVarIO False
@@ -556,7 +557,8 @@ newClient clientId qSize clientTHParams createdAt = do
         connected,
         createdAt,
         rcvActiveAt,
-        sndActiveAt
+        sndActiveAt,
+        closeTransport
       }
 
 newSubscription :: SubscriptionThread -> STM Sub
