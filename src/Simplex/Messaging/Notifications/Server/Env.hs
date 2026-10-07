@@ -170,6 +170,9 @@ data SMPSubscriber = SMPSubscriber
   { smpServer :: SMPServer,
     smpServerId :: Int64,
     subscriberSubQ :: TQueue ServerNtfSub,
+    -- TQueue is unbounded and has no length operation - this counter is updated in the
+    -- same transaction as the queue itself, so it cannot drift from the queue contents
+    subscriberSubQLen :: TVar Int,
     subThreadId :: Weak ThreadId
   }
 
