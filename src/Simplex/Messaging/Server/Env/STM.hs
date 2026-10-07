@@ -29,8 +29,6 @@ module Simplex.Messaging.Server.Env.STM
     Server (..),
     ServerSubscribers (..),
     SubscribedClients,
-    SubKey,
-    subKey,
     ProxyAgent (..),
     Client (..),
     ClientId,
@@ -87,7 +85,6 @@ import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
-import Data.ByteString.Short (ShortByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -391,53 +388,45 @@ data ServerSubscribers s = ServerSubscribers
 -- any STM transaction that reads subscribed client will re-evaluate in this case.
 -- The subscriptions that were made at any point are not removed -
 -- this is a better trade-off with intermittently connected mobile clients.
-data SubscribedClients s = SubscribedClients (TMap SubKey (TVar (Maybe (Client s))))
+data SubscribedClients s = SubscribedClients (TMap EntityId (TVar (Maybe (Client s))))
 
--- Subscription maps use unpinned keys. A pinned key keeps its whole pinned block alive, and with it
--- the weak pointers and finalizers of dead crypto keys allocated in that block (~5 KB per subscription).
-type SubKey = ShortByteString
-
-subKey :: EntityId -> SubKey
-subKey = unEntityId
-{-# INLINE subKey #-}
-
-getSubscribedClients :: SubscribedClients s -> IO (Map SubKey (TVar (Maybe (Client s))))
+getSubscribedClients :: SubscribedClients s -> IO (Map EntityId (TVar (Maybe (Client s))))
 getSubscribedClients (SubscribedClients cs) = readTVarIO cs
 
 getSubscribedClient :: EntityId -> SubscribedClients s -> IO (Maybe (TVar (Maybe (Client s))))
-getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO (subKey entId) cs
+getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO entId cs
 {-# INLINE getSubscribedClient #-}
 
 -- insert subscribed and current client, return previously subscribed client if it is different
-upsertSubscribedClient :: SubKey -> Client s -> SubscribedClients s -> STM (Maybe (Client s))
-upsertSubscribedClient k c (SubscribedClients cs) =
-  TM.lookup k cs >>= \case
-    Nothing -> Nothing <$ TM.insertM k (newTVar (Just c)) cs
+upsertSubscribedClient :: EntityId -> Client s -> SubscribedClients s -> STM (Maybe (Client s))
+upsertSubscribedClient entId c (SubscribedClients cs) =
+  TM.lookup entId cs >>= \case
+    Nothing -> Nothing <$ TM.insertM entId (newTVar (Just c)) cs
     Just cv ->
       readTVar cv >>= \case
         Just c' | sameClientId c c' -> pure Nothing
         c_ -> c_ <$ writeTVar cv (Just c)
 
 lookupSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
-lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup (subKey entId) cs $>>= readTVar
+lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup entId cs $>>= readTVar
 {-# INLINE lookupSubscribedClient #-}
 
 -- lookup and delete currently subscribed client
 lookupDeleteSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
 lookupDeleteSubscribedClient entId (SubscribedClients cs) =
-  TM.lookupDelete (subKey entId) cs $>>= (`swapTVar` Nothing)
+  TM.lookupDelete entId cs $>>= (`swapTVar` Nothing)
 {-# INLINE lookupDeleteSubscribedClient #-}
 
-deleteSubcribedClient :: SubKey -> Client s -> SubscribedClients s -> IO ()
-deleteSubcribedClient k c (SubscribedClients cs) =
+deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients s -> IO ()
+deleteSubcribedClient entId c (SubscribedClients cs) =
   -- lookup of the subscribed client TVar can be in separate transaction,
   -- as long as the client is read in the same transaction -
   -- it prevents removing the next subscribed client and also avoids STM contention for the Map.
-  TM.lookupIO k cs >>= mapM_ (\cv -> atomically $ whenM (sameClient c cv) $ delete cv)
+  TM.lookupIO entId cs >>= mapM_ (\cv -> atomically $ whenM (sameClient c cv) $ delete cv)
   where
     delete cv = do
       writeTVar cv Nothing
-      TM.delete k cs
+      TM.delete entId cs
 
 sameClientId :: Client s -> (Client s) -> Bool
 sameClientId c c' = clientId c == clientId c'
@@ -448,7 +437,7 @@ sameClient c cv = maybe False (sameClientId c) <$> readTVar cv
 {-# INLINE sameClient #-}
 
 data ClientSub
-  = CSClient QueueId SubKey (Maybe ServiceId) (Maybe ServiceId) -- includes the key in client subscriptions, previous and new associated service IDs
+  = CSClient QueueId (Maybe ServiceId) (Maybe ServiceId) -- includes previous and new associated service IDs
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
   | CSService ServiceId (Int64, IdsHash) -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
@@ -460,8 +449,8 @@ type ClientId = Int
 
 data Client s = Client
   { clientId :: ClientId,
-    subscriptions :: TMap SubKey Sub,
-    ntfSubscriptions :: TMap SubKey (),
+    subscriptions :: TMap RecipientId Sub,
+    ntfSubscriptions :: TMap NotifierId (),
     serviceSubscribed :: TVar Bool, -- set independently of serviceSubsCount, to track whether service subscription command was received
     ntfServiceSubscribed :: TVar Bool,
     serviceSubsCount :: TVar (Int64, IdsHash), -- only one service can be subscribed, based on its certificate, this is subscription count
