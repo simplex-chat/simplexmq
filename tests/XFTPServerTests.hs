@@ -20,6 +20,7 @@ import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Short as SBS
 import qualified Data.CaseInsensitive as CI
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
@@ -104,7 +105,7 @@ createXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> FileInfo -> NonEmpty C.APu
 createXFTPChunk c spKey file rcps auth = (\(sId, rIds, _) -> (sId, rIds)) <$> A.createXFTPChunk c spKey file rcps auth Nothing
 
 readChunk :: XFTPFileId -> IO ByteString
-readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
+readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ SBS.fromShort $ unEntityId sId))
 
 testFileChunkDelivery :: AFStoreType -> Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c

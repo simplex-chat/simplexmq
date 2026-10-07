@@ -31,6 +31,7 @@ import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Short as SBS
 import Simplex.Messaging.Agent.Client (cryptoError)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -47,7 +48,7 @@ userDataPaddedLength = 13784 -- 13824 - 24 - 16
 contactShortLinkKdf :: LinkKey -> (LinkId, C.SbKey)
 contactShortLinkKdf (LinkKey k) =
   let (lnkId, sbKey) = B.splitAt 24 $ C.hkdf "" k "SimpleXContactLink" 56
-   in (EntityId lnkId, C.unsafeSbKey sbKey)
+   in (EntityId $ SBS.toShort lnkId, C.unsafeSbKey sbKey)
 
 invShortLinkKdf :: LinkKey -> C.SbKey
 invShortLinkKdf (LinkKey k) = C.unsafeSbKey $ C.hkdf "" k "SimpleXInvLink" 32

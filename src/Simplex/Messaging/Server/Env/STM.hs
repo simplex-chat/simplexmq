@@ -88,7 +88,6 @@ import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.ByteString.Short (ShortByteString)
-import qualified Data.ByteString.Short as SBS
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -399,7 +398,7 @@ data SubscribedClients s = SubscribedClients (TMap SubKey (TVar (Maybe (Client s
 type SubKey = ShortByteString
 
 subKey :: EntityId -> SubKey
-subKey = SBS.toShort . unEntityId
+subKey = unEntityId
 {-# INLINE subKey #-}
 
 getSubscribedClients :: SubscribedClients s -> IO (Map SubKey (TVar (Maybe (Client s))))

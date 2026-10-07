@@ -211,6 +211,7 @@ import Data.Bifunctor (bimap, first, second)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Composition ((.:), (.:.))
 import Data.Containers.ListUtils (nubOrd)
 import Data.Either (isRight, partitionEithers)
@@ -1161,7 +1162,7 @@ withLogClient c nm tSess entId cmdStr action = withLogClient_ c nm tSess entId c
 withSMPClient :: SMPQueueRec q => AgentClient -> NetworkRequestMode -> q -> ByteString -> (SMPClient -> ExceptT SMPClientError IO a) -> AM a
 withSMPClient c nm q cmdStr action = do
   tSess <- mkSMPTransportSessionIO c q
-  withLogClient c nm tSess (unEntityId $ queueId q) cmdStr $ action . connectedClient
+  withLogClient c nm tSess (SBS.fromShort $ unEntityId $ queueId q) cmdStr $ action . connectedClient
 
 sendOrProxySMPMessage :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> ConnId -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
 sendOrProxySMPMessage c nm userId destSrv connId cmdStr spKey_ senderId msgFlags msg =
@@ -1255,7 +1256,7 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
           | serverHostError e -> ifM directAllowed ((Nothing,) <$> sendDirectly destSess) (throwE e)
           | otherwise -> throwE e
     sendDirectly tSess =
-      withLogClient_ c nm tSess (unEntityId entId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
+      withLogClient_ c nm tSess (SBS.fromShort $ unEntityId entId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
         tryAllErrors (liftClient SMP (clientServer smp) $ sendCmdDirectly smp) >>= \case
           Right r -> r <$ atomically (incSMPServerStat c userId destSrv sentDirect)
           Left e -> throwE e
@@ -1270,7 +1271,7 @@ ipAddressProtected NetworkConfig {socksProxy, socksMode, hostMode} (ProtocolServ
     isOnionHost = \case THOnionHost _ -> True; _ -> False
 
 withNtfClient :: AgentClient -> NetworkRequestMode -> NtfServer -> EntityId -> ByteString -> (NtfClient -> ExceptT NtfClientError IO a) -> AM a
-withNtfClient c nm srv (EntityId entId) = withLogClient c nm (0, srv, Nothing) entId
+withNtfClient c nm srv (EntityId entId) = withLogClient c nm (0, srv, Nothing) $ SBS.fromShort entId
 
 withXFTPClient ::
   ProtocolServerClient v err msg =>
@@ -1929,7 +1930,7 @@ getSubscriptions = readTVarIO . subscrConns
 {-# INLINE getSubscriptions #-}
 
 logServer :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> EntityId -> ByteString -> m ()
-logServer dir c srv = logServer' dir c srv . unEntityId
+logServer dir c srv = logServer' dir c srv . SBS.fromShort . unEntityId
 {-# INLINE logServer #-}
 
 logServer' :: MonadIO m => ByteString -> AgentClient -> ProtocolServer s -> ByteString -> ByteString -> m ()
@@ -1942,7 +1943,7 @@ showServer ProtocolServer {host, port} =
 {-# INLINE showServer #-}
 
 logSecret :: EntityId -> ByteString
-logSecret = logSecret' . unEntityId
+logSecret = logSecret' . SBS.fromShort . unEntityId
 {-# INLINE logSecret #-}
 
 logSecret' :: ByteString -> ByteString
@@ -2007,14 +2008,14 @@ deleteQueueLink c nm rq@RcvQueue {rcvId, rcvPrivateKey} =
 
 secureGetQueueLink :: AgentClient -> NetworkRequestMode -> UserId -> InvShortLink -> AM (SMP.SenderId, QueueLinkData)
 secureGetQueueLink c nm userId InvShortLink {server, linkId, sndPrivateKey} =
-  snd <$> sendOrProxySMPCommand c nm userId server (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server (SBS.fromShort $ unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
   where
     secureGetViaProxy smp proxySess = proxySecureGetSMPQueueLink smp nm proxySess sndPrivateKey linkId
     secureGetDirectly smp = secureGetSMPQueueLink smp nm sndPrivateKey linkId
 
 getQueueLink :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SMP.LinkId -> AM (SMP.SenderId, QueueLinkData)
 getQueueLink c nm userId server lnkId =
-  snd <$> sendOrProxySMPCommand c nm userId server (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server (SBS.fromShort $ unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
   where
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp nm proxySess lnkId
     getDirectly smp = getSMPQueueLink smp nm lnkId
@@ -2148,7 +2149,7 @@ getQueueInfo c nm rq@RcvQueue {server, rcvId, rcvPrivateKey, sndId, status, clie
     let ntfId = enc . (\ClientNtfCreds {notifierId} -> notifierId) <$> clientNtfCreds
     pure ServerQueueInfo {server, rcvId = enc rcvId, sndId = enc sndId, ntfId, status = serializeQueueStatus status, info}
   where
-    enc = decodeLatin1 . B64.encode . unEntityId
+    enc = decodeLatin1 . B64.encode . SBS.fromShort . unEntityId
 
 agentNtfRegisterToken :: AgentClient -> NetworkRequestMode -> NtfToken -> SMP.NtfPublicAuthKey -> C.PublicKeyX25519 -> AM (NtfTokenId, C.PublicKeyX25519)
 agentNtfRegisterToken c nm NtfToken {deviceToken, ntfServer, ntfPrivKey} ntfPubKey pubDhKey =

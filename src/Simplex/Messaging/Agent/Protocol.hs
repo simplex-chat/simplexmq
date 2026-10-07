@@ -212,6 +212,7 @@ import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Char (toLower, toUpper)
 import Data.Foldable (find)
 import Data.Functor (($>))
@@ -1720,7 +1721,7 @@ instance FromJSON AConnectionLink where
 
 instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
   strEncode = \case
-    CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' lnkId k
+    CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k) -> slEncode sch srv 'i' (SBS.fromShort lnkId) k
     CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
     where
       slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
@@ -1750,7 +1751,7 @@ instance StrEncoding AConnShortLink where
         lnkId <- strP <* A.char '/'
         k <- strP
         srv <- serverQueryP h_
-        pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId lnkId) (LinkKey k)
+        pure $ ACSL SCMInvitation $ CSLInvitation sch srv (SMP.EntityId $ SBS.toShort lnkId) (LinkKey k)
       Just ct -> do
         k <- strP
         srv <- serverQueryP h_

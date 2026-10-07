@@ -62,6 +62,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Short as SBS
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -233,7 +234,7 @@ deleteNtfToken st tknId =
     toServerSubs :: SMPServerRow :. Only Text -> (SMPServer, [NotifierId])
     toServerSubs (srv :. Only nIdsStr) = (rowToSrv srv, parseByteaString nIdsStr)
     parseByteaString :: Text -> [NotifierId]
-    parseByteaString s = mapMaybe (fmap EntityId . decodeHex . T.drop 2) $ T.splitOn "," s  -- drop 2 to remove "\\x"
+    parseByteaString s = mapMaybe (fmap (EntityId . SBS.toShort) . decodeHex . T.drop 2) $ T.splitOn "," s  -- drop 2 to remove "\\x"
 
 type SMPServerRow = (NonEmpty TransportHost, ServiceName, C.KeyHash)
 

@@ -18,6 +18,7 @@ module SMPClient where
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Short as SBS
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
@@ -452,7 +453,7 @@ smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >
       pure ()
     tGet' h = do
       [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
-      pure (Nothing, corrId, qId, cmd)
+      pure (Nothing, corrId, SBS.fromShort qId, cmd)
 
 smpTest :: (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest _ msType test' = runSmpTest msType test' `shouldReturn` ()

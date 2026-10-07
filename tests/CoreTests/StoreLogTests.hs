@@ -14,6 +14,7 @@ import Control.Monad
 import CoreTests.MsgStoreTests
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Either (partitionEithers)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
@@ -79,7 +80,7 @@ storeLogTests =
     ((rId, qr), ntfCreds, date, sr@ServiceRec {serviceId}) <- runIO $
       (,,,) <$> testNewQueueRec g qm <*> testNtfCreds g <*> getSystemDate <*> newTestServiceRec g
     ((rId', qr'), lnkId, qd) <- runIO $ do
-      lnkId <- atomically $ EntityId <$> C.randomBytes 24 g
+      lnkId <- atomically $ EntityId . SBS.toShort <$> C.randomBytes 24 g
       let qd = (EncDataBytes "fixed data", EncDataBytes "user data")
       q <- testNewQueueRecData g qm (Just (lnkId, qd))
       pure (q, lnkId, qd)
@@ -157,7 +158,7 @@ storeLogTests =
 
 newTestServiceRec :: TVar ChaChaDRG -> IO ServiceRec
 newTestServiceRec g = do
-  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
+  serviceId <- atomically $ EntityId . SBS.toShort <$> C.randomBytes 24 g
   (_, cert) <- genCredentials g Nothing (0, 2400) "ntf.example.com"
   serviceCreatedAt <- getSystemDate
   pure
@@ -233,7 +234,7 @@ fileStoreLogTests :: Spec
 fileStoreLogTests = do
   g <- runIO C.newRandom
   (sndKey, _) <- runIO $ atomically $ C.generateAuthKeyPair C.SEd25519 g
-  sId <- runIO $ atomically $ EntityId <$> C.randomBytes 24 g
+  sId <- runIO $ atomically $ EntityId . SBS.toShort <$> C.randomBytes 24 g
   let file = FileInfo {sndKey, size = 16384, digest = "12345678"}
       createdAt = RoundedSystemTime 1600000000
       expiresAt = RoundedSystemTime 1600172800

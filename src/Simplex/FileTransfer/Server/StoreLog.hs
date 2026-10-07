@@ -28,6 +28,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Composition ((.:), (.::.))
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -103,7 +104,7 @@ logAckFile :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logAckFile s = logFileStoreRecord s . AckFile
 
 serverFileName :: SenderId -> FilePath
-serverFileName = B.unpack . B64.encode . unEntityId
+serverFileName = B.unpack . B64.encode . SBS.fromShort . unEntityId
 
 readWriteFileStore :: FilePath -> STMFileStore -> IO (StoreLog 'WriteMode)
 readWriteFileStore = readWriteStoreLog readFileStore writeFileStore

@@ -25,6 +25,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Functor (($>))
 import Data.Int (Int32, Int64)
 import Data.List (intersperse)
@@ -333,7 +334,7 @@ fileRecToCSV sId FileRec {fileInfo = FileInfo {sndKey, size, digest}, filePath, 
   pure $ LB.toStrict $ BB.toLazyByteString $ mconcat (BB.char7 ',' `intersperse` fields path status) <> BB.char7 '\n'
   where
     fields path status =
-      [ renderField (toField (Binary (unEntityId sId))),
+      [ renderField (toField (Binary (SBS.fromShort $ unEntityId sId))),
         renderField (toField (fromIntegral size :: Int32)),
         renderField (toField (Binary digest)),
         renderField (toField (Binary (C.encodePubKey sndKey))),
@@ -348,8 +349,8 @@ recipientToCSV rId sId rKey =
   LB.toStrict $ BB.toLazyByteString $ mconcat (BB.char7 ',' `intersperse` fields) <> BB.char7 '\n'
   where
     fields =
-      [ renderField (toField (Binary (unEntityId rId))),
-        renderField (toField (Binary (unEntityId sId))),
+      [ renderField (toField (Binary (SBS.fromShort $ unEntityId rId))),
+        renderField (toField (Binary (SBS.fromShort $ unEntityId sId))),
         renderField (toField (Binary (C.encodePubKey rKey)))
       ]
 

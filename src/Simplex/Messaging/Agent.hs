@@ -173,6 +173,7 @@ import qualified Data.Aeson.TH as JQ
 import Data.Bifunctor (bimap, first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Composition
 import Data.Either (fromRight, isRight, partitionEithers, rights)
 import Data.Foldable (foldl', toList)
@@ -1044,7 +1045,7 @@ prepareConnectionLink' c userId rootKey@(_, plpRootPrivKey) linkEntityId checkNo
   plpNonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
   plpQueueE2EKeys@(e2ePubKey, _) <- atomically $ C.generateKeyPair g
   addrKeys_ <- if useDR then Just <$> generateAddressRatchetKeys pqInitKeys else pure Nothing
-  let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
+  let sndId = SMP.EntityId $ SBS.toShort $ B.take 24 $ C.sha3_384 corrId
       qUri = SMPQueueUri smpClientVRange $ SMPQueueAddress srv sndId e2ePubKey (Just QMContact)
       connReq = CRContactUri (ConnReqUriData SSSimplex smpAgentVRange [qUri] clientData) (fst <$> addrKeys_)
       (plpLinkKey, plpSignedFixedData) = SL.encodeSignFixedData rootKey smpAgentVRange connReq (Just linkEntityId)
@@ -1360,7 +1361,7 @@ newRcvConnSrv c nm userId connId enableNtfs cMode userLinkData_ clientData pqIni
       sigKeys@(_, privSigKey) <- atomically $ C.generateKeyPair @'C.Ed25519 g
       AgentConfig {smpClientVRange = vr, smpAgentVRange} <- asks config
       -- the remaining 24 bytes are reserved, possibly for notifier ID in the new notifications protocol
-      let sndId = SMP.EntityId $ B.take 24 $ C.sha3_384 corrId
+      let sndId = SMP.EntityId $ SBS.toShort $ B.take 24 $ C.sha3_384 corrId
           qm = case cMode of SCMContact -> QMContact; SCMInvitation -> QMMessaging
           qUri = SMPQueueUri vr $ SMPQueueAddress srv sndId e2eDhKey (Just qm)
       connReq <- createConnReq addrKeys_ qUri

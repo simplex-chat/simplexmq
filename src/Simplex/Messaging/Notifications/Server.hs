@@ -32,6 +32,7 @@ import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.Hashable (hash)
@@ -948,7 +949,7 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
           PING -> pure NRPong
       NtfReqPing corrId entId -> pure (corrId, entId, NRPong)
     getId :: M NtfEntityId
-    getId = fmap EntityId . randomBytes =<< asks (subIdBytes . config)
+    getId = fmap (EntityId . SBS.toShort) . randomBytes =<< asks (subIdBytes . config)
     getRegCode :: M NtfRegCode
     getRegCode = NtfRegCode <$> (randomBytes =<< asks (regCodeBytes . config))
     randomBytes :: Int -> M ByteString

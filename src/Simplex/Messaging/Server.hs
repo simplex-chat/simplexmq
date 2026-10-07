@@ -62,6 +62,7 @@ import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
@@ -748,7 +749,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
-      newServiceId <- EntityId <$> atomically (C.randomBytes idSize g)
+      newServiceId <- EntityId . SBS.toShort <$> atomically (C.randomBytes idSize g)
       ts <- liftIO getSystemDate
       let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
@@ -1452,7 +1453,7 @@ client
         ProxyAgent {smpAgent = a} <- asks proxyAgent
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-        liftIO (lookupSMPServerClient a sessId) >>= \case
+        liftIO (lookupSMPServerClient a $ SBS.fromShort sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
             forkProxiedCmd $ do
@@ -1574,9 +1575,9 @@ client
               ntfKeys_ <- forM ntfCreds $ \(NewNtfCreds notifierKey dhKey) -> do
                 (ntfPubDhKey, ntfPrivDhKey) <- atomically $ C.generateKeyPair g
                 pure (notifierKey, C.dh' dhKey ntfPrivDhKey, ntfPubDhKey)
-              let randId = EntityId <$> atomically (C.randomBytes idSize g)
+              let randId = EntityId . SBS.toShort <$> atomically (C.randomBytes idSize g)
                   -- the remaining 24 bytes are reserved, possibly for notifier ID in the new notifications protocol
-                  sndId' = B.take 24 $ C.sha3_384 (bs corrId)
+                  sndId' = EntityId $ SBS.toShort $ B.take 24 $ C.sha3_384 (bs corrId)
                   tryCreate 0 = pure $ ERR INTERNAL
                   tryCreate n = do
                     (sndId, clntIds, queueData) <- case queueReqData of
@@ -1586,7 +1587,7 @@ client
                     -- The condition that client-provided sender ID must match hash of correlation ID
                     -- prevents "ID oracle" attack, when creating queue with supplied ID can be used to check
                     -- if queue with this ID still exists.
-                    if clntIds && unEntityId sndId /= sndId'
+                    if clntIds && sndId /= sndId'
                       then pure $ ERR $ CMD PROHIBITED
                       else do
                         rcvId <- randId
@@ -2269,7 +2270,7 @@ randomId' :: Int -> M s ByteString
 randomId' n = atomically . C.randomBytes n =<< asks random
 
 randomId :: Int -> M s EntityId
-randomId = fmap EntityId . randomId'
+randomId = fmap (EntityId . SBS.toShort) . randomId'
 {-# INLINE randomId #-}
 
 saveServerMessages :: Bool -> MsgStore s -> IO ()
@@ -2394,7 +2395,7 @@ importMessages tty ms f old_ skipWarnings  = do
             Right q -> addToQueue_ q rId msg
             Left AUTH -> liftIO $ do
               when tty $ putStrLn ""
-              warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
+              warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ SBS.fromShort $ unEntityId rId) <> " does not exist"
               pure (Nothing, counts)
             Left e -> throwE e
         addToQueue_ q rId msg =

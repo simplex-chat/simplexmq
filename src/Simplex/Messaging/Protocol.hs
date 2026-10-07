@@ -248,6 +248,7 @@ import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
@@ -1553,7 +1554,7 @@ queueIdsHash :: [QueueId] -> IdsHash
 queueIdsHash = mconcat . map queueIdHash
 
 queueIdHash :: QueueId -> IdsHash
-queueIdHash = IdsHash . C.md5Hash . unEntityId
+queueIdHash = IdsHash . C.md5Hash . SBS.fromShort . unEntityId
 {-# INLINE queueIdHash #-}
 
 addServiceSubs :: (Int64, IdsHash) -> (Int64, IdsHash) -> (Int64, IdsHash)
@@ -1868,11 +1869,11 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     -- NEW must have signature but NOT queue ID
     NEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
-      | not (B.null entId) -> Left $ CMD HAS_AUTH
+      | not (SBS.null entId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     -- SEND must have queue ID, signature is not always required
     SEND {}
-      | B.null entId -> Left $ CMD NO_ENTITY
+      | SBS.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     LGET -> entityCmd
     PING -> noAuthCmd
@@ -1884,22 +1885,22 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     NSUB -> serviceCmd
     -- other client commands must have both signature and queue ID
     _
-      | isNothing auth || B.null entId -> Left $ CMD NO_AUTH
+      | isNothing auth || SBS.null entId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     where
       -- command must not have entity ID (queue or session ID) or signature
       noAuthCmd :: Either ErrorType (Command p)
       noAuthCmd
-        | isNothing auth && B.null entId = Right cmd
+        | isNothing auth && SBS.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
       entityCmd :: Either ErrorType (Command p)
       entityCmd
-        | B.null entId = Left $ CMD NO_ENTITY
+        | SBS.null entId = Left $ CMD NO_ENTITY
         | isNothing auth = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
       serviceCmd :: Either ErrorType (Command p)
       serviceCmd
-        | isNothing auth || B.null entId = Left $ CMD NO_AUTH
+        | isNothing auth || SBS.null entId = Left $ CMD NO_AUTH
         | otherwise = Right cmd
 
 instance ProtocolEncoding SMPVersion ErrorType Cmd where
@@ -2086,12 +2087,12 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     RNAME {} -> noEntityMsg
     -- other broker responses must have queue ID
     _
-      | B.null entId -> Left $ CMD NO_ENTITY
+      | SBS.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     where
       noEntityMsg :: Either ErrorType BrokerMsg
       noEntityMsg
-        | B.null entId = Right cmd
+        | SBS.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
 
 -- | Parse SMP protocol commands and broker messages

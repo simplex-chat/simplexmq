@@ -38,7 +38,7 @@ module Simplex.FileTransfer.Protocol
 import qualified Data.Aeson.TH as J
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -238,14 +238,14 @@ instance FilePartyI p => ProtocolEncoding XFTPVersion XFTPErrorType (FileCommand
     -- FNEW must not have signature and chunk ID
     FNEW {}
       | isNothing auth -> Left $ CMD NO_AUTH
-      | not (B.null fileId) -> Left $ CMD HAS_AUTH
+      | not (SBS.null fileId) -> Left $ CMD HAS_AUTH
       | otherwise -> Right cmd
     PING
-      | isNothing auth && B.null fileId -> Right cmd
+      | isNothing auth && SBS.null fileId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and queue ID
     _
-      | isNothing auth || B.null fileId -> Left $ CMD NO_AUTH
+      | isNothing auth || SBS.null fileId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
 
 instance ProtocolEncoding XFTPVersion XFTPErrorType FileCmd where
@@ -363,11 +363,11 @@ instance ProtocolEncoding XFTPVersion XFTPErrorType FileResponse where
     FRPong -> noEntity
     -- other server responses must have entity ID
     _
-      | B.null entId -> Left $ CMD NO_ENTITY
+      | SBS.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     where
       noEntity
-        | B.null entId = Right cmd
+        | SBS.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
 
 checkParty :: forall t p p'. (FilePartyI p, FilePartyI p') => t p' -> Either String (t p)

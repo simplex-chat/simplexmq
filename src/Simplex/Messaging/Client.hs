@@ -145,6 +145,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Base64 as B64
+import qualified Data.ByteString.Short as SBS
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
@@ -1237,7 +1238,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret (encTransmissionNonce v nonce) b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * netTimeoutInt tcpTimeout nm
-  tryE (sendProtocolCommand_ c nm (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
+  tryE (sendProtocolCommand_ c nm (Just nonce) tOut Nothing (EntityId $ SBS.toShort sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
       PRES nonce_ (EncResponse er) -> do
         -- server interaction errors are thrown directly

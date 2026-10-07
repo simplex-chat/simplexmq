@@ -48,6 +48,7 @@ import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Bitraversable (bimapM)
 import Data.Either (fromRight, lefts)
 import Data.Functor (($>))
@@ -801,9 +802,9 @@ instance ToField SMPServiceRole where toField = toField . decodeLatin1 . smpEnco
 instance FromField SMPServiceRole where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 
 #if !defined(dbPostgres)
-instance ToField EntityId where toField (EntityId s) = toField $ Binary s
+instance ToField EntityId where toField (EntityId s) = toField $ Binary $ SBS.fromShort s
 
-deriving newtype instance FromField EntityId
+instance FromField EntityId where fromField = blobFieldDecoder $ Right . EntityId . SBS.toShort
 
 instance FromField QueueMode where fromField = fromTextField_ $ eitherToMaybe . smpDecode . encodeUtf8
 

@@ -25,6 +25,7 @@ import qualified Data.Aeson.Types as JT
 import Data.ByteString.Builder (lazyByteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
@@ -208,7 +209,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       pure ()
     tGet' h = do
       [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
-      pure (Nothing, corrId, qId, cmd)
+      pure (Nothing, corrId, SBS.fromShort qId, cmd)
 
 ntfTest :: Transport c => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()

@@ -26,6 +26,7 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Int (Int64)
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromJust)
@@ -183,7 +184,7 @@ testNewQueueRecData g qm queueData = do
           }
   pure (rId, qr)
   where
-    rndId = atomically $ EntityId <$> C.randomBytes 24 g
+    rndId = atomically $ EntityId . SBS.toShort <$> C.randomBytes 24 g
 
 testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
@@ -274,7 +275,7 @@ testLinkDataSecuredQueue ms = do
   (sKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let st = queueStore ms
       ld = (EncDataBytes "fixed data", EncDataBytes "user data")
-      rndId = atomically $ EntityId <$> C.randomBytes 24 g
+      rndId = atomically $ EntityId . SBS.toShort <$> C.randomBytes 24 g
   (rId, qr) <- testNewQueueRec g QMMessaging
   (cId, cqr) <- testNewQueueRec g QMContact
   lnkId <- rndId
@@ -459,7 +460,7 @@ testExpireMessagesInBatches ms = do
 testQueueState :: JournalMsgStore s -> IO ()
 testQueueState ms = do
   g <- C.newRandom
-  rId <- EntityId <$> atomically (C.randomBytes 24 g)
+  rId <- EntityId . SBS.toShort <$> atomically (C.randomBytes 24 g)
   let dir = msgQueueDirectory ms rId
       statePath = msgQueueStatePath dir rId
   createDirectoryIfMissing True dir

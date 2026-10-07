@@ -296,6 +296,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Base64.URL as U
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Either (partitionEithers)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -2265,9 +2266,9 @@ instance ToField (Version v) where toField (Version v) = toField v
 
 deriving newtype instance FromField (Version v)
 
-instance ToField EntityId where toField (EntityId s) = toField $ Binary s
+instance ToField EntityId where toField (EntityId s) = toField $ Binary $ SBS.fromShort s
 
-deriving newtype instance FromField EntityId
+instance FromField EntityId where fromField = blobFieldDecoder $ Right . EntityId . SBS.toShort
 
 deriving newtype instance ToField ChunkReplicaId
 

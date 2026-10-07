@@ -29,6 +29,7 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Foldable (foldrM)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
@@ -489,13 +490,13 @@ testDuplex =
       (bDhPub, bDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "abcd" _ (Ids bRcv bSnd bSrvDh) <- signSendRecv bob brKey ("abcd", NoEntity, New brPub bDhPub)
       let bDec = decryptMsgV3 $ C.dh' bSrvDh bDhPriv
-      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> B64.encode (unEntityId bSnd))
+      Resp "bcda" _ OK <- signSendRecv bob bsKey ("bcda", aSnd, _SEND $ "reply_id " <> B64.encode (SBS.fromShort $ unEntityId bSnd))
       -- "reply_id ..." is ad-hoc, not a part of SMP protocol
 
       Resp "" _ (Msg mId2 msg2) <- tGet1 alice
       Resp "cdab" _ OK <- signSendRecv alice arKey ("cdab", aRcv, ACK mId2)
       Right ["reply_id", bId] <- pure $ B.words <$> aDec mId2 msg2
-      (bId, B64.encode (unEntityId bSnd)) #== "reply queue ID received from Bob"
+      (bId, B64.encode (SBS.fromShort $ unEntityId bSnd)) #== "reply queue ID received from Bob"
 
       (asPub, asKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       Resp "dabc" _ OK <- sendRecv alice ("", "dabc", bSnd, _SEND $ "key " <> strEncode asPub)
@@ -1161,9 +1162,9 @@ checkStats s qs sent received = do
   _msgSentNtf s `shouldBe` 0
   _msgRecvNtf s `shouldBe` 0
   let PeriodStatsData {_day, _week, _month} = _activeQueues s
-  IS.toList _day `shouldBe` map (hash . unEntityId) qs
-  IS.toList _week `shouldBe` map (hash . unEntityId) qs
-  IS.toList _month `shouldBe` map (hash . unEntityId) qs
+  IS.toList _day `shouldBe` map (hash . SBS.fromShort . unEntityId) qs
+  IS.toList _week `shouldBe` map (hash . SBS.fromShort . unEntityId) qs
+  IS.toList _month `shouldBe` map (hash . SBS.fromShort . unEntityId) qs
 
 testRestoreExpireMessages :: SpecWith (ASrvTransport, AStoreType)
 testRestoreExpireMessages =
@@ -1616,7 +1617,7 @@ testInvQueueLinkData =
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       C.CbNonce corrId <- atomically $ C.randomCbNonce g
-      let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
+      let sId = EntityId $ SBS.toShort $ B.take 24 $ C.sha3_384 corrId
           ld = (EncDataBytes "fixed data", EncDataBytes "user data")
           qrd = QRMessaging $ Just (sId, ld)
       -- sender ID must be derived from corrId
@@ -1672,8 +1673,8 @@ testContactQueueLinkData =
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       C.CbNonce corrId <- atomically $ C.randomCbNonce g
-      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
-      let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
+      lnkId <- EntityId . SBS.toShort <$> atomically (C.randomBytes 24 g)
+      let sId = EntityId $ SBS.toShort $ B.take 24 $ C.sha3_384 corrId
           ld = (EncDataBytes "fixed data", EncDataBytes "user data")
           qrd = QRContact $ Just (lnkId, (sId, ld))
       -- sender ID must be derived from corrId
@@ -1711,7 +1712,7 @@ testContactQueueLinkData =
       sId4 `shouldBe` sId
       ld3 `shouldBe` newLD
 
-      badLnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      badLnkId <- EntityId . SBS.toShort <$> atomically (C.randomBytes 24 g)
       Resp "9" _ (ERR AUTH) <- signSendRecv r rKey ("9", rId, LSET badLnkId newLD)
 
       let badLD = (EncDataBytes "changed fixed data", EncDataBytes "updated user data 2")
@@ -1732,8 +1733,8 @@ testDuplicateQueueLinkData =
       (victimPub, victimKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (victimDhPub, _victimDhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       C.CbNonce corrId <- atomically $ C.randomCbNonce g
-      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
-      let victimSId = EntityId $ B.take 24 $ C.sha3_384 corrId
+      lnkId <- EntityId . SBS.toShort <$> atomically (C.randomBytes 24 g)
+      let victimSId = EntityId $ SBS.toShort $ B.take 24 $ C.sha3_384 corrId
           victimLD = (EncDataBytes "fixed data", EncDataBytes "victim user data")
           victimQRD = QRContact $ Just (lnkId, (victimSId, victimLD))
           victimReq = NEW (NewQueueReq victimPub victimDhPub Nothing SMSubscribe (Just victimQRD) Nothing)

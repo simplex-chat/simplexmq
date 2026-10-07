@@ -47,6 +47,7 @@ import qualified Data.Aeson.Encoding as JE
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.Functor (($>))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
@@ -248,16 +249,16 @@ instance NtfEntityI e => ProtocolEncoding NTFVersion ErrorType (NtfCommand e) wh
     TNEW {} -> sigNoEntity
     SNEW {} -> sigNoEntity
     PING
-      | isNothing auth && B.null entityId -> Right cmd
+      | isNothing auth && SBS.null entityId -> Right cmd
       | otherwise -> Left $ CMD HAS_AUTH
     -- other client commands must have both signature and entity ID
     _
-      | isNothing auth || B.null entityId -> Left $ CMD NO_AUTH
+      | isNothing auth || SBS.null entityId -> Left $ CMD NO_AUTH
       | otherwise -> Right cmd
     where
       sigNoEntity
         | isNothing auth = Left $ CMD NO_AUTH
-        | not (B.null entityId) = Left $ CMD HAS_AUTH
+        | not (SBS.null entityId) = Left $ CMD HAS_AUTH
         | otherwise = Right cmd
 
 instance ProtocolEncoding NTFVersion ErrorType NtfCmd where
@@ -368,11 +369,11 @@ instance ProtocolEncoding NTFVersion ErrorType NtfResponse where
     NRPong -> noEntity
     -- other server responses must have entity ID
     _
-      | B.null entId -> Left $ CMD NO_ENTITY
+      | SBS.null entId -> Left $ CMD NO_ENTITY
       | otherwise -> Right cmd
     where
       noEntity
-        | B.null entId = Right cmd
+        | SBS.null entId = Right cmd
         | otherwise = Left $ CMD HAS_AUTH
 
 data SMPQueueNtf = SMPQueueNtf

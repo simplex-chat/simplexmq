@@ -120,6 +120,8 @@ import Data.Bitraversable (bimapM)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.ByteString.Short (ShortByteString)
+import qualified Data.ByteString.Short as SBS
 import Data.Default (def)
 import Data.Functor (($>))
 import Data.Int (Int64)
@@ -526,9 +528,20 @@ type SessionId = ByteString
 type ServiceId = EntityId
 
 -- this type is used for server entities only
-newtype EntityId = EntityId {unEntityId :: ByteString}
+-- ShortByteString is unpinned, so long-lived IDs (map keys) do not retain the pinned block they were parsed from
+newtype EntityId = EntityId {unEntityId :: ShortByteString}
   deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, StrEncoding)
+
+instance Encoding EntityId where
+  smpEncode (EntityId s) = smpEncode $ SBS.fromShort s
+  {-# INLINE smpEncode #-}
+  smpP = EntityId . SBS.toShort <$> smpP
+  {-# INLINE smpP #-}
+
+instance StrEncoding EntityId where
+  strEncode (EntityId s) = strEncode $ SBS.fromShort s
+  strDecode = fmap (EntityId . SBS.toShort) . strDecode
+  strP = EntityId . SBS.toShort <$> strP
 
 pattern NoEntity :: EntityId
 pattern NoEntity = EntityId ""

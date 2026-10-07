@@ -10,6 +10,7 @@ module CoreTests.TSessionSubs where
 import AgentTests.EqInstances ()
 import Control.Monad
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Short as SBS
 import Data.List (foldl')
 import qualified Data.Map as M
 import Data.String (IsString (..))
@@ -27,7 +28,7 @@ import Util
 tSessionSubsTests :: Spec
 tSessionSubsTests = it "subscription lifecycle" $ testSessionSubs
 
-instance IsString EntityId where fromString = EntityId . B.pack
+instance IsString EntityId where fromString = EntityId . SBS.toShort . B.pack
 
 dumpSessionSubs :: SS.TSessionSubs -> IO (M.Map SMPTransportSession (Maybe SessionId, (M.Map RecipientId RcvQueueSub, M.Map RecipientId RcvQueueSub)))
 dumpSessionSubs =

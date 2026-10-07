@@ -29,6 +29,7 @@ import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -716,7 +717,7 @@ randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
 
 getFileId :: M s XFTPFileId
-getFileId = fmap EntityId . randomId =<< asks (fileIdSize . config)
+getFileId = fmap (EntityId . SBS.toShort) . randomId =<< asks (fileIdSize . config)
 
 withFileLog :: (StoreLog 'WriteMode -> IO a) -> M s ()
 withFileLog action = liftIO . mapM_ action =<< asks storeLog
