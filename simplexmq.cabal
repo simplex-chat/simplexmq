@@ -196,6 +196,7 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260823_snd_files_entitlement
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260919_ratchet_verify_codes
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260929_ratchet_indexes
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20261008_rcv_switch_status
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -253,6 +254,7 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260919_ratchet_verify_codes
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260929_ratchet_indexes
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261005_commands_autoincrement
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261008_rcv_switch_status
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:

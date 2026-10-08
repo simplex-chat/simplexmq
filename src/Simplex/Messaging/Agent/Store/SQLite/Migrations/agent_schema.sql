@@ -645,6 +645,7 @@ CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_h
   conn_id,
   processed_ratchet_key_hash_id
 );
+CREATE INDEX idx_rcv_queues_switch_status ON rcv_queues(switch_status);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW

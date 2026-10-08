@@ -54,6 +54,7 @@ import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260823_snd_files_entit
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260919_ratchet_verify_codes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260929_ratchet_indexes
 import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261005_commands_autoincrement
+import Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261008_rcv_switch_status
 import Simplex.Messaging.Agent.Store.Shared (Migration (..))
 
 schemaMigrations :: [(String, Query, Maybe Query)]
@@ -107,7 +108,8 @@ schemaMigrations =
     ("m20260823_snd_files_entitlement", m20260823_snd_files_entitlement, Just down_m20260823_snd_files_entitlement),
     ("m20260919_ratchet_verify_codes", m20260919_ratchet_verify_codes, Just down_m20260919_ratchet_verify_codes),
     ("m20260929_ratchet_indexes", m20260929_ratchet_indexes, Just down_m20260929_ratchet_indexes),
-    ("m20261005_commands_autoincrement", m20261005_commands_autoincrement, Just down_m20261005_commands_autoincrement)
+    ("m20261005_commands_autoincrement", m20261005_commands_autoincrement, Just down_m20261005_commands_autoincrement),
+    ("m20261008_rcv_switch_status", m20261008_rcv_switch_status, Just down_m20261008_rcv_switch_status)
   ]
 
 -- | The list of migrations in ascending order by date
