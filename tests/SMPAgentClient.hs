@@ -6,6 +6,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -15,50 +16,51 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import SMPClient (ntfTestPort, testPort)
+import SMPClient (ntfTestPort, ntfTestPort2, testHost, testHost2, testKeyHash, testPort, testPort2)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Client (NetworkTimeout (..), ProtocolClientConfig (..), SMPProxyFallback (..), SMPProxyMode (..), defaultNetworkConfig, defaultSMPClientConfig)
 import Simplex.Messaging.Notifications.Client (defaultNTFClientConfig)
-import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer)
+import Simplex.Messaging.Protocol (NtfServer, ProtoServerWithAuth (..), ProtocolServer, pattern NtfServer)
 import Simplex.Messaging.Transport
+import Util
 import XFTPClient (testXFTPServer)
 
 -- name fixtures are reused, but they are used as schema name instead of database file path
 #if defined(dbPostgres)
-testDB :: String
-testDB = "smp_agent_test_protocol_schema"
+testDB :: HasTestEnv => String
+testDB = testSchemaName "smp_agent_test_protocol_schema"
 
-testDB2 :: String
-testDB2 = "smp_agent2_test_protocol_schema"
+testDB2 :: HasTestEnv => String
+testDB2 = testSchemaName "smp_agent2_test_protocol_schema"
 
-testDB3 :: String
-testDB3 = "smp_agent3_test_protocol_schema"
+testDB3 :: HasTestEnv => String
+testDB3 = testSchemaName "smp_agent3_test_protocol_schema"
 #else
-testDB :: FilePath
-testDB = "tests/tmp/smp-agent.test.protocol.db"
+testDB :: HasTestEnv => FilePath
+testDB = testPath "smp-agent.test.protocol.db"
 
-testDB2 :: FilePath
-testDB2 = "tests/tmp/smp-agent2.test.protocol.db"
+testDB2 :: HasTestEnv => FilePath
+testDB2 = testPath "smp-agent2.test.protocol.db"
 
-testDB3 :: FilePath
-testDB3 = "tests/tmp/smp-agent3.test.protocol.db"
+testDB3 :: HasTestEnv => FilePath
+testDB3 = testPath "smp-agent3.test.protocol.db"
 #endif
 
-testSMPServer :: SMPServer
-testSMPServer = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"
+testSMPServer :: HasTestEnv => SMPServer
+testSMPServer = SMPServer testHost testPort testKeyHash
 
-testSMPServer2 :: SMPServer
-testSMPServer2 = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@127.0.0.1:5002"
+testSMPServer2 :: HasTestEnv => SMPServer
+testSMPServer2 = SMPServer testHost2 testPort2 testKeyHash
 
-testNtfServer :: NtfServer
-testNtfServer = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6001"
+testNtfServer :: HasTestEnv => NtfServer
+testNtfServer = NtfServer testHost ntfTestPort testKeyHash
 
-testNtfServer2 :: NtfServer
-testNtfServer2 = "ntf://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:6002"
+testNtfServer2 :: HasTestEnv => NtfServer
+testNtfServer2 = NtfServer testHost ntfTestPort2 testKeyHash
 
-initAgentServers :: InitialAgentServers
+initAgentServers :: HasTestEnv => InitialAgentServers
 initAgentServers =
   InitialAgentServers
     { smp = userServers [testSMPServer],
@@ -71,23 +73,23 @@ initAgentServers =
       presetServers = []
     }
 
-initAgentServers2 :: InitialAgentServers
+initAgentServers2 :: HasTestEnv => InitialAgentServers
 initAgentServers2 = initAgentServers {smp = userServers [testSMPServer, testSMPServer2]}
 
-initAgentServersProxy :: InitialAgentServers
+initAgentServersProxy :: HasTestEnv => InitialAgentServers
 initAgentServersProxy = initAgentServersProxy_ SPMAlways SPFProhibit
 
-initAgentServersProxy_ :: SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
+initAgentServersProxy_ :: HasTestEnv => SMPProxyMode -> SMPProxyFallback -> InitialAgentServers
 initAgentServersProxy_ smpProxyMode smpProxyFallback =
   initAgentServers {netCfg = (netCfg initAgentServers) {smpProxyMode, smpProxyFallback}}
 
-initAgentServersProxy2 :: InitialAgentServers
+initAgentServersProxy2 :: HasTestEnv => InitialAgentServers
 initAgentServersProxy2 = initAgentServersProxy {smp = userServers [testSMPServer2]}
 
-initAgentServersClientService :: InitialAgentServers
+initAgentServersClientService :: HasTestEnv => InitialAgentServers
 initAgentServersClientService = initAgentServers {useServices = M.fromList [(1, True)]}
 
-agentCfg :: AgentConfig
+agentCfg :: HasTestEnv => AgentConfig
 agentCfg =
   defaultAgentConfig
     { tcpPort = Nothing,

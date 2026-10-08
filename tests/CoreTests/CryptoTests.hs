@@ -146,9 +146,9 @@ instance Eq C.APrivateKey where
     Just Refl -> k == k'
     Nothing -> False
 
-testPadUnpadFile :: IO ()
+testPadUnpadFile :: HasTestEnv => IO ()
 testPadUnpadFile = do
-  let f = "tests/tmp/testpad"
+  let f = testPath "testpad"
       paddedLen = 1024 * 1024
       len = 1000000
       s = LB.replicate len 'a'
@@ -208,7 +208,7 @@ testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random s
   g <- C.newRandom
   k <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  let f = "tests/tmp/testsecretbox"
+  let f = testPath "testsecretbox"
       paddedLen = 4 * 1024 * 1024
       len = 4 * 1000 * 1000 :: Int64
       s = LC.fastReplicate len 'a'
@@ -236,7 +236,7 @@ testLazySecretBoxFileTailTag = it "should lazily encrypt / decrypt file with a r
   g <- C.newRandom
   k <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  let f = "tests/tmp/testsecretbox"
+  let f = testPath "testsecretbox"
       paddedLen = 4 * 1024 * 1024
       len = 4 * 1000 * 1000 :: Int64
       s = LC.fastReplicate len 'a'

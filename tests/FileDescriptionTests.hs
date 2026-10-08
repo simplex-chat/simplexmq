@@ -33,8 +33,8 @@ fileDescriptionTests = do
 fileDescPath :: FilePath
 fileDescPath = "tests/fixtures/file_description.yaml"
 
-tmpFileDescPath :: FilePath
-tmpFileDescPath = "tests/tmp/file_description.yaml"
+tmpFileDescPath :: HasTestEnv => FilePath
+tmpFileDescPath = testPath "file_description.yaml"
 
 testSbKey :: C.SbKey
 testSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTFFFOY="
@@ -144,7 +144,7 @@ testParseYAMLFileDescription = do
   yfd <- Y.decodeFileThrow fileDescPath
   yfd `shouldBe` yamlFileDesc
 
-testSerializeYAMLFileDescription :: IO ()
+testSerializeYAMLFileDescription :: HasTestEnv => IO ()
 testSerializeYAMLFileDescription = withRemoveTmpFile $ do
   Y.encodeFile tmpFileDescPath yamlFileDesc
   fdSer <- B.readFile tmpFileDescPath
@@ -158,7 +158,7 @@ testParseFileDescription = do
     Left e -> expectationFailure $ show e
     Right fd -> fd `shouldBe` fileDesc
 
-testSerializeFileDescription :: IO ()
+testSerializeFileDescription :: HasTestEnv => IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
   B.writeFile tmpFileDescPath $ strEncode fileDesc
   fdSer <- B.readFile tmpFileDescPath
@@ -177,7 +177,7 @@ testFileDescriptionURIExtras = do
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
 
-withRemoveTmpFile :: IO () -> IO ()
+withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =
   bracket_
     (pure ())

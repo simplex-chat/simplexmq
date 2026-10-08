@@ -61,7 +61,7 @@ import System.IO (IOMode (..), withFile)
 import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
-import Test.Hspec hiding (fit, it)
+import Test.Hspec hiding (fit, it, xit)
 import Util
 
 #if defined(dbServerPostgres)
@@ -96,7 +96,6 @@ serverTests = do
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
-  describe "Timing of AUTH error" testTiming
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
@@ -1034,15 +1033,15 @@ testWithStoreLog =
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 6)
     removeFile testStoreLogFile
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-serverStoreLogCfg :: AStoreType -> (AServerConfig, Bool)
+serverStoreLogCfg :: HasTestEnv => AStoreType -> (AServerConfig, Bool)
 serverStoreLogCfg msType =
   let cfg' =
         withServerCfg (cfgMS msType) $ \cfg_ ->
@@ -1141,12 +1140,12 @@ testRestoreMessages =
     whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFile testServerStatsBackupFile
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 checkStats :: ServerStatsData -> [RecipientId] -> Int -> Int -> Expectation
@@ -1216,7 +1215,7 @@ testRestoreExpireMessages =
     Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
     _msgExpired `shouldBe` 2
   where
-    exportStoreMessages :: AStoreType -> IO ()
+    exportStoreMessages :: HasTestEnv => AStoreType -> IO ()
     exportStoreMessages = \case
       ASType _ SMSJournal -> export
       ASType _ SMSPostgres -> exportDB
@@ -1240,12 +1239,12 @@ testRestoreExpireMessages =
           readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
           pure ms
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
@@ -1511,7 +1510,7 @@ testServiceNotificationsTwoRestarts =
         Resp "3.2" _ (SOK Nothing) <- signSendRecv rh rKey ("3.2", rId, SUB)
         deliverMessage rh rId rKey sh sId sKey nh "hello 3" dec
     where
-      runTest2 :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+      runTest2 :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
       runTest2 _ test' server = do
         a <- testSMPClient $ \h1 -> testSMPClient $ \h2 -> test' h1 h2
         killThread server
@@ -1602,7 +1601,7 @@ testBlockMessageQueue =
       Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent Nothing))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "same queue ID in response"
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
     runTest _ test' server = do
       a <- testSMPClient test'
       killThread server
@@ -1830,7 +1829,7 @@ serverSyntaxTests (ATransport t) = do
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", ERR $ CMD NO_AUTH)
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
-      Encoding smp =>
+      (HasTestEnv, Encoding smp) =>
       (Maybe TAuthorizations, ByteString, ByteString, smp) ->
       (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
       Expectation

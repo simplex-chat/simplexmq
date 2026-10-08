@@ -2080,7 +2080,7 @@ disableQueuesNtfs c = sendTSessionBatches "NDEL" (mkSMPTSession . snd) disableQu
     queueCreds :: DisableQueueNtfReq -> (SMP.RecipientId, SMP.RcvPrivateAuthKey)
     queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}) = (rcvId, rcvPrivateKey)
 
-sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
+sendAck :: AgentClient -> RcvQueue -> MsgId -> AM (Maybe SMP.RcvMessage)
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
   withSMPClient c NRMBackground rq ("ACK:" <> logSecret' msgId) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
