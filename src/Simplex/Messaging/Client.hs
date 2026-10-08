@@ -67,6 +67,7 @@ module Simplex.Messaging.Client
     enableSMPQueuesNtfs,
     disableSMPQueuesNtfs,
     sendSMPMessage,
+    QueueDrained,
     ackSMPMessage,
     suspendSMPQueue,
     deleteSMPQueue,
@@ -1087,15 +1088,17 @@ resolvedNameOrNotFound d NameResponse {registration} = case registration of
   NRRegistered {nameRecord} -> T.toLower (nrName nameRecord) == fullDomainName d
   _ -> True
 
+type QueueDrained = Bool
+
 -- | Acknowledge message delivery (server deletes the message).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 -- This command is always sent in background request mode
-ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO QueueDrained
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c NRMBackground (Just rpKey) rId (ACK msgId) >>= \case
-    OK -> return ()
-    cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
+    OK -> pure True
+    cmd@MSG {} -> liftIO (writeSMPMessage c rId cmd) $> False
     r -> throwE $ unexpectedResponse r
 
 -- | Irreversibly suspend SMP queue.
