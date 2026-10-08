@@ -91,6 +91,7 @@ import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestSte
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..), RetryInterval2 (..))
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
 import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
@@ -610,6 +611,7 @@ functionalAPITests ps = do
   describe "user network info" $ do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
+    it "should reconnect to servers when network changes" $ testNetworkChangeReconnect ps
     it "should resume multiple threads" testResumeMultipleThreads
   describe "SMP queue info" $ do
     it "server should respond with queue and subscription information" $
@@ -4860,8 +4862,30 @@ testWaitForUserNetwork = withAgent 1 aCfg initAgentServers testDB $ \a -> do
     (threadDelay 50000 >> setUserNetworkInfo a (UserNetworkInfo UNCellular True))
     (networkDelay a 50000)
   noNetworkDelay a
+  -- the agent is disposed, so that the workers the network events resumed do not use the database
+  -- of the test that runs next - they share the file
+  disposeAgentClient a
   where
     aCfg = agentCfg {userNetworkInterval = 100000, userOfflineDelay = 0}
+
+testNetworkChangeReconnect :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testNetworkChangeReconnect ps =
+  withAgentClientsCfg2 agentCfg {userOfflineDelay = 0} agentCfg $ \a b -> withSmpServer ps $ do
+    (aId, bId) <- runRight $ makeConnection a b
+    -- network type changed while online - connections to servers are re-established
+    setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+    nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    nGet a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
+    -- the same network type reported again (the client only reports it when the network changes) - reconnects
+    setUserNetworkInfo a $ UserNetworkInfo UNCellular True
+    nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    nGet a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
+    setUserNetworkInfo a $ UserNetworkInfo UNNone False
+    noMessages a "no reconnection when offline"
+    setUserNetworkInfo a $ UserNetworkInfo UNWifi True
+    nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
+    nGet a =##> \case ("", "", UP _ [c]) -> c == bId; _ -> False
+    runRight_ $ exchangeGreetings a bId b aId
 
 testDoNotResetOnlineToOffline :: IO ()
 testDoNotResetOnlineToOffline = withAgent 1 aCfg initAgentServers testDB $ \a -> do
@@ -4881,6 +4905,7 @@ testDoNotResetOnlineToOffline = withAgent 1 aCfg initAgentServers testDB $ \a ->
   setUserNetworkInfo a $ UserNetworkInfo UNWifi True
   setUserNetworkInfo a $ UserNetworkInfo UNNone False -- ingnored
   noNetworkDelay a
+  disposeAgentClient a
   where
     aCfg = agentCfg {userNetworkInterval = 100000, userOfflineDelay = 0.1}
 
@@ -4902,6 +4927,7 @@ testResumeMultipleThreads = withAgent 1 aCfg initAgentServers testDB $ \a -> do
   let average = sum ts `div` fromIntegral (length ts)
   average < 3000000 `shouldBe` True
   maximum ts < 4000000 `shouldBe` True
+  disposeAgentClient a
   where
     aCfg = agentCfg {userOfflineDelay = 0}
 

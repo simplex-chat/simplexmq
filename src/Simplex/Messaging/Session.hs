@@ -6,6 +6,7 @@ module Simplex.Messaging.Session
   ( SessionVar (..),
     getSessVar,
     removeSessVar,
+    currentSessVar,
     withGetSessVar,
     withGetSessVar',
     tryReadSessVar,
@@ -43,6 +44,10 @@ removeSessVar v sessKey vs =
   TM.lookup sessKey vs >>= \case
     Just v' | sessionVarId v == sessionVarId v' -> TM.delete sessKey vs
     _ -> pure ()
+
+-- the client is current while its session var is the one in the map
+currentSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM Bool
+currentSessVar v sessKey vs = maybe False ((sessionVarId v ==) . sessionVarId) <$> TM.lookup sessKey vs
 
 -- | Get or create a session var and route to onNew (newly created) or onExisting. The new-var
 -- branch is bracketed from the point of creation: if it is interrupted before filling the var
