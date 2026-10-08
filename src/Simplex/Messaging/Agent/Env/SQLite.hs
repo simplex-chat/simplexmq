@@ -198,7 +198,9 @@ defaultReconnectInterval =
   RetryInterval
     { initialInterval = 2_000000,
       increaseAfter = 10_000000,
-      maxInterval = 180_000000
+      -- the network can become usable at any point in this interval, and nothing shortens it,
+      -- so it bounds how long reconnection is delayed after the network recovers
+      maxInterval = 30_000000
     }
 
 defaultMessageRetryInterval :: RetryInterval2
