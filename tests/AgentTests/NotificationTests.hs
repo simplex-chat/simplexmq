@@ -232,7 +232,7 @@ testNotificationToken apns = do
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
-    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
     verifyNtfToken a tkn nonce verification
     NTActive <- checkNtfToken a tkn
     deleteNtfToken a tkn
@@ -256,7 +256,7 @@ testNtfTokenRepeatRegistration apns = do
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
-    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
     NTRegistered <- registerNtfToken a tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
       getMockNotification apns tkn
@@ -275,14 +275,14 @@ testNtfTokenSecondRegistration apns =
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
-    nonce <- C.cbNonce <$> ntfData .-> "nonce"
+    nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
     verifyNtfToken a tkn nonce verification
 
     NTRegistered <- registerNtfToken a' tkn NMPeriodic
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
       getMockNotification apns tkn
     verification' <- ntfData' .-> "verification"
-    nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+    nonce' <- C.unsafeCbNonce <$> ntfData' .-> "nonce"
 
     -- at this point the first token is still active
     NTActive <- checkNtfToken a tkn
@@ -313,7 +313,7 @@ testNtfTokenServerRestart t apns = do
     -- so that repeat verification happens without restarting the clients, when notification arrives
     withNtfServer t $ runRight_ $ do
       verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
       verifyNtfToken a' tkn nonce verification
       NTActive <- checkNtfToken a' tkn
       pure ()
@@ -329,7 +329,7 @@ testNtfTokenServerRestartReverify t apns = do
       pure ntfData
     runRight_ $ do
       verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
       Left (BROKER _ (NETWORK _)) <- tryE $ verifyNtfToken a tkn nonce verification
       pure ()
   threadDelay 1500000
@@ -350,7 +350,7 @@ testNtfTokenServerRestartReverifyTimeout t apns = do
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
       verifyNtfToken a tkn nonce verification
       pure (nonce, verification)
     -- this emulates the situation when server verified token but the client did not receive the response
@@ -395,7 +395,7 @@ testNtfTokenServerRestartReregister t apns = do
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
       verifyNtfToken a' tkn nonce verification
       NTActive <- checkNtfToken a' tkn
       pure ()
@@ -430,7 +430,7 @@ testNtfTokenServerRestartReregisterTimeout t apns = do
       APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
         getMockNotification apns tkn
       verification <- ntfData .-> "verification"
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
       verifyNtfToken a' tkn nonce verification
       NTActive <- checkNtfToken a' tkn
       pure ()
@@ -452,7 +452,7 @@ testNtfTokenMultipleServers t apns = do
         APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
           getMockNotification apns tkn
         verification <- ntfData .-> "verification"
-        nonce <- C.cbNonce <$> ntfData .-> "nonce"
+        nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
         verifyNtfToken a tkn nonce verification
         NTActive <- checkNtfToken a tkn
         -- shut down the "other" server
@@ -568,7 +568,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData}} <-
       getMockNotification apns tkn
     verification <- ntfData .-> "verification"
-    vNonce <- C.cbNonce <$> ntfData .-> "nonce"
+    vNonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
     -- send message
@@ -659,7 +659,7 @@ registerTestToken a token mode apns = do
   Just APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData'}} <-
     timeout 1000000 $ getMockNotification apns tkn
   verification' <- ntfData' .-> "verification"
-  nonce' <- C.cbNonce <$> ntfData' .-> "nonce"
+  nonce' <- C.unsafeCbNonce <$> ntfData' .-> "nonce"
   verifyNtfToken a tkn nonce' verification'
   NTActive <- checkNtfToken a tkn
   pure tkn
@@ -1037,7 +1037,7 @@ messageNotification apns tkn = do
   500000 `timeout` getMockNotification apns tkn >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}} -> do
-      nonce <- C.cbNonce <$> ntfData .-> "nonce"
+      nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
       message <- ntfData .-> "message"
       pure (nonce, message)
     _ -> error "bad notification"

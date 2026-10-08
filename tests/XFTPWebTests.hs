@@ -767,7 +767,7 @@ tsSecretboxTests :: Spec
 tsSecretboxTests = describe "crypto/secretbox" $ do
   let key32 = B.pack [1 .. 32]
       nonce24 = B.pack [1 .. 24]
-      cbNonceVal = C.cbNonce nonce24
+      cbNonceVal = C.unsafeCbNonce nonce24
       sbKeyVal = C.unsafeSbKey key32
 
   describe "NaCl secretbox (tag prepended)" $ do
@@ -978,7 +978,7 @@ tsFileCryptoTests :: Spec
 tsFileCryptoTests = describe "crypto/file" $ do
   let key32 = B.pack [1 .. 32]
       nonce24 = B.pack [1 .. 24]
-      cbNonceVal = C.cbNonce nonce24
+      cbNonceVal = C.unsafeCbNonce nonce24
       sbKeyVal = C.unsafeSbKey key32
 
   describe "FileHeader encoding" $ do
@@ -2328,7 +2328,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       tsResult <-
         callNode $
@@ -2351,7 +2351,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       B.length expected `shouldBe` 80
 
@@ -2362,7 +2362,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       tsResult <-
         callNode $
@@ -2388,7 +2388,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       tsResult <-
         callNode $
@@ -2426,7 +2426,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbVerify
               (C.PublicKeyX25519 pubB)
               (C.PrivateKeyX25519 privA)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               (C.CbAuthenticator tsAuth)
               msg
       hsValid `shouldBe` True
@@ -2437,7 +2437,7 @@ tsClientTests = describe "protocol/client" $ do
 
     it "encryptTransportChunk matches Haskell" $ do
       let plaintext = B.pack [100 .. 199]
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 plaintext
           tag = BA.convert $ LC.sbAuth state1 :: B.ByteString
           expected = cipher <> tag
@@ -2456,7 +2456,7 @@ tsClientTests = describe "protocol/client" $ do
 
     it "decryptTransportChunk decrypts Haskell-encrypted data" $ do
       let plaintext = B.pack ([200 .. 255] <> [0 .. 99])
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 plaintext
           tag = BA.convert $ LC.sbAuth state1 :: B.ByteString
           encData = cipher <> tag
@@ -2541,7 +2541,7 @@ tsDownloadTests = describe "download" $ do
       -- File-level key/nonce (different from transport)
       fileKey32 = B.pack [1 .. 32]
       fileNonce24 = B.pack [1 .. 24]
-      fileCbNonce = C.cbNonce fileNonce24
+      fileCbNonce = C.unsafeCbNonce fileNonce24
       fileSbKey = C.unsafeSbKey fileKey32
 
   describe "processFileResponse" $ do
@@ -2567,7 +2567,7 @@ tsDownloadTests = describe "download" $ do
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           chunkData = B.pack [50 .. 149]
           chunkDigest = C.sha256Hash chunkData
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2591,7 +2591,7 @@ tsDownloadTests = describe "download" $ do
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           chunkData = B.pack [50 .. 149]
           wrongDigest = B.replicate 32 0xff
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2614,7 +2614,7 @@ tsDownloadTests = describe "download" $ do
       let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           chunkData = B.pack [10 .. 50]
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2651,7 +2651,7 @@ tsDownloadTests = describe "download" $ do
       -- Step 2: transport-level encryption (simulates server sending chunk)
       let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
-          ts0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          ts0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (transportCipher, ts1) = LC.sbEncryptChunk ts0 fileEncrypted
           transportTag = BA.convert (LC.sbAuth ts1) :: B.ByteString
           transportEncData = transportCipher <> transportTag
@@ -2701,7 +2701,7 @@ tsDownloadTests = describe "download" $ do
           dhSecret1 = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           dhSecret1Bytes = case dhSecret1 of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           nonce1 = nonce24
-          t1s0 = either (error . show) id $ LC.cbInit dhSecret1 (C.cbNonce nonce1)
+          t1s0 = either (error . show) id $ LC.cbInit dhSecret1 (C.unsafeCbNonce nonce1)
           (t1cipher, t1s1) = LC.sbEncryptChunk t1s0 fileChunk1
           t1tag = BA.convert (LC.sbAuth t1s1) :: B.ByteString
           transportEnc1 = t1cipher <> t1tag
@@ -2709,7 +2709,7 @@ tsDownloadTests = describe "download" $ do
           nonce2 = B.pack [24 .. 47]
           dhSecret2 = C.dh' (C.PublicKeyX25519 pubB) (C.PrivateKeyX25519 privA)
           dhSecret2Bytes = case dhSecret2 of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
-          t2s0 = either (error . show) id $ LC.cbInit dhSecret2 (C.cbNonce nonce2)
+          t2s0 = either (error . show) id $ LC.cbInit dhSecret2 (C.unsafeCbNonce nonce2)
           (t2cipher, t2s1) = LC.sbEncryptChunk t2s0 fileChunk2
           t2tag = BA.convert (LC.sbAuth t2s1) :: B.ByteString
           transportEnc2 = t2cipher <> t2tag
@@ -2747,7 +2747,7 @@ tsDownloadTests = describe "download" $ do
       -- Client side: generate FGET command
       let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           chunkData = "FGET round-trip test data" :: B.ByteString
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag

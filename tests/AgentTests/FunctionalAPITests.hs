@@ -4933,7 +4933,7 @@ testServerQueueInfo = do
     Just srvMsgId <- checkMsgQ bob aliceId 1
     get bob =##> \case
       ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} _ "hello") ->
-        c == aliceId && decodeLatin1 (B64.encode smId) == srvMsgId && mId == msgId
+        c == aliceId && decodeLatin1 (B64.encode $ SMP.unMsgId smId) == srvMsgId && mId == msgId
       _ -> False
     ackMessage bob aliceId msgId Nothing
     liftIO $ threadDelay 200000

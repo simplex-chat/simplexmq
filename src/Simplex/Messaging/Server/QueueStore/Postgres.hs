@@ -825,6 +825,10 @@ instance ToField EncDataBytes where toField (EncDataBytes s) = toField (Binary s
 
 deriving newtype instance FromField EncDataBytes
 
+instance ToField MsgId where toField = toField . Binary . unMsgId
+
+instance FromField MsgId where fromField = blobFieldDecoder mkMsgId
+
 deriving newtype instance ToField (RoundedSystemTime t)
 
 deriving newtype instance FromField (RoundedSystemTime t)
