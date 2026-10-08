@@ -1228,7 +1228,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   -- encode
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
   -- serviceAuth is False here – proxied commands are not used with service certificates
-  auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey nonce tForAuth
+  auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey (Just nonce) tForAuth
   b <- case batchTransmissions serverThParams [Right (auth, tToSend)] of
     [] -> throwE $ PCETransportError TELargeMsg
     TBError e _ : _ -> throwE $ PCETransportError e
@@ -1262,7 +1262,7 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 -- receives RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
 -- Always uses background timeout mode
-forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
+forwardSMPTransmission :: SMPClient -> C.CorrCbNonce -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
 forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
@@ -1400,7 +1400,7 @@ mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err 
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
-      auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ nonce tForAuth
+      auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ (Just nonce) tForAuth
   r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
@@ -1419,14 +1419,14 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       atomically $ TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
-authTransmission thAuth serviceAuth pKey_ nonce t = traverse authenticate pKey_
+authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> Maybe C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
+authTransmission thAuth serviceAuth pKey_ nonce_ t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
     authenticate (C.APrivateAuthKey a pk) = (,serviceSig) <$> case a of
-      C.SX25519 -> case thAuth of
-        Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t'
-        Nothing -> Left TENoServerAuth
+      C.SX25519 -> case (thAuth, nonce_) of
+        (Just THAuthClient {peerServerPubKey = k}, Just nonce) -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t'
+        _ -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
     -- When command is signed by both entity key and service key,
