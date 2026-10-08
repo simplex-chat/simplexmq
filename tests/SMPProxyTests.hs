@@ -478,7 +478,7 @@ testChangedFwdVersion =
     _ <- runExceptT' $ forward v
     runExceptT (forward $ prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
 
-testFwdCorrIdSize :: IO ()
+testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
     withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ ->
