@@ -23,17 +23,17 @@ Recipient only. The sender is unchanged.
   - condition: another receive queue of the connection has an active subscription.
   - `delete_errors + 1 < deleteErrorCount`: `delete_errors` is incremented.
   - otherwise: the queue is deleted as above; the first `DEL` error of `ICDeleteRcvQueue` removes it locally.
-- `ackSMPMessage` result:
-  - `OK`: `Nothing`.
-  - `MSG`: `Just` the message, which is also written to `msgQ`.
+- `ackSMPMessage` result, `type QueueDrained = Bool`:
+  - `OK`: `True`.
+  - `MSG`: `False`; the message is written to `msgQ`.
 - Apps: `received_qend` is added to `RcvSwitchStatus`.
 
 ## Mechanics
 
 - `Agent/Protocol.hs`: `RSReceivedQEND`.
 - `Agent/Store.hs`: `canAbortRcvSwitch`.
-- `Client.hs`: `ackSMPMessage` returns `Maybe RcvMessage`.
-- `Agent/Client.hs`: `sendAck` returns `Maybe SMP.RcvMessage`.
+- `Client.hs`: `QueueDrained`; `ackSMPMessage` returns it.
+- `Agent/Client.hs`: `sendAck` returns `QueueDrained`.
 - `Agent/Store/AgentStore.hs`: `getEndedRcvQueueConnIds`:
 
   ```sql

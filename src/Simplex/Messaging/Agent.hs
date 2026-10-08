@@ -2896,19 +2896,19 @@ ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (Maybe ATransmissi
 ackQueueMessage c rq@RcvQueue {userId, connId, server, rcvSwchStatus} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
-    Right msg_ -> sendMsgNtf ackMsgs $ isNothing msg_ && rcvSwchStatus == Just RSReceivedQEND
+    Right drained -> sendMsgNtf ackMsgs $ drained && rcvSwchStatus == Just RSReceivedQEND
     Left (SMP _ SMP.NO_MSG) -> sendMsgNtf ackNoMsgErrs False
     Left e -> do
       unless (temporaryOrHostError e) $ atomically $ incSMPServerStat c userId server ackOtherErrs
       throwE e
   where
-    sendMsgNtf stat drained = do
+    sendMsgNtf stat ended = do
       atomically $ incSMPServerStat c userId server stat
       ifM (liftIO $ hasGetLock c rq)
         (do atomically $ releaseGetLock c rq
             brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
             pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
-        (Nothing <$ when drained (deleteRcvQueueAsync c rq))
+        (Nothing <$ when ended (deleteRcvQueueAsync c rq))
 
 deleteRcvQueueAsync :: AgentClient -> RcvQueue -> AM ()
 deleteRcvQueueAsync c rq@RcvQueue {connId, server, rcvId} = do
