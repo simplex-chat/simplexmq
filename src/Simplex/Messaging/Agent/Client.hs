@@ -1982,7 +1982,7 @@ decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
   liftEither $ parse SMP.clientRcvMsgBodyP (AGENT $ A_MESSAGE "decrypt message") =<< decrypt body
   where
-    decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
+    decrypt = agentCbDecrypt (rcvDhSecret rq) msgId
 
 secureQueue :: AgentClient -> NetworkRequestMode -> RcvQueue -> SndPublicAuthKey -> AM ()
 secureQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
@@ -2082,7 +2082,7 @@ disableQueuesNtfs c = sendTSessionBatches "NDEL" (mkSMPTSession . snd) disableQu
 
 sendAck :: AgentClient -> RcvQueue -> MsgId -> AM (Maybe SMP.RcvMessage)
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
-  withSMPClient c NRMBackground rq ("ACK:" <> logSecret' msgId) $ \smp ->
+  withSMPClient c NRMBackground rq ("ACK:" <> logSecret' (SMP.unMsgId msgId)) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 hasGetLock :: SomeRcvQueue q => AgentClient -> q -> IO Bool
@@ -2277,7 +2277,7 @@ agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
 
 -- | NaCl crypto-box decrypt - both for messages received from the server
 -- and per-queue E2E encrypted messages from the sender that were inside.
-agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> Either AgentErrorType ByteString
+agentCbDecrypt :: C.CbNonceI n => C.DhSecretX25519 -> n -> ByteString -> Either AgentErrorType ByteString
 agentCbDecrypt dhSecret nonce msg =
   first cryptoError $
     C.cbDecrypt dhSecret nonce msg
