@@ -23,7 +23,8 @@ mkdir -p "$init_dir/$TAG-$repo_name/from-source" "$init_dir/$TAG-$repo_name/preb
 
 git -C "$tempdir" clone "$repo.git" &&\
 	cd "$tempdir/${repo_name}" &&\
-	git checkout "$TAG"
+	git checkout "$TAG" &&\
+	git submodule update --init --recursive
 
 for os in 22.04 24.04; do
 	os_url="$(printf '%s' "$os" | tr '.' '_')"
