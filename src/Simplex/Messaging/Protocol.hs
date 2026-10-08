@@ -709,18 +709,18 @@ encTransmissionNonce v nonce@(C.CbNonce s)
   | otherwise = nonce
 
 data FwdTransmission = FwdTransmission
-  { fwdCorrId :: CorrId,
+  { fwdCorrId :: C.StrictCbNonce,
     fwdVersion :: VersionSMP,
     fwdKey :: C.PublicKeyX25519,
     fwdTransmission :: EncTransmission
   }
 
 instance Encoding FwdTransmission where
-  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
-    smpEncode (corrId, fwdVersion, fwdKey, Tail t)
+  smpEncode FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
+    smpEncode (fwdCorrId, fwdVersion, fwdKey, Tail t)
   smpP = do
-    (corrId, fwdVersion, fwdKey, Tail t) <- smpP
-    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
+    (fwdCorrId, fwdVersion, fwdKey, Tail t) <- smpP
+    pure FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
@@ -766,16 +766,16 @@ newtype EncFwdResponse = EncFwdResponse ByteString
   deriving (Eq, Show)
 
 data FwdResponse = FwdResponse
-  { fwdCorrId :: CorrId,
+  { fwdCorrId :: C.StrictCbNonce,
     fwdResponse :: EncResponse
   }
 
 instance Encoding FwdResponse where
-  smpEncode FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t} =
-    smpEncode (corrId, Tail t)
+  smpEncode FwdResponse {fwdCorrId, fwdResponse = EncResponse t} =
+    smpEncode (fwdCorrId, Tail t)
   smpP = do
-    (corrId, Tail t) <- smpP
-    pure FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t}
+    (fwdCorrId, Tail t) <- smpP
+    pure FwdResponse {fwdCorrId, fwdResponse = EncResponse t}
 
 newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)

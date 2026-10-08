@@ -2125,7 +2125,7 @@ client
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
           unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
           let clientSecret = C.dh' fwdKey serverPrivKey
-              clientNonce = C.cbNonce $ bs fwdCorrId
+              clientNonce = C.cbNonce $ C.unStrictCbNonce fwdCorrId
           b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
