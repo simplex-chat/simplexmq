@@ -1091,11 +1091,11 @@ resolvedNameOrNotFound d NameResponse {registration} = case registration of
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 -- This command is always sent in background request mode
-ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO (Maybe RcvMessage)
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c NRMBackground (Just rpKey) rId (ACK msgId) >>= \case
-    OK -> return ()
-    cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
+    OK -> pure Nothing
+    cmd@(MSG msg) -> liftIO (writeSMPMessage c rId cmd) $> Just msg
     r -> throwE $ unexpectedResponse r
 
 -- | Irreversibly suspend SMP queue.

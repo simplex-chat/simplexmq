@@ -100,6 +100,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setSndQueuePrimary,
     deleteConnRcvQueue,
     incRcvDeleteErrors,
+    getEndedRcvQueueConnIds,
     deleteConnSndQueue,
     getPrimaryRcvQueue,
     getRcvQueue,
@@ -762,6 +763,10 @@ setSndQueuePrimary db connId SndQueue {dbQueueId} = do
 incRcvDeleteErrors :: DB.Connection -> RcvQueue -> IO ()
 incRcvDeleteErrors db RcvQueue {connId, dbQueueId} =
   DB.execute db "UPDATE rcv_queues SET delete_errors = delete_errors + 1 WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
+
+getEndedRcvQueueConnIds :: DB.Connection -> IO [ConnId]
+getEndedRcvQueueConnIds db =
+  map fromOnly <$> DB.query db "SELECT conn_id FROM rcv_queues WHERE switch_status = ? AND deleted = 0" (Only RSReceivedQEND)
 
 deleteConnRcvQueue :: DB.Connection -> RcvQueue -> IO ()
 deleteConnRcvQueue db RcvQueue {connId, dbQueueId} =

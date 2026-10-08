@@ -2893,22 +2893,27 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
 ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (Maybe ATransmission)
-ackQueueMessage c rq@RcvQueue {userId, connId, server} srvMsgId = do
+ackQueueMessage c rq@RcvQueue {userId, connId, server, rcvSwchStatus} srvMsgId = do
   atomically $ incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
-    Right _ -> sendMsgNtf ackMsgs
-    Left (SMP _ SMP.NO_MSG) -> sendMsgNtf ackNoMsgErrs
+    Right msg_ -> sendMsgNtf ackMsgs $ isNothing msg_ && rcvSwchStatus == Just RSReceivedQEND
+    Left (SMP _ SMP.NO_MSG) -> sendMsgNtf ackNoMsgErrs False
     Left e -> do
       unless (temporaryOrHostError e) $ atomically $ incSMPServerStat c userId server ackOtherErrs
       throwE e
   where
-    sendMsgNtf stat = do
+    sendMsgNtf stat drained = do
       atomically $ incSMPServerStat c userId server stat
       ifM (liftIO $ hasGetLock c rq)
         (do atomically $ releaseGetLock c rq
             brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
             pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
-        (pure Nothing)
+        (Nothing <$ when drained (deleteRcvQueueAsync c rq))
+
+deleteRcvQueueAsync :: AgentClient -> RcvQueue -> AM ()
+deleteRcvQueueAsync c rq@RcvQueue {connId, server, rcvId} = do
+  withStore' c (`setRcvQueueDeleted` rq)
+  enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICDeleteRcvQueue rcvId
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ()
@@ -3438,6 +3443,7 @@ cleanupManager c@AgentClient {subQ} = do
     run SFERR deleteSndFilesPrefixPaths
     run SFERR deleteExpiredReplicasForDeletion
     run ERR deleteExpiredServiceReqs
+    run ERR expireEndedRcvQueues
     liftIO $ threadDelay' int
   where
     run :: forall e. AEntityI e => (AgentErrorType -> AEvent e) -> AM () -> AM' ()
@@ -3495,6 +3501,20 @@ cleanupManager c@AgentClient {subQ} = do
         deleteExpiredServiceRequests db $ addUTCTime (negate serviceResponseTimeout) now
         getExpiredServiceConns db now
       deleteConnectionsAsync' c False expiredConns
+    expireEndedRcvQueues = do
+      maxErrs <- asks $ deleteErrorCount . config
+      connIds <- withStore' c getEndedRcvQueueConnIds
+      forM_ connIds $ \connId -> flip catchAllErrors (notify connId . ERR) $
+        withConnLock c connId "cleanupManager" $
+          withStore c (`getConn` connId) >>= \case
+            SomeConn _ (DuplexConnection _ rqs _) -> do
+              let (ended, current) = L.partition ((Just RSReceivedQEND ==) . rcvSwchStatus) rqs
+              whenM (anyM $ map (atomically . hasActiveSubscription c) current) $
+                forM_ ended $ \rq ->
+                  if deleteErrors rq + 1 < maxErrs
+                    then withStore' c (`incRcvDeleteErrors` rq)
+                    else deleteRcvQueueAsync c rq
+            _ -> pure ()
     notify :: forall e. AEntityI e => AEntityId -> AEvent e -> AM ()
     notify entId cmd = atomically $ writeTBQueue subQ ("", entId, AEvt (sAEntity @e) cmd)
 
@@ -4094,19 +4114,23 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
           -- processed by queue recipient
           qEndMsg :: SMP.MsgId -> NonEmpty SndQAddr -> Connection 'CDuplex -> AM ()
           qEndMsg srvMsgId addrs (DuplexConnection cData'@ConnData {enableNtfs} rqs sqs) =
-            case L.partition (\rq' -> any (`sameQAddress` sndAddress rq') addrs) rqs of
+            case L.partition isRemoved rqs of
               (removed@(_ : _), keptRq : keptRqs) -> do
                 logServer "<--" c srv rId $ "MSG <QEND>:" <> logSecret' srvMsgId
-                forM_ removed $ \rq'@RcvQueue {server = rmServer, rcvId} -> do
-                  withStore' c $ \db -> setRcvQueueDeleted db rq'
-                  enqueueCommand c "" connId (Just rmServer) $ AInternalCommand $ ICDeleteRcvQueue rcvId
-                when enableNtfs $ do
-                  ns <- asks ntfSupervisor
-                  liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
-                let conn' = DuplexConnection cData' (keptRq :| keptRqs) sqs
-                cStats <- connectionStats c conn'
-                notify $ SWITCH QDRcv SPCompleted cStats
+                let completed = any ((Just RSReceivedQEND ==) . rcvSwchStatus) removed
+                if isRemoved rq
+                  then mapM_ (deleteRcvQueueAsync c) removed
+                  else withStore' c $ \db -> forM_ removed $ \rq' -> setRcvSwitchStatus db rq' $ Just RSReceivedQEND
+                unless completed $ do
+                  when enableNtfs $ do
+                    ns <- asks ntfSupervisor
+                    liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
+                  let conn' = DuplexConnection cData' (keptRq :| keptRqs) sqs
+                  cStats <- connectionStats c conn'
+                  notify $ SWITCH QDRcv SPCompleted cStats
               _ -> pure ()
+            where
+              isRemoved rq' = any (`sameQAddress` sndAddress rq') addrs
 
           qError :: String -> AM a
           qError = throwE . AGENT . A_QUEUE
