@@ -1157,7 +1157,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
-    errs' <- case ts' of
+    (delayed, errs') <- case ts' of
       (_, _, (_, _, Cmd p cmd)) : rest -> do
         let service = peerClientService =<< thAuth
         (errs', cmds) <- partitionEithers <$> case batchParty p of
@@ -1168,24 +1168,13 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ
             zipWithM (\t -> verified stats t . verifyLoadedQueue service thAuth t) ts' qs
           _ -> mapM (\t -> verified stats t =<< verifyTransmission ms service thAuth t) ts'
         mapM_ (atomically . writeTBQueue rcvQ) $ L.nonEmpty cmds
-        pure $ errs ++ errs'
-      [] -> pure errs
+        pure (any fst errs', errs ++ map snd errs')
+      [] -> pure (False, errs)
     forM_ (L.nonEmpty errs') $ \rs ->
-      if any isAuthError rs then sendAfterDelay authDelay receivedAt rs else sendResponses rs
+      if delayed
+        then sendAfterDelay c authDelay receivedAt (rs, [])
+        else atomically $ writeTBQueue sndQ (rs, [])
   where
-    sendResponses :: NonEmpty (Transmission BrokerMsg) -> IO ()
-    sendResponses = atomically . writeTBQueue sndQ . (,[])
-    sendAfterDelay :: Int64 -> UTCTime -> NonEmpty (Transmission BrokerMsg) -> IO ()
-    sendAfterDelay authDelay receivedAt rs = do
-      elapsed <- diffToMicroseconds . (`diffUTCTime` receivedAt) <$> getCurrentTime
-      let remaining = authDelay - elapsed
-      if remaining > 0
-        then forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' remaining >> sendResponses rs
-        else sendResponses rs
-    isAuthError :: Transmission BrokerMsg -> Bool
-    isAuthError (_, _, r) = case r of
-      ERR AUTH -> True
-      _ -> False
     sameParty :: SParty p -> SignedTransmission Cmd -> Bool
     sameParty p (_, _, (_, _, Cmd p' _)) = isJust $ testEquality p p'
     updateBatchStats :: ServerStats -> Command p -> IO ()
@@ -1195,10 +1184,10 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ
       NDEL -> incStat $ ntfDeletedB stats
       NSUB -> incStat $ ntfSubB stats
       _ -> pure ()
-    verified :: ServerStats -> SignedTransmission Cmd -> VerificationResult s -> IO (VerifiedTransmissionOrError s)
-    verified stats (_, _, t@(corrId, entId, Cmd _ command)) = \case
+    verified :: ServerStats -> SignedTransmission Cmd -> VerificationResult s -> IO (Either (Bool, Transmission BrokerMsg) (VerifiedTransmission s))
+    verified stats (_, _, t@(corrId, entId, cmd@(Cmd _ command))) = \case
       VRVerified q -> pure $ Right (q, t)
-      VRFailed e -> Left (corrId, entId, ERR e) <$ when (e == AUTH) incAuthStat
+      VRFailed e -> Left (delayedAuthError cmd (ERR e), (corrId, entId, ERR e)) <$ when (e == AUTH) incAuthStat
         where
           incAuthStat = case command of
             SEND {} -> incStat $ msgSentAuth stats
@@ -1206,6 +1195,23 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ
             NSUB -> incStat $ ntfSubAuth stats
             GET -> incStat $ msgGetAuth stats
             _ -> pure ()
+
+delayedAuthError :: Cmd -> BrokerMsg -> Bool
+delayedAuthError cmd = \case
+  ERR AUTH -> case cmd of
+    Cmd SSenderLink LGET -> False
+    _ -> True
+  _ -> False
+
+sendAfterDelay :: Client s -> Int64 -> UTCTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
+sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} delay since rs = do
+  elapsed <- diffToMicroseconds . (`diffUTCTime` since) <$> getCurrentTime
+  let remaining = delay - elapsed
+  if remaining > 0
+    then forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' remaining >> sendResponses
+    else sendResponses
+  where
+    sendResponses = atomically $ writeTBQueue sndQ rs
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
 send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
@@ -1390,15 +1396,20 @@ client
   ms
   clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
+    authDelay <- asks $ authErrorDelay . config
     let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
-        process batchSubs t acc@(rs, msgs) =
-          (maybe acc (\(!r, !msg_) -> (r : rs, maybe msgs (: msgs) msg_)))
+        process batchSubs t@(_, (_, _, cmd)) acc@(delayed, rs, msgs) =
+          (maybe acc (\(!r@(_, _, resp), !msg_) -> (delayed || delayedAuthError cmd resp, r : rs, maybe msgs (: msgs) msg_)))
             <$> processCommand clntServiceId batchSubs t
     forever $ do
       batch <- atomically (readTBQueue rcvQ)
+      processedAt <- liftIO getCurrentTime
       batchSubs <- prepareBatchSubs clntServiceId batch
-      foldrM (process batchSubs) ([], []) batch
-        >>= \(rs_, msgs) -> mapM_ (atomically . writeTBQueue sndQ . (,msgs)) (L.nonEmpty rs_)
+      (delayed, rs_, msgs) <- foldrM (process batchSubs) (False, [], []) batch
+      forM_ (L.nonEmpty rs_) $ \rs ->
+        if delayed
+          then liftIO $ sendAfterDelay clnt authDelay processedAt (rs, msgs)
+          else atomically $ writeTBQueue sndQ (rs, msgs)
   where
     prepareBatchSubs ::
       Maybe ServiceId ->
@@ -2135,6 +2146,7 @@ client
 
         processForwardedCommand :: EncFwdTransmission -> M s (Maybe BrokerMsg)
         processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
+          startedAt <- liftIO getCurrentTime
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
           proxyNonce <- liftEitherWith (const CRYPTO) $ C.cbNonce $ bs corrId
@@ -2178,7 +2190,14 @@ client
               _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_
+          let delayed = case (t', r_) of
+                (Right (_, _, (_, _, cmd')), Just (_, _, r)) -> delayedAuthError cmd' r
+                _ -> False
+          traverse encodeResp r_ >>= \case
+            Just rres | delayed -> do
+              authDelay <- asks $ authErrorDelay . config
+              Nothing <$ liftIO (sendAfterDelay clnt authDelay startedAt ([(corrId, NoEntity, rres)], []))
+            rres_ -> pure rres_
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case

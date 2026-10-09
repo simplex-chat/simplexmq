@@ -1351,25 +1351,30 @@ testTiming =
 
 testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
 testAuthErrorDelay =
-  it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
-    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh _ -> do
+  it "should send AUTH errors after the delay, except to LGET" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" NoEntity (Ids rId _ _) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
+      Resp "1" NoEntity (Ids rId sId _) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
       (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      (wrongKeyTime, Resp "bcda" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("bcda", rId, SUB)
-      (noQueueTime, Resp "cdab" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("cdab", EntityId "1234", SUB)
-      (subTime, Resp "dabc" _ (SOK Nothing)) <- responseTime $ signSendRecv rh rKey ("dabc", rId, SUB)
+      (wrongKeyTime, Resp "2" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("2", rId, SUB)
+      (noQueueTime, Resp "3" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("3", EntityId "1234", SUB)
+      (noLinkTime, Resp "4" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "4", EntityId "1234", LGET)
+      (subTime, Resp "5" _ (SOK Nothing)) <- responseTime $ signSendRecv rh rKey ("5", rId, SUB)
+      Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, OFF)
+      (suspendedTime, Resp "7" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "7", sId, _SEND "hello")
       wrongKeyTime `shouldSatisfy` (>= 0.5)
       noQueueTime `shouldSatisfy` (>= 0.5)
+      suspendedTime `shouldSatisfy` (>= 0.5)
+      noLinkTime `shouldSatisfy` (< 0.5)
       subTime `shouldSatisfy` (< 0.5)
-  where
-    responseTime :: IO a -> IO (NominalDiffTime, a)
-    responseTime action = do
-      t <- getCurrentTime
-      r <- action
-      (,r) . (`diffUTCTime` t) <$> getCurrentTime
+
+responseTime :: IO a -> IO (NominalDiffTime, a)
+responseTime action = do
+  t <- getCurrentTime
+  r <- action
+  (,r) . (`diffUTCTime` t) <$> getCurrentTime
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =
