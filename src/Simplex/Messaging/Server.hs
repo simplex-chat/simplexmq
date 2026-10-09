@@ -1145,7 +1145,7 @@ cancelSub s = case subThread s of
 type VerifiedTransmissionOrError s = Either (Transmission BrokerMsg) (VerifiedTransmission s)
 
 receive :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M s ()
-receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ, sndQ, rcvActiveAt} = do
+receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ, rcvActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   sa <- asks serverActive
   stats <- asks serverStats
@@ -1170,10 +1170,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ
         mapM_ (atomically . writeTBQueue rcvQ) $ L.nonEmpty cmds
         pure $ errs ++ errs'
       [] -> pure errs
-    forM_ (L.nonEmpty errs') $ \rs ->
-      if any isAuthError rs
-        then sendAfterDelay c authDelay receivedAt (rs, [])
-        else atomically $ writeTBQueue sndQ (rs, [])
+    mapM_ (sendResponses c authDelay receivedAt . (,[])) $ L.nonEmpty errs'
   where
     sameParty :: SParty p -> SignedTransmission Cmd -> Bool
     sameParty p (_, _, (_, _, Cmd p' _)) = isJust $ testEquality p p'
@@ -1201,15 +1198,20 @@ isAuthError (_, _, r) = case r of
   ERR AUTH -> True
   _ -> False
 
+sendResponses :: Client s -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
+sendResponses c@Client {sndQ} authDelay since rs@(ts, _)
+  | any isAuthError ts = sendAfterDelay c authDelay since rs
+  | otherwise = atomically $ writeTBQueue sndQ rs
+
 sendAfterDelay :: Client s -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
 sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} delay since rs = do
   now <- getSystemTime
   let remaining = delay - (microseconds now - microseconds since)
   if remaining > 0
-    then forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' remaining >> sendResponses
-    else sendResponses
+    then forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' remaining >> write
+    else write
   where
-    sendResponses = atomically $ writeTBQueue sndQ rs
+    write = atomically $ writeTBQueue sndQ rs
     microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
@@ -1404,11 +1406,8 @@ client
       batch <- atomically (readTBQueue rcvQ)
       processedAt <- liftIO getSystemTime
       batchSubs <- prepareBatchSubs clntServiceId batch
-      (rs_, msgs) <- foldrM (process batchSubs) ([], []) batch
-      forM_ (L.nonEmpty rs_) $ \rs ->
-        if any isAuthError rs
-          then liftIO $ sendAfterDelay clnt authDelay processedAt (rs, msgs)
-          else atomically $ writeTBQueue sndQ (rs, msgs)
+      foldrM (process batchSubs) ([], []) batch
+        >>= \(rs_, msgs) -> mapM_ (liftIO . sendResponses clnt authDelay processedAt . (,msgs)) (L.nonEmpty rs_)
   where
     prepareBatchSubs ::
       Maybe ServiceId ->
