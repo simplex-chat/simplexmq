@@ -1,4 +1,11 @@
+--
+-- PostgreSQL database dump
+--
 
+\restrict 2VhRh9TjEf48DUpOJ9yf0mHxQuP7DAwleNuR1ACyiZ7rn51S2x3TX2fGKTdJ0MO
+
+-- Dumped from database version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -11,10 +18,16 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+--
+-- Name: ntf_server; Type: SCHEMA; Schema: -; Owner: -
+--
 
 CREATE SCHEMA ntf_server;
 
 
+--
+-- Name: on_subscription_delete(); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.on_subscription_delete() RETURNS trigger
     LANGUAGE plpgsql
@@ -28,6 +41,9 @@ END;
 $$;
 
 
+--
+-- Name: on_subscription_insert(); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.on_subscription_insert() RETURNS trigger
     LANGUAGE plpgsql
@@ -41,6 +57,9 @@ END;
 $$;
 
 
+--
+-- Name: on_subscription_update(); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.on_subscription_update() RETURNS trigger
     LANGUAGE plpgsql
@@ -58,6 +77,9 @@ END;
 $$;
 
 
+--
+-- Name: should_subscribe_status(text); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.should_subscribe_status(p_status text) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE STRICT
@@ -68,6 +90,9 @@ END;
 $$;
 
 
+--
+-- Name: update_aggregates(bigint, bigint, bytea); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.update_aggregates(p_server_id bigint, p_change bigint, p_notifier_id bytea) RETURNS void
     LANGUAGE plpgsql
@@ -81,6 +106,9 @@ END;
 $$;
 
 
+--
+-- Name: update_all_aggregates(); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.update_all_aggregates() RETURNS void
     LANGUAGE plpgsql
@@ -104,6 +132,9 @@ END;
 $$;
 
 
+--
+-- Name: xor_combine(bytea, bytea); Type: FUNCTION; Schema: ntf_server; Owner: -
+--
 
 CREATE FUNCTION ntf_server.xor_combine(state bytea, value bytea) RETURNS bytea
     LANGUAGE plpgsql IMMUTABLE STRICT
@@ -124,6 +155,9 @@ END;
 $$;
 
 
+--
+-- Name: xor_aggregate(bytea); Type: AGGREGATE; Schema: ntf_server; Owner: -
+--
 
 CREATE AGGREGATE ntf_server.xor_aggregate(bytea) (
     SFUNC = ntf_server.xor_combine,
@@ -134,6 +168,9 @@ CREATE AGGREGATE ntf_server.xor_aggregate(bytea) (
 
 SET default_table_access_method = heap;
 
+--
+-- Name: last_notifications; Type: TABLE; Schema: ntf_server; Owner: -
+--
 
 CREATE TABLE ntf_server.last_notifications (
     token_ntf_id bigint NOT NULL,
@@ -145,6 +182,9 @@ CREATE TABLE ntf_server.last_notifications (
 );
 
 
+--
+-- Name: last_notifications_token_ntf_id_seq; Type: SEQUENCE; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ntf_server.last_notifications ALTER COLUMN token_ntf_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME ntf_server.last_notifications_token_ntf_id_seq
@@ -156,6 +196,9 @@ ALTER TABLE ntf_server.last_notifications ALTER COLUMN token_ntf_id ADD GENERATE
 );
 
 
+--
+-- Name: migrations; Type: TABLE; Schema: ntf_server; Owner: -
+--
 
 CREATE TABLE ntf_server.migrations (
     name text NOT NULL,
@@ -164,6 +207,9 @@ CREATE TABLE ntf_server.migrations (
 );
 
 
+--
+-- Name: smp_servers; Type: TABLE; Schema: ntf_server; Owner: -
+--
 
 CREATE TABLE ntf_server.smp_servers (
     smp_server_id bigint NOT NULL,
@@ -179,6 +225,9 @@ CREATE TABLE ntf_server.smp_servers (
 );
 
 
+--
+-- Name: smp_servers_smp_server_id_seq; Type: SEQUENCE; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ntf_server.smp_servers ALTER COLUMN smp_server_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME ntf_server.smp_servers_smp_server_id_seq
@@ -190,6 +239,9 @@ ALTER TABLE ntf_server.smp_servers ALTER COLUMN smp_server_id ADD GENERATED ALWA
 );
 
 
+--
+-- Name: subscriptions; Type: TABLE; Schema: ntf_server; Owner: -
+--
 
 CREATE TABLE ntf_server.subscriptions (
     subscription_id bytea NOT NULL,
@@ -202,6 +254,9 @@ CREATE TABLE ntf_server.subscriptions (
 );
 
 
+--
+-- Name: tokens; Type: TABLE; Schema: ntf_server; Owner: -
+--
 
 CREATE TABLE ntf_server.tokens (
     token_id bytea NOT NULL,
@@ -218,97 +273,165 @@ CREATE TABLE ntf_server.tokens (
 );
 
 
+--
+-- Name: last_notifications last_notifications_pkey; Type: CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.last_notifications
     ADD CONSTRAINT last_notifications_pkey PRIMARY KEY (token_ntf_id);
 
 
+--
+-- Name: migrations migrations_pkey; Type: CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.migrations
     ADD CONSTRAINT migrations_pkey PRIMARY KEY (name);
 
 
+--
+-- Name: smp_servers smp_servers_pkey; Type: CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.smp_servers
     ADD CONSTRAINT smp_servers_pkey PRIMARY KEY (smp_server_id);
 
 
+--
+-- Name: subscriptions subscriptions_pkey; Type: CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.subscriptions
     ADD CONSTRAINT subscriptions_pkey PRIMARY KEY (subscription_id);
 
 
+--
+-- Name: tokens tokens_pkey; Type: CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.tokens
     ADD CONSTRAINT tokens_pkey PRIMARY KEY (token_id);
 
 
+--
+-- Name: idx_last_notifications_subscription_id; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE INDEX idx_last_notifications_subscription_id ON ntf_server.last_notifications USING btree (subscription_id);
 
 
+--
+-- Name: idx_last_notifications_token_id_sent_at; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE INDEX idx_last_notifications_token_id_sent_at ON ntf_server.last_notifications USING btree (token_id, sent_at);
 
 
+--
+-- Name: idx_last_notifications_token_subscription; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_last_notifications_token_subscription ON ntf_server.last_notifications USING btree (token_id, subscription_id);
 
 
+--
+-- Name: idx_smp_servers; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_smp_servers ON ntf_server.smp_servers USING btree (smp_host, smp_port, smp_keyhash);
 
 
+--
+-- Name: idx_subscriptions_smp_server_id_notifier_id; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_subscriptions_smp_server_id_notifier_id ON ntf_server.subscriptions USING btree (smp_server_id, smp_notifier_id);
 
 
+--
+-- Name: idx_subscriptions_smp_server_id_ntf_service_status; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE INDEX idx_subscriptions_smp_server_id_ntf_service_status ON ntf_server.subscriptions USING btree (smp_server_id, ntf_service_assoc, status);
 
 
+--
+-- Name: idx_subscriptions_token_id; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE INDEX idx_subscriptions_token_id ON ntf_server.subscriptions USING btree (token_id);
 
 
+--
+-- Name: idx_tokens_push_provider_token; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_tokens_push_provider_token ON ntf_server.tokens USING btree (push_provider, push_provider_token, verify_key);
 
 
+--
+-- Name: idx_tokens_status_cron_interval_sent_at; Type: INDEX; Schema: ntf_server; Owner: -
+--
 
 CREATE INDEX idx_tokens_status_cron_interval_sent_at ON ntf_server.tokens USING btree (status, cron_interval, ((cron_sent_at + (cron_interval * 60))));
 
 
+--
+-- Name: subscriptions tr_subscriptions_delete; Type: TRIGGER; Schema: ntf_server; Owner: -
+--
 
 CREATE TRIGGER tr_subscriptions_delete AFTER DELETE ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_delete();
 
 
+--
+-- Name: subscriptions tr_subscriptions_insert; Type: TRIGGER; Schema: ntf_server; Owner: -
+--
 
 CREATE TRIGGER tr_subscriptions_insert AFTER INSERT ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_insert();
 
 
+--
+-- Name: subscriptions tr_subscriptions_update; Type: TRIGGER; Schema: ntf_server; Owner: -
+--
 
 CREATE TRIGGER tr_subscriptions_update AFTER UPDATE ON ntf_server.subscriptions FOR EACH ROW EXECUTE FUNCTION ntf_server.on_subscription_update();
 
 
+--
+-- Name: last_notifications last_notifications_subscription_id_fkey; Type: FK CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.last_notifications
     ADD CONSTRAINT last_notifications_subscription_id_fkey FOREIGN KEY (subscription_id) REFERENCES ntf_server.subscriptions(subscription_id) ON UPDATE RESTRICT ON DELETE CASCADE;
 
 
+--
+-- Name: last_notifications last_notifications_token_id_fkey; Type: FK CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.last_notifications
     ADD CONSTRAINT last_notifications_token_id_fkey FOREIGN KEY (token_id) REFERENCES ntf_server.tokens(token_id) ON UPDATE RESTRICT ON DELETE CASCADE;
 
 
+--
+-- Name: subscriptions subscriptions_smp_server_id_fkey; Type: FK CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.subscriptions
     ADD CONSTRAINT subscriptions_smp_server_id_fkey FOREIGN KEY (smp_server_id) REFERENCES ntf_server.smp_servers(smp_server_id) ON UPDATE RESTRICT ON DELETE RESTRICT;
 
 
+--
+-- Name: subscriptions subscriptions_token_id_fkey; Type: FK CONSTRAINT; Schema: ntf_server; Owner: -
+--
 
 ALTER TABLE ONLY ntf_server.subscriptions
     ADD CONSTRAINT subscriptions_token_id_fkey FOREIGN KEY (token_id) REFERENCES ntf_server.tokens(token_id) ON UPDATE RESTRICT ON DELETE CASCADE;
 
 
+--
+-- PostgreSQL database dump complete
+--
+
+\unrestrict 2VhRh9TjEf48DUpOJ9yf0mHxQuP7DAwleNuR1ACyiZ7rn51S2x3TX2fGKTdJ0MO
 

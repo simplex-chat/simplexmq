@@ -331,7 +331,9 @@ testNtfTokenServerRestartReverify t apns = do
     runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
-      Left (BROKER _ (NETWORK _)) <- tryE $ verifyNtfToken a tkn nonce verification
+      r <- tryE $ verifyNtfToken a tkn nonce verification
+      liftIO $ putStrLn $ "DEBUG reverify result: " <> show r
+      Left (BROKER _ (NETWORK _)) <- pure r
       pure ()
   threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->

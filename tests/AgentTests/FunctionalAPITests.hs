@@ -178,7 +178,7 @@ nGet c = withFrozenCallStack $ get' @'AENone c
 
 get' :: forall e m. (MonadIO m, AEntityI e, HasCallStack) => AgentClient -> m (AEntityTransmission e)
 get' c = withFrozenCallStack $ do
-  (corrId, connId, AEvt e cmd) <- pGet c
+  (corrId, connId, AEvt e cmd) <- liftIO (timeout 120000000 (pGet c)) >>= maybe (error "DEBUG get timeout") pure
   case testEquality e (sAEntity @e) of
     Just Refl -> pure (corrId, connId, cmd)
     _ -> error $ "unexpected command " <> show cmd
@@ -876,7 +876,16 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
         loop (0, 0, 0, 0) = pure ()
         loop acc@(s, !m, !r, !o) =
           timeout 3000000 (get a) >>= \case
-            Nothing -> error $ "timeout " <> show acc
+            Nothing -> do
+              t0 <- liftIO getCurrentTime
+              qi <- liftIO $ runExceptT $ getConnectionQueueInfo a NRMInteractive bId
+              aInfo <- liftIO $ dbInfo alice
+              bInfo <- liftIO $ dbInfo bob
+              liftIO $ putStrLn $ "DEBUG stall " <> show acc <> " at " <> show t0 <> ", queue info: " <> show qi <> ", alice: " <> show aInfo <> ", bob: " <> show bInfo
+              evt_ <- liftIO $ timeout 60000000 (get a)
+              t1 <- liftIO getCurrentTime
+              liftIO $ putStrLn $ "DEBUG stall next event after " <> show (diffUTCTime t1 t0) <> ": " <> show evt_
+              error $ "timeout " <> show acc
             Just evt -> case evt of
               ("", c, A.SENT _mId srv) -> do
                 liftIO $ c == bId && srv == proxySrv `shouldBe` True
@@ -903,6 +912,10 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
                 unless (o > 0) $ error "unexpected OK"
                 loop (s, m, r, o - 1)
               _ -> liftIO $ expectationFailure $ "unexpected: " <> show r
+    dbInfo c = withTransaction (store $ agentEnv c) $ \db -> do
+      cmds :: [(ByteString, Int)] <- DB.query_ db "SELECT command_tag, failed FROM commands"
+      dels :: [(Int64, Int)] <- DB.query_ db "SELECT internal_id, failed FROM snd_message_deliveries"
+      pure (cmds, dels)
 
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
 testEnablePQEncryption =
@@ -3092,6 +3105,7 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
     delete c cs = do
       r <- deleteConnections c cs
       liftIO $ do
+        unless (all isRight r) $ putStrLn $ "DEBUG batch delete errors: " <> show (M.elems $ M.filter (not . isRight) r)
         all isRight r `shouldBe` True
         M.keys r `shouldMatchList` cs
     deleteFail :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
@@ -3365,8 +3379,8 @@ testDeleteConnectionAsync ps =
       (bId3, _inv) <- createConnection a 1 True SCMInvitation Nothing SMSubscribe
       pure ([bId1, bId2, bId3] :: [ConnId])
     runRight_ $ do
-      deleteConnectionsAsync a False connIds
       nGet a =##> \case ("", "", DOWN {}) -> True; _ -> False
+      deleteConnectionsAsync a False connIds
       let delOk = \case (c, _, _, Just (BROKER _ e)) -> c `elem` connIds && networkOrTimeoutError e; _ -> False
       get a =##> \case ("", "", DEL_RCVQS rs) -> length rs == 3 && all delOk rs; _ -> False
       get a =##> \case ("", "", DEL_CONNS cs) -> length cs == 3 && all (`elem` connIds) cs; _ -> False
