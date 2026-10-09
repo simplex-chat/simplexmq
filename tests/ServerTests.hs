@@ -59,7 +59,6 @@ import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util (whenM)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.IO (IOMode (..), withFile)
-import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec hiding (fit, it)
@@ -1276,21 +1275,21 @@ testTiming =
         smpTest2Cfg (cfgMS msType) supportedServerSMPRelayVRange t $ \rh sh ->
           testSameTiming rh sh tst msType
   where
-    testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
-    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
-    timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
+    testName :: (C.AuthAlg, C.AuthAlg) -> String
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
+    timingTests :: [(C.AuthAlg, C.AuthAlg)]
     timingTests =
-      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 200), -- correct key type
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150), -- correct key type
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448, 150),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
+      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519), -- correct key type
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448),
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448), -- correct key type
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519) -- correct key type
       ]
-    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
+    timeRepeat = fmap fst . responseTime . replicateM_ 5
     similarTime t1 t2 msType
       | t1 <= t2 = abs (1 - t1 / t2) < diff
       | otherwise = similarTime t2 t1 msType
@@ -1299,8 +1298,8 @@ testTiming =
         diff = case msType of
           ASType SQSPostgres _ -> 0.45
           _ -> 0.3
-    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> AStoreType -> Expectation
-    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) msType = do
+    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg) -> AStoreType -> Expectation
+    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) msType = do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -1327,16 +1326,16 @@ testTiming =
         runTimingTest :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> EntityId -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
-          _ <- timeRepeat n $ do
+          _ <- timeRepeat $ do
             -- "warm up" the server
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           threadDelay 100000
-          timeWrongKey <- timeRepeat n $ do
+          timeWrongKey <- timeRepeat $ do
             Resp "cdabcdabcdabcdabcdabcdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdabcdabcdabcdabcdabcdab", qId, cmd)
             return ()
           threadDelay 100000
-          timeNoQueue <- timeRepeat n $ do
+          timeNoQueue <- timeRepeat $ do
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey msType

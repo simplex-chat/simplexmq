@@ -128,6 +128,7 @@ data ServerStats = ServerStats
     ntfServices :: ServiceStats,
     rcvServicesSubMsg :: IORef Int,
     rcvServicesSubDuplicate :: IORef Int,
+    authDelayExceeded :: IORef Int,
     qCount :: IORef Int,
     msgCount :: IORef Int,
     ntfCount :: IORef Int,
@@ -190,6 +191,7 @@ data ServerStatsData = ServerStatsData
     _rcvServices :: ServiceStatsData,
     _rcvServicesSubMsg :: Int,
     _rcvServicesSubDuplicate :: Int,
+    _authDelayExceeded :: Int,
     _qCount :: Int,
     _msgCount :: Int,
     _ntfCount :: Int,
@@ -254,6 +256,7 @@ newServerStats ts = do
   ntfServices <- newServiceStats
   rcvServicesSubMsg <- newIORef 0
   rcvServicesSubDuplicate <- newIORef 0
+  authDelayExceeded <- newIORef 0
   qCount <- newIORef 0
   msgCount <- newIORef 0
   ntfCount <- newIORef 0
@@ -315,6 +318,7 @@ newServerStats ts = do
         ntfServices,
         rcvServicesSubMsg,
         rcvServicesSubDuplicate,
+        authDelayExceeded,
         qCount,
         msgCount,
         ntfCount,
@@ -378,6 +382,7 @@ getServerStatsData s = do
   _ntfServices <- getServiceStatsData $ ntfServices s
   _rcvServicesSubMsg <- readIORef $ rcvServicesSubMsg s
   _rcvServicesSubDuplicate <- readIORef $ rcvServicesSubDuplicate s
+  _authDelayExceeded <- readIORef $ authDelayExceeded s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
   _ntfCount <- readIORef $ ntfCount s
@@ -439,6 +444,7 @@ getServerStatsData s = do
         _ntfServices,
         _rcvServicesSubMsg,
         _rcvServicesSubDuplicate,
+        _authDelayExceeded,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -503,6 +509,7 @@ setServerStats s d = do
   setServiceStats (ntfServices s) $! _ntfServices d
   writeIORef (rcvServicesSubMsg s) $! _rcvServicesSubMsg d
   writeIORef (rcvServicesSubDuplicate s) $! _rcvServicesSubDuplicate d
+  writeIORef (authDelayExceeded s) $! _authDelayExceeded d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
@@ -705,6 +712,7 @@ instance StrEncoding ServerStatsData where
           _ntfServices,
           _rcvServicesSubMsg = 0,
           _rcvServicesSubDuplicate = 0,
+          _authDelayExceeded = 0,
           _qCount,
           _msgCount = 0,
           _ntfCount = 0,

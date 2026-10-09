@@ -11,7 +11,8 @@
   | `client`, command processing | responses and messages of one batch | batch read from `rcvQ` |
   | `RFWD`, forwarded command | the `RRES` of that command | start of forwarded command processing |
 
-- When the delay has already passed, the responses are written to the send queue directly.
+- When the delay has already passed, the responses are written to the send queue directly, and `authDelayExceeded` is incremented.
+- `authDelayExceeded`: Prometheus counter `simplex_smp_auth_delay_exceeded`, not saved in the stats backup, not in the daily stats log.
 - Otherwise a thread created by `forkClient` waits for the remaining time and writes them.
 - Configuration:
 
@@ -19,9 +20,10 @@
   |---|---|
   | INI section | `TRANSPORT` |
   | INI key | `auth_error_delay_ms` |
-  | default | 250 |
+  | default | 50 |
   | `ServerConfig` field | `authErrorDelay`, microseconds |
-  | test servers | 0 |
+  | test servers | 20 ms |
+  | AUTH timing test | test servers' delay, elapsed time of 5 requests |
 
 - Out of scope: NTF and XFTP servers.
 
@@ -34,6 +36,8 @@
   - `client`: batch time.
   - `processForwardedCommand`: start time.
 - `Server/Env/STM.hs`: `authErrorDelay` field, `defaultAuthErrorDelayMs`.
+- `Server/Stats.hs`: `authDelayExceeded` in `ServerStats` and `ServerStatsData`.
+- `Server/Prometheus.hs`: `simplex_smp_auth_delay_exceeded`.
 - `Server/Main.hs`: INI value.
 - `Server/Main/Init.hs`: INI template line.
 - `tests/SMPClient.hs`: `authErrorDelay = 0`.

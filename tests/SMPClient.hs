@@ -263,7 +263,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       prometheusMetricsFile = testPrometheusMetricsFile,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
-      authErrorDelay = 0,
+      authErrorDelay = 20000,
       smpCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",

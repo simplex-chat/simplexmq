@@ -258,7 +258,7 @@ defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 1000
 
 defaultAuthErrorDelayMs :: Int64
-defaultAuthErrorDelayMs = 250
+defaultAuthErrorDelayMs = 50
 
 journalMsgStoreDepth :: Int
 journalMsgStoreDepth = 5
