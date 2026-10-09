@@ -77,7 +77,7 @@ smpProxyTests = do
       testChangedFwdVersion
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
       testFwdCorrIdSize
-    it "relay delays AUTH errors to forwarded commands, except to LGET" $ \_ ->
+    it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
   describe "deliver message via SMP proxy" $ do
     let srv1 = SMPServer testHost testPort testKeyHash
@@ -503,7 +503,7 @@ testForwardedAuthErrorDelay =
       (sendTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxySMPMessage pc NRMInteractive sess Nothing (SMP.EntityId "1234") noMsgFlags "hello"
       (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
       sendTime `shouldSatisfy` (>= 0.5)
-      getLinkTime `shouldSatisfy` (< 0.5)
+      getLinkTime `shouldSatisfy` (>= 0.5)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,

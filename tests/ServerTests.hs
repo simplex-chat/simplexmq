@@ -1351,7 +1351,7 @@ testTiming =
 
 testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
 testAuthErrorDelay =
-  it "should send AUTH errors after the delay, except to LGET" $ \(ATransport t, msType) ->
+  it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
     smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -1367,7 +1367,7 @@ testAuthErrorDelay =
       wrongKeyTime `shouldSatisfy` (>= 0.5)
       noQueueTime `shouldSatisfy` (>= 0.5)
       suspendedTime `shouldSatisfy` (>= 0.5)
-      noLinkTime `shouldSatisfy` (< 0.5)
+      noLinkTime `shouldSatisfy` (>= 0.5)
       subTime `shouldSatisfy` (< 0.5)
 
 responseTime :: IO a -> IO (NominalDiffTime, a)

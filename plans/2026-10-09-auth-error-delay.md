@@ -2,7 +2,7 @@
 
 ## Decisions
 
-- `ERR AUTH` responses to all commands except `LGET` are sent no earlier than the delay.
+- Responses that include `ERR AUTH` are sent no earlier than the delay.
 - Delayed response sets:
 
   | Source | Responses sent together | Delay counted from |
@@ -28,14 +28,14 @@
 ## Mechanics
 
 - `Server.hs`:
-  - `delayedAuthError`: `ERR AUTH` to a command other than `LGET`.
+  - `isAuthError`: response is `ERR AUTH`.
   - `sendAfterDelay`: writes responses to the send queue after the remaining delay.
-  - `receive`: block receipt time, delay flag from `verified`.
-  - `client`: batch time, delay flag from processed responses.
-  - `processForwardedCommand`: start time, delay flag from the forwarded command and its response.
+  - `receive`: block receipt time from the `rcvActiveAt` reading.
+  - `client`: batch time.
+  - `processForwardedCommand`: start time.
 - `Server/Env/STM.hs`: `authErrorDelay` field, `defaultAuthErrorDelayMs`.
 - `Server/Main.hs`: INI value.
 - `Server/Main/Init.hs`: INI template line.
 - `tests/SMPClient.hs`: `authErrorDelay = 0`.
-- `tests/ServerTests.hs`: delayed AUTH for wrong key, absent queue and suspended queue; immediate AUTH to `LGET`; immediate `SOK`.
-- `tests/SMPProxyTests.hs`: delayed AUTH to forwarded `SEND`; immediate AUTH to forwarded `LGET`.
+- `tests/ServerTests.hs`: delayed AUTH for wrong key, absent queue, absent link and suspended queue; immediate `SOK`.
+- `tests/SMPProxyTests.hs`: delayed AUTH to forwarded `SEND` and `LGET`.
