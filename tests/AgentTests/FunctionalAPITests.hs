@@ -427,6 +427,7 @@ functionalAPITests ps = do
     it "should connect via prepared connection link" $ testPrepareCreateConnectionLink ps
     it "should connect via prepared invitation link" $ testPrepareCreateInvitationLink ps
     it "should not create connection for prepared invitation link with too large data" $ testPrepareInvitationLinkTooLarge ps
+    it "should not create connection for prepared contact link with too large data" $ testPrepareContactLinkTooLarge ps
     it "should connect via short link prepared for existing contact connection" $ testPrepareConnShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
@@ -2066,7 +2067,8 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
     (ccLink@(CCLink connReq (Just shortLink)), preparedParams) <-
       A.prepareConnectionLink a 1 SCMContact rootKey (Just linkEntId) True Nothing CR.IKPQOn False Nothing
     liftIO $ strDecode (strEncode shortLink) `shouldBe` Right shortLink
-    _ <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    (_, ccLink') <- A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams userLinkData SMSubscribe
+    liftIO $ ccLink' `shouldBe` ccLink
     (FixedLinkData {linkEntityId}, ContactLinkData _ userCtData', connReq') <- getConnShortLink b 1 shortLink
     liftIO $ Just linkEntId `shouldBe` linkEntityId
     Right connReqBin <- pure $ smpDecode (smpEncode (binaryConnReq connReq))
@@ -2108,6 +2110,17 @@ testPrepareInvitationLinkTooLarge ps = withSmpServer ps $ withAgent 1 agentCfg i
   runRight_ $ do
     (ccLink, preparedParams) <- A.prepareConnectionLink a 1 SCMInvitation rootKey Nothing False Nothing CR.IKPQOn False Nothing
     Left (A.CMD LARGE _) <- tryError $ A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams (UserInvLinkData $ UserLinkData $ B.replicate 14000 'a') SMSubscribe
+    pure ()
+  withTransaction (store $ agentEnv a) getConnIds `shouldReturn` []
+
+testPrepareContactLinkTooLarge :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareContactLinkTooLarge ps = withSmpServer ps $ withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData $ B.replicate 14000 'a', ratchetKeys = Nothing}
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  runRight_ $ do
+    (ccLink, preparedParams) <- A.prepareConnectionLink a 1 SCMContact rootKey Nothing True Nothing CR.IKPQOn True Nothing
+    Left (A.CMD LARGE _) <- tryError $ A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
     pure ()
   withTransaction (store $ agentEnv a) getConnIds `shouldReturn` []
 

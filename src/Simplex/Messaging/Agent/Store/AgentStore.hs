@@ -165,7 +165,6 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createSndRatchet,
     getSndRatchet,
     createRatchet,
-    createRatchetIfNotExists,
     deleteRatchet,
     getRatchet,
     getRatchetVerifyCodes,
@@ -1537,17 +1536,6 @@ createRatchet db connId rc =
         x3dh_pub_key_2 = NULL,
         pq_priv_kem = NULL,
         pq_pub_kem = NULL
-    |]
-    ((connId, rc) :. verifyCodesRow (ratchetVerifyCodes rc))
-
-createRatchetIfNotExists :: DB.Connection -> ConnId -> RatchetX448 -> IO ()
-createRatchetIfNotExists db connId rc =
-  DB.execute
-    db
-    [sql|
-      INSERT INTO ratchets (conn_id, ratchet_state, rc_verify_code_ad, rc_verify_code_pq)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT (conn_id) DO NOTHING
     |]
     ((connId, rc) :. verifyCodesRow (ratchetVerifyCodes rc))
 

@@ -85,9 +85,7 @@ newOwnerAuth g ownerId signingKey = do
   pure (ownerPrivKey, OwnerAuth {ownerId, ownerKey, authOwnerSig})
 
 encryptLinkData :: TVar ChaChaDRG -> C.SbKey -> (ByteString, ByteString) -> ExceptT AgentErrorType IO QueueLinkData
-encryptLinkData g k = bimapM (encrypt fixedDataPaddedLength) (encrypt userDataPaddedLength)
-  where
-    encrypt len = encryptData g k len
+encryptLinkData g k = bimapM (encryptFixedData g k) (encryptUserData g k)
 
 encryptFixedData :: TVar ChaChaDRG -> C.SbKey -> ByteString -> ExceptT AgentErrorType IO EncDataBytes
 encryptFixedData g k s = encryptData g k fixedDataPaddedLength s

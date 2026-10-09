@@ -1637,12 +1637,13 @@ data PreparedLinkParams (m :: ConnectionMode) = PreparedLinkParams
     plpLinkKey :: LinkKey,
     -- | Root signing key (for signing link data)
     plpRootPrivKey :: C.PrivateKeyEd25519,
-    -- | smpEncode of FixedLinkData (includes linkEntityId)
+    -- | smpEncode of FixedLinkData signed with the root key
     plpSignedFixedData :: ByteString,
     -- | Server with basic auth (not stored in link)
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
+    -- | Invitation X3DH keys or contact address double ratchet keys
     plpRatchetKeys :: PreparedRatchetKeys m
   }
 
