@@ -613,6 +613,7 @@ data RcvSwitchStatus
   | RSSendingQADD
   | RSSendingQUSE
   | RSReceivedMessage
+  | RSReceivedQEND
   deriving (Eq, Show)
 
 instance StrEncoding RcvSwitchStatus where
@@ -621,12 +622,14 @@ instance StrEncoding RcvSwitchStatus where
     RSSendingQADD -> "sending_qadd"
     RSSendingQUSE -> "sending_quse"
     RSReceivedMessage -> "received_message"
+    RSReceivedQEND -> "received_qend"
   strP =
     A.takeTill (== ' ') >>= \case
       "switch_started" -> pure RSSwitchStarted
       "sending_qadd" -> pure RSSendingQADD
       "sending_quse" -> pure RSSendingQUSE
       "received_message" -> pure RSReceivedMessage
+      "received_qend" -> pure RSReceivedQEND
       _ -> fail "bad RcvSwitchStatus"
 
 instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode

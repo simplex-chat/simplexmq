@@ -557,6 +557,10 @@ functionalAPITests ps = do
       testServerMatrix2 ps testFastSwitchConnection
     it "should switch delivery to the new queue when the old server is down" $
       testFastSwitchDeadOldServer ps
+    it "should drain the old queue after QEND on the new queue" $
+      testFastSwitchDrainOldQueue ps
+    it "should drain the old queue after QEND on the new queue and restart" $
+      testFastSwitchDrainOldQueueRestart ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -3810,7 +3814,7 @@ testFastSwitchDeadOldServer :: HasCallStack => (ASrvTransport, AStoreType) -> IO
 testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
   let bServers = initAgentServers {smp = userServers [testSMPServer2]}
   withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \_ ->
-    withAgent 1 agentCfg initAgentServers testDB $ \a ->
+    withAgent 1 aCfg initAgentServers testDB $ \a ->
       withAgent 2 agentCfg bServers testDB2 $ \b -> do
         (aId, bId) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
           (aId, bId) <- makeConnection a b
@@ -3826,7 +3830,10 @@ testFastSwitchDeadOldServer ps@(t, ASType qsType _) = do
           queuedReceived <- drainSwitchCompletedRcvMsg a bId "queued while down"
           liftIO $ queuedReceived `shouldBe` True
           drainSwitchCompleted b aId QDSnd
+          waitOneRcvQueue a bId
           exchangeGreetingsMsgId 7 a bId b aId
+  where
+    aCfg = agentCfg {initialCleanupDelay = 10000, cleanupInterval = 10000, deleteErrorCount = 3}
 
 -- drains switch and network events until the connection reports SPCompleted in the given direction,
 -- tolerating DOWN/UP and intermediate phases (the old server is stopped mid-rotation)
@@ -3845,6 +3852,69 @@ drainSwitchCompletedRcvMsg c connId body = go False
         (_, connId', AEvt SAEConn (SWITCH QDRcv SPCompleted _)) | connId' == connId -> pure seen
         (_, connId', AEvt SAEConn (Msg' mId _ body')) | connId' == connId && body' == body -> ackMessage c connId' mId Nothing >> go True
         _ -> go seen
+
+testFastSwitchDrainOldQueue :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchDrainOldQueue ps =
+  withSmpServers2 ps $ withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId, aM1Id) <- endSwitchOnNewQueue a b
+    ackMessage a bId aM1Id Nothing
+    drainOldQueue a bId b aId
+
+testFastSwitchDrainOldQueueRestart :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchDrainOldQueueRestart ps =
+  withSmpServers2 ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
+      (aId, bId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ endSwitchOnNewQueue a b
+      withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
+        subscribeConnection a bId
+        drainOldQueue a bId b aId
+
+endSwitchOnNewQueue :: HasCallStack => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
+endSwitchOnNewQueue a b = do
+  (aId, bId) <- makeConnection a b
+  exchangeGreetings a bId b aId
+  liftIO $ setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
+  m1Id <- sendMessage b aId SMP.noMsgFlags "m1"
+  get b ##> ("", aId, SENT m1Id)
+  ("", c, Msg' aM1Id _ "m1") <- get a
+  liftIO $ c `shouldBe` bId
+  m2Id <- sendMessage b aId SMP.noMsgFlags "m2"
+  get b ##> ("", aId, SENT m2Id)
+  _ <- switchConnectionAsync a "" bId
+  fastSwitchComplete a bId b aId
+  stats <- getConnectionServers a bId
+  liftIO $ rcvSwchStatuses' stats `shouldMatchList` [Nothing, Just RSReceivedQEND]
+  pure (aId, bId, aM1Id)
+
+drainOldQueue :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+drainOldQueue a bId b aId = do
+  ("", c, MSG MsgMeta {recipient = (aM2Id, _)} _ "m2") <- get a
+  liftIO $ c `shouldBe` bId
+  ackMessage a bId aM2Id Nothing
+  waitOneRcvQueue a bId
+  bMsgId <- sendMessage b aId SMP.noMsgFlags "hello"
+  get b ##> ("", aId, SENT bMsgId)
+  ("", c', MSG MsgMeta {recipient = (aMsgId, _)} _ "hello") <- get a
+  liftIO $ c' `shouldBe` bId
+  ackMessage a bId aMsgId Nothing
+  aMsgId' <- sendMessage a bId SMP.noMsgFlags "hello too"
+  get a ##> ("", bId, SENT aMsgId')
+  ("", c'', MSG MsgMeta {recipient = (bMsgId', _)} _ "hello too") <- get b
+  liftIO $ c'' `shouldBe` aId
+  ackMessage b aId bMsgId' Nothing
+  liftIO $ noMessages a "nothing else should be delivered to alice"
+  liftIO $ noMessages b "nothing else should be delivered to bob"
+
+waitOneRcvQueue :: HasCallStack => AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+waitOneRcvQueue c connId = go (300 :: Int)
+  where
+    go n = do
+      stats <- getConnectionServers c connId
+      case rcvSwchStatuses' stats of
+        [Nothing] -> pure ()
+        statuses
+          | n > 0 -> liftIO (threadDelay 100000) >> go (n - 1)
+          | otherwise -> liftIO $ expectationFailure $ "old receive queue was not deleted: " <> show statuses
 
 phaseRcv :: AgentClient -> ByteString -> SwitchPhase -> [Maybe RcvSwitchStatus] -> ExceptT AgentErrorType IO ()
 phaseRcv c connId p swchStatuses = phase c connId QDRcv p (\stats -> rcvSwchStatuses' stats `shouldMatchList` swchStatuses)
@@ -4942,7 +5012,7 @@ testServerQueueInfo = do
     Just srvMsgId <- checkMsgQ bob aliceId 1
     get bob =##> \case
       ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} _ "hello") ->
-        c == aliceId && decodeLatin1 (B64.encode smId) == srvMsgId && mId == msgId
+        c == aliceId && decodeLatin1 (B64.encode $ SMP.unMsgId smId) == srvMsgId && mId == msgId
       _ -> False
     ackMessage bob aliceId msgId Nothing
     liftIO $ threadDelay 200000

@@ -100,6 +100,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     setSndQueuePrimary,
     deleteConnRcvQueue,
     incRcvDeleteErrors,
+    getEndedRcvQueueConnIds,
     deleteConnSndQueue,
     getPrimaryRcvQueue,
     getRcvQueue,
@@ -764,6 +765,10 @@ incRcvDeleteErrors :: DB.Connection -> RcvQueue -> IO ()
 incRcvDeleteErrors db RcvQueue {connId, dbQueueId} =
   DB.execute db "UPDATE rcv_queues SET delete_errors = delete_errors + 1 WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
 
+getEndedRcvQueueConnIds :: DB.Connection -> IO [ConnId]
+getEndedRcvQueueConnIds db =
+  map fromOnly <$> DB.query db "SELECT conn_id FROM rcv_queues WHERE switch_status = ? AND deleted = 0" (Only RSReceivedQEND)
+
 deleteConnRcvQueue :: DB.Connection -> RcvQueue -> IO ()
 deleteConnRcvQueue db RcvQueue {connId, dbQueueId} =
   DB.execute db "DELETE FROM rcv_queues WHERE conn_id = ? AND rcv_queue_id = ?" (connId, dbQueueId)
@@ -1256,7 +1261,7 @@ getLastMsg db connId msgId =
         LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
-      (connId, Binary msgId)
+      (connId, msgId)
 
 toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, BoolInt) -> RcvMsg
 toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, BI userAck)) =
@@ -1288,7 +1293,7 @@ checkRcvMsgHashExists db connId hash =
 getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
 getRcvMsgBrokerTs db connId msgId =
   firstRow fromOnly (SEMsgNotFound "getRcvMsgBrokerTs") $
-    DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, Binary msgId)
+    DB.query db "SELECT broker_ts FROM rcv_messages WHERE conn_id = ? AND broker_id = ?" (connId, msgId)
 
 deleteMsg :: DB.Connection -> ConnId -> InternalId -> IO ()
 deleteMsg db connId msgId =
@@ -3047,7 +3052,7 @@ insertRcvMsgDetails_ db connId RcvQueue {dbQueueId} RcvMsgData {msgMeta, interna
       VALUES
         (?,?,?,?,?,?,?,?,?,?)
     |]
-    (connId, dbQueueId, internalRcvId, fst recipient, sndMsgId, Binary (fst broker), snd broker, Binary internalHash, Binary externalPrevSndHash, integrity)
+    (connId, dbQueueId, internalRcvId, fst recipient, sndMsgId, fst broker, snd broker, Binary internalHash, Binary externalPrevSndHash, integrity)
   DB.execute db "INSERT INTO encrypted_rcv_message_hashes (conn_id, hash) VALUES (?,?)" (connId, Binary encryptedMsgHash)
 
 updateRcvMsgHash :: DB.Connection -> ConnId -> AgentMsgId -> InternalRcvId -> MsgHash -> IO ()
@@ -3195,7 +3200,8 @@ createRcvFile db gVar userId fd@FileDescription {chunks} prefixPath tmpPath file
 createRcvFileRedirect :: DB.Connection -> TVar ChaChaDRG -> UserId -> FileDescription 'FRecipient -> FilePath -> FilePath -> CryptoFile -> FilePath -> CryptoFile -> Bool -> IO (Either StoreError RcvFileId)
 createRcvFileRedirect _ _ _ FileDescription {redirect = Nothing} _ _ _ _ _ _ = pure $ Left $ SEInternal "createRcvFileRedirect called without redirect"
 createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redirectChunks, redirect = Just RedirectFileInfo {size, digest}} prefixPath redirectPath redirectFile dstPath dstFile approvedRelays = runExceptT $ do
-  (dstEntityId, dstId) <- ExceptT $ insertRcvFile db gVar userId dummyDst prefixPath dstPath dstFile Nothing Nothing approvedRelays
+  nonce <- atomically $ C.randomCbNonce gVar
+  (dstEntityId, dstId) <- ExceptT $ insertRcvFile db gVar userId (dummyDst nonce) prefixPath dstPath dstFile Nothing Nothing approvedRelays
   (_, redirectId) <- ExceptT $ insertRcvFile db gVar userId redirectFd prefixPath redirectPath redirectFile (Just dstId) (Just dstEntityId) approvedRelays
   liftIO $
     forM_ redirectChunks $ \fc@FileChunk {replicas} -> do
@@ -3203,7 +3209,7 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
       forM_ (zip [1 ..] replicas) $ \(rno, replica) -> insertRcvFileChunkReplica db rno replica chunkId
   pure dstEntityId
   where
-    dummyDst =
+    dummyDst nonce =
       FileDescription
         { party = SFRecipient,
           size,
@@ -3211,7 +3217,7 @@ createRcvFileRedirect db gVar userId redirectFd@FileDescription {chunks = redire
           redirect = Nothing,
           -- updated later with updateRcvFileRedirect
           key = C.unsafeSbKey $ B.replicate 32 '#',
-          nonce = C.cbNonce "",
+          nonce,
           chunkSize = FileSize 0,
           chunks = []
         }

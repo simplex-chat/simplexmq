@@ -571,7 +571,10 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig, msgIdBytes} = do
+  when (msgIdBytes < 24) $ do
+    logError "Error: msgIdBytes must be at least 24"
+    exitFailure
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of

@@ -513,7 +513,7 @@ hw = encodeUtf8 "Hello world!"
 ts :: UTCTime
 ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 
-mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> BrokerId -> MsgHash -> RcvMsgData
+mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> ByteString -> MsgHash -> RcvMsgData
 mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
   RcvMsgData
     { internalRcvId,
@@ -522,7 +522,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (brokerId, ts),
+            broker = (SMP.unsafeMsgId $ mconcat (replicate 24 brokerId), ts),
             pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
@@ -688,7 +688,7 @@ hasMigrations :: DBStore -> Expectation
 hasMigrations st = getMigrations st `shouldReturn` True
 
 errorGettingMigrations :: DBStore -> Expectation
-errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
+errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "withTransaction: database closed" `isInfixOf` show e
 
 testGetPendingQueueMsg :: DBStore -> Expectation
 testGetPendingQueueMsg st = do
