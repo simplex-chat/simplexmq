@@ -83,7 +83,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import qualified Data.Text.IO as T
-import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
@@ -1145,12 +1145,14 @@ cancelSub s = case subThread s of
 type VerifiedTransmissionOrError s = Either (Transmission BrokerMsg) (VerifiedTransmission s)
 
 receive :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> s -> Client s -> M s ()
-receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, sndQ, rcvActiveAt} = do
+receive h@THandle {params = THandleParams {thAuth, sessionId}} ms c@Client {rcvQ, sndQ, rcvActiveAt} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " receive"
   sa <- asks serverActive
   stats <- asks serverStats
+  authDelay <- asks $ authErrorDelay . config
   liftIO $ forever $ do
     ts <- tGetServer h
+    receivedAt <- getCurrentTime
     unlessM (readTVarIO sa) $ throwIO $ userError "server stopped"
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
     let (es, ts') = partitionEithers $ L.toList ts
@@ -1168,8 +1170,22 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
         mapM_ (atomically . writeTBQueue rcvQ) $ L.nonEmpty cmds
         pure $ errs ++ errs'
       [] -> pure errs
-    mapM_ (atomically . writeTBQueue sndQ . (,[])) $ L.nonEmpty errs'
+    forM_ (L.nonEmpty errs') $ \rs ->
+      if any isAuthError rs then sendAfterDelay authDelay receivedAt rs else sendResponses rs
   where
+    sendResponses :: NonEmpty (Transmission BrokerMsg) -> IO ()
+    sendResponses = atomically . writeTBQueue sndQ . (,[])
+    sendAfterDelay :: Int64 -> UTCTime -> NonEmpty (Transmission BrokerMsg) -> IO ()
+    sendAfterDelay authDelay receivedAt rs = do
+      elapsed <- diffToMicroseconds . (`diffUTCTime` receivedAt) <$> getCurrentTime
+      let remaining = authDelay - elapsed
+      if remaining > 0
+        then forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' remaining >> sendResponses rs
+        else sendResponses rs
+    isAuthError :: Transmission BrokerMsg -> Bool
+    isAuthError (_, _, r) = case r of
+      ERR AUTH -> True
+      _ -> False
     sameParty :: SParty p -> SignedTransmission Cmd -> Bool
     sameParty p (_, _, (_, _, Cmd p' _)) = isJust $ testEquality p p'
     updateBatchStats :: ServerStats -> Command p -> IO ()

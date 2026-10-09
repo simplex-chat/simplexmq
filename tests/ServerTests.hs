@@ -36,6 +36,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
+import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
@@ -97,6 +98,7 @@ serverTests = do
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
+  describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
@@ -1346,6 +1348,28 @@ testTiming =
               show $ timeWrongKey / timeNoQueue - 1
             ]
           ok `shouldBe` True
+
+testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
+testAuthErrorDelay =
+  it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh _ -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "abcd" NoEntity (Ids rId _ _) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
+      (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (wrongKeyTime, Resp "bcda" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("bcda", rId, SUB)
+      (noQueueTime, Resp "cdab" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("cdab", EntityId "1234", SUB)
+      (subTime, Resp "dabc" _ (SOK Nothing)) <- responseTime $ signSendRecv rh rKey ("dabc", rId, SUB)
+      wrongKeyTime `shouldSatisfy` (>= 0.5)
+      noQueueTime `shouldSatisfy` (>= 0.5)
+      subTime `shouldSatisfy` (< 0.5)
+  where
+    responseTime :: IO a -> IO (NominalDiffTime, a)
+    responseTime action = do
+      t <- getCurrentTime
+      r <- action
+      (,r) . (`diffUTCTime` t) <$> getCurrentTime
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =
