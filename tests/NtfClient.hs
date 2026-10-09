@@ -60,30 +60,31 @@ import UnliftIO.Async
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
+import Util
 
 testHost :: NonEmpty TransportHost
 testHost = "localhost"
 
-apnsTestPort :: ServiceName
-apnsTestPort = "6010"
+apnsTestPort :: HasTestEnv => ServiceName
+apnsTestPort = testServerPort 5
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
-ntfTestStoreLogFile :: FilePath
-ntfTestStoreLogFile = "tests/tmp/ntf-server-store.log"
+ntfTestStoreLogFile :: HasTestEnv => FilePath
+ntfTestStoreLogFile = testPath "ntf-server-store.log"
 
-ntfTestStoreLogFile2 :: FilePath
-ntfTestStoreLogFile2 = "tests/tmp/ntf-server-store.log.2"
+ntfTestStoreLogFile2 :: HasTestEnv => FilePath
+ntfTestStoreLogFile2 = testPath "ntf-server-store.log.2"
 
-ntfTestStoreLastNtfsFile :: FilePath
-ntfTestStoreLastNtfsFile = "tests/tmp/ntf-server-last-notifications.log"
+ntfTestStoreLastNtfsFile :: HasTestEnv => FilePath
+ntfTestStoreLastNtfsFile = testPath "ntf-server-last-notifications.log"
 
-ntfTestPrometheusMetricsFile :: FilePath
-ntfTestPrometheusMetricsFile = "tests/tmp/ntf-server-metrics.txt"
+ntfTestPrometheusMetricsFile :: HasTestEnv => FilePath
+ntfTestPrometheusMetricsFile = testPath "ntf-server-metrics.txt"
 
-ntfTestStoreDBOpts :: DBOpts
-ntfTestStoreDBOpts =
+ntfTestServerDBOpts :: DBOpts
+ntfTestServerDBOpts =
   DBOpts
     { connstr = ntfTestServerDBConnstr,
       schema = "ntf_server",
@@ -91,8 +92,11 @@ ntfTestStoreDBOpts =
       createSchema = True
     }
 
-ntfTestStoreDBOpts2 :: DBOpts
-ntfTestStoreDBOpts2 = ntfTestStoreDBOpts {schema = "smp_server2"}
+ntfTestStoreDBOpts :: HasTestEnv => DBOpts
+ntfTestStoreDBOpts = ntfTestServerDBOpts {schema = testSchemaName "ntf_server"}
+
+ntfTestStoreDBOpts2 :: HasTestEnv => DBOpts
+ntfTestStoreDBOpts2 = ntfTestStoreDBOpts {schema = testSchemaName "smp_server2"}
 
 ntfTestServerDBConnstr :: ByteString
 ntfTestServerDBConnstr = "postgresql://ntf_test_server_user@/ntf_test_server_db"
@@ -104,7 +108,7 @@ ntfTestServerDBConnectInfo =
       connectDatabase = "ntf_test_server_db"
     }
 
-ntfTestDBCfg :: PostgresStoreCfg
+ntfTestDBCfg :: HasTestEnv => PostgresStoreCfg
 ntfTestDBCfg =
   PostgresStoreCfg
     { dbOpts = ntfTestStoreDBOpts,
@@ -113,10 +117,10 @@ ntfTestDBCfg =
       deletedTTL = 86400
     }
 
-ntfTestDBCfg2 :: PostgresStoreCfg
+ntfTestDBCfg2 :: HasTestEnv => PostgresStoreCfg
 ntfTestDBCfg2 = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts2, dbStoreLogPath = Just ntfTestStoreLogFile2}
 
-testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
+testNtfClient :: (HasTestEnv, Transport c) => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
@@ -124,7 +128,7 @@ testNtfClient client = do
       Right th -> client th
       Left e -> error $ show e
 
-ntfServerCfg :: NtfServerConfig
+ntfServerCfg :: HasTestEnv => NtfServerConfig
 ntfServerCfg =
   NtfServerConfig
     { transports = [],
@@ -151,7 +155,7 @@ ntfServerCfg =
       -- stats config
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
-      serverStatsLogFile = "tests/ntf-server-stats.daily.log",
+      serverStatsLogFile = testPath "ntf-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = ntfTestPrometheusMetricsFile,
@@ -171,7 +175,7 @@ ntfServerCfg =
 --     smpCfg' = smpCfg smpAgentCfg'
 --     serverVRange' = serverVRange smpCfg'
 
-withNtfServerThreadOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
+withNtfServerThreadOn :: (HasCallStack, HasTestEnv) => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => ThreadId -> IO a) -> IO a
 withNtfServerThreadOn t port' dbStoreConfig =
   withNtfServerCfg ntfServerCfg {transports = [(port', t, False)], dbStoreConfig}
 
@@ -184,18 +188,18 @@ withNtfServerCfg cfg@NtfServerConfig {transports} =
         (\started -> runNtfServerBlocking started cfg)
         (pure ())
 
-withNtfServerOn :: HasCallStack => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
+withNtfServerOn :: (HasCallStack, HasTestEnv) => ASrvTransport -> ServiceName -> PostgresStoreCfg -> (HasCallStack => IO a) -> IO a
 withNtfServerOn t port' dbStoreConfig = withNtfServerThreadOn t port' dbStoreConfig . const
 
-withNtfServer :: HasCallStack => ASrvTransport -> (HasCallStack => IO a) -> IO a
+withNtfServer :: (HasCallStack, HasTestEnv) => ASrvTransport -> (HasCallStack => IO a) -> IO a
 withNtfServer t = withNtfServerOn t ntfTestPort ntfTestDBCfg
 
-runNtfTest :: forall c a. Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
+runNtfTest :: forall c a. (HasTestEnv, Transport c) => (THandleNTF c 'TClient -> IO a) -> IO a
 runNtfTest test = withNtfServer (transport @c) $ testNtfClient test
 
 ntfServerTest ::
   forall c smp.
-  (Transport c, Encoding smp) =>
+  (HasTestEnv, Transport c, Encoding smp) =>
   TProxy c 'TServer ->
   (Maybe TAuthorizations, ByteString, ByteString, smp) ->
   IO (Maybe TAuthorizations, ByteString, ByteString, NtfResponse)
@@ -210,7 +214,7 @@ ntfServerTest _ t = runNtfTest $ \h -> tPut' h t >> tGet' h
       [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
       pure (Nothing, corrId, qId, cmd)
 
-ntfTest :: Transport c => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation
+ntfTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleNTF c 'TClient -> IO ()) -> Expectation
 ntfTest _ test' = runNtfTest test' `shouldReturn` ()
 
 data APNSMockRequest = APNSMockRequest
@@ -225,7 +229,7 @@ data APNSMockServer = APNSMockServer
     http2Server :: HTTP2Server
   }
 
-apnsMockServerConfig :: HTTP2ServerConfig
+apnsMockServerConfig :: HasTestEnv => HTTP2ServerConfig
 apnsMockServerConfig =
   HTTP2ServerConfig
     { qSize = 2,
@@ -242,7 +246,7 @@ apnsMockServerConfig =
       transportConfig = mkTransportServerConfig True Nothing False
     }
 
-withAPNSMockServer :: (APNSMockServer -> IO a) -> IO a
+withAPNSMockServer :: HasTestEnv => (APNSMockServer -> IO a) -> IO a
 withAPNSMockServer = E.bracket (getAPNSMockServer apnsMockServerConfig) closeAPNSMockServer
 
 deriving instance Generic APNSAlertBody

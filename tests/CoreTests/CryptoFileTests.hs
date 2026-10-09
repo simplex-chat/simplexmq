@@ -24,10 +24,10 @@ cryptoFileTests = do
   it "should put/read file" testPutReadFile
   it "should fail reading empty or small file" testSmallFile
 
-testFilePath :: FilePath
-testFilePath = "tests/tmp/testcryptofile"
+testFilePath :: HasTestEnv => FilePath
+testFilePath = testPath "testcryptofile"
 
-testWriteReadFile :: IO ()
+testWriteReadFile :: HasTestEnv => IO ()
 testWriteReadFile = do
   g <- C.newRandom
   s <- atomically $ LB.fromStrict <$> C.randomBytes 100000 g
@@ -39,7 +39,7 @@ testWriteReadFile = do
     s' <- CF.readFile file
     liftIO $ s `shouldBe` s'
 
-testPutGetFile :: IO ()
+testPutGetFile :: HasTestEnv => IO ()
 testPutGetFile = do
   g <- C.newRandom
   s <- atomically $ LB.fromStrict <$> C.randomBytes 50000 g
@@ -59,7 +59,7 @@ testPutGetFile = do
       CF.hGetTag h
       liftIO $ (s <> s') `shouldBe` LB.fromStrict (s1 <> s2 <> s3)
 
-testWriteGetFile :: IO ()
+testWriteGetFile :: HasTestEnv => IO ()
 testWriteGetFile = do
   g <- C.newRandom
   s <- atomically $ LB.fromStrict <$> C.randomBytes 100000 g
@@ -73,7 +73,7 @@ testWriteGetFile = do
       liftIO $ runExceptT (CF.hGetTag h) `shouldReturn` Left FTCEInvalidAuthTag
       liftIO $ s `shouldBe` LB.fromStrict (s' <> s'')
 
-testPutReadFile :: IO ()
+testPutReadFile :: HasTestEnv => IO ()
 testPutReadFile = do
   g <- C.newRandom
   s <- atomically $ LB.fromStrict <$> C.randomBytes 50000 g
@@ -92,7 +92,7 @@ testPutReadFile = do
     s'' <- CF.readFile file
     liftIO $ (s <> s') `shouldBe` s''
 
-testSmallFile :: IO ()
+testSmallFile :: HasTestEnv => IO ()
 testSmallFile = do
   g <- C.newRandom
   file <- atomically $ mkCryptoFile g
@@ -101,5 +101,5 @@ testSmallFile = do
   LB.writeFile testFilePath "123"
   runExceptT (CF.readFile file) `shouldReturn` Left FTCEInvalidFileSize
 
-mkCryptoFile :: TVar ChaChaDRG -> STM CryptoFile
+mkCryptoFile :: HasTestEnv => TVar ChaChaDRG -> STM CryptoFile
 mkCryptoFile g = CryptoFile testFilePath . Just <$> CF.randomArgs g

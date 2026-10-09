@@ -177,10 +177,10 @@ testSMPStoreLog testSuite tests =
     closeStoreLog l
     replicateM_ 3 $ testReadWrite t
 #if defined(dbServerPostgres)
-    (sCnt, qCnt) <- importStoreLogToDatabase "tests/tmp/" testStoreLogFile testStoreDBOpts
+    (sCnt, qCnt) <- importStoreLogToDatabase testDir testStoreLogFile testStoreDBOpts
     fromIntegral (sCnt + qCnt) `shouldBe` length (compacted t)
     imported <- B.readFile $ testStoreLogFile <> ".bak"
-    (sCnt', qCnt') <- exportDatabaseToStoreLog "tests/tmp/" testStoreDBOpts testStoreLogFile
+    (sCnt', qCnt') <- exportDatabaseToStoreLog testDir testStoreDBOpts testStoreLogFile
     sCnt' `shouldBe` fromIntegral sCnt
     qCnt' `shouldBe` fromIntegral qCnt
     exported <- B.readFile testStoreLogFile
@@ -207,8 +207,8 @@ deriving instance Eq FileRecipient
 
 deriving instance Eq FileStoreLogRecord
 
-testFileStoreLogFile :: FilePath
-testFileStoreLogFile = "tests/tmp/xftp-server-store.log"
+testFileStoreLogFile :: HasTestEnv => FilePath
+testFileStoreLogFile = testPath "xftp-server-store.log"
 
 fileExpirationTests :: Spec
 fileExpirationTests =

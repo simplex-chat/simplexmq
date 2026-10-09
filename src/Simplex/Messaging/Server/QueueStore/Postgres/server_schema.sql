@@ -1,5 +1,11 @@
+--
+-- PostgreSQL database dump
+--
 
+\restrict Syi742MOIhG1l4r03KD7ril66oifkCCIReFiBCdmZcoTgCvB2NGXpJdwNatyQue
 
+-- Dumped from database version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
+-- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -12,10 +18,16 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+--
+-- Name: smp_server; Type: SCHEMA; Schema: -; Owner: -
+--
 
 CREATE SCHEMA smp_server;
 
 
+--
+-- Name: delete_expired_msgs(bytea, bigint); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.delete_expired_msgs(p_recipient_id bytea, p_old_ts bigint) RETURNS bigint
     LANGUAGE plpgsql
@@ -55,6 +67,9 @@ END;
 $$;
 
 
+--
+-- Name: expire_old_messages(bigint, integer); Type: PROCEDURE; Schema: smp_server; Owner: -
+--
 
 CREATE PROCEDURE smp_server.expire_old_messages(IN p_old_ts bigint, IN batch_size integer, OUT r_expired_msgs_count bigint, OUT r_stored_msgs_count bigint, OUT r_stored_queues bigint)
     LANGUAGE plpgsql
@@ -113,6 +128,9 @@ END;
 $$;
 
 
+--
+-- Name: on_queue_delete(); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.on_queue_delete() RETURNS trigger
     LANGUAGE plpgsql
@@ -131,6 +149,9 @@ END;
 $$;
 
 
+--
+-- Name: on_queue_insert(); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.on_queue_insert() RETURNS trigger
     LANGUAGE plpgsql
@@ -147,6 +168,9 @@ END;
 $$;
 
 
+--
+-- Name: on_queue_update(); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.on_queue_update() RETURNS trigger
     LANGUAGE plpgsql
@@ -178,6 +202,9 @@ END;
 $$;
 
 
+--
+-- Name: try_del_msg(bytea, bytea); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.try_del_msg(p_recipient_id bytea, p_msg_id bytea) RETURNS TABLE(r_msg_id bytea, r_msg_ts bigint, r_msg_quota boolean, r_msg_ntf_flag boolean, r_msg_body bytea)
     LANGUAGE plpgsql
@@ -225,6 +252,9 @@ END;
 $$;
 
 
+--
+-- Name: try_del_peek_msg(bytea, bytea); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.try_del_peek_msg(p_recipient_id bytea, p_msg_id bytea) RETURNS TABLE(r_msg_id bytea, r_msg_ts bigint, r_msg_quota boolean, r_msg_ntf_flag boolean, r_msg_body bytea)
     LANGUAGE plpgsql
@@ -294,6 +324,9 @@ END;
 $$;
 
 
+--
+-- Name: update_aggregates(bytea, text, bytea, bigint); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.update_aggregates(p_service_id bytea, p_role text, p_queue_id bytea, p_change bigint) RETURNS void
     LANGUAGE plpgsql
@@ -307,6 +340,9 @@ END;
 $$;
 
 
+--
+-- Name: update_all_aggregates(); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.update_all_aggregates() RETURNS void
     LANGUAGE plpgsql
@@ -331,6 +367,9 @@ END;
 $$;
 
 
+--
+-- Name: write_message(bytea, bytea, bigint, boolean, boolean, bytea, integer); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.write_message(p_recipient_id bytea, p_msg_id bytea, p_msg_ts bigint, p_msg_quota boolean, p_msg_ntf_flag boolean, p_msg_body bytea, p_quota integer) RETURNS TABLE(quota_written boolean, was_empty boolean)
     LANGUAGE plpgsql
@@ -362,6 +401,9 @@ END;
 $$;
 
 
+--
+-- Name: xor_combine(bytea, bytea); Type: FUNCTION; Schema: smp_server; Owner: -
+--
 
 CREATE FUNCTION smp_server.xor_combine(state bytea, value bytea) RETURNS bytea
     LANGUAGE plpgsql IMMUTABLE STRICT
@@ -382,6 +424,9 @@ END;
 $$;
 
 
+--
+-- Name: xor_aggregate(bytea); Type: AGGREGATE; Schema: smp_server; Owner: -
+--
 
 CREATE AGGREGATE smp_server.xor_aggregate(bytea) (
     SFUNC = smp_server.xor_combine,
@@ -392,6 +437,9 @@ CREATE AGGREGATE smp_server.xor_aggregate(bytea) (
 
 SET default_table_access_method = heap;
 
+--
+-- Name: messages; Type: TABLE; Schema: smp_server; Owner: -
+--
 
 CREATE TABLE smp_server.messages (
     message_id bigint NOT NULL,
@@ -405,6 +453,9 @@ CREATE TABLE smp_server.messages (
 WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', toast.autovacuum_vacuum_scale_factor='0.02');
 
 
+--
+-- Name: messages_message_id_seq; Type: SEQUENCE; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE smp_server.messages ALTER COLUMN message_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME smp_server.messages_message_id_seq
@@ -416,6 +467,9 @@ ALTER TABLE smp_server.messages ALTER COLUMN message_id ADD GENERATED ALWAYS AS 
 );
 
 
+--
+-- Name: migrations; Type: TABLE; Schema: smp_server; Owner: -
+--
 
 CREATE TABLE smp_server.migrations (
     name text NOT NULL,
@@ -424,6 +478,9 @@ CREATE TABLE smp_server.migrations (
 );
 
 
+--
+-- Name: msg_queues; Type: TABLE; Schema: smp_server; Owner: -
+--
 
 CREATE TABLE smp_server.msg_queues (
     recipient_id bytea NOT NULL,
@@ -449,6 +506,9 @@ CREATE TABLE smp_server.msg_queues (
 WITH (fillfactor='80', autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', autovacuum_vacuum_cost_limit='1000');
 
 
+--
+-- Name: services; Type: TABLE; Schema: smp_server; Owner: -
+--
 
 CREATE TABLE smp_server.services (
     service_id bytea NOT NULL,
@@ -462,97 +522,164 @@ CREATE TABLE smp_server.services (
 WITH (fillfactor='70', autovacuum_vacuum_threshold='1000', autovacuum_vacuum_scale_factor='0');
 
 
+--
+-- Name: messages messages_pkey; Type: CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.messages
     ADD CONSTRAINT messages_pkey PRIMARY KEY (message_id);
 
 
+--
+-- Name: migrations migrations_pkey; Type: CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.migrations
     ADD CONSTRAINT migrations_pkey PRIMARY KEY (name);
 
 
+--
+-- Name: msg_queues msg_queues_pkey; Type: CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_pkey PRIMARY KEY (recipient_id);
 
 
+--
+-- Name: services services_pkey; Type: CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.services
     ADD CONSTRAINT services_pkey PRIMARY KEY (service_id);
 
 
+--
+-- Name: services services_service_cert_hash_key; Type: CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.services
     ADD CONSTRAINT services_service_cert_hash_key UNIQUE (service_cert_hash);
 
 
+--
+-- Name: idx_messages_expire; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_messages_expire ON smp_server.messages USING btree (msg_ts, recipient_id) WHERE (NOT msg_quota);
 
 
+--
+-- Name: idx_messages_recipient_id_message_id; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_messages_recipient_id_message_id ON smp_server.messages USING btree (recipient_id, message_id);
 
 
+--
+-- Name: idx_messages_recipient_id_msg_quota; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_messages_recipient_id_msg_quota ON smp_server.messages USING btree (recipient_id, msg_quota);
 
 
+--
+-- Name: idx_msg_queues_link_id; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_msg_queues_link_id ON smp_server.msg_queues USING btree (link_id);
 
 
+--
+-- Name: idx_msg_queues_notifier_active; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_msg_queues_notifier_active ON smp_server.msg_queues USING btree (notifier_id) WHERE ((deleted_at IS NULL) AND (notifier_id IS NOT NULL));
 
 
+--
+-- Name: idx_msg_queues_notifier_id; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_msg_queues_notifier_id ON smp_server.msg_queues USING btree (notifier_id);
 
 
+--
+-- Name: idx_msg_queues_ntf_service_id; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_msg_queues_ntf_service_id ON smp_server.msg_queues USING btree (ntf_service_id, deleted_at);
 
 
+--
+-- Name: idx_msg_queues_rcv_service_id; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_msg_queues_rcv_service_id ON smp_server.msg_queues USING btree (rcv_service_id, deleted_at);
 
 
+--
+-- Name: idx_msg_queues_sender_id; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE UNIQUE INDEX idx_msg_queues_sender_id ON smp_server.msg_queues USING btree (sender_id);
 
 
+--
+-- Name: idx_services_service_role; Type: INDEX; Schema: smp_server; Owner: -
+--
 
 CREATE INDEX idx_services_service_role ON smp_server.services USING btree (service_role);
 
 
+--
+-- Name: msg_queues tr_queue_delete; Type: TRIGGER; Schema: smp_server; Owner: -
+--
 
 CREATE TRIGGER tr_queue_delete AFTER DELETE ON smp_server.msg_queues FOR EACH ROW EXECUTE FUNCTION smp_server.on_queue_delete();
 
 
+--
+-- Name: msg_queues tr_queue_insert; Type: TRIGGER; Schema: smp_server; Owner: -
+--
 
 CREATE TRIGGER tr_queue_insert AFTER INSERT ON smp_server.msg_queues FOR EACH ROW EXECUTE FUNCTION smp_server.on_queue_insert();
 
 
+--
+-- Name: msg_queues tr_queue_update; Type: TRIGGER; Schema: smp_server; Owner: -
+--
 
 CREATE TRIGGER tr_queue_update AFTER UPDATE ON smp_server.msg_queues FOR EACH ROW EXECUTE FUNCTION smp_server.on_queue_update();
 
 
+--
+-- Name: messages messages_recipient_id_fkey; Type: FK CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.messages
     ADD CONSTRAINT messages_recipient_id_fkey FOREIGN KEY (recipient_id) REFERENCES smp_server.msg_queues(recipient_id) ON UPDATE RESTRICT ON DELETE CASCADE;
 
 
+--
+-- Name: msg_queues msg_queues_ntf_service_id_fkey; Type: FK CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_ntf_service_id_fkey FOREIGN KEY (ntf_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
 
 
+--
+-- Name: msg_queues msg_queues_rcv_service_id_fkey; Type: FK CONSTRAINT; Schema: smp_server; Owner: -
+--
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_rcv_service_id_fkey FOREIGN KEY (rcv_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
 
 
+--
+-- PostgreSQL database dump complete
+--
 
+\unrestrict Syi742MOIhG1l4r03KD7ril66oifkCCIReFiBCdmZcoTgCvB2NGXpJdwNatyQue
 

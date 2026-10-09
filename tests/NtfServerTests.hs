@@ -69,13 +69,13 @@ ntfSyntaxTests (ATransport t) = do
     it "token ID" $ (sampleSig, "abcd", "12345678", (TNEW_, ' ', ('T', 'A', 'T', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "abcd", "12345678", NRErr $ CMD HAS_AUTH)
   where
     (>#>) ::
-      Encoding smp =>
+      (HasTestEnv, Encoding smp) =>
       (Maybe TAuthorizations, ByteString, ByteString, smp) ->
       (Maybe TAuthorizations, ByteString, ByteString, NtfResponse) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
-testApnsTestProviderRejected :: ASrvTransport -> Expectation
+testApnsTestProviderRejected :: HasTestEnv => ASrvTransport -> Expectation
 testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
   g <- C.newRandom
   (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
