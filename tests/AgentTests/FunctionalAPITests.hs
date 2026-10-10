@@ -92,7 +92,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAg
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getRatchetX3dhKeys)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getConnIds, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -371,6 +371,10 @@ functionalAPITests ps = do
       testAddDRViaSetConnShortLink ps
     it "should resume DR accept after a transient failure (reuse the send queue and ratchet)" $
       testAcceptContactDRResumeAfterOffline ps
+    it "should store the ratchet when DR accept is prepared" $
+      withSmpServer ps $ testAcceptContactDRPrepared False
+    it "should create the ratchet at DR accept when the prepared connection has none" $
+      withSmpServer ps $ testAcceptContactDRPrepared True
     it "should support rejecting contact request" $
       withSmpServer ps testRejectContactRequest
     it "should communicate rejection reason via double ratchet" $
@@ -421,6 +425,10 @@ functionalAPITests ps = do
       it "should connect via added contact short link after restart" $ testAddContactShortLinkRestart ps
     it "should create and get short links with the old contact queues" $ testOldContactQueueShortLink ps
     it "should connect via prepared connection link" $ testPrepareCreateConnectionLink ps
+    it "should connect via prepared invitation link" $ testPrepareCreateInvitationLink ps
+    it "should not create connection for prepared invitation link with too large data" $ testPrepareInvitationLinkTooLarge ps
+    it "should not create connection for prepared contact link with too large data" $ testPrepareContactLinkTooLarge ps
+    it "should connect via short link prepared for existing contact connection" $ testPrepareConnShortLink ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -1241,6 +1249,30 @@ testAcceptContactDRResumeAfterOffline ps = withAgentClients2 $ \alice bob -> do
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc
 
+testAcceptContactDRPrepared :: HasCallStack => Bool -> IO ()
+testAcceptContactDRPrepared ratchetDeleted =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    let userLinkData = UserContactLinkData UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+        pqEnc = PQEncryption $ pqConnectionMode IKPQOn PQSupportOn
+    (_, CCLink connReq _) <- A.createConnection alice NRMInteractive 1 True True SCMContact (Just userLinkData) Nothing IKPQOn True SMSubscribe
+    (aliceId, CRBRatchet codes) <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo" (CRBRatchet reqCodes) _) <- get alice
+    (bobId, CRBRatchet acceptCodes) <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+    liftIO $ do
+      reqCodes `shouldBe` codes
+      acceptCodes `shouldBe` codes
+    if ratchetDeleted
+      then do
+        liftIO $ withTransaction (store $ agentEnv alice) (`DB.execute_` "DELETE FROM ratchets")
+        Left (CONN NOT_FOUND _) <- tryError $ getConnectionVerifyCodes alice bobId
+        pure ()
+      else getConnectionVerifyCodes alice bobId >>= liftIO . (`shouldBe` codes)
+    void $ acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
+    allowConfirmGreet alice bobId bob aliceId confId IKPQOn pqEnc
+    getConnectionVerifyCodes alice bobId >>= liftIO . (`shouldBe` codes)
+
 runAgentClientContactTestPQ3 :: HasCallStack => Bool -> (AgentClient, InitialKeys) -> (AgentClient, PQSupport) -> (AgentClient, PQSupport) -> AgentMsgId -> IO ()
 runAgentClientContactTestPQ3 viaProxy (alice, aPQ) (bob, bPQ) (tom, tPQ) baseId = runRight_ $ do
   (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing aPQ False SMSubscribe
@@ -2054,6 +2086,64 @@ testPrepareCreateConnectionLink ps = withSmpServer ps $ withAgentClients2 $ \a b
     get a ##> ("", aId, CON)
     get b ##> ("", bId, CON)
     exchangeGreetings a aId b bId
+
+testPrepareCreateInvitationLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareCreateInvitationLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
+  let userData = UserLinkData "test user data"
+  runRight_ $ do
+    (preparedReq, preparedParams@PreparedLinkParams {plpLinkKey}) <- A.prepareInvitationLink a 1 CR.IKPQOn Nothing
+    (bId, CCLink connReq (Just shortLink@(CSLInvitation _ _ _ linkKey))) <- A.createInvitationForLink a NRMInteractive 1 True preparedReq preparedParams (UserInvLinkData userData) SMSubscribe
+    liftIO $ linkKey `shouldBe` plpLinkKey
+    (_, connData', connReq') <- getConnShortLink b 1 shortLink
+    liftIO $ connReq' `shouldBe` preparedReq
+    liftIO $ connReq `shouldNotBe` preparedReq
+    liftIO $ linkUserData connData' `shouldBe` userData
+    testJoinConn_ False True a bId b connReq
+
+testPrepareInvitationLinkTooLarge :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareInvitationLinkTooLarge ps = withSmpServer ps $ withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  runRight_ $ do
+    (preparedReq, preparedParams) <- A.prepareInvitationLink a 1 CR.IKPQOn Nothing
+    Left (A.CMD LARGE _) <- tryError $ A.createInvitationForLink a NRMInteractive 1 True preparedReq preparedParams (UserInvLinkData $ UserLinkData $ B.replicate 14000 'a') SMSubscribe
+    pure ()
+  withTransaction (store $ agentEnv a) getConnIds `shouldReturn` []
+
+testPrepareContactLinkTooLarge :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareContactLinkTooLarge ps = withSmpServer ps $ withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData $ B.replicate 14000 'a', ratchetKeys = Nothing}
+  g <- C.newRandom
+  rootKey <- atomically $ C.generateKeyPair g
+  linkEntId <- atomically $ C.randomBytes 32 g
+  runRight_ $ do
+    (ccLink, preparedParams) <- A.prepareConnectionLink a 1 rootKey linkEntId True Nothing CR.IKPQOn True Nothing
+    Left (A.CMD LARGE _) <- tryError $ A.createConnectionForLink a NRMInteractive 1 True ccLink preparedParams (UserContactLinkData userCtData) SMSubscribe
+    pure ()
+  withTransaction (store $ agentEnv a) getConnIds `shouldReturn` []
+
+testPrepareConnShortLink :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
+testPrepareConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
+  let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+  runRight_ $ do
+    (contactId, CCLink _ Nothing) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMSubscribe
+    shortLink <- A.prepareConnShortLink a contactId Nothing
+    shortLink' <- A.prepareConnShortLink a contactId Nothing
+    liftIO $ shortLink' `shouldBe` shortLink
+    shortLink'' <- A.setConnShortLink a NRMInteractive contactId SCMContact (UserContactLinkData userCtData) Nothing False Nothing
+    liftIO $ shortLink'' `shouldBe` shortLink
+    (_, ContactLinkData _ userCtData', connReq) <- getConnShortLink b 1 shortLink
+    liftIO $ userCtData' `shouldBe` userCtData
+    (aId, sndSecure) <- joinConnection b 1 True connReq "bob's connInfo" SMSubscribe
+    liftIO $ sndSecure `shouldBe` False
+    ("", _, REQ invId _ "bob's connInfo") <- get a
+    (bId, _) <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
+    sndSecure' <- acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    liftIO $ sndSecure' `shouldBe` True
+    ("", _, CONF confId _ "alice's connInfo") <- get b
+    allowConnection b aId confId "bob's connInfo"
+    get a ##> ("", bId, INFO "bob's connInfo")
+    get a ##> ("", bId, CON)
+    get b ##> ("", aId, CON)
+    exchangeGreetings a bId b aId
 
 connReqWithKeys :: BinaryConnectionRequestUri m -> Maybe AddressRatchetKeys -> ConnectionRequestUri m
 connReqWithKeys cr rk = case cr of
