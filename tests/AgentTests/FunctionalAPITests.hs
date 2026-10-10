@@ -2091,20 +2091,20 @@ testPrepareCreateInvitationLink :: HasCallStack => (ASrvTransport, AStoreType) -
 testPrepareCreateInvitationLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
   let userData = UserLinkData "test user data"
   runRight_ $ do
-    preparedInv@PreparedInvitationLink {pilConnReq, pilLinkKey} <- A.prepareInvitationLink a 1 CR.IKPQOn Nothing
-    (bId, CCLink connReq (Just shortLink@(CSLInvitation _ _ _ linkKey))) <- A.createInvitationForLink a NRMInteractive 1 True preparedInv (UserInvLinkData userData) SMSubscribe
-    liftIO $ linkKey `shouldBe` pilLinkKey
+    (preparedReq, preparedParams@PreparedLinkParams {plpLinkKey}) <- A.prepareInvitationLink a 1 CR.IKPQOn Nothing
+    (bId, CCLink connReq (Just shortLink@(CSLInvitation _ _ _ linkKey))) <- A.createInvitationForLink a NRMInteractive 1 True preparedReq preparedParams (UserInvLinkData userData) SMSubscribe
+    liftIO $ linkKey `shouldBe` plpLinkKey
     (_, connData', connReq') <- getConnShortLink b 1 shortLink
-    liftIO $ connReq' `shouldBe` pilConnReq
-    liftIO $ connReq `shouldNotBe` pilConnReq
+    liftIO $ connReq' `shouldBe` preparedReq
+    liftIO $ connReq `shouldNotBe` preparedReq
     liftIO $ linkUserData connData' `shouldBe` userData
     testJoinConn_ False True a bId b connReq
 
 testPrepareInvitationLinkTooLarge :: HasCallStack => (ASrvTransport, AStoreType) -> IO ()
 testPrepareInvitationLinkTooLarge ps = withSmpServer ps $ withAgent 1 agentCfg initAgentServers testDB $ \a -> do
   runRight_ $ do
-    preparedInv <- A.prepareInvitationLink a 1 CR.IKPQOn Nothing
-    Left (A.CMD LARGE _) <- tryError $ A.createInvitationForLink a NRMInteractive 1 True preparedInv (UserInvLinkData $ UserLinkData $ B.replicate 14000 'a') SMSubscribe
+    (preparedReq, preparedParams) <- A.prepareInvitationLink a 1 CR.IKPQOn Nothing
+    Left (A.CMD LARGE _) <- tryError $ A.createInvitationForLink a NRMInteractive 1 True preparedReq preparedParams (UserInvLinkData $ UserLinkData $ B.replicate 14000 'a') SMSubscribe
     pure ()
   withTransaction (store $ agentEnv a) getConnIds `shouldReturn` []
 

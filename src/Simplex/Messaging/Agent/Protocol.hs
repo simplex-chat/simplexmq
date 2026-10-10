@@ -142,7 +142,6 @@ module Simplex.Messaging.Agent.Protocol
     ShortLinkScheme (..),
     LinkKey (..),
     PreparedLinkParams (..),
-    PreparedInvitationLink (..),
     validateOwners,
     validateLinkOwners,
     sameConnReqContact,
@@ -247,7 +246,6 @@ import Simplex.Messaging.Crypto.Ratchet
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
     SndE2ERatchetParams,
-    RcvE2EPrivRatchetParams,
     pattern PQSupportOff,
     pattern PQSupportOn,
   )
@@ -1628,7 +1626,7 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
 -- | Parameters for creating a connection with a prepared link.
-data PreparedLinkParams = PreparedLinkParams
+data PreparedLinkParams k = PreparedLinkParams
   { -- | Correlation ID / determines sender ID
     plpNonce :: C.CbNonce,
     -- | Queue E2EE DH key pair
@@ -1643,20 +1641,8 @@ data PreparedLinkParams = PreparedLinkParams
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
-    -- | Contact address double ratchet keys
-    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
-  }
-
-data PreparedInvitationLink = PreparedInvitationLink
-  { pilConnReq :: ConnectionRequestUri 'CMInvitation,
-    pilNonce :: C.CbNonce,
-    pilQueueE2EKeys :: C.KeyPairX25519,
-    pilLinkKey :: LinkKey,
-    pilRootPrivKey :: C.PrivateKeyEd25519,
-    pilSignedFixedData :: ByteString,
-    pilSrvWithAuth :: SMPServerWithAuth,
-    pilInitKeys :: InitialKeys,
-    pilX3dhKeys :: RcvE2EPrivRatchetParams 'C.X448
+    -- | Contact address double ratchet keys or invitation X3DH keys
+    plpRatchetKeys :: k
   }
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
