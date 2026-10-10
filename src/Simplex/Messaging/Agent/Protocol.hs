@@ -142,7 +142,7 @@ module Simplex.Messaging.Agent.Protocol
     ShortLinkScheme (..),
     LinkKey (..),
     PreparedLinkParams (..),
-    PreparedRatchetKeys (..),
+    PreparedInvitationLink (..),
     validateOwners,
     validateLinkOwners,
     sameConnReqContact,
@@ -1628,7 +1628,7 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
 -- | Parameters for creating a connection with a prepared link.
-data PreparedLinkParams (m :: ConnectionMode) = PreparedLinkParams
+data PreparedLinkParams = PreparedLinkParams
   { -- | Correlation ID / determines sender ID
     plpNonce :: C.CbNonce,
     -- | Queue E2EE DH key pair
@@ -1637,19 +1637,27 @@ data PreparedLinkParams (m :: ConnectionMode) = PreparedLinkParams
     plpLinkKey :: LinkKey,
     -- | Root signing key (for signing link data)
     plpRootPrivKey :: C.PrivateKeyEd25519,
-    -- | smpEncode of FixedLinkData signed with the root key
+    -- | smpEncode of FixedLinkData (includes linkEntityId)
     plpSignedFixedData :: ByteString,
     -- | Server with basic auth (not stored in link)
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
-    -- | Invitation X3DH keys or contact address double ratchet keys
-    plpRatchetKeys :: PreparedRatchetKeys m
+    -- | Contact address double ratchet keys
+    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
   }
 
-data PreparedRatchetKeys (m :: ConnectionMode) where
-  PRKInvitation :: RcvE2EPrivRatchetParams 'C.X448 -> PreparedRatchetKeys 'CMInvitation
-  PRKContact :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448) -> PreparedRatchetKeys 'CMContact
+data PreparedInvitationLink = PreparedInvitationLink
+  { pilConnReq :: ConnectionRequestUri 'CMInvitation,
+    pilNonce :: C.CbNonce,
+    pilQueueE2EKeys :: C.KeyPairX25519,
+    pilLinkKey :: LinkKey,
+    pilRootPrivKey :: C.PrivateKeyEd25519,
+    pilSignedFixedData :: ByteString,
+    pilSrvWithAuth :: SMPServerWithAuth,
+    pilInitKeys :: InitialKeys,
+    pilX3dhKeys :: RcvE2EPrivRatchetParams 'C.X448
+  }
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode
 
