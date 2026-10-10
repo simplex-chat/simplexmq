@@ -17,11 +17,11 @@ note over CC, HC: TLS handshake
 par
     note over CC: validate client X509 credentials
     CC->>CI: session code from tlsUnique
-    CI-->>CC: user confirmation
+    CI-->>CC: user confirmation (optional if known)
 and
     note over HC: validate server X509 credentials
     HC->>HI: session code from tlsUnique
-    HI-->>HC: user confirmation
+    HI-->>HC: user confirmation (optional if known)
 end
 
 note over CI, HI: 3. Session verification and protocol negotiation

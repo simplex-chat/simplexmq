@@ -114,7 +114,9 @@ instance MsgStoreClass PostgresMsgStore where
     where
       st = dbStore $ queueStore_ ms
       oldMsg = now - ttl
-      batchSize = 10000 :: Int
+      -- expired messages read per page in expire_old_messages, and the page is one
+      -- transaction: queues in it stay row-locked against SEND and ACK until it commits.
+      batchSize = 100 :: Int
       toMessageStats (expiredMsgsCount, storedMsgsCount, storedQueues) =
         MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues}
 
@@ -200,7 +202,7 @@ instance MsgStoreClass PostgresMsgStore where
           DB.query
             db
             "SELECT quota_written, was_empty FROM write_message(?,?,?,?,?,?,?)"
-            (recipientId' q, Binary (messageId msg), systemSeconds (messageTs msg), msgQuota, ntf, Binary body, quota)
+            (recipientId' q, messageId msg, systemSeconds (messageTs msg), msgQuota, ntf, Binary body, quota)
     where
       toResult = \case
         ((msgQuota, wasEmpty) : _) -> if msgQuota then Nothing else Just (msg, wasEmpty)
@@ -269,14 +271,14 @@ instance MsgStoreClass PostgresMsgStore where
     uninterruptibleMask_ $
       withDB' "tryDelMsg" (queueStore_ ms) $ \db ->
         maybeFirstRow toMessage $
-          DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_msg(?, ?)" (recipientId' q, Binary msgId)
+          DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_msg(?, ?)" (recipientId' q, msgId)
 
   tryDelPeekMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
   tryDelPeekMsg ms q msgId =
     uninterruptibleMask_ $
       withDB' "tryDelPeekMsg" (queueStore_ ms) $ \db ->
         toResult . map toMessage
-          <$> DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_peek_msg(?, ?)" (recipientId' q, Binary msgId)
+          <$> DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_peek_msg(?, ?)" (recipientId' q, msgId)
     where
       toResult = \case
         [] -> (Nothing, Nothing)
@@ -295,13 +297,13 @@ uninterruptibleMask_ :: ExceptT ErrorType IO a -> ExceptT ErrorType IO a
 uninterruptibleMask_ = ExceptT . E.uninterruptibleMask_ . runExceptT
 {-# INLINE uninterruptibleMask_ #-}
 
-toMaybeMessage :: (Maybe (Binary MsgId), Maybe Int64, Maybe Bool, Maybe Bool, Maybe (Binary MsgBody)) -> Maybe Message
+toMaybeMessage :: (Maybe MsgId, Maybe Int64, Maybe Bool, Maybe Bool, Maybe (Binary MsgBody)) -> Maybe Message
 toMaybeMessage = \case
   (Just msgId, Just ts, Just msgQuota, Just ntf, Just body) -> Just $ toMessage (msgId, ts, msgQuota, ntf, body)
   _ -> Nothing
 
-toMessage :: (Binary MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
-toMessage (Binary msgId, ts, msgQuota, ntf, Binary body)
+toMessage :: (MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
+toMessage (msgId, ts, msgQuota, ntf, Binary body)
   | msgQuota = MessageQuota {msgId, msgTs}
   | otherwise = Message {msgId, msgTs, msgFlags = MsgFlags ntf, msgBody = C.unsafeMaxLenBS body} -- TODO [messages] unsafeMaxLenBS?
   where
@@ -363,8 +365,8 @@ deleteAllMessages ms =
       db
       [sql|
         UPDATE msg_queues
-        SET msg_queue_size = 0, msg_can_write = TRUE, msg_queue_expire = FALSE
-        WHERE msg_queue_size != 0 OR msg_can_write = FALSE OR msg_queue_expire = TRUE
+        SET msg_queue_size = 0, msg_can_write = TRUE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
       |]
 
 updateQueueCounts :: PostgresMsgStore -> IO ()
@@ -384,16 +386,15 @@ updateQueueCounts ms =
       db
       [sql|
         UPDATE msg_queues
-        SET msg_queue_size = 0, msg_can_write = TRUE, msg_queue_expire = FALSE
-        WHERE msg_queue_size != 0 OR msg_can_write = FALSE OR msg_queue_expire = TRUE
+        SET msg_queue_size = 0, msg_can_write = TRUE
+        WHERE msg_queue_size != 0 OR msg_can_write = FALSE
       |]
     void $ DB.execute_
       db
       [sql|
         UPDATE msg_queues q
         SET msg_queue_size = s.size,
-            msg_can_write = s.quota_count = 0,
-            msg_queue_expire = s.size > s.quota_count
+            msg_can_write = s.quota_count = 0
         FROM queue_stats s
         WHERE q.recipient_id = s.recipient_id
       |]
@@ -428,7 +429,7 @@ messageRecToText rId msg =
     tabFields = BB.char7 ',' `intersperse` fields
     fields =
       [ renderField (toField rId),
-        renderField (toField $ Binary (messageId msg)),
+        renderField (toField $ messageId msg),
         renderField (toField $ systemSeconds (messageTs msg)),
         renderField (toField msgQuota),
         renderField (toField ntf),

@@ -145,7 +145,10 @@ module Simplex.Messaging.Protocol
     RcvNtfDhSecret,
     Message (..),
     RcvMessage (..),
-    MsgId,
+    MsgId (unMsgId),
+    mkMsgId,
+    unsafeMsgId,
+    randomMsgId,
     MsgBody,
     IdsHash (..),
     ServiceSub (..),
@@ -168,6 +171,7 @@ module Simplex.Messaging.Protocol
     EncFwdTransmission (..),
     EncResponse (..),
     EncTransmission (..),
+    encTransmissionNonce,
     FwdResponse (..),
     FwdTransmission (..),
     NameRecord (..),
@@ -232,8 +236,10 @@ module Simplex.Messaging.Protocol
 where
 
 import Control.Applicative (optional, (<|>))
+import Control.Concurrent.STM (STM, TVar)
 import Control.Exception (Exception, SomeException, displayException, fromException)
 import Control.Monad.Except
+import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as J
@@ -241,6 +247,7 @@ import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import Data.Bits (xor)
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -267,7 +274,7 @@ import qualified GHC.TypeLits as TE
 import qualified GHC.TypeLits as Type
 import Network.Socket (ServiceName)
 import qualified Network.TLS as TLS
-import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..))
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -701,19 +708,24 @@ instance Encoding NewNtfCreds where
 newtype EncTransmission = EncTransmission ByteString
   deriving (Show)
 
+encTransmissionNonce :: C.CbNonceI n => VersionSMP -> n -> C.CbNonce
+encTransmissionNonce v nonce
+  | v >= fwdNoncesSMPVersion = C.xorNonce (smpEncode v) nonce
+  | otherwise = C.toCbNonce nonce
+
 data FwdTransmission = FwdTransmission
-  { fwdCorrId :: CorrId,
+  { fwdCorrId :: C.CorrCbNonce,
     fwdVersion :: VersionSMP,
     fwdKey :: C.PublicKeyX25519,
     fwdTransmission :: EncTransmission
   }
 
 instance Encoding FwdTransmission where
-  smpEncode FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
-    smpEncode (corrId, fwdVersion, fwdKey, Tail t)
+  smpEncode FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t} =
+    smpEncode (fwdCorrId, fwdVersion, fwdKey, Tail t)
   smpP = do
-    (corrId, fwdVersion, fwdKey, Tail t) <- smpP
-    pure FwdTransmission {fwdCorrId = CorrId corrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
+    (fwdCorrId, fwdVersion, fwdKey, Tail t) <- smpP
+    pure FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission t}
 
 newtype EncFwdTransmission = EncFwdTransmission ByteString
   deriving (Show)
@@ -736,8 +748,8 @@ data BrokerMsg where
   NMSG :: C.CbNonce -> EncNMsgMeta -> BrokerMsg
   -- Should include certificate chain
   PKEY :: SessionId -> VersionRangeSMP -> CertChainPubKey -> BrokerMsg -- TLS-signed server key for proxy shared secret and initial sender key
-  RRES :: EncFwdResponse -> BrokerMsg -- relay to proxy
-  PRES :: EncResponse -> BrokerMsg -- proxy to client
+  RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg -- relay to proxy
+  PRES :: Maybe C.CbNonce -> EncResponse -> BrokerMsg -- proxy to client
   END :: BrokerMsg
   ENDS :: Int64 -> IdsHash -> BrokerMsg
   DELD :: BrokerMsg
@@ -759,16 +771,16 @@ newtype EncFwdResponse = EncFwdResponse ByteString
   deriving (Eq, Show)
 
 data FwdResponse = FwdResponse
-  { fwdCorrId :: CorrId,
+  { fwdCorrId :: C.CorrCbNonce,
     fwdResponse :: EncResponse
   }
 
 instance Encoding FwdResponse where
-  smpEncode FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t} =
-    smpEncode (corrId, Tail t)
+  smpEncode FwdResponse {fwdCorrId, fwdResponse = EncResponse t} =
+    smpEncode (fwdCorrId, Tail t)
   smpP = do
-    (corrId, Tail t) <- smpP
-    pure FwdResponse {fwdCorrId = CorrId corrId, fwdResponse = EncResponse t}
+    (fwdCorrId, Tail t) <- smpP
+    pure FwdResponse {fwdCorrId, fwdResponse = EncResponse t}
 
 newtype EncResponse = EncResponse ByteString
   deriving (Eq, Show)
@@ -791,7 +803,7 @@ toMsgInfo = \case
   Message {msgId, msgTs} -> msgInfo msgId msgTs MTMessage
   MessageQuota {msgId, msgTs} -> msgInfo msgId msgTs MTQuota
   where
-    msgInfo msgId msgTs msgType = MsgInfo {msgId = decodeLatin1 $ B64.encode msgId, msgTs = systemToUTCTime msgTs, msgType}
+    msgInfo msgId msgTs msgType = MsgInfo {msgId = decodeLatin1 $ B64.encode $ unMsgId msgId, msgTs = systemToUTCTime msgTs, msgType}
 
 messageId :: Message -> MsgId
 messageId = \case
@@ -1323,7 +1335,10 @@ instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
   parseJSON = strParseJSON "ProtocolServer"
 
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
-  deriving (Eq, Ord, Show)
+  deriving (Ord, Show)
+
+instance Eq BasicAuth where
+  BasicAuth s == BasicAuth s' = BA.constEq s s'
 
 instance IsString BasicAuth where fromString = BasicAuth . B.pack
 
@@ -1489,7 +1504,34 @@ type RcvNtfPublicDhKey = C.PublicKeyX25519
 type RcvNtfDhSecret = C.DhSecretX25519
 
 -- | SMP message server ID.
-type MsgId = ByteString
+newtype MsgId = MsgId {unMsgId :: ByteString}
+  deriving (Eq, Show)
+
+instance C.CbNonceI MsgId where
+  unCbNonce (MsgId s) = B.take 24 s
+
+instance Encoding MsgId where
+  smpEncode (MsgId s) = smpEncode s
+  smpP = mkMsgId <$?> smpP
+
+instance StrEncoding MsgId where
+  strEncode (MsgId s) = strEncode s
+  strP = mkMsgId <$?> strP
+
+instance FromField MsgId where fromField = blobFieldDecoder mkMsgId
+
+instance ToField MsgId where toField (MsgId s) = toField $ Binary s
+
+mkMsgId :: ByteString -> Either String MsgId
+mkMsgId s
+  | B.length s >= 24 = Right $ MsgId s
+  | otherwise = Left "MsgId: invalid length"
+
+unsafeMsgId :: ByteString -> MsgId
+unsafeMsgId s = either error id $ mkMsgId s
+
+randomMsgId :: Int -> TVar ChaChaDRG -> STM MsgId
+randomMsgId n = fmap MsgId . C.randomBytes (max 24 n)
 
 -- | SMP message body.
 type MsgBody = ByteString
@@ -1814,8 +1856,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
   encodeProtocol v = \case
     NEW NewQueueReq {rcvAuthKey = rKey, rcvDhKey = dhKey, auth_, subMode, queueReqData, ntfCreds}
       | v >= newNtfCredsSMPVersion -> new <> e (subMode, queueReqData, ntfCreds)
-      | v >= shortLinksSMPVersion -> new <> e (subMode, queueReqData)
-      | otherwise -> new <> e (subMode, senderCanSecure (queueReqMode <$> queueReqData))
+      | otherwise -> new <> e (subMode, queueReqData)
       where
         new = e (NEW_, ' ', rKey, dhKey, auth_)
     SUB -> e SUB_
@@ -1902,20 +1943,18 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
     CT SCreator NEW_ -> Cmd SCreator <$> newCmd
       where
         newCmd
-          | v >= newNtfCredsSMPVersion = new smpP smpP
-          | v >= shortLinksSMPVersion = new smpP nothing
-          | otherwise = new (qReq <$> smpP) nothing
+          | v >= newNtfCredsSMPVersion = new smpP
+          | otherwise = new nothing
           where
             nothing = pure Nothing
-            new p2 p3 = NEW <$> do
+            new p3 = NEW <$> do
               rcvAuthKey <- _smpP
               rcvDhKey <- smpP
               auth_ <- smpP
               subMode <- smpP
-              queueReqData <- p2
+              queueReqData <- smpP
               ntfCreds <- p3
               pure NewQueueReq {rcvAuthKey, rcvDhKey, auth_, subMode, queueReqData, ntfCreds}
-            qReq sndSecure = Just $ if sndSecure then QRMessaging Nothing else QRContact Nothing
     CT SRecipient tag ->
       Cmd SRecipient <$> case tag of
         SUB_ -> pure SUB
@@ -1966,8 +2005,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     IDS QIK {rcvId, sndId, rcvPublicDhKey = srvDh, queueMode, linkId, serviceId, serverNtfCreds}
       | v >= newNtfCredsSMPVersion -> ids <> e (queueMode, linkId, serviceId, serverNtfCreds)
       | v >= serviceCertsSMPVersion -> ids <> e (queueMode, linkId, serviceId)
-      | v >= shortLinksSMPVersion -> ids <> e (queueMode, linkId)
-      | otherwise -> ids <> e (senderCanSecure queueMode)
+      | otherwise -> ids <> e (queueMode, linkId)
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     LNK sId d -> e (LNK_, ' ', sId, d)
@@ -1981,8 +2019,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID nId srvNtfDh -> e (NID_, ' ', nId, srvNtfDh)
     NMSG nmsgNonce encNMsgMeta -> e (NMSG_, ' ', nmsgNonce, encNMsgMeta)
     PKEY sid vr certKey -> e (PKEY_, ' ', sid, vr, certKey)
-    RRES (EncFwdResponse encBlock) -> e (RRES_, ' ', Tail encBlock)
-    PRES (EncResponse encBlock) -> e (PRES_, ' ', Tail encBlock)
+    RRES nonce_ (EncFwdResponse encBlock) -> fwdResp RRES_ nonce_ encBlock
+    PRES nonce_ (EncResponse encBlock) -> fwdResp PRES_ nonce_ encBlock
     END -> e END_
     ENDS n idsHash -> serviceResp ENDS_ n idsHash
     DELD -> e DELD_
@@ -2006,6 +2044,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       serviceResp tag n idsHash
         | v >= rcvServiceSMPVersion = e (tag, ' ', n, idsHash)
         | otherwise = e (tag, ' ', n)
+      fwdResp tag nonce_ encBlock
+        | v >= fwdNoncesSMPVersion = e (tag, ' ', nonce_, Tail encBlock)
+        | otherwise = e (tag, ' ', Tail encBlock)
 
   protocolP v = \case
     MSG_ -> do
@@ -2015,19 +2056,17 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
         bodyP = EncRcvMsgBody . unTail <$> smpP
     ALLS_ -> pure ALLS
     IDS_
-      | v >= newNtfCredsSMPVersion -> ids smpP smpP smpP smpP
-      | v >= serviceCertsSMPVersion -> ids smpP smpP smpP nothing
-      | v >= shortLinksSMPVersion -> ids smpP smpP nothing nothing
-      | otherwise -> ids (qm <$> smpP) nothing nothing nothing
+      | v >= newNtfCredsSMPVersion -> ids smpP smpP
+      | v >= serviceCertsSMPVersion -> ids smpP nothing
+      | otherwise -> ids nothing nothing
       where
-        qm sndSecure = Just $ if sndSecure then QMMessaging else QMContact
         nothing = pure Nothing
-        ids p1 p2 p3 p4 = do
+        ids p3 p4 = do
           rcvId <- _smpP
           sndId <- smpP
           rcvPublicDhKey <- smpP
-          queueMode <- p1
-          linkId <- p2
+          queueMode <- smpP
+          linkId <- smpP
           serviceId <- p3
           serverNtfCreds <- p4
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId, serverNtfCreds}
@@ -2037,8 +2076,8 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     NID_ -> NID <$> _smpP <*> smpP
     NMSG_ -> NMSG <$> _smpP <*> smpP
     PKEY_ -> PKEY <$> _smpP <*> smpP <*> smpP
-    RRES_ -> RRES <$> (EncFwdResponse . unTail <$> _smpP)
-    PRES_ -> PRES <$> (EncResponse . unTail <$> _smpP)
+    RRES_ -> fwdRespP RRES EncFwdResponse
+    PRES_ -> fwdRespP PRES EncResponse
     END_ -> pure END
     ENDS_ -> serviceRespP ENDS
     DELD_ -> pure DELD
@@ -2055,6 +2094,9 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
+      fwdRespP :: (Maybe C.CbNonce -> a -> BrokerMsg) -> (ByteString -> a) -> Parser BrokerMsg
+      fwdRespP resp enc = resp <$> (A.space *> nonceP) <*> (enc <$> A.takeByteString)
+      nonceP = if v >= fwdNoncesSMPVersion then smpP else pure Nothing
 
   fromProtocolError = \case
     PECmdSyntax -> CMD SYNTAX
@@ -2071,7 +2113,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
     -- PONG response must not have queue ID
     PONG -> noEntityMsg
     PKEY {} -> noEntityMsg
-    RRES _ -> noEntityMsg
+    RRES {} -> noEntityMsg
     ALLS -> noEntityMsg
     RNAME {} -> noEntityMsg
     -- other broker responses must have queue ID
@@ -2407,7 +2449,9 @@ tDecodeServer THandleParams {sessionId, thVersion = v, implySessId} = \case
           where
             cmdOrErr = parseProtocol @v @err @cmd v command >>= checkCredentials tAuth entityId
             t :: a -> (CorrId, EntityId, a)
-            t = (corrId,entityId,)
+            -- IDs are slices of the ~16 KB received block and are kept as subscription keys,
+            -- so without a copy one live key retains the whole block
+            t = (CorrId $ B.copy $ bs corrId,EntityId $ B.copy $ unEntityId entityId,)
         Left _ -> tError corrId PEBlock
     | otherwise -> tError corrId PESession
   Left _ -> tError "" PEBlock

@@ -1,6 +1,5 @@
 
 
-
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -47,7 +46,6 @@ BEGIN
   IF del_count > 0 THEN
     UPDATE msg_queues
     SET msg_can_write = msg_can_write OR msg_queue_size <= del_count,
-        msg_queue_expire = msg_queue_size > del_count AND keep_min_id IS NOT NULL,
         msg_queue_size = GREATEST(msg_queue_size - del_count, 0)
     WHERE recipient_id = p_recipient_id;
   END IF;
@@ -63,24 +61,33 @@ CREATE PROCEDURE smp_server.expire_old_messages(IN p_old_ts bigint, IN batch_siz
 DECLARE
   rids BYTEA[];
   rid BYTEA;
+  last_ts BIGINT := -1;
   last_rid BYTEA := '\x';
+  next_ts BIGINT;
+  next_rid BYTEA;
   del_count BIGINT;
   total_deleted BIGINT := 0;
 BEGIN
   LOOP
-    SELECT array_agg(recipient_id)
-    INTO rids
+    -- The page is scanned in (msg_ts, recipient_id) order, so its last row is the next
+    -- keyset cursor. Advancing it past every row read, including queues left unexpired
+    -- because delete_expired_msgs skipped a locked row or raised, is what terminates the
+    -- loop; re-reading from the start instead would repeat those queues forever.
+    SELECT array_agg(DISTINCT recipient_id),
+           (array_agg(msg_ts ORDER BY msg_ts DESC, recipient_id DESC))[1],
+           (array_agg(recipient_id ORDER BY msg_ts DESC, recipient_id DESC))[1]
+    INTO rids, next_ts, next_rid
     FROM (
-      SELECT recipient_id
-      FROM msg_queues
-      WHERE deleted_at IS NULL
-        AND msg_queue_expire = TRUE
-        AND recipient_id > last_rid
-      ORDER BY recipient_id ASC
+      SELECT msg_ts, recipient_id
+      FROM messages
+      WHERE NOT msg_quota
+        AND msg_ts < p_old_ts
+        AND (msg_ts, recipient_id) > (last_ts, last_rid)
+      ORDER BY msg_ts ASC, recipient_id ASC
       LIMIT batch_size
-    ) qs;
+    ) m;
 
-    EXIT WHEN rids IS NULL OR cardinality(rids) = 0;
+    EXIT WHEN rids IS NULL;
 
     FOREACH rid IN ARRAY rids
     LOOP
@@ -91,9 +98,11 @@ BEGIN
         RAISE WARNING 'STORE, expire_old_messages, error expiring queue %: %', encode(rid, 'base64'), SQLERRM;
         CONTINUE;
       END;
-      COMMIT;
     END LOOP;
-    last_rid := rids[cardinality(rids)];
+    COMMIT;
+
+    last_ts := next_ts;
+    last_rid := next_rid;
   END LOOP;
 
   r_expired_msgs_count := total_deleted;
@@ -195,7 +204,6 @@ BEGIN
     IF q_size != 0 THEN
       UPDATE msg_queues
       SET msg_can_write = TRUE,
-          msg_queue_expire = FALSE,
           msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
@@ -207,7 +215,6 @@ BEGIN
     IF FOUND THEN
       UPDATE msg_queues
       SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
-          msg_queue_expire = msg_queue_size > 1,
           msg_queue_size = GREATEST(msg_queue_size - 1, 0)
       WHERE recipient_id = p_recipient_id;
       RETURN QUERY VALUES (msg.msg_id, msg.msg_ts, msg.msg_quota, msg.msg_ntf_flag, msg.msg_body);
@@ -245,7 +252,6 @@ BEGIN
     IF q_size != 0 THEN
       UPDATE msg_queues
       SET msg_can_write = TRUE,
-          msg_queue_expire = FALSE,
           msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
@@ -271,14 +277,12 @@ BEGIN
       IF msg_deleted THEN
         UPDATE msg_queues
         SET msg_can_write = msg_can_write OR msg_queue_size <= 1,
-            msg_queue_expire = msg_queue_size > 1,
             msg_queue_size = GREATEST(msg_queue_size - 1, 0)
         WHERE recipient_id = p_recipient_id;
       END IF;
     ELSIF msg_deleted OR q_size != 0 THEN
       UPDATE msg_queues
       SET msg_can_write = TRUE,
-          msg_queue_expire = FALSE,
           msg_queue_size = 0
       WHERE recipient_id = p_recipient_id;
     END IF;
@@ -348,7 +352,6 @@ BEGIN
 
     UPDATE msg_queues
     SET msg_can_write = NOT quota_written,
-        msg_queue_expire = TRUE,
         msg_queue_size = msg_queue_size + 1
     WHERE recipient_id = p_recipient_id;
 
@@ -440,7 +443,6 @@ CREATE TABLE smp_server.msg_queues (
     rcv_service_id bytea,
     ntf_service_id bytea,
     msg_can_write boolean DEFAULT true NOT NULL,
-    msg_queue_expire boolean DEFAULT false NOT NULL,
     msg_queue_size bigint DEFAULT 0 NOT NULL
 )
 WITH (fillfactor='80', autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', autovacuum_vacuum_cost_limit='1000');
@@ -485,19 +487,15 @@ ALTER TABLE ONLY smp_server.services
 
 
 
+CREATE INDEX idx_messages_expire ON smp_server.messages USING btree (msg_ts, recipient_id) WHERE (NOT msg_quota);
+
+
+
 CREATE INDEX idx_messages_recipient_id_message_id ON smp_server.messages USING btree (recipient_id, message_id);
 
 
 
 CREATE INDEX idx_messages_recipient_id_msg_quota ON smp_server.messages USING btree (recipient_id, msg_quota);
-
-
-
-CREATE INDEX idx_messages_recipient_id_msg_ts ON smp_server.messages USING btree (recipient_id, msg_ts);
-
-
-
-CREATE INDEX idx_msg_queues_expire ON smp_server.msg_queues USING btree (recipient_id) WHERE ((deleted_at IS NULL) AND msg_queue_expire);
 
 
 
@@ -553,7 +551,6 @@ ALTER TABLE ONLY smp_server.msg_queues
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_rcv_service_id_fkey FOREIGN KEY (rcv_service_id) REFERENCES smp_server.services(service_id) ON UPDATE RESTRICT ON DELETE SET NULL;
-
 
 
 

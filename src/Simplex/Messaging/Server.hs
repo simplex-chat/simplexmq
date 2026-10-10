@@ -1092,6 +1092,7 @@ controlPortAuth h user admin role auth = do
   readTVarIO role >>= \case
     CPRNone -> do
       atomically $ writeTVar role $! newRole
+      when (newRole == CPRNone) $ logWarn "ControlPort: failed auth"
       hPutStrLn h $ currentRole newRole
     r -> hPutStrLn h $ currentRole r <> if r == newRole then "" else ", start new session to change."
   where
@@ -1318,11 +1319,6 @@ isContactQueue QueueRec {queueMode, senderKey} = case queueMode of
   Just QMContact -> True
   Nothing -> isNothing senderKey -- for backward compatibility with pre-SKEY contact addresses
 
-isSecuredMsgQueue :: QueueRec -> Bool
-isSecuredMsgQueue QueueRec {queueMode, senderKey} = case queueMode of
-  Just QMContact -> False
-  _ -> isJust senderKey
-
 -- Random correlation ID is used as a nonce in case crypto_box authenticator is used to authorize transmission
 verifyCmdAuthorization :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> C.APublicAuthKey -> Bool
 verifyCmdAuthorization thAuth tAuth authorized corrId key = maybe False (verify key) tAuth
@@ -1338,7 +1334,7 @@ verifyCmdAuthorization thAuth tAuth authorized corrId key = maybe False (verify 
 
 verifyCmdAuth :: Maybe (THandleAuth 'TServer) -> C.PublicKeyX25519 -> C.CbAuthenticator -> ByteString -> CorrId -> Bool
 verifyCmdAuth thAuth k authenticator authorized (CorrId corrId) = case thAuth of
-  Just THAuthServer {serverPrivKey = pk} -> C.cbVerify k pk (C.cbNonce corrId) authenticator authorized
+  Just THAuthServer {serverPrivKey = pk} -> either (const False) (\nonce -> C.cbVerify k pk nonce authenticator authorized) $ C.cbNonce corrId
   Nothing -> False
 
 dummyVerifyCmd :: Maybe (THandleAuth 'TServer) -> Maybe TAuthorizations -> ByteString -> CorrId -> Bool
@@ -1457,14 +1453,15 @@ client
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
         liftIO (lookupSMPServerClient a sessId) >>= \case
-          Just (own, smp) -> do
+          Just (own, smp) | Right fwdCorrId <- C.corrCbNonce (bs corrId) -> do
             inc own pRequests
             forkProxiedCmd $ do
-              liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ inc own pSuccesses
+              liftIO (runExceptT (forwardSMPTransmission smp fwdCorrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
+                Right (nonce_, r) -> PRES nonce_ r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
                   PCEProtocolError {} -> inc own pSuccesses
                   _ -> inc own pErrorsOther
+          Just _ -> pure $ Just $ ERR $ CMD SYNTAX
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
@@ -1954,7 +1951,7 @@ client
             getDelivered :: Sub -> STM (Maybe (ServerSub, SystemSeconds))
             getDelivered Sub {delivered, subThread} = do
               readTVar delivered $>>= \(msgId', ts) ->
-                if msgId == msgId' || B.null msgId
+                if msgId == msgId'
                   then writeTVar delivered Nothing $> Just (subThread, ts)
                   else pure Nothing
             updateStats :: ServerStats -> Bool -> SystemSeconds -> Message -> IO ()
@@ -2000,7 +1997,7 @@ client
                       when (isJust (queueData qr) && isSecuredMsgQueue qr) $ void $ liftIO $
                         deleteQueueLinkData (queueStore ms) q
                       ServerConfig {messageExpiration, expireMessagesOnSend, msgIdBytes} <- asks config
-                      msgId <- randomId' msgIdBytes
+                      msgId <- atomically . randomMsgId msgIdBytes =<< asks random
                       msg_ <- liftIO $ runExceptT $ do
                         when expireMessagesOnSend $ mapM_ (expireMessages stats) messageExpiration
                         msg <- liftIO $ mkMessage msgId body
@@ -2113,7 +2110,7 @@ client
               liftIO $ storeNtf ns nId ntf
               incStat . ntfCount =<< asks serverStats
 
-            mkMessageNotification :: ByteString -> SystemTime -> RcvNtfDhSecret -> M s MsgNtf
+            mkMessageNotification :: MsgId -> SystemTime -> RcvNtfDhSecret -> M s MsgNtf
             mkMessageNotification msgId msgTs rcvNtfDhSecret = do
               ntfNonce <- atomically . C.randomCbNonce =<< asks random
               let msgMeta = NMsgMeta {msgId, msgTs}
@@ -2124,12 +2121,13 @@ client
         processForwardedCommand (EncFwdTransmission s) = fmap (either (Just . ERR) id) . runExceptT $ do
           THAuthServer {serverPrivKey, sessSecret'} <- maybe (throwE $ transportErr TENoServerAuth) pure (thAuth thParams')
           sessSecret <- maybe (throwE $ transportErr TENoServerAuth) pure sessSecret'
-          let proxyNonce = C.cbNonce $ bs corrId
+          proxyNonce <- liftEitherWith (const CRYPTO) $ C.cbNonce $ bs corrId
           s' <- liftEitherWith (const CRYPTO) $ C.cbDecryptNoPad sessSecret proxyNonce s
           FwdTransmission {fwdCorrId, fwdVersion, fwdKey, fwdTransmission = EncTransmission et} <- liftEitherWith (const $ CMD SYNTAX) $ smpDecode s'
+          unless (fwdVersion `isCompatible` thServerVRange thParams') $ throwE $ transportErr TEVersion
           let clientSecret = C.dh' fwdKey serverPrivKey
-              clientNonce = C.cbNonce $ bs fwdCorrId
-          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret clientNonce et
+              clientNonce = fwdCorrId
+          b <- liftEitherWith (const CRYPTO) $ C.cbDecrypt clientSecret (encTransmissionNonce fwdVersion clientNonce) et
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
@@ -2142,9 +2140,13 @@ client
                   TBError _ _ : _ -> throwE BLOCK
                   TBTransmission b' _ : _ -> pure b'
                   TBTransmissions b' _ _ : _ -> pure b'
-                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (C.reverseNonce clientNonce) r' paddedProxiedTLength
+                nonce_ <-
+                  if fwdVersion >= fwdNoncesSMPVersion
+                    then Just <$> (atomically . C.randomCbNonce =<< asks random)
+                    else pure Nothing
+                r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
-                pure $ RRES $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+                pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
           -- the inner response, or Nothing if forked (RSLV).
           r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
@@ -2186,7 +2188,7 @@ client
           MessageQuota {} -> RcvMsgQuota msgTs'
           where
             encrypt :: KnownNat i => C.MaxLenBS i -> RcvMessage
-            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+            encrypt body = RcvMessage msgId' . EncRcvMsgBody $ C.cbEncryptMaxLenBS (rcvDhSecret qr) msgId' body
             msgId' = messageId msg
             msgTs' = messageTs msg
 
@@ -2235,7 +2237,7 @@ client
                     SubPending -> QSubPending
                     SubThread _ -> QSubThread
                 ProhibitSub -> pure QProhibitSub
-              qDelivered <- decodeLatin1 . encode . fst <$$> readTVarIO delivered
+              qDelivered <- decodeLatin1 . encode . unMsgId . fst <$$> readTVarIO delivered
               pure QSub {qSubThread, qDelivered}
 
         ok :: Transmission BrokerMsg

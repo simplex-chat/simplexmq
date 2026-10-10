@@ -1169,11 +1169,15 @@ CREATE INDEX idx_ntf_tokens_ntf_host_ntf_port ON smp_agent_test_protocol_schema.
 
 
 
+CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON smp_agent_test_protocol_schema.processed_ratchet_key_hashes USING btree (conn_id, processed_ratchet_key_hash_id);
+
+
+
 CREATE INDEX idx_processed_ratchet_key_hashes_created_at ON smp_agent_test_protocol_schema.processed_ratchet_key_hashes USING btree (created_at);
 
 
 
-CREATE INDEX idx_processed_ratchet_key_hashes_hash ON smp_agent_test_protocol_schema.processed_ratchet_key_hashes USING btree (conn_id, hash);
+CREATE UNIQUE INDEX idx_processed_ratchet_key_hashes_hash ON smp_agent_test_protocol_schema.processed_ratchet_key_hashes USING btree (conn_id, hash);
 
 
 
@@ -1229,6 +1233,10 @@ CREATE UNIQUE INDEX idx_rcv_queues_ntf ON smp_agent_test_protocol_schema.rcv_que
 
 
 
+CREATE INDEX idx_rcv_queues_switch_status ON smp_agent_test_protocol_schema.rcv_queues USING btree (switch_status);
+
+
+
 CREATE INDEX idx_rcv_queues_to_subscribe ON smp_agent_test_protocol_schema.rcv_queues USING btree (to_subscribe);
 
 
@@ -1241,7 +1249,7 @@ CREATE UNIQUE INDEX idx_server_certs_user_id_host_port ON smp_agent_test_protoco
 
 
 
-CREATE INDEX idx_skipped_messages_conn_id ON smp_agent_test_protocol_schema.skipped_messages USING btree (conn_id);
+CREATE INDEX idx_skipped_messages_conn_id ON smp_agent_test_protocol_schema.skipped_messages USING btree (conn_id, skipped_message_id);
 
 
 
