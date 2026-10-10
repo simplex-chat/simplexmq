@@ -1204,12 +1204,12 @@ sendResponses c@Client {sndQ} stats authDelay since rs@(ts, _)
   | otherwise = atomically $ writeTBQueue sndQ rs
 
 sendAfterDelay :: Client s -> ServerStats -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
-sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats delay since rs = do
-  now <- getSystemTime
-  let remaining = delay - (microseconds now - microseconds since)
-  if remaining > 0
-    then forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' remaining >> write
-    else incStat (authDelayExceeded stats) >> write
+sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats delay since rs
+  | delay > 0 = do
+      elapsed <- subtract (microseconds since) . microseconds <$> getSystemTime
+      when (elapsed >= delay) $ incStat $ authDelayExceeded stats
+      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' (delay - elapsed `mod` delay) >> write
+  | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
     microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
