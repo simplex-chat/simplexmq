@@ -36,6 +36,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
+import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
@@ -58,7 +59,6 @@ import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util (whenM)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.IO (IOMode (..), withFile)
-import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec hiding (fit, it)
@@ -97,6 +97,7 @@ serverTests = do
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
+  describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
@@ -1274,21 +1275,21 @@ testTiming =
         smpTest2Cfg (cfgMS msType) supportedServerSMPRelayVRange t $ \rh sh ->
           testSameTiming rh sh tst msType
   where
-    testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
-    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
-    timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
+    testName :: (C.AuthAlg, C.AuthAlg) -> String
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
+    timingTests :: [(C.AuthAlg, C.AuthAlg)]
     timingTests =
-      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 200), -- correct key type
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150), -- correct key type
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448, 150),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
+      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519), -- correct key type
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448),
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448), -- correct key type
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519) -- correct key type
       ]
-    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
+    timeRepeat = fmap fst . responseTime . replicateM_ 5
     similarTime t1 t2 msType
       | t1 <= t2 = abs (1 - t1 / t2) < diff
       | otherwise = similarTime t2 t1 msType
@@ -1297,8 +1298,8 @@ testTiming =
         diff = case msType of
           ASType SQSPostgres _ -> 0.45
           _ -> 0.3
-    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> AStoreType -> Expectation
-    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) msType = do
+    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg) -> AStoreType -> Expectation
+    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) msType = do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -1325,16 +1326,16 @@ testTiming =
         runTimingTest :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> EntityId -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
-          _ <- timeRepeat n $ do
+          _ <- timeRepeat $ do
             -- "warm up" the server
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           threadDelay 100000
-          timeWrongKey <- timeRepeat n $ do
+          timeWrongKey <- timeRepeat $ do
             Resp "cdabcdabcdabcdabcdabcdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdabcdabcdabcdabcdabcdab", qId, cmd)
             return ()
           threadDelay 100000
-          timeNoQueue <- timeRepeat n $ do
+          timeNoQueue <- timeRepeat $ do
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey msType
@@ -1346,6 +1347,33 @@ testTiming =
               show $ timeWrongKey / timeNoQueue - 1
             ]
           ok `shouldBe` True
+
+testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
+testAuthErrorDelay =
+  it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId _) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
+      (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (wrongKeyTime, Resp "2" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("2", rId, SUB)
+      (noQueueTime, Resp "3" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("3", EntityId "1234", SUB)
+      (noLinkTime, Resp "4" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "4", EntityId "1234", LGET)
+      (subTime, Resp "5" _ (SOK Nothing)) <- responseTime $ signSendRecv rh rKey ("5", rId, SUB)
+      Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, OFF)
+      (suspendedTime, Resp "7" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "7", sId, _SEND "hello")
+      wrongKeyTime `shouldSatisfy` (>= 0.5)
+      noQueueTime `shouldSatisfy` (>= 0.5)
+      suspendedTime `shouldSatisfy` (>= 0.5)
+      noLinkTime `shouldSatisfy` (>= 0.5)
+      subTime `shouldSatisfy` (< 0.5)
+
+responseTime :: IO a -> IO (NominalDiffTime, a)
+responseTime action = do
+  t <- getCurrentTime
+  r <- action
+  (,r) . (`diffUTCTime` t) <$> getCurrentTime
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =

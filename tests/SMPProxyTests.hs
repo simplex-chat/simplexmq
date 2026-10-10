@@ -26,7 +26,7 @@ import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
 import SMPAgentClient
 import SMPClient
-import ServerTests (decryptMsgV3, sendRecv)
+import ServerTests (decryptMsgV3, responseTime, sendRecv)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
@@ -77,6 +77,8 @@ smpProxyTests = do
       testChangedFwdVersion
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
       testFwdCorrIdSize
+    it "relay delays AUTH errors to forwarded commands" $ \_ ->
+      testForwardedAuthErrorDelay
   describe "deliver message via SMP proxy" $ do
     let srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
@@ -489,6 +491,19 @@ testFwdCorrIdSize =
         forM_ (["", "2", "3333333333333333333333333"] :: [ByteString]) $ \corrId -> do
           (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
           reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
+
+testForwardedAuthErrorDelay :: IO ()
+testForwardedAuthErrorDelay =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) (updateCfg cfgJ2 $ \cfg_ -> cfg_ {authErrorDelay = 500000}) testPort2 $ \_ -> do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      (sendTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxySMPMessage pc NRMInteractive sess Nothing (SMP.EntityId "1234") noMsgFlags "hello"
+      (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
+      sendTime `shouldSatisfy` (>= 0.5)
+      getLinkTime `shouldSatisfy` (>= 0.5)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,
