@@ -181,7 +181,7 @@ jobs:
             TAG=${{ matrix.os }}
             GHC=${{ matrix.ghc }}
           cache-from: ${{ env.release != 'true' && format('type=registry,ref={0}-{1}', env.image_cache, steps.week.outputs.week) || '' }}
-          cache-to: ${{ (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) && format('type=registry,ref={0}-{1},mode=max,ignore-error=true', env.image_cache, steps.week.outputs.week) || '' }}
+          cache-to: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && format('type=registry,ref={0}-{1},mode=max,ignore-error=true', env.image_cache, steps.week.outputs.week) || '' }}
 
       - name: Start container
         if: matrix.should_run == true
