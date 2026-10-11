@@ -34,6 +34,7 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 
@@ -84,6 +85,10 @@ mkEntropy ent
   | otherwise = Left $ "entropy: expected 16, 20, 24, 28 or 32 bytes, got " <> show entLen
   where
     entLen = BA.length ent
+
+instance ToField WalletEntropy where toField (WalletEntropy ent) = toField $ Binary (BA.convert ent :: ByteString)
+
+instance FromField WalletEntropy where fromField = blobFieldDecoder $ mkEntropy . BA.convert
 
 randomEntropy :: EntropyStrength -> TVar ChaChaDRG -> STM WalletEntropy
 randomEntropy s = fmap WalletEntropy . C.randomBytes' (strengthBytes s)
