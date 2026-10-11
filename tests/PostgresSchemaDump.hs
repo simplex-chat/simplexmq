@@ -15,6 +15,7 @@ import qualified Simplex.Messaging.Agent.Store.Postgres.Migrations as Migrations
 import Simplex.Messaging.Agent.Store.Shared (Migration (..), MigrationConfig (..), MigrationConfirmation (..), MigrationsToRun (..), toDownMigration)
 import Simplex.Messaging.Util (ifM, whenM)
 import System.Directory (doesFileExist, removeFile)
+import System.Info (os)
 import System.Process (readCreateProcess, shell)
 import Test.Hspec hiding (fit, it)
 import Util
@@ -57,14 +58,13 @@ postgresSchemaDumpTest migrations skipComparisonForDownMigrations testDBOpts@DBO
 
     getSchema :: FilePath -> IO String
     getSchema schemaPath = do
-      ci <- envCI
       let cmd =
             ("pg_dump " <> B.unpack connstr <> " --schema " <> B.unpack testDBSchema)
               <> " --schema-only --no-owner --no-privileges --no-acl --no-subscriptions --no-tablespaces > "
               <> schemaPath
       void $ readCreateProcess (shell cmd) ""
       threadDelay 20000
-      let sed = (if ci then "sed -i" else "sed -i ''")
+      let sed = (if os == "linux" then "sed -i" else "sed -i ''")
       void $ readCreateProcess (shell $ sed <> " '/^--/d; /^\\\\restrict/d; /^\\\\unrestrict/d' " <> schemaPath) ""
       sch <- readFile schemaPath
       sch `deepseq` pure sch

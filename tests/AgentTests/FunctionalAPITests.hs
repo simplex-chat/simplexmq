@@ -5052,9 +5052,9 @@ testServerQueueInfo = do
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello 4") -> c == aliceId && mId == msgId4; _ -> False
     ackMessage bob aliceId msgId4 Nothing
     liftIO $ threadDelay 200000
-    Just _ <- checkMsgQ bob aliceId 1 -- the one that did not fit now accepted
     get alice ##> ("", bobId, QCONT)
     get alice ##> ("", bobId, SENT msgId5)
+    Just _ <- checkMsgQ bob aliceId 1 -- the one that did not fit now accepted
     liftIO $ threadDelay 200000
     Just _srvMsgId <- checkQ bob aliceId True (Just QNoSub) 1 (Just MTMessage)
     get bob =##> \case ("", c, Msg' mId PQEncOn "hello: quota exceeded") -> c == aliceId && mId == msgId5 + 1; _ -> False
