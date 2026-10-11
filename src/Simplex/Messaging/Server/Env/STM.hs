@@ -68,6 +68,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
+    defaultAuthErrorDelayMs,
     defaultMaxJournalMsgCount,
     defaultMaxJournalStateLines,
     defaultIdleQueueInterval,
@@ -187,6 +188,7 @@ data ServerConfig s = ServerConfig
     ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
+    authErrorDelay :: Int64,
     smpCredentials :: ServerCredentials,
     httpCredentials :: Maybe ServerCredentials,
     -- | SMP client-server protocol version range
@@ -254,6 +256,9 @@ defaultProxyClientConcurrency = 32
 
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 1000
+
+defaultAuthErrorDelayMs :: Int64
+defaultAuthErrorDelayMs = 50
 
 journalMsgStoreDepth :: Int
 journalMsgStoreDepth = 5
