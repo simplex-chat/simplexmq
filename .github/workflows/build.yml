@@ -99,7 +99,7 @@ jobs:
             runner: "ubuntu-22.04"
             ghc: "8.10.7"
             should_run: ${{ !(github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }}
-            cache_build: false
+            cache_build: true
           - os: 22.04
             os_underscore: 22_04
             arch: x86-64
@@ -120,14 +120,14 @@ jobs:
             runner: "ubuntu-22.04-arm"
             ghc: "9.6.3"
             should_run: true
-            cache_build: false
+            cache_build: true
           - os: 24.04
             os_underscore: 24_04
             arch: aarch64
             runner: "ubuntu-24.04-arm"
             ghc: "9.6.3"
             should_run: true
-            cache_build: false
+            cache_build: true
     steps:
       - name: Clone project
         if: matrix.should_run == true
@@ -179,7 +179,7 @@ jobs:
           cache-from: ${{ env.release != 'true' && format('type=registry,ref=ghcr.io/simplex-chat/simplexmq-build-cache:{0}-{1}-ghc{2}', matrix.os, matrix.arch, matrix.ghc) || '' }}
           cache-to: ${{ (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) && format('type=registry,ref=ghcr.io/simplex-chat/simplexmq-build-cache:{0}-{1}-ghc{2},mode=max,ignore-error=true', matrix.os, matrix.arch, matrix.ghc) || '' }}
 
-      - name: Restore dependencies
+      - name: Restore dependencies from cache
         id: restore-deps
         if: matrix.should_run == true
         uses: actions/cache/restore@v4
@@ -188,7 +188,12 @@ jobs:
           key: deps-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ github.sha }}
           restore-keys: deps-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-
 
-      - name: Restore build
+      - name: Warn if dependencies not in cache
+        if: matrix.should_run == true && steps.restore-deps.outputs.cache-matched-key == ''
+        run: echo "::warning title=Cache miss::dependencies, ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC ${{ matrix.ghc }}"
+
+      - name: Restore build directories from cache
+        id: restore-build
         if: matrix.should_run == true && matrix.cache_build == true && env.release != 'true'
         uses: actions/cache/restore@v4
         with:
@@ -197,6 +202,22 @@ jobs:
             dist-postgres
           key: dist-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ env.opt }}-${{ github.sha }}
           restore-keys: dist-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ env.opt }}-
+
+      - name: Warn if build directories not in cache
+        if: matrix.should_run == true && matrix.cache_build == true && env.release != 'true' && github.event_name == 'push' && steps.restore-build.outputs.cache-matched-key == ''
+        run: echo "::warning title=Cache miss::build directory, ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC ${{ matrix.ghc }}"
+
+      - name: Set old timestamps on unchanged sources (GHC 8.10.7)
+        if: matrix.should_run == true && matrix.ghc == '8.10.7' && steps.restore-build.outputs.cache-matched-key != ''
+        shell: bash
+        run: |
+          if [ -f dist-newstyle/sources.sha256 ]; then
+            while read -r hash file; do
+              if [ -f "$file" ] && [ "$(sha256sum "$file" | cut -d' ' -f1)" = "$hash" ]; then
+                touch -d 2000-01-01 "$file"
+              fi
+            done < dist-newstyle/sources.sha256
+          fi
 
       - name: Start container
         if: matrix.should_run == true
@@ -318,20 +339,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Hash dependencies
+      - name: Record source hashes (GHC 8.10.7)
+        if: matrix.should_run == true && matrix.ghc == '8.10.7'
+        shell: docker exec -t builder sh -eu {0}
+        run: git ls-files -z '*.hs' '*.hsc' | xargs -0 sha256sum > dist-newstyle/sources.sha256
+
+      - name: Compute dependency cache key
         id: hash-deps
         if: matrix.should_run == true && env.release != 'true'
         shell: bash
         run: echo "hash=$(ls ~/.cabal/store/ghc-*/ | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
-      - name: Save dependencies
+      - name: Save dependencies to cache
         if: matrix.should_run == true && env.release != 'true' && steps.restore-deps.outputs.cache-matched-key != format('deps-{0}-{1}-ghc{2}-{3}', matrix.os, matrix.arch, matrix.ghc, steps.hash-deps.outputs.hash)
         uses: actions/cache/save@v4
         with:
           path: ~/.cabal/store
           key: deps-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ steps.hash-deps.outputs.hash }}
 
-      - name: Save build
+      - name: Save build directories to cache
         if: matrix.should_run == true && matrix.cache_build == true && env.release != 'true'
         uses: actions/cache/save@v4
         with:
