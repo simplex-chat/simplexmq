@@ -66,12 +66,15 @@ jobs:
   build:
     name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
     needs: maybe-release
+    permissions:
+      contents: write
+      packages: write
     env:
       apps: "smp-server xftp-server ntf-server xftp"
       opt: ${{ github.event_name == 'pull_request' && 'O0' || 'O2' }}
       ghc_options: ${{ github.event_name == 'pull_request' && '--ghc-options=-O0' || '' }}
-      save_cache: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/stable') }}
       release: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      postgres_dist: ${{ startsWith(github.ref, 'refs/tags/v') && 'dist-newstyle' || 'dist-postgres' }}
     runs-on: ${{ matrix.runner }}
     services:
       postgres:
@@ -155,6 +158,13 @@ jobs:
           sudo apt update
           sudo apt -y install postgresql-client-15
 
+      - name: Log in to GitHub Container Registry
+        if: matrix.should_run == true && env.release != 'true'
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
       - name: Build and cache Docker image
         if: matrix.should_run == true
         uses: simplex-chat/docker-build-push-action@v6
@@ -166,8 +176,8 @@ jobs:
           build-args: |
             TAG=${{ matrix.os }}
             GHC=${{ matrix.ghc }}
-          cache-from: type=gha,scope=image-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}
-          cache-to: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && format('type=gha,mode=max,scope=image-{0}-{1}-ghc{2}', matrix.os, matrix.arch, matrix.ghc) || '' }}
+          cache-from: ${{ env.release != 'true' && format('type=registry,ref=ghcr.io/simplex-chat/simplexmq-build-cache:{0}-{1}-ghc{2}', matrix.os, matrix.arch, matrix.ghc) || '' }}
+          cache-to: ${{ (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) && format('type=registry,ref=ghcr.io/simplex-chat/simplexmq-build-cache:{0}-{1}-ghc{2},mode=max,ignore-error=true', matrix.os, matrix.arch, matrix.ghc) || '' }}
 
       - name: Restore dependencies
         id: restore-deps
@@ -214,14 +224,14 @@ jobs:
             fi
           done
           cabal update
-          cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres ${{ env.ghc_options }}
+          cabal build --builddir=${{ env.postgres_dist }} --jobs=$(nproc) --enable-tests -fserver_postgres ${{ env.ghc_options }}
           mkdir -p /out
-          for i in smp-server xftp-server simplexmq-test; do
-            bin=$(find /project/dist-postgres -name "$i" -type f -executable)
+          for i in smp-server xftp-server ntf-server simplexmq-test; do
+            bin=$(find /project/${{ env.postgres_dist }} -name "$i" -type f -executable)
             chmod +x "$bin"
-            mv "$bin" /out/
+            cp "$bin" /out/
           done
-          strip /out/smp-server /out/xftp-server
+          strip /out/smp-server /out/xftp-server /out/ntf-server
 
       - name: Copy simplexmq-test from container
         if: matrix.should_run == true
@@ -259,11 +269,11 @@ jobs:
         run: |
           cabal build --jobs=$(nproc) ${{ env.ghc_options }}
           mkdir -p /out
-          for i in ${{ env.apps }}; do
+          for i in smp-server xftp-server xftp; do
             bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
             strip "$bin"
             chmod +x "$bin"
-            mv "$bin" /out/
+            cp "$bin" /out/
           done
 
       - name: Copy binaries from container and prepare them
@@ -310,12 +320,12 @@ jobs:
 
       - name: Hash dependencies
         id: hash-deps
-        if: matrix.should_run == true && env.save_cache == 'true'
+        if: matrix.should_run == true && env.release != 'true'
         shell: bash
         run: echo "hash=$(ls ~/.cabal/store/ghc-*/ | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - name: Save dependencies
-        if: matrix.should_run == true && env.save_cache == 'true' && steps.restore-deps.outputs.cache-matched-key != format('deps-{0}-{1}-ghc{2}-{3}', matrix.os, matrix.arch, matrix.ghc, steps.hash-deps.outputs.hash)
+        if: matrix.should_run == true && env.release != 'true' && steps.restore-deps.outputs.cache-matched-key != format('deps-{0}-{1}-ghc{2}-{3}', matrix.os, matrix.arch, matrix.ghc, steps.hash-deps.outputs.hash)
         uses: actions/cache/save@v4
         with:
           path: ~/.cabal/store
