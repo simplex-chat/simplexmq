@@ -68,6 +68,10 @@ jobs:
     needs: maybe-release
     env:
       apps: "smp-server xftp-server ntf-server xftp"
+      opt: ${{ github.event_name == 'pull_request' && 'O0' || 'O2' }}
+      ghc_options: ${{ github.event_name == 'pull_request' && '--ghc-options=-O0' || '' }}
+      save_cache: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/stable') }}
+      release: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ matrix.runner }}
     services:
       postgres:
@@ -92,30 +96,35 @@ jobs:
             runner: "ubuntu-22.04"
             ghc: "8.10.7"
             should_run: ${{ !(github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }}
+            cache_build: false
           - os: 22.04
             os_underscore: 22_04
             arch: x86-64
             runner: "ubuntu-22.04"
             ghc: "9.6.3"
             should_run: true
+            cache_build: true
           - os: 24.04
             os_underscore: 24_04
             arch: x86-64
             runner: "ubuntu-24.04"
             ghc: "9.6.3"
             should_run: true
+            cache_build: true
           - os: 22.04
             os_underscore: 22_04
             arch: aarch64
             runner: "ubuntu-22.04-arm"
             ghc: "9.6.3"
             should_run: true
+            cache_build: false
           - os: 24.04
             os_underscore: 24_04
             arch: aarch64
             runner: "ubuntu-24.04-arm"
             ghc: "9.6.3"
             should_run: true
+            cache_build: false
     steps:
       - name: Clone project
         if: matrix.should_run == true
@@ -157,15 +166,27 @@ jobs:
           build-args: |
             TAG=${{ matrix.os }}
             GHC=${{ matrix.ghc }}
+          cache-from: type=gha,scope=image-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}
+          cache-to: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && format('type=gha,mode=max,scope=image-{0}-{1}-ghc{2}', matrix.os, matrix.arch, matrix.ghc) || '' }}
 
-      - name: Cache dependencies
+      - name: Restore dependencies
+        id: restore-deps
         if: matrix.should_run == true
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cabal/store
+          key: deps-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ github.sha }}
+          restore-keys: deps-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-
+
+      - name: Restore build
+        if: matrix.should_run == true && matrix.cache_build == true && env.release != 'true'
+        uses: actions/cache/restore@v4
         with:
           path: |
-            ~/.cabal/store
             dist-newstyle
-          key: ubuntu-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ hashFiles('cabal.project', 'simplexmq.cabal') }}
+            dist-postgres
+          key: dist-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ env.opt }}-${{ github.sha }}
+          restore-keys: dist-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ env.opt }}-
 
       - name: Start container
         if: matrix.should_run == true
@@ -185,13 +206,18 @@ jobs:
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
-          chmod -fR 777 ~/.cabal ./dist-newstyle || :; git config --global --add safe.directory '*'
-          cabal clean
+          chmod -fR 777 ~/.cabal ./dist-newstyle ./dist-postgres || :; git config --global --add safe.directory '*'
+          version=$(awk '/^version:/ {print $2}' simplexmq.cabal)
+          for d in dist-newstyle/build dist-postgres/build; do
+            if [ -d "$d" ]; then
+              find "$d" -mindepth 3 -maxdepth 3 -type d -name 'simplexmq-*' ! -name "simplexmq-$version" -exec rm -rf {} +
+            fi
+          done
           cabal update
-          cabal build --jobs=$(nproc) --enable-tests -fserver_postgres
+          cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres ${{ env.ghc_options }}
           mkdir -p /out
           for i in smp-server xftp-server simplexmq-test; do
-            bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
+            bin=$(find /project/dist-postgres -name "$i" -type f -executable)
             chmod +x "$bin"
             mv "$bin" /out/
           done
@@ -231,7 +257,7 @@ jobs:
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
-          cabal build --jobs=$(nproc)
+          cabal build --jobs=$(nproc) ${{ env.ghc_options }}
           mkdir -p /out
           for i in ${{ env.apps }}; do
             bin=$(find /project/dist-newstyle -name "$i" -type f -executable)
@@ -281,6 +307,28 @@ jobs:
             ${{ steps.prepare-postgres.outputs.bins }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Hash dependencies
+        id: hash-deps
+        if: matrix.should_run == true && env.save_cache == 'true'
+        shell: bash
+        run: echo "hash=$(ls ~/.cabal/store/ghc-*/ | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save dependencies
+        if: matrix.should_run == true && env.save_cache == 'true' && steps.restore-deps.outputs.cache-matched-key != format('deps-{0}-{1}-ghc{2}-{3}', matrix.os, matrix.arch, matrix.ghc, steps.hash-deps.outputs.hash)
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cabal/store
+          key: deps-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ steps.hash-deps.outputs.hash }}
+
+      - name: Save build
+        if: matrix.should_run == true && matrix.cache_build == true && env.release != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            dist-newstyle
+            dist-postgres
+          key: dist-${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-${{ env.opt }}-${{ github.sha }}
 
       - name: Test
         if: matrix.should_run == true && matrix.arch == 'x86-64'
