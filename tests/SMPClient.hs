@@ -45,7 +45,7 @@ import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, readTMVar, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
@@ -389,20 +389,25 @@ withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)
 serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
+  startError <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask (\unmask -> unmask (process started) `E.catchAny` handleStartError started))
-    (\t -> killThread t >> afterProcess >> waitFor started "stop")
-    (\t -> waitFor started "start" >> f t >>= \r -> r <$ threadDelay 100000)
+    (forkIOWithUnmask (\unmask -> unmask (process started) `E.catchAny` handleStartError started startError))
+    (\t -> killThread t >> afterProcess >> void (waitFor started "stop"))
+    (\t -> checkStarted started startError >> f t >>= \r -> r <$ threadDelay 100000)
   where
     -- it putTMVar is called twise to unlock both parts of the bracket in case of start failure
-    handleStartError started e = do
+    handleStartError started startError e = do
+      atomically $ putTMVar startError e
       atomically $ putTMVar started False
       atomically $ putTMVar started False
       E.throwIO e
+    checkStarted started startError =
+      waitFor started "start" >>= \ok ->
+        unless ok $ atomically (readTMVar startError) >>= \e -> error $ "server did not start: " <> show e
     waitFor started s =
       5_000_000 `timeout` atomically (takeTMVar started) >>= \case
         Nothing -> error $ "server did not " <> s
-        _ -> pure ()
+        Just ok -> pure ok
 
 -- A TCP server that accepts connections but never performs a TLS handshake, so a client
 -- connecting to it stays blocked in the TLS handshake until its connection timeout.
