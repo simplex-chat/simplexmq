@@ -905,7 +905,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 2
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 2
 
       -- Phase 2: associate 1 more queue via SUB, reconnect with SUBS 3, check metric = 3
       (rPub3, rKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -935,7 +935,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 3
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
