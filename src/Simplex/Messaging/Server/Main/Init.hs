@@ -25,7 +25,7 @@ import Network.Socket (HostName)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BasicAuth)
-import Simplex.Messaging.Server.CLI (SignAlgorithm, addressStatsIniContent, onOff)
+import Simplex.Messaging.Server.CLI (SignAlgorithm, onOff, usageStatsIniContent)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (Entity (..), ServerPublicInfo (..))
@@ -177,7 +177,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
     <> ("check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration))
     <> "\n\n"
-    <> addressStatsIniContent
+    <> usageStatsIniContent
     <> "\n\
         \[WEB]\n\
         \# Set path to generate static mini-site for server information and qr codes/links\n"

@@ -16,7 +16,7 @@ module Simplex.FileTransfer.Server.Env
     XFTPStoreConfig (..),
     XFTPEnv (..),
     XFTPRequest (..),
-    XFTPAddrCounter (..),
+    XFTPUsageCounter (..),
     xftpCmdCounter,
     XFTPStoreType,
     FileStore (..),
@@ -69,9 +69,9 @@ import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
 import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
-import Simplex.Messaging.Server.AddressStats (AddrCounter (..), AddressStatsConfig, ServerAddrStats, countBounds, kilobyteBounds, newServerAddrStats)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
+import Simplex.Messaging.Server.UsageStats (UsageCounter (..), UsageStats, countBounds, kilobyteBounds, newUsageStats)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
@@ -118,7 +118,7 @@ data XFTPServerConfig s = XFTPServerConfig
     serverStatsBackupFile :: Maybe FilePath,
     prometheusInterval :: Maybe Int,
     prometheusMetricsFile :: FilePath,
-    addressStats :: Maybe AddressStatsConfig,
+    usageStatsPeriod :: Maybe Int64,
     transportConfig :: TransportServerConfig,
     responseDelay :: Int,
     webStaticPath :: Maybe FilePath
@@ -141,53 +141,53 @@ data XFTPEnv s = XFTPEnv
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
     serverStats :: FileServerStats,
-    addrStats :: Maybe (ServerAddrStats XFTPAddrCounter)
+    usageStats :: Maybe (UsageStats XFTPUsageCounter)
   }
 
-data XFTPAddrCounter
-  = XACConnections
-  | XACErrors
-  | XACFNew
-  | XACFAdd
-  | XACFPut
-  | XACFDel
-  | XACFGet
-  | XACFAck
-  | XACPing
-  | XACUploadKb
-  | XACDownloadKb
-  | XACRecipients
+data XFTPUsageCounter
+  = XUCConnections
+  | XUCErrors
+  | XUCFNew
+  | XUCFAdd
+  | XUCFPut
+  | XUCFDel
+  | XUCFGet
+  | XUCFAck
+  | XUCPing
+  | XUCUploadKb
+  | XUCDownloadKb
+  | XUCRecipients
   deriving (Eq, Ord, Enum, Bounded, Show)
 
-instance AddrCounter XFTPAddrCounter where
+instance UsageCounter XFTPUsageCounter where
   counterName = \case
-    XACConnections -> "connections"
-    XACErrors -> "errors"
-    XACFNew -> "FNEW"
-    XACFAdd -> "FADD"
-    XACFPut -> "FPUT"
-    XACFDel -> "FDEL"
-    XACFGet -> "FGET"
-    XACFAck -> "FACK"
-    XACPing -> "PING"
-    XACUploadKb -> "upload_kb"
-    XACDownloadKb -> "download_kb"
-    XACRecipients -> "recipients"
+    XUCConnections -> "connections"
+    XUCErrors -> "errors"
+    XUCFNew -> "FNEW"
+    XUCFAdd -> "FADD"
+    XUCFPut -> "FPUT"
+    XUCFDel -> "FDEL"
+    XUCFGet -> "FGET"
+    XUCFAck -> "FACK"
+    XUCPing -> "PING"
+    XUCUploadKb -> "upload_kb"
+    XUCDownloadKb -> "download_kb"
+    XUCRecipients -> "recipients"
   counterBounds = \case
-    XACUploadKb -> kilobyteBounds
-    XACDownloadKb -> kilobyteBounds
+    XUCUploadKb -> kilobyteBounds
+    XUCDownloadKb -> kilobyteBounds
     _ -> countBounds
-  connectionsCounter = XACConnections
+  connectionsCounter = XUCConnections
 
-xftpCmdCounter :: FileCmd -> XFTPAddrCounter
+xftpCmdCounter :: FileCmd -> XFTPUsageCounter
 xftpCmdCounter (FileCmd _ cmd) = case cmd of
-  FNEW {} -> XACFNew
-  FADD _ -> XACFAdd
-  FPUT -> XACFPut
-  FDEL -> XACFDel
-  FGET _ -> XACFGet
-  FACK -> XACFAck
-  PING -> XACPing
+  FNEW {} -> XUCFNew
+  FADD _ -> XUCFAdd
+  FPUT -> XUCFPut
+  FDEL -> XUCFDel
+  FGET _ -> XUCFGet
+  FACK -> XUCFAck
+  PING -> XUCPing
 
 fileStore :: XFTPEnv s -> s
 fileStore = fromFileStore . store
@@ -232,7 +232,7 @@ defaultFileExpiration =
     }
 
 newXFTPServerEnv :: FileStoreClass s => XFTPServerConfig s -> IO (XFTPEnv s)
-newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials, addressStats} = do
+newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExpiration, fileStorageEntitlements, xftpCredentials, httpCredentials, usageStatsPeriod} = do
   let defaultMax = ttl fileExpiration
       belowDefault = M.filter ((< defaultMax) . storageTime) fileStorageEntitlements
   unless (M.null belowDefault) $ do
@@ -260,8 +260,8 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  addrStats <- mapM (const newServerAddrStats) addressStats
-  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats, addrStats}
+  usageStats <- mapM (const newUsageStats) usageStatsPeriod
+  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats, usageStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)

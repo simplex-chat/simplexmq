@@ -205,7 +205,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
             <> ("# ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
             <> ("# check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
             <> "\n"
-            <> addressStatsIniContent
+            <> usageStatsIniContent
             <> "\n\
                \[WEB]\n\
                \# Set path to generate static mini-site for server information\n"
@@ -327,7 +327,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
               serverStatsBackupFile = logStats $> combine logPath "file-server-stats.log",
               prometheusInterval = eitherToMaybe (lookupValue "STORE_LOG" "prometheus_interval" ini) >>= readMaybe . T.unpack,
               prometheusMetricsFile = combine logPath "xftp-server-metrics.txt",
-              addressStats = iniAddressStats ini,
+              usageStatsPeriod = iniUsageStatsPeriod ini,
               transportConfig =
                 let cfg =
                       mkTransportServerConfig

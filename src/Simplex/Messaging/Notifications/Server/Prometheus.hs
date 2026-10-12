@@ -21,10 +21,10 @@ import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Notifications.Server.Env (NtfAddrCounter)
+import Simplex.Messaging.Notifications.Server.Env (NtfUsageCounter)
 import Simplex.Messaging.Notifications.Server.Stats
-import Simplex.Messaging.Server.AddressStats (AddrHistogram, addrHistogramMetrics)
 import Simplex.Messaging.Server.Stats (PeriodStatCounts (..))
+import Simplex.Messaging.Server.UsageStats (UsageHistogram, usageMetrics)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (tshow)
 
@@ -52,7 +52,7 @@ data NtfRealTimeMetrics = NtfRealTimeMetrics
     ntfPendingQueueSubs :: NtfSMPSubMetrics,
     smpSessionCount :: Int,
     apnsPushQLength :: Natural,
-    addressHistograms :: Maybe (M.Map NtfAddrCounter AddrHistogram)
+    usageHistograms :: Maybe (M.Map NtfUsageCounter UsageHistogram)
   }
 
 data NtfSMPWorkerMetrics = NtfSMPWorkerMetrics {ownServers :: [Text], otherServers :: Int}
@@ -62,7 +62,7 @@ data NtfSMPSubMetrics = NtfSMPSubMetrics {ownSrvSubs :: M.Map Text Int, otherSer
 {-# FOURMOLU_DISABLE\n#-}
 ntfPrometheusMetrics :: NtfServerMetrics -> NtfRealTimeMetrics -> UTCTime -> Text
 ntfPrometheusMetrics sm rtm ts =
-  time <> tokens <> subscriptions <> notifications <> clientAddresses <> info
+  time <> tokens <> subscriptions <> notifications <> clientUsage <> info
   where
     NtfServerMetrics {statsData, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions} = sm
     NtfRealTimeMetrics
@@ -76,7 +76,7 @@ ntfPrometheusMetrics sm rtm ts =
         ntfPendingQueueSubs,
         smpSessionCount,
         apnsPushQLength,
-        addressHistograms
+        usageHistograms
       } = rtm
     NtfServerStatsData
       { _fromTime,
@@ -225,7 +225,7 @@ ntfPrometheusMetrics sm rtm ts =
       <> showNtfsByServer _ntfReceivedAuthOwn "simplex_ntf_notifications_received_auth_own" "Received notifications without token or subscription (AUTH error)" "ntfReceivedAuthOwn"
       <> showNtfsByServer _ntfDeliveredOwn "simplex_ntf_notifications_delivered_own" "Delivered notifications" "ntfDeliveredOwn"
       <> showNtfsByServer _ntfFailedOwn "simplex_ntf_notifications_failed_own" "Failed notifications" "ntfFailedOwn"
-    clientAddresses = maybe "" (addrHistogramMetrics "simplex_ntf" tsEpoch) addressHistograms
+    clientUsage = maybe "" (usageMetrics "simplex_ntf" tsEpoch) usageHistograms
     info =
       "# Info\n\
       \# ----\n\

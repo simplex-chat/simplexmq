@@ -17,10 +17,10 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
-import Simplex.FileTransfer.Server.Env (XFTPAddrCounter)
+import Simplex.FileTransfer.Server.Env (XFTPUsageCounter)
 import Simplex.FileTransfer.Server.Stats
-import Simplex.Messaging.Server.AddressStats (AddrHistogram, addrHistogramMetrics)
 import Simplex.Messaging.Server.Stats (PeriodStatCounts (..))
+import Simplex.Messaging.Server.UsageStats (UsageHistogram, usageMetrics)
 import Simplex.Messaging.Transport (simplexMQVersion)
 import Simplex.Messaging.Util (tshow)
 
@@ -28,7 +28,7 @@ data FileServerMetrics = FileServerMetrics
   { statsData :: FileServerStatsData,
     filesDownloadedPeriods :: PeriodStatCounts,
     rtsOptions :: Text,
-    addressHistograms :: Maybe (Map XFTPAddrCounter AddrHistogram)
+    usageHistograms :: Maybe (Map XFTPUsageCounter UsageHistogram)
   }
 
 rtsOptionsEnv :: Text
@@ -37,9 +37,9 @@ rtsOptionsEnv = "XFTP_RTS_OPTIONS"
 {-# FOURMOLU_DISABLE\n#-}
 xftpPrometheusMetrics :: FileServerMetrics -> UTCTime -> Text
 xftpPrometheusMetrics sm ts =
-  time <> files <> clientAddresses <> info
+  time <> files <> clientUsage <> info
   where
-    FileServerMetrics {statsData, filesDownloadedPeriods, rtsOptions, addressHistograms} = sm
+    FileServerMetrics {statsData, filesDownloadedPeriods, rtsOptions, usageHistograms} = sm
     FileServerStatsData
       { _fromTime,
         _filesCreated,
@@ -126,7 +126,7 @@ xftpPrometheusMetrics sm ts =
       \simplex_xftp_files_count_monthly " <> mstr (monthCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.monthCount\n\
       \\n"
-    clientAddresses = maybe "" (addrHistogramMetrics "simplex_xftp" tsEpoch) addressHistograms
+    clientUsage = maybe "" (usageMetrics "simplex_xftp" tsEpoch) usageHistograms
     info =
       "# Info\n\
       \# ----\n\

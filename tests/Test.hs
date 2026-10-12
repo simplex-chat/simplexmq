@@ -7,7 +7,6 @@ import CLITests
 import Control.Concurrent (threadDelay)
 import qualified Control.Exception as E
 import Control.Logger.Simple
-import CoreTests.AddressStatsTests
 import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
@@ -17,6 +16,7 @@ import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
 import CoreTests.StoreLogTests
 import CoreTests.TSessionSubs
+import CoreTests.UsageStatsTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
@@ -84,7 +84,6 @@ main = do
       . after_ (eventuallyRemove "tests/tmp" 3)
       $ do
         describe "Core tests" $ do
-          describe "Address statistics tests" addressStatsTests
           describe "Batching tests" batchingTests
           describe "Encoding tests" encodingTests
           describe "Version range" versionRangeTests
@@ -102,6 +101,7 @@ main = do
           describe "XFTP store log tests" fileStoreLogTests
           fileExpirationTests
           describe "TSessionSubs tests" tSessionSubsTests
+          describe "Usage statistics tests" usageStatsTests
           describe "Util tests" utilTests
           describe "Names resolver tests" smpNamesTests
           describe "RSLV functional API tests" rslvTests

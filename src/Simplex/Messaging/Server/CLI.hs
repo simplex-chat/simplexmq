@@ -44,8 +44,8 @@ module Simplex.Messaging.Server.CLI
     checkSavedFingerprint,
     iniTransports,
     iniDBOptions,
-    iniAddressStats,
-    addressStatsIniContent,
+    iniUsageStatsPeriod,
+    usageStatsIniContent,
     printServerConfig,
     printServerTransports,
     printSMPServerConfig,
@@ -62,6 +62,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
+import Data.Int (Int64)
 import Data.List ((\\))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -75,10 +76,10 @@ import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), ProtocolTypeI)
-import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..), defaultAddressStatsPeriod)
 import Simplex.Messaging.Server.Env.STM (ServerStoreCfg (..), StartOptions (..), dbStoreCfg, storeLogFile')
 import Simplex.Messaging.Server.Main.GitCommit
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
+import Simplex.Messaging.Server.UsageStats (defaultUsagePeriod)
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), TLS, Transport (..), simplexMQVersion)
 import Simplex.Messaging.Transport.Server (AddHTTP, loadFileFingerprint)
 import Simplex.Messaging.Transport.WebSockets (WS)
@@ -438,18 +439,16 @@ iniDBOptions ini _default@DBOpts {connstr, schema, poolSize} =
       createSchema = False
     }
 
-iniAddressStats :: Ini -> Maybe AddressStatsConfig
-iniAddressStats ini =
-  AddressStatsConfig {period = readIniDefault defaultAddressStatsPeriod "ADDRESS_STATS" "period" ini}
-    <$ settingIsOn "ADDRESS_STATS" "enable" ini
+iniUsageStatsPeriod :: Ini -> Maybe Int64
+iniUsageStatsPeriod ini = readIniDefault defaultUsagePeriod "USAGE_STATS" "period" ini <$ settingIsOn "USAGE_STATS" "enable" ini
 
-addressStatsIniContent :: Text
-addressStatsIniContent =
-  "[ADDRESS_STATS]\n\
-  \# Command counts per client address, shown by the control port command `addresses`\n\
+usageStatsIniContent :: Text
+usageStatsIniContent =
+  "[USAGE_STATS]\n\
+  \# Usage counts per client address, shown by the control port command `usage`\n\
   \# and aggregated in Prometheus metrics.\n\
   \enable = off\n"
-    <> ("period = " <> tshow defaultAddressStatsPeriod <> "\n")
+    <> ("period = " <> tshow defaultUsagePeriod <> "\n")
 
 printServerConfig :: String -> [(ServiceName, ASrvTransport, AddHTTP)] -> Maybe FilePath -> IO ()
 printServerConfig protocol transports logFile = do

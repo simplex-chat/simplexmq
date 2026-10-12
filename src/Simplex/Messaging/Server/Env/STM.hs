@@ -31,7 +31,7 @@ module Simplex.Messaging.Server.Env.STM
     SubscribedClients,
     ProxyAgent (..),
     Client (..),
-    SMPAddrCounter (..),
+    SMPUsageCounter (..),
     smpCmdCounter,
     ClientId,
     ClientSub (..),
@@ -113,7 +113,6 @@ import Simplex.Messaging.Client.Agent (SMPClientAgent, SMPClientAgentConfig, new
 import Simplex.Messaging.Crypto (KeyHash (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.AddressStats (AddrCounter (..), AddrStats, AddressStatsConfig, ServerAddrStats, newServerAddrStats)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Server.MsgStore.Journal
@@ -128,6 +127,7 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Server.StoreLog.ReadWrite
+import Simplex.Messaging.Server.UsageStats (ClientUsage, UsageCounter (..), UsageStats, newUsageStats)
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -186,7 +186,7 @@ data ServerConfig s = ServerConfig
     -- | interval and file to save prometheus metrics
     prometheusInterval :: Maybe Int,
     prometheusMetricsFile :: FilePath,
-    addressStats :: Maybe AddressStatsConfig,
+    usageStatsPeriod :: Maybe Int64,
     -- | notification delivery interval
     ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
@@ -290,7 +290,7 @@ data Env s = Env
     clientSeq :: TVar ClientId,
     proxyAgent :: ProxyAgent, -- senders served on this proxy
     namesEnv :: Maybe NamesEnv, -- public-namespace resolver, present when [NAMES] enable: on
-    addrStats :: Maybe (ServerAddrStats SMPAddrCounter)
+    usageStats :: Maybe (UsageStats SMPUsageCounter)
   }
 
 msgStore :: Env s -> s
@@ -471,115 +471,115 @@ data Client s = Client
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
     sndActiveAt :: TVar SystemTime,
-    clientAddrStats :: Maybe (AddrStats SMPAddrCounter)
+    clientUsage :: Maybe (ClientUsage SMPUsageCounter)
   }
 
-data SMPAddrCounter
-  = SACConnections
-  | SACErrors
-  | SACNew
-  | SACSub
-  | SACSubs
-  | SACKey
-  | SACRKey
-  | SACLSet
-  | SACLDel
-  | SACNKey
-  | SACNDel
-  | SACGet
-  | SACAck
-  | SACOff
-  | SACDel
-  | SACQue
-  | SACSKey
-  | SACSend
-  | SACPing
-  | SACLKey
-  | SACLGet
-  | SACNSub
-  | SACNSubs
-  | SACPrxy
-  | SACPfwd
-  | SACRfwd
-  | SACRslv
-  | SACPrxyOwn
-  | SACPrxyConnected
-  | SACPrxyNew
-  | SACPrxyOnion
-  | SACPrxyFailed
-  | SACPfwdOwn
-  | SACPfwdOther
-  | SACPfwdOnion
-  | SACPfwdFailed
+data SMPUsageCounter
+  = SUCConnections
+  | SUCErrors
+  | SUCNew
+  | SUCSub
+  | SUCSubs
+  | SUCKey
+  | SUCRKey
+  | SUCLSet
+  | SUCLDel
+  | SUCNKey
+  | SUCNDel
+  | SUCGet
+  | SUCAck
+  | SUCOff
+  | SUCDel
+  | SUCQue
+  | SUCSKey
+  | SUCSend
+  | SUCPing
+  | SUCLKey
+  | SUCLGet
+  | SUCNSub
+  | SUCNSubs
+  | SUCPrxy
+  | SUCPfwd
+  | SUCRfwd
+  | SUCRslv
+  | SUCPrxyOwn
+  | SUCPrxyConnected
+  | SUCPrxyNew
+  | SUCPrxyOnion
+  | SUCPrxyFailed
+  | SUCPfwdOwn
+  | SUCPfwdOther
+  | SUCPfwdOnion
+  | SUCPfwdFailed
   deriving (Eq, Ord, Enum, Bounded, Show)
 
-instance AddrCounter SMPAddrCounter where
+instance UsageCounter SMPUsageCounter where
   counterName = \case
-    SACConnections -> "connections"
-    SACErrors -> "errors"
-    SACNew -> "NEW"
-    SACSub -> "SUB"
-    SACSubs -> "SUBS"
-    SACKey -> "KEY"
-    SACRKey -> "RKEY"
-    SACLSet -> "LSET"
-    SACLDel -> "LDEL"
-    SACNKey -> "NKEY"
-    SACNDel -> "NDEL"
-    SACGet -> "GET"
-    SACAck -> "ACK"
-    SACOff -> "OFF"
-    SACDel -> "DEL"
-    SACQue -> "QUE"
-    SACSKey -> "SKEY"
-    SACSend -> "SEND"
-    SACPing -> "PING"
-    SACLKey -> "LKEY"
-    SACLGet -> "LGET"
-    SACNSub -> "NSUB"
-    SACNSubs -> "NSUBS"
-    SACPrxy -> "PRXY"
-    SACPfwd -> "PFWD"
-    SACRfwd -> "RFWD"
-    SACRslv -> "RSLV"
-    SACPrxyOwn -> "PRXY_own"
-    SACPrxyConnected -> "PRXY_connected"
-    SACPrxyNew -> "PRXY_new"
-    SACPrxyOnion -> "PRXY_onion"
-    SACPrxyFailed -> "PRXY_failed"
-    SACPfwdOwn -> "PFWD_own"
-    SACPfwdOther -> "PFWD_other"
-    SACPfwdOnion -> "PFWD_onion"
-    SACPfwdFailed -> "PFWD_failed"
-  connectionsCounter = SACConnections
+    SUCConnections -> "connections"
+    SUCErrors -> "errors"
+    SUCNew -> "NEW"
+    SUCSub -> "SUB"
+    SUCSubs -> "SUBS"
+    SUCKey -> "KEY"
+    SUCRKey -> "RKEY"
+    SUCLSet -> "LSET"
+    SUCLDel -> "LDEL"
+    SUCNKey -> "NKEY"
+    SUCNDel -> "NDEL"
+    SUCGet -> "GET"
+    SUCAck -> "ACK"
+    SUCOff -> "OFF"
+    SUCDel -> "DEL"
+    SUCQue -> "QUE"
+    SUCSKey -> "SKEY"
+    SUCSend -> "SEND"
+    SUCPing -> "PING"
+    SUCLKey -> "LKEY"
+    SUCLGet -> "LGET"
+    SUCNSub -> "NSUB"
+    SUCNSubs -> "NSUBS"
+    SUCPrxy -> "PRXY"
+    SUCPfwd -> "PFWD"
+    SUCRfwd -> "RFWD"
+    SUCRslv -> "RSLV"
+    SUCPrxyOwn -> "PRXY_own"
+    SUCPrxyConnected -> "PRXY_connected"
+    SUCPrxyNew -> "PRXY_new"
+    SUCPrxyOnion -> "PRXY_onion"
+    SUCPrxyFailed -> "PRXY_failed"
+    SUCPfwdOwn -> "PFWD_own"
+    SUCPfwdOther -> "PFWD_other"
+    SUCPfwdOnion -> "PFWD_onion"
+    SUCPfwdFailed -> "PFWD_failed"
+  connectionsCounter = SUCConnections
 
-smpCmdCounter :: Cmd -> SMPAddrCounter
+smpCmdCounter :: Cmd -> SMPUsageCounter
 smpCmdCounter (Cmd _ cmd) = case cmd of
-  NEW _ -> SACNew
-  SUB -> SACSub
-  SUBS {} -> SACSubs
-  KEY _ -> SACKey
-  RKEY _ -> SACRKey
-  LSET {} -> SACLSet
-  LDEL -> SACLDel
-  NKEY {} -> SACNKey
-  NDEL -> SACNDel
-  GET -> SACGet
-  ACK _ -> SACAck
-  OFF -> SACOff
-  DEL -> SACDel
-  QUE -> SACQue
-  SKEY _ -> SACSKey
-  SEND {} -> SACSend
-  PING -> SACPing
-  LKEY _ -> SACLKey
-  LGET -> SACLGet
-  NSUB -> SACNSub
-  NSUBS {} -> SACNSubs
-  PRXY {} -> SACPrxy
-  PFWD {} -> SACPfwd
-  RFWD _ -> SACRfwd
-  RSLV _ -> SACRslv
+  NEW _ -> SUCNew
+  SUB -> SUCSub
+  SUBS {} -> SUCSubs
+  KEY _ -> SUCKey
+  RKEY _ -> SUCRKey
+  LSET {} -> SUCLSet
+  LDEL -> SUCLDel
+  NKEY {} -> SUCNKey
+  NDEL -> SUCNDel
+  GET -> SUCGet
+  ACK _ -> SUCAck
+  OFF -> SUCOff
+  DEL -> SUCDel
+  QUE -> SUCQue
+  SKEY _ -> SUCSKey
+  SEND {} -> SUCSend
+  PING -> SUCPing
+  LKEY _ -> SUCLKey
+  LGET -> SUCLGet
+  NSUB -> SUCNSub
+  NSUBS {} -> SUCNSubs
+  PRXY {} -> SUCPrxy
+  PFWD {} -> SUCPfwd
+  RFWD _ -> SUCRfwd
+  RSLV _ -> SUCRslv
 
 type VerifiedTransmission s = (Maybe (StoreQueue s, QueueRec), Transmission Cmd)
 
@@ -633,8 +633,8 @@ newServerSubscribers = do
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
-newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> Maybe (AddrStats SMPAddrCounter) -> IO (Client s)
-newClient clientId qSize clientTHParams createdAt clientAddrStats = do
+newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> Maybe (ClientUsage SMPUsageCounter) -> IO (Client s)
+newClient clientId qSize clientTHParams createdAt clientUsage = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   serviceSubscribed <- newTVarIO False
@@ -670,7 +670,7 @@ newClient clientId qSize clientTHParams createdAt clientAddrStats = do
         createdAt,
         rcvActiveAt,
         sndActiveAt,
-        clientAddrStats
+        clientUsage
       }
 
 newSubscription :: SubscriptionThread -> STM Sub
@@ -685,7 +685,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig, addressStats} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig, usageStatsPeriod} = do
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of
@@ -740,7 +740,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       Right _ -> logInfo "[NAMES] endpoint probe ok"
       Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR (NAME ...) until reachable): " <> tshow e
     pure env
-  addrStats <- mapM (const newServerAddrStats) addressStats
+  usageStats <- mapM (const newUsageStats) usageStatsPeriod
   pure
     Env
       { serverActive,
@@ -758,7 +758,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         clientSeq,
         proxyAgent,
         namesEnv,
-        addrStats
+        usageStats
       }
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()

@@ -32,7 +32,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
-import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..))
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -271,7 +270,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = testPrometheusMetricsFile,
-      addressStats = Just AddressStatsConfig {period = 1},
+      usageStatsPeriod = Just 1,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
       smpCredentials =

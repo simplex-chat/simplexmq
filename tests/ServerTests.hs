@@ -47,7 +47,6 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.AddressStats (AddressStatsConfig (..), defaultAddressStatsPeriod)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
@@ -97,7 +96,7 @@ serverTests = do
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
-  describe "Client address statistics" testAddressStatsControlPort
+  describe "Client usage statistics" testUsageStatsControlPort
   describe "Timing of AUTH error" testTiming
   describe "Message notifications" $ do
     testMessageNotifications
@@ -906,7 +905,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 2
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 2
 
       -- Phase 2: associate 1 more queue via SUB, reconnect with SUBS 3, check metric = 3
       (rPub3, rKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -936,7 +935,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 3
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
@@ -1257,12 +1256,12 @@ testPrometheusMetrics =
     withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1000000
     doesFileExist testPrometheusMetricsFile `shouldReturn` True
     metrics <- B.readFile testPrometheusMetricsFile
-    metrics `shouldSatisfy` ("# TYPE simplex_smp_client_address_period_count histogram" `B.isInfixOf`)
+    metrics `shouldSatisfy` ("# TYPE simplex_smp_client_usage histogram" `B.isInfixOf`)
 
-testAddressStatsControlPort :: SpecWith (ASrvTransport, AStoreType)
-testAddressStatsControlPort =
-  it "should list client addresses by counter via control port" $ \(at@(ATransport (_ :: TProxy c 'TServer)), msType) -> do
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {addressStats = Just AddressStatsConfig {period = defaultAddressStatsPeriod}, controlPort = Just testControlPort, controlPortUserAuth = Just testControlPortUserAuth}
+testUsageStatsControlPort :: SpecWith (ASrvTransport, AStoreType)
+testUsageStatsControlPort =
+  it "should list client usage by counter via control port" $ \(at@(ATransport (_ :: TProxy c 'TServer)), msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {usageStatsPeriod = Just 300, controlPort = Just testControlPort, controlPortUserAuth = Just testControlPortUserAuth}
         ipv4Client = testSMPClient_ @c "127.0.0.1" testPort supportedClientSMPRelayVRange Nothing
     withSmpServerConfigOn at cfg' testPort $ \_ ->
       ipv4Client $ \r -> ipv4Client $ \s -> do
@@ -1272,11 +1271,11 @@ testAddressStatsControlPort =
         Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND "hello")
         Resp "cdab" _ OK <- signSendRecv s sKey ("cdab", sId, _SEND "hello again")
         withControlPort $ \h -> do
-          controlPortCommand h "addresses SEND" 1 `shouldReturn` ["AUTH"]
+          controlPortCommand h "usage SEND" 1 `shouldReturn` ["AUTH"]
           controlPortCommand h ("auth " <> unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
-          controlPortCommand h "addresses unknown" 1 `shouldReturn` ["error: unknown counter"]
-          controlPortCommand h "addresses SEND" 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0,2"]
-          controlPortCommand h "addresses connections" 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0,2"]
+          controlPortCommand h "usage unknown" 1 `shouldReturn` ["error: unknown counter"]
+          controlPortCommand h "usage SEND" 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0,2"]
+          controlPortCommand h "usage connections" 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0,2"]
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
