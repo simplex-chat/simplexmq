@@ -13,12 +13,10 @@ held by the device.
 - **No EIP-7702 authorizations.** RLP is implemented only as far as EIP-1559
   transactions need it, for registering names; the `RSLV` resolver path in
   this repo stays strictly read-only.
-- **No stealth addresses.** Signing covers recoverable ECDSA over a 32-byte
-  digest, EIP-712 typed data and EIP-1559 transactions, which name
-  registration requires. Stealth addresses are added with the first code that
-  uses them.
-- **No EIP-712 schema encoder.** The caller supplies the canonical type string
-  and the member values in order.
+- **No stealth addresses.** Signing covers recoverable ECDSA
+  over a 32-byte digest, EIP-712 typed data and EIP-1559 transactions,
+  which name registration requires. Stealth addresses are added with
+  the first code that uses them.
 - **No BIP-32 public derivation.** We always hold the seed, so CKDpub, xpub
   serialization and fingerprints are not implemented. Non-hardened *private*
   derivation is, because BIP-44 paths end in non-hardened components.
@@ -65,9 +63,6 @@ data CoinType = Ethereum            -- SLIP-44 coin types
 newtype AccountIndex                -- below 2^31
 
 newtype Address                     -- 20 bytes; StrEncoding is EIP-55, JSON via it
-
-data Eip712Domain = Eip712Domain {edName, edVersion :: ByteString, edChainId :: Word64, edVerifyingContract :: Address}
-data Eip712Value = VUint Integer | VAddress Address | VFixedBytes ByteString | VBytes ByteString | VString ByteString | VArray [Eip712Value] | VStruct ByteString
 ```
 
 Private keys, chain codes, BIP-39 entropy and seeds are `ScrubbedBytes`:
@@ -84,7 +79,6 @@ unPrivateKey        :: Secp256k1PrivateKey -> ScrubbedBytes
 secp256k1PublicKey  :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Secp256k1PublicKey  -- total: key is validated
 serializePublicKey  :: PubKeyFormat -> Secp256k1PublicKey -> IO ByteString
 privateKeyTweakAdd  :: Secp256k1PrivateKey -> ScrubbedBytes -> IO (Maybe Secp256k1PrivateKey)
-recoverPublicKey    :: RecoverableSignature -> ByteString -> IO (Either String Secp256k1PublicKey)
 
 -- BIP39
 mkEntropy           :: ScrubbedBytes -> Either String WalletEntropy
@@ -118,13 +112,6 @@ keccak256           :: ByteString -> ByteString
 addressFromPublicKey  :: Secp256k1PublicKey -> IO Address
 addressFromPrivateKey :: TVar ChaChaDRG -> Secp256k1PrivateKey -> IO Address
 deriveAddress         :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String (ExtendedKey, Address))
-recoverAddress        :: RecoverableSignature -> ByteString -> IO (Either String Address)
-
--- EIP712
-domainSeparator     :: Eip712Domain -> Either String ByteString
-hashStruct          :: ByteString -> [Eip712Value] -> Either String ByteString  -- VStruct takes its result
-hashTypedData       :: Eip712Domain -> ByteString -> [Eip712Value] -> Either String ByteString  -- the digest to sign
-serializeSignature  :: RecoverableSignature -> ByteString    -- r, s and v = 27 + recovery id, as Solidity's ECDSA takes
 ```
 
 Internal to simplexmq, for sharing one context:
@@ -186,8 +173,6 @@ secp256k1_context_destroy(ctx)
 secp256k1_ec_pubkey_create(ctx, pubkey, seckey)
 secp256k1_ec_pubkey_serialize(secp256k1_context_static, output, outputlen, pubkey, flags)
 secp256k1_ec_seckey_tweak_add(secp256k1_context_static, seckey, tweak)
-secp256k1_ecdsa_recoverable_signature_parse_compact(secp256k1_context_static, sig, input64, recid)
-secp256k1_ecdsa_recover(secp256k1_context_static, pubkey, sig, msghash32)
 ```
 
 Context randomisation blinds only the multiplication of a secret scalar by the
@@ -206,9 +191,7 @@ are therefore not evaluated after the context is destroyed; the context is not
 retained past `withContext`.
 
 Recovery involves no secret, so `recoverPublicKey` and `recoverAddress` also
-run on `secp256k1_context_static` and take no generator. A recovery id above 3
-is refused before the call, because libsecp256k1 treats it as an illegal
-argument and aborts.
+run on `secp256k1_context_static` and take no generator.
 
 `Secp256k1PublicKey` is produced only by libsecp256k1 and has no encoding: its
 64-byte form is not portable between libsecp256k1 versions, and
@@ -295,7 +278,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 122 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 111 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:
@@ -305,10 +288,6 @@ from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
   `xprv`; the two vector 5 keys outside `[1, n-1]` drive the `mkPrivateKey`
   rejections. The test decodes base58check itself; the library does not parse
   `xprv`, so vector 5's malformed serializations do not apply.
-- **EIP-712**: the specification's `Mail` example (domain separator,
-  `hashStruct` and digest), and viem's digests and signature for the member
-  types the library encodes, `bytes` and `bytes[]` included.
-- **Recovery**: viem's signature recovers viem's signer.
 - **EIP-55**: the eight addresses from the EIP-55 spec, round-tripped.
 - **BIP-44**: the well-known `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` for
   the `abandon ... about` mnemonic at `m/44'/60'/0'/0/0`, plus accounts 1 and 2,
@@ -319,8 +298,7 @@ from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 - Negative cases: zero, short and out-of-range private keys, a tweak that makes
   the key zero or is not 32 bytes, bad BIP-39 checksums and word counts,
   out-of-range seeds, a stored master that does not match its entropy, account
-  indexes at or above 2^31, bad EIP-55 checksums, out-of-range EIP-712 members,
-  and malformed signatures.
+  indexes at or above 2^31, and bad EIP-55 checksums.
 
 The BIP-44 expectations were additionally reproduced by an independent
 pure-Python secp256k1 reference written for the purpose, so they were not
