@@ -32,6 +32,7 @@ import Simplex.Messaging.Crypto.BIP44
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
+import Simplex.Messaging.Eth.EIP712
 import Simplex.Messaging.Eth.RLP
 import Simplex.Messaging.Eth.Transaction
 import Simplex.Messaging.Util ((<$$>))
@@ -50,6 +51,7 @@ ethCryptoTests = do
   describe "RLP" rlpTests
   describe "recoverable signing" $ signingTests g
   describe "EIP-1559 transactions" $ transactionTests g
+  describe "EIP-712 typed data" $ eip712Tests g
 
 -- helpers
 
@@ -347,6 +349,25 @@ signingTests g = do
           }
   it "refuses a digest that is not 32 bytes" $
     (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
+  it "recovers the address that signed a digest" $
+    (strEncode <$$> recoverAddress viemSig (C.keccak256 "simplex")) `shouldReturn` Right txAddress
+  it "recovers another address from another digest" $
+    (strEncode <$$> recoverAddress viemSig (C.keccak256 "SimpleX")) `shouldNotReturn` Right txAddress
+  it "refuses a recovery id above 3" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsRecId = 4} (C.keccak256 "simplex")) `shouldReturn` True
+  it "refuses r at or above the group order" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.replicate 32 0xff} (C.keccak256 "simplex")) `shouldReturn` True
+  it "refuses r that is not 32 bytes" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.drop 1 $ S.rsR viemSig} (C.keccak256 "simplex")) `shouldReturn` True
+  it "refuses to recover from a digest that is not 32 bytes" $
+    (isLeft <$> S.recoverPublicKey viemSig "digest") `shouldReturn` True
+  where
+    viemSig =
+      S.RecoverableSignature
+        { S.rsR = hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b0",
+          S.rsS = hx "3eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb1",
+          S.rsRecId = 1
+        }
 
 transactionTests :: TVar ChaChaDRG -> Spec
 transactionTests g = do
@@ -368,3 +389,56 @@ transactionTests g = do
 
 txKey :: S.Secp256k1PrivateKey
 txKey = right $ S.mkPrivateKey $ BA.replicate 32 0x46
+
+txAddress :: ByteString
+txAddress = "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+
+-- expected values for the Mail example are the EIP-712 specification's; signatures and the other digest are viem's
+eip712Tests :: TVar ChaChaDRG -> Spec
+eip712Tests g = do
+  it "computes the domain separator of the specification" $
+    toHex <$> domainSeparator mailDomain `shouldBe` Right "f2cee375fa42b42143804025fc449deafd50cc031ca257e0b194a650a912090f"
+  it "computes hashStruct of the specification" $
+    toHex <$> mailHash `shouldBe` Right "c52c0ee5d84264471806290a3f2c4cecfc5490626bf912d01f240d7a274b371e"
+  it "computes the digest of the specification" $
+    toHex <$> mailDigest `shouldBe` Right "be609aee343fb3c4b28e1df9e632fca64fcfaede20f02e86244efddf30957bd2"
+  it "signs typed data as viem does" $
+    S.signRecoverable g txKey (right mailDigest)
+      `shouldReturn` Right
+        S.RecoverableSignature
+          { S.rsR = hx "5318aee9942b84885761bb20e768372b76e7ee454fc4d39b59ce07338d15a06c",
+            S.rsS = hx "5e585a2f4882ec3228a9303244798b47a9102e4be72f48159d890c73e4511d79",
+            S.rsRecId = 0
+          }
+  it "serializes a signature as r, s and v, as viem does" $
+    (serializeSignature <$$> S.signRecoverable g txKey (right mailDigest))
+      `shouldReturn` Right (hx "5318aee9942b84885761bb20e768372b76e7ee454fc4d39b59ce07338d15a06c5e585a2f4882ec3228a9303244798b47a9102e4be72f48159d890c73e4511d791b")
+  it "encodes uint256, bytes32, bytes2, address and string as viem does" $
+    toHex <$> hashTypedData wordsDomain "Words(uint256 n,bytes32 b,bytes2 s,address a,string t)" wordsMembers
+      `shouldBe` Right "12447954a930b4d6ff1af6a4bc4243444d8fdab27540ff89d13baae9969f9163"
+  it "encodes bytes and bytes[] as viem does" $ do
+    toHex <$> hashTypedData wordsDomain callsType [VBytes "\x01\x02", VArray $ map VBytes ["", "\x01\x02", B.replicate 40 0xff]]
+      `shouldBe` Right "33dda8b790e4a810a5adfd4f83506954a519a9665e0b19b9907c3890982e6f83"
+    toHex <$> hashTypedData wordsDomain callsType [VBytes "", VArray []]
+      `shouldBe` Right "605d3f8a45b0e9af5c57637ea7d1ff4298c00a26acd7cb6953028056c78249a3"
+  it "rejects a uint at or above 2^256" $
+    hashStruct "T(uint256 n)" [VUint $ 2 ^ (256 :: Int)] `shouldSatisfy` isLeft
+  it "rejects a negative uint" $
+    hashStruct "T(uint256 n)" [VUint (-1)] `shouldSatisfy` isLeft
+  it "rejects bytesN longer than 32" $
+    hashStruct "T(bytes32 b)" [VFixedBytes $ B.replicate 33 0] `shouldSatisfy` isLeft
+  it "rejects empty bytesN" $
+    hashStruct "T(bytes32 b)" [VFixedBytes ""] `shouldSatisfy` isLeft
+  it "rejects a struct hash that is not 32 bytes" $
+    hashStruct "T(S s)S(uint256 n)" [VStruct "short"] `shouldSatisfy` isLeft
+  where
+    mailDomain = Eip712Domain {edName = "Ether Mail", edVersion = "1", edChainId = 1, edVerifyingContract = address "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC"}
+    mailType = "Mail(Person from,Person to,string contents)Person(string name,address wallet)"
+    person name wallet = VStruct . right $ hashStruct "Person(string name,address wallet)" [VString name, VAddress $ address wallet]
+    mailMembers = [person "Cow" "0xCD2a3d9F938E13CD947Ec05AbC7FE734Df8DD826", person "Bob" "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB", VString "Hello, Bob!"]
+    mailHash = hashStruct mailType mailMembers
+    mailDigest = hashTypedData mailDomain mailType mailMembers
+    wordsDomain = Eip712Domain {edName = "SimpleX", edVersion = "2", edChainId = 11155111, edVerifyingContract = address "0x3535353535353535353535353535353535353535"}
+    wordsMembers = [VUint $ 2 ^ (256 :: Int) - 1, VFixedBytes $ B.replicate 32 0x11, VFixedBytes "\x01\x02", VAddress $ address txAddress, VString "simplex"]
+    callsType = "Calls(bytes b,bytes[] data)"
+    address = right . strDecode @Address

@@ -155,6 +155,7 @@ library
       Simplex.Messaging.Encoding
       Simplex.Messaging.Encoding.String
       Simplex.Messaging.Eth.Address
+      Simplex.Messaging.Eth.EIP712
       Simplex.Messaging.Eth.RLP
       Simplex.Messaging.Eth.Transaction
       Simplex.Messaging.Names.Record

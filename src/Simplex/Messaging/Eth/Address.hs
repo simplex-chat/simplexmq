@@ -8,6 +8,7 @@ module Simplex.Messaging.Eth.Address
     unAddress,
     addressFromPublicKey,
     addressFromPrivateKey,
+    recoverAddress,
     deriveAddress,
   )
 where
@@ -61,6 +62,9 @@ addressFromPrivateKey g k = S.withContext g (`addressFromPrivateKey_` k)
 
 addressFromPrivateKey_ :: S.Secp256k1Context -> S.Secp256k1PrivateKey -> IO Address
 addressFromPrivateKey_ ctx = addressFromPublicKey <=< S.secp256k1PublicKey_ ctx
+
+recoverAddress :: S.RecoverableSignature -> ByteString -> IO (Either String Address)
+recoverAddress sig digest = S.recoverPublicKey sig digest >>= mapM addressFromPublicKey
 
 deriveAddress :: TVar ChaChaDRG -> ExtendedKey -> [Word32] -> IO (Either String (ExtendedKey, Address))
 deriveAddress g xk path = S.withContext g $ \ctx ->
