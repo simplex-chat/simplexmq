@@ -148,12 +148,7 @@ data XFTPUsageCounter
   = XUCConnections
   | XUCErrors
   | XUCFNew
-  | XUCFAdd
-  | XUCFPut
-  | XUCFDel
-  | XUCFGet
-  | XUCFAck
-  | XUCPing
+  | XUCOther
   | XUCUploadKb
   | XUCDownloadKb
   | XUCRecipients
@@ -164,12 +159,7 @@ instance UsageCounter XFTPUsageCounter where
     XUCConnections -> "connections"
     XUCErrors -> "errors"
     XUCFNew -> "FNEW"
-    XUCFAdd -> "FADD"
-    XUCFPut -> "FPUT"
-    XUCFDel -> "FDEL"
-    XUCFGet -> "FGET"
-    XUCFAck -> "FACK"
-    XUCPing -> "PING"
+    XUCOther -> "other"
     XUCUploadKb -> "upload_kb"
     XUCDownloadKb -> "download_kb"
     XUCRecipients -> "recipients"
@@ -182,12 +172,7 @@ instance UsageCounter XFTPUsageCounter where
 xftpCmdCounter :: FileCmd -> XFTPUsageCounter
 xftpCmdCounter (FileCmd _ cmd) = case cmd of
   FNEW {} -> XUCFNew
-  FADD _ -> XUCFAdd
-  FPUT -> XUCFPut
-  FDEL -> XUCFDel
-  FGET _ -> XUCFGet
-  FACK -> XUCFAck
-  PING -> XUCPing
+  _ -> XUCOther
 
 fileStore :: XFTPEnv s -> s
 fileStore = fromFileStore . store

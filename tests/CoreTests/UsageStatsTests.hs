@@ -6,6 +6,7 @@
 
 module CoreTests.UsageStatsTests where
 
+import Control.Monad ((<=<))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.IORef (readIORef)
@@ -24,6 +25,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (SMPUsageCounter (..), smpCmdCounter)
 import Simplex.Messaging.Server.UsageStats
 import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..))
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (supportedClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Version (VersionRange (..))
 import Test.Hspec hiding (fit, it)
@@ -228,29 +230,34 @@ metricsTests =
 
 commandCounterTests :: Spec
 commandCounterTests = do
-  it "should count each SMP command in the counter named by its tag" $ do
+  it "should count each SMP command in the counter named by its tag or in other" $ do
     cmds <- smpCommands
-    map (counterName . smpCmdCounter) cmds `shouldBe` map (commandTag . encodeProtocol (maxVersion supportedServerSMPRelayVRange)) cmds
-    S.fromList (map smpCmdCounter cmds) `shouldBe` S.fromList [SUCNew .. SUCRslv]
-  it "should count each XFTP command in the counter named by its tag" $ do
+    map (counterName . smpCmdCounter) cmds `shouldBe` map (commandCounter ["NEW", "SUB", "SEND", "PFWD", "RFWD", "RSLV"] . encodeProtocol (maxVersion supportedServerSMPRelayVRange)) cmds
+    S.fromList (map smpCmdCounter cmds) `shouldBe` S.fromList [SUCNew .. SUCOther]
+  it "should count each XFTP command in the counter named by its tag or in other" $ do
     cmds <- xftpCommands
-    map (counterName . xftpCmdCounter) cmds `shouldBe` map (commandTag . encodeProtocol (maxVersion supportedFileServerVRange)) cmds
-    S.fromList (map xftpCmdCounter cmds) `shouldBe` S.fromList [XUCFNew .. XUCPing]
+    map (counterName . xftpCmdCounter) cmds `shouldBe` map (commandCounter ["FNEW"] . encodeProtocol (maxVersion supportedFileServerVRange)) cmds
+    S.fromList (map xftpCmdCounter cmds) `shouldBe` S.fromList [XUCFNew .. XUCOther]
 #if defined(dbServerPostgres)
-  it "should count each NTF command in the counter named by its tag" $ do
+  it "should count each NTF command in the counter named by its tag or in other" $ do
     cmds <- ntfCommands
-    map (counterName . ntfCmdCounter) cmds `shouldBe` map (commandTag . encodeProtocol (maxVersion supportedServerNTFVRange)) cmds
-    S.fromList (map ntfCmdCounter cmds) `shouldBe` S.fromList [NUCTNew .. NUCPing]
+    map (counterName . ntfCmdCounter) cmds `shouldBe` map (commandCounter ["TNEW", "TRPL", "SNEW"] . encodeProtocol (maxVersion supportedServerNTFVRange)) cmds
+    S.fromList (map ntfCmdCounter cmds) `shouldBe` S.fromList [NUCTNew .. NUCOther]
 #endif
   where
-    commandTag :: ByteString -> Text
-    commandTag = decodeLatin1 . B.takeWhile (/= ' ')
+    commandCounter :: [Text] -> ByteString -> Text
+    commandCounter tags s
+      | tag `elem` tags = tag
+      | otherwise = "other"
+      where
+        tag = decodeLatin1 $ B.takeWhile (/= ' ') s
 
 counts :: UsageStats TestCounter -> ClientAddr -> TestCounter -> IO (Maybe (Int, Int))
 counts UsageStats {clientCounts} addr c =
-  readTVarIO clientCounts >>= mapM (\ClientCounts {previous, current} -> (,) <$> counterValue previous <*> counterValue current) . M.lookup addr
+  readTVarIO clientCounts >>= mapM (\ClientCounts {previous, current} -> (,) <$> previousCount previous <*> currentCount current) . M.lookup addr
   where
-    counterValue = fmap (M.findWithDefault 0 c) . readIORef
+    previousCount = fmap (M.findWithDefault 0 c) . readTVarIO
+    currentCount = maybe (pure 0) readTVarIO <=< TM.lookupIO c
 
 testKeys :: IO (C.APublicAuthKey, C.APrivateAuthKey, C.PublicKeyX25519)
 testKeys = do

@@ -55,25 +55,32 @@ Counter types and command functions:
 Counters of every server:
 
 - `connections`: connections passed to the protocol handler, after TLS setup.
-- One counter per command, named by the command tag: each parsed command is counted, failed ones included.
 - `errors`: parse errors and failed verifications.
+- Command counters: each parsed command is counted once, failed ones included.
+  - A command with its own counter: the counter named by the command tag.
+  - Other commands: `other`.
 
-SMP proxy counters, by result of `PRXY`:
+Commands with their own counter:
 
-- `PRXY_own`: own server.
-- `PRXY_connected`: other server, existing connection.
-- `PRXY_new`: other server, new connection.
-- `PRXY_onion`: other server, connection to an onion host.
-- `PRXY_failed`: error.
+- SMP:
+  - `NEW`
+  - `SUB`
+  - `SEND`
+  - `PFWD`
+  - `RFWD`
+  - `RSLV`
+- XFTP:
+  - `FNEW`
+- NTF:
+  - `TNEW`
+  - `TRPL`
+  - `SNEW`
 
-SMP proxy counters, by result of `PFWD`:
+SMP proxy counters:
 
-- `PFWD_own`: own server.
-- `PFWD_other`: other server.
-- `PFWD_onion`: other server, connection to an onion host.
-- `PFWD_failed`: error other than a protocol error, or no session.
-
-Precedence: `failed`, then `own`, then `onion`.
+- `PRXY_new`: `PRXY` without a connected relay.
+- `PRXY_failed`: `PRXY` with an error.
+- `PFWD_failed`: `PFWD` with an error other than a protocol error, or without a session.
 
 XFTP counters:
 
@@ -102,8 +109,8 @@ data UsageStats c = UsageStats
   }
 
 data ClientCounts c = ClientCounts
-  { current :: IORef (Map c Int),
-    previous :: IORef (Map c Int)
+  { current :: TMap c (TVar Int),
+    previous :: TVar (Map c Int)
   }
 
 data ClientUsage c = ClientUsage (UsageStats c) ClientAddr
@@ -137,13 +144,16 @@ Functions:
 - `addUsage :: UsageCounter c => ClientUsage c -> c -> Int -> IO ()`:
   1. The client entry is read with `TM.lookupIO`.
   2. An absent entry is created, then looked up or inserted in one transaction.
-  3. The count of the counter in `current` is increased with `atomicModifyIORef'`.
+  3. The counter is read from `current` with `TM.lookupIO`.
+  4. An absent counter is looked up or inserted with the amount in one transaction.
+  5. A present counter is increased with `modifyTVar'`.
   
   The amount is positive at every call site.
 - `closeUsagePeriod :: UsageCounter c => UsageStats c -> IO ()`, per client:
-  1. `current` is set to an empty map. Its counts are the closed counts.
-  2. `previous` is set to the closed counts.
-  3. The entry is deleted when the closed counts are empty.
+  1. In one transaction:
+     - `current` is set to an empty map; the counts of its counters are the closed counts;
+     - `previous` is set to the closed counts.
+  2. The entry is deleted when the closed counts are empty.
   
   Then, per counter, the closed counts are added to the histogram:
   - to each bucket with a bound at or above the count
@@ -160,7 +170,10 @@ Functions:
 - `printTopClients :: UsageCounter c => Handle -> Text -> Maybe Int -> Maybe (UsageStats c) -> IO ()`: control port output.
 - `usageMetrics :: UsageCounter c => Text -> Text -> Map c UsageHistogram -> Text`: Prometheus text for a metric prefix and a timestamp.
 
-A count added to an entry between its read and its deletion in `closeUsagePeriod` is lost.
+Counts lost in `closeUsagePeriod`:
+
+- a count added to an entry between its read and its deletion;
+- a count added after the closing transaction to a counter read with `TM.lookupIO` before it.
 
 ## Prometheus
 
@@ -278,8 +291,8 @@ In `Simplex.Messaging.Server`:
   - `errors` is increased by the number of parse errors.
   - `errors` is incremented for each failed verification.
 - `processProxiedCmd`:
-  - `incResult own sel c`: the proxy stat `sel` and the usage counter `c` are incremented when the result of `PRXY` or `PFWD` is known.
-  - `proxyServerResponse` has the counter of a successful `PRXY` to another server as a parameter: `PRXY_connected` or `PRXY_new`.
+  - `PRXY_new` is incremented before the connection to the relay is forked.
+  - `incFailed own sel`: the proxy stat `sel` and `PRXY_failed` or `PFWD_failed` are incremented.
 
 ## NTF server
 
@@ -337,7 +350,7 @@ Other changes:
   - number of clients limited
   - clients with both counts 0 excluded
 - `usageMetrics` output
-- command function of each server
+- command function of each server: counter named by the command tag or `other`
 
 `usageStatsPeriod = Just 1` is set in the default test configurations of the SMP, XFTP and NTF servers.
 
@@ -347,7 +360,7 @@ Control port tests, with `usageStatsPeriod = Just 300`:
   - output of `usage SEND` and `usage connections`: the test client address
   - output of `usage` without authentication: `AUTH`
   - output of `usage` with an unknown counter: `error: unknown counter`
-- SMP proxy: proxy counters for other servers and own servers.
+- SMP proxy: `other`, `PRXY_new`, `PRXY_failed`, `PFWD` and `PFWD_failed`.
 - XFTP server: command, transfer and recipient counters.
 
 Other tests:

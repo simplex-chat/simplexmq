@@ -350,7 +350,7 @@ testFileUsageStats fsType =
         controlPortCommand h ("usage " <> counter) 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0," <> n]
   where
     counts :: [(ByteString, ByteString)]
-    counts = [("connections", "1"), ("FNEW", "2"), ("FPUT", "2"), ("FGET", "2"), ("recipients", "2"), ("upload_kb", "128"), ("download_kb", "256")]
+    counts = [("connections", "1"), ("FNEW", "2"), ("other", "4"), ("recipients", "2"), ("upload_kb", "128"), ("download_kb", "256")]
 
 testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =

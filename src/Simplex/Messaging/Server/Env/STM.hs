@@ -479,37 +479,13 @@ data SMPUsageCounter
   | SUCErrors
   | SUCNew
   | SUCSub
-  | SUCSubs
-  | SUCKey
-  | SUCRKey
-  | SUCLSet
-  | SUCLDel
-  | SUCNKey
-  | SUCNDel
-  | SUCGet
-  | SUCAck
-  | SUCOff
-  | SUCDel
-  | SUCQue
-  | SUCSKey
   | SUCSend
-  | SUCPing
-  | SUCLKey
-  | SUCLGet
-  | SUCNSub
-  | SUCNSubs
-  | SUCPrxy
   | SUCPfwd
   | SUCRfwd
   | SUCRslv
-  | SUCPrxyOwn
-  | SUCPrxyConnected
+  | SUCOther
   | SUCPrxyNew
-  | SUCPrxyOnion
   | SUCPrxyFailed
-  | SUCPfwdOwn
-  | SUCPfwdOther
-  | SUCPfwdOnion
   | SUCPfwdFailed
   deriving (Eq, Ord, Enum, Bounded, Show)
 
@@ -519,37 +495,13 @@ instance UsageCounter SMPUsageCounter where
     SUCErrors -> "errors"
     SUCNew -> "NEW"
     SUCSub -> "SUB"
-    SUCSubs -> "SUBS"
-    SUCKey -> "KEY"
-    SUCRKey -> "RKEY"
-    SUCLSet -> "LSET"
-    SUCLDel -> "LDEL"
-    SUCNKey -> "NKEY"
-    SUCNDel -> "NDEL"
-    SUCGet -> "GET"
-    SUCAck -> "ACK"
-    SUCOff -> "OFF"
-    SUCDel -> "DEL"
-    SUCQue -> "QUE"
-    SUCSKey -> "SKEY"
     SUCSend -> "SEND"
-    SUCPing -> "PING"
-    SUCLKey -> "LKEY"
-    SUCLGet -> "LGET"
-    SUCNSub -> "NSUB"
-    SUCNSubs -> "NSUBS"
-    SUCPrxy -> "PRXY"
     SUCPfwd -> "PFWD"
     SUCRfwd -> "RFWD"
     SUCRslv -> "RSLV"
-    SUCPrxyOwn -> "PRXY_own"
-    SUCPrxyConnected -> "PRXY_connected"
+    SUCOther -> "other"
     SUCPrxyNew -> "PRXY_new"
-    SUCPrxyOnion -> "PRXY_onion"
     SUCPrxyFailed -> "PRXY_failed"
-    SUCPfwdOwn -> "PFWD_own"
-    SUCPfwdOther -> "PFWD_other"
-    SUCPfwdOnion -> "PFWD_onion"
     SUCPfwdFailed -> "PFWD_failed"
   connectionsCounter = SUCConnections
 
@@ -557,29 +509,11 @@ smpCmdCounter :: Cmd -> SMPUsageCounter
 smpCmdCounter (Cmd _ cmd) = case cmd of
   NEW _ -> SUCNew
   SUB -> SUCSub
-  SUBS {} -> SUCSubs
-  KEY _ -> SUCKey
-  RKEY _ -> SUCRKey
-  LSET {} -> SUCLSet
-  LDEL -> SUCLDel
-  NKEY {} -> SUCNKey
-  NDEL -> SUCNDel
-  GET -> SUCGet
-  ACK _ -> SUCAck
-  OFF -> SUCOff
-  DEL -> SUCDel
-  QUE -> SUCQue
-  SKEY _ -> SUCSKey
   SEND {} -> SUCSend
-  PING -> SUCPing
-  LKEY _ -> SUCLKey
-  LGET -> SUCLGet
-  NSUB -> SUCNSub
-  NSUBS {} -> SUCNSubs
-  PRXY {} -> SUCPrxy
   PFWD {} -> SUCPfwd
   RFWD _ -> SUCRfwd
   RSLV _ -> SUCRslv
+  _ -> SUCOther
 
 type VerifiedTransmission s = (Maybe (StoreQueue s, QueueRec), Transmission Cmd)
 

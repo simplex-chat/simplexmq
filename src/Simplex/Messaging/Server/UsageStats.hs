@@ -62,8 +62,8 @@ class (Ord c, Enum c, Bounded c) => UsageCounter c where
   connectionsCounter :: c
 
 data ClientCounts c = ClientCounts
-  { current :: IORef (Map c Int),
-    previous :: IORef (Map c Int)
+  { current :: TMap c (TVar Int),
+    previous :: TVar (Map c Int)
   }
 
 data ClientUsage c = ClientUsage (UsageStats c) ClientAddr
@@ -132,10 +132,12 @@ incUsage usage c = addUsage usage c 1
 addUsage :: UsageCounter c => ClientUsage c -> c -> Int -> IO ()
 addUsage (ClientUsage UsageStats {clientCounts} addr) c n = do
   ClientCounts {current} <- TM.lookupIO addr clientCounts >>= maybe newCounts pure
-  atomicModifyIORef'_ current $ M.insertWith (+) c n
+  TM.lookupIO c current >>= atomically . maybe (newCount current) add
   where
+    add v = modifyTVar' v (+ n)
+    newCount current = TM.lookup c current >>= maybe (TM.insertM c (newTVar n) current) add
     newCounts = do
-      counts <- ClientCounts <$> newIORef M.empty <*> newIORef M.empty
+      counts <- ClientCounts <$> TM.emptyIO <*> newTVarIO M.empty
       atomically $ TM.lookup addr clientCounts >>= maybe (counts <$ TM.insert addr counts clientCounts) pure
 
 closeUsagePeriod :: UsageCounter c => UsageStats c -> IO ()
@@ -145,8 +147,9 @@ closeUsagePeriod UsageStats {clientCounts, histograms} = do
   atomicModifyIORef'_ histograms $ M.mapWithKey $ \c -> addPeriodCounts (counterBounds c) (M.findWithDefault [] c periodCounts)
   where
     closeClientPeriod (addr, ClientCounts {current, previous}) = do
-      counts <- atomicModifyIORef' current (M.empty,)
-      writeIORef previous counts
+      counts <- atomically $ do
+        counts <- mapM readTVar =<< swapTVar current M.empty
+        counts <$ writeTVar previous counts
       when (M.null counts) $ atomically $ TM.delete addr clientCounts
       pure counts
 
@@ -169,10 +172,11 @@ usagePeriodThread period stats = do
 topClients :: UsageCounter c => UsageStats c -> c -> Int -> IO [(ClientAddr, Int, Int)]
 topClients UsageStats {clientCounts} c n = do
   entries <- M.toList <$> readTVarIO clientCounts
-  counts <- forM entries $ \(addr, ClientCounts {previous, current}) -> (addr,,) <$> counterValue previous <*> counterValue current
+  counts <- forM entries $ \(addr, ClientCounts {previous, current}) -> (addr,,) <$> previousCount previous <*> currentCount current
   pure $ take n $ sortOn (\(_, p, cur) -> Down (p + cur)) $ filter (\(_, p, cur) -> p + cur > 0) counts
   where
-    counterValue = fmap (M.findWithDefault 0 c) . readIORef
+    previousCount = fmap (M.findWithDefault 0 c) . readTVarIO
+    currentCount = maybe (pure 0) readTVarIO <=< TM.lookupIO c
 
 printTopClients :: UsageCounter c => Handle -> Text -> Maybe Int -> Maybe (UsageStats c) -> IO ()
 printTopClients h name n_ = \case

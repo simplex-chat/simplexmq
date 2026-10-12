@@ -33,7 +33,6 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Client
-import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -150,29 +149,28 @@ smpProxyTests = do
       xdescribe "stress test 10k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
-  describe "client usage statistics" $ do
-    it "should count proxy commands to other servers" $
-      proxyUsageStats [] [("PRXY", "2"), ("PRXY_new", "1"), ("PRXY_connected", "1"), ("PFWD", "3"), ("PFWD_other", "2"), ("PFWD_failed", "1")]
-    it "should count proxy commands to own servers" $
-      proxyUsageStats ["127.0.0.1"] [("PRXY", "2"), ("PRXY_own", "2"), ("PFWD", "3"), ("PFWD_own", "2"), ("PFWD_failed", "1")]
+  describe "client usage statistics" $
+    it "should count proxy commands" proxyUsageStats
   where
-    proxyUsageStats :: [ByteString] -> [(ByteString, ByteString)] -> AStoreType -> IO ()
-    proxyUsageStats ownDomains counts msType =
+    proxyUsageStats :: AStoreType -> IO ()
+    proxyUsageStats msType =
       twoServers_ proxyCfg' (cfgMS msType) testProxyCounts msType
       where
         proxyCfg' = updateCfg (proxyCfgMS msType) $ \cfg_ ->
           cfg_
             { usageStatsPeriod = Just 300,
               controlPort = Just testControlPort,
-              controlPortUserAuth = Just testControlPortUserAuth,
-              smpAgentCfg = (smpAgentCfg cfg_) {ownServerDomains = ownDomains}
+              controlPortUserAuth = Just testControlPortUserAuth
             }
         testProxyCounts = do
           deliverMessageViaProxy (SMPServer testHost2 testPort testKeyHash) (SMPServer testHost2 testPort2 testKeyHash) C.SEd448 "hello 1" "hello 2"
           withControlPort $ \h -> do
             controlPortCommand h ("auth " <> SMP.unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
+            controlPortCommand h "usage PRXY_failed" 1 `shouldReturn` ["address,previous,current"]
             forM_ counts $ \(counter, n) ->
               controlPortCommand h ("usage " <> counter) 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0," <> n]
+        counts :: [(ByteString, ByteString)]
+        counts = [("other", "2"), ("PRXY_new", "1"), ("PFWD", "3"), ("PFWD_failed", "1")]
     oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) testPort $ const test
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
     twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType

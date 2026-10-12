@@ -98,7 +98,7 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError, transportHost')
+import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -125,7 +125,6 @@ import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
-import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -1437,26 +1436,27 @@ client
           getRelay = do
             ProxyAgent {smpAgent = a} <- asks proxyAgent
             liftIO (getConnectedSMPServerClient a srv) >>= \case
-              Just r -> Just <$> proxyServerResponse a SUCPrxyConnected r
-              Nothing ->
+              Just r -> Just <$> proxyServerResponse a r
+              Nothing -> do
+                incClientUsage SUCPrxyNew
                 forkProxiedCmd $
                   liftIO (runExceptT (getSMPServerClient'' a srv) `E.catches` clientHandlers)
-                    >>= proxyServerResponse a SUCPrxyNew
-          proxyServerResponse :: SMPClientAgent 'Sender -> SMPUsageCounter -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
-          proxyServerResponse a otherCounter smp_ = do
+                    >>= proxyServerResponse a
+          proxyServerResponse :: SMPClientAgent 'Sender -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
+          proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn
-                incResult own sel c = inc own sel >> incClientUsage c
+                incFailed own sel = inc own sel >> incClientUsage SUCPrxyFailed
             case smp_ of
               Right (own, smp) -> do
                 inc own pRequests
                 case proxyResp smp of
-                  r@PKEY {} -> r <$ incResult own pSuccesses (proxyDestCounter own smp SUCPrxyOwn SUCPrxyOnion otherCounter)
-                  r -> r <$ incResult own pErrorsCompat SUCPrxyFailed
+                  r@PKEY {} -> r <$ inc own pSuccesses
+                  r -> r <$ incFailed own pErrorsCompat
               Left e -> do
                 let own = isOwnServer a srv
                 inc own pRequests
-                incResult own (if temporaryClientError e then pErrorsConnect else pErrorsOther) SUCPrxyFailed
+                incFailed own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
                 logWarn $ "Error connecting: " <> decodeLatin1 (strEncode $ host srv) <> " " <> tshow e
                 pure . ERR $ smpProxyError e
             where
@@ -1473,26 +1473,20 @@ client
         ProxyAgent {smpAgent = a} <- asks proxyAgent
         ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
-            incResult own sel c = inc own sel >> incClientUsage c
+            incFailed own sel = inc own sel >> incClientUsage SUCPfwdFailed
         liftIO (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
             inc own pRequests
-            let dest = proxyDestCounter own smp SUCPfwdOwn SUCPfwdOnion SUCPfwdOther
             forkProxiedCmd $ do
               liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers)  >>= \case
-                Right r -> PRES r <$ incResult own pSuccesses dest
+                Right r -> PRES r <$ inc own pSuccesses
                 Left e -> ERR (smpProxyError e) <$ case e of
-                  PCEProtocolError {} -> incResult own pSuccesses dest
-                  _ -> incResult own pErrorsOther SUCPfwdFailed
-          Nothing -> inc False pRequests >> incResult False pErrorsConnect SUCPfwdFailed $> Just (ERR $ PROXY NO_SESSION)
+                  PCEProtocolError {} -> inc own pSuccesses
+                  _ -> incFailed own pErrorsOther
+          Nothing -> inc False pRequests >> incFailed False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
         forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
-        proxyDestCounter :: OwnServer -> SMPClient -> SMPUsageCounter -> SMPUsageCounter -> SMPUsageCounter -> SMPUsageCounter
-        proxyDestCounter own smp ownCounter onionCounter otherCounter
-          | own = ownCounter
-          | THOnionHost _ <- transportHost' smp = onionCounter
-          | otherwise = otherCounter
     incClientUsage :: SMPUsageCounter -> M s ()
     incClientUsage c = liftIO $ forM_ clientUsage (`incUsage` c)
     -- Run a slow command on a thread

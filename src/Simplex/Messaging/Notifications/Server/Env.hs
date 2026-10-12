@@ -129,15 +129,9 @@ data NtfUsageCounter
   = NUCConnections
   | NUCErrors
   | NUCTNew
-  | NUCTVfy
-  | NUCTChk
   | NUCTRpl
-  | NUCTDel
-  | NUCTCrn
   | NUCSNew
-  | NUCSChk
-  | NUCSDel
-  | NUCPing
+  | NUCOther
   deriving (Eq, Ord, Enum, Bounded, Show)
 
 instance UsageCounter NtfUsageCounter where
@@ -145,29 +139,17 @@ instance UsageCounter NtfUsageCounter where
     NUCConnections -> "connections"
     NUCErrors -> "errors"
     NUCTNew -> "TNEW"
-    NUCTVfy -> "TVFY"
-    NUCTChk -> "TCHK"
     NUCTRpl -> "TRPL"
-    NUCTDel -> "TDEL"
-    NUCTCrn -> "TCRN"
     NUCSNew -> "SNEW"
-    NUCSChk -> "SCHK"
-    NUCSDel -> "SDEL"
-    NUCPing -> "PING"
+    NUCOther -> "other"
   connectionsCounter = NUCConnections
 
 ntfCmdCounter :: NtfCmd -> NtfUsageCounter
 ntfCmdCounter (NtfCmd _ cmd) = case cmd of
   TNEW _ -> NUCTNew
-  TVFY _ -> NUCTVfy
-  TCHK -> NUCTChk
   TRPL _ -> NUCTRpl
-  TDEL -> NUCTDel
-  TCRN _ -> NUCTCrn
   SNEW _ -> NUCSNew
-  SCHK -> NUCSChk
-  SDEL -> NUCSDel
-  PING -> NUCPing
+  _ -> NUCOther
 
 newNtfServerEnv :: NtfServerConfig -> IO NtfEnv
 newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbStoreConfig, ntfCredentials, useServiceCreds, usageStatsPeriod} = do
