@@ -390,24 +390,21 @@ serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
   startError <- newEmptyTMVarIO
+  stopped <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask (\unmask -> unmask (process started) `E.catchAny` handleStartError started startError))
-    (\t -> killThread t >> afterProcess >> void (waitFor started "stop"))
+    (forkIOWithUnmask (\unmask -> (unmask (process started) `E.catchAny` handleStartError started startError) `E.finally` atomically (putTMVar stopped ())))
+    (\t -> killThread t >> afterProcess >> atomically (takeTMVar stopped))
     (\t -> checkStarted started startError >> f t >>= \r -> r <$ threadDelay 100000)
   where
-    -- it putTMVar is called twise to unlock both parts of the bracket in case of start failure
     handleStartError started startError e = do
       atomically $ putTMVar startError e
       atomically $ putTMVar started False
-      atomically $ putTMVar started False
       E.throwIO e
     checkStarted started startError =
-      waitFor started "start" >>= \ok ->
-        unless ok $ atomically (readTMVar startError) >>= \e -> error $ "server did not start: " <> show e
-    waitFor started s =
       5_000_000 `timeout` atomically (takeTMVar started) >>= \case
-        Nothing -> error $ "server did not " <> s
-        Just ok -> pure ok
+        Nothing -> error "server did not start"
+        Just True -> pure ()
+        Just False -> atomically (readTMVar startError) >>= \e -> error $ "server did not start: " <> show e
 
 -- A TCP server that accepts connections but never performs a TLS handshake, so a client
 -- connecting to it stays blocked in the TLS handshake until its connection timeout.
