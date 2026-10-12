@@ -88,7 +88,7 @@ import SMPAgentClient
 import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (AgentWorkersDetails (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), getAgentWorkersDetails, sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
@@ -890,6 +890,9 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
               aInfo <- liftIO $ dbInfo alice
               bInfo <- liftIO $ dbInfo bob
               liftIO $ putStrLn $ "DEBUG stall " <> show acc <> " at " <> show t0 <> ", queue info: " <> show qi <> ", alice: " <> show aInfo <> ", bob: " <> show bInfo
+              aWorkers <- liftIO $ smpDeliveryWorkers_ <$> getAgentWorkersDetails alice
+              bWorkers <- liftIO $ smpDeliveryWorkers_ <$> getAgentWorkersDetails bob
+              liftIO $ putStrLn $ "DEBUG stall workers, alice: " <> show aWorkers <> ", bob: " <> show bWorkers
               evt_ <- liftIO $ timeout 60000000 (get a)
               t1 <- liftIO getCurrentTime
               liftIO $ putStrLn $ "DEBUG stall next event after " <> show (diffUTCTime t1 t0) <> ": " <> show evt_
@@ -922,7 +925,10 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
               _ -> liftIO $ expectationFailure $ "unexpected: " <> show r
     dbInfo c = withTransaction (store $ agentEnv c) $ \db -> do
       cmds :: [(ByteString, Int)] <- DB.query_ db "SELECT command_tag, failed FROM commands"
-      dels :: [(Int64, Int)] <- DB.query_ db "SELECT internal_id, failed FROM snd_message_deliveries"
+      dels :: [(Int64, Int, ByteString, Maybe Int64, Maybe Int64)] <-
+        DB.query_
+          db
+          "SELECT d.internal_id, d.failed, m.msg_type, s.retry_int_slow, s.retry_int_fast FROM snd_message_deliveries d JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id JOIN snd_messages s ON s.conn_id = d.conn_id AND s.internal_id = d.internal_id ORDER BY d.internal_id"
       pure (cmds, dels)
 
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
@@ -1774,6 +1780,10 @@ testContactErrors ps restart = do
             Left _ -> putStrLn "retrying accept confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
     n <- loopConfirm 1
     ("", _, A.CONF confId PQSupportOn _ "alice's connInfo") <- get b''
+    let waitAck = do
+          ServerQueueInfo {info = QueueInfo {qiSize}} <- runRight $ getConnectionQueueInfo b'' NRMInteractive aId
+          when (qiSize > 0) $ threadDelay 20000 >> waitAck
+    waitAck
     pure (n, confId)
   ("", "", DOWN _ [_]) <- nGet b''
   runRight_ $ allowConnection b'' aId confId "bob's connInfo"

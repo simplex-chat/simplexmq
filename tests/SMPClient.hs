@@ -45,7 +45,7 @@ import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, readTMVar, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
@@ -393,7 +393,7 @@ serverBracket process afterProcess f = do
   stopped <- newEmptyTMVarIO
   E.bracket
     (forkIOWithUnmask (\unmask -> (unmask (process started) `E.catchAny` handleStartError started startError) `E.finally` atomically (putTMVar stopped ())))
-    (\t -> killThread t >> afterProcess >> atomically (takeTMVar stopped))
+    (\t -> killThread t >> afterProcess >> waitStopped stopped)
     (\t -> checkStarted started startError >> f t >>= \r -> r <$ threadDelay 100000)
   where
     handleStartError started startError e = do
@@ -405,6 +405,10 @@ serverBracket process afterProcess f = do
         Nothing -> error "server did not start"
         Just True -> pure ()
         Just False -> atomically (readTMVar startError) >>= \e -> error $ "server did not start: " <> show e
+    waitStopped stopped = do
+      delay <- registerDelay 30_000_000
+      ok <- atomically $ (True <$ takeTMVar stopped) `orElse` (False <$ (readTVar delay >>= checkSTM))
+      unless ok $ error "server did not stop"
 
 -- A TCP server that accepts connections but never performs a TLS handshake, so a client
 -- connecting to it stays blocked in the TLS handshake until its connection timeout.
