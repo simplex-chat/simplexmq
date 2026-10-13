@@ -30,7 +30,6 @@ data Eip712Value
   = VUint Word256
   | VAddress Address
   | VBytes ByteString
-  | VString ByteString
   | VArray [Eip712Value]
 
 encodeValue :: Eip712Value -> ByteString
@@ -38,7 +37,6 @@ encodeValue = \case
   VUint n -> i2ospOf_ 32 $ toInteger n
   VAddress a -> B.replicate 12 0 <> unAddress a
   VBytes bs -> keccak256 bs
-  VString s -> keccak256 s
   VArray vs -> keccak256 $ B.concat $ map encodeValue vs
 
 hashStruct :: ByteString -> [Eip712Value] -> ByteString
@@ -48,7 +46,7 @@ domainSeparator :: Eip712Domain -> ByteString
 domainSeparator Eip712Domain {edName, edVersion, edChainId, edVerifyingContract} =
   hashStruct
     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
-    [VString edName, VString edVersion, VUint $ fromIntegral edChainId, VAddress edVerifyingContract]
+    [VBytes edName, VBytes edVersion, VUint $ fromIntegral edChainId, VAddress edVerifyingContract]
 
 hashTypedData :: Eip712Domain -> ByteString -> [Eip712Value] -> ByteString
 hashTypedData domain typeString members = keccak256 $ "\x19\x01" <> domainSeparator domain <> hashStruct typeString members

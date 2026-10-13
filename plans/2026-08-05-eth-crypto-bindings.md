@@ -14,8 +14,8 @@ held by the device.
   transactions need it, for registering names; the `RSLV` resolver path in
   this repo stays strictly read-only.
 - **No stealth addresses.** Signing covers recoverable ECDSA
-  over a 32-byte digest, EIP-712 typed data and EIP-1559 transactions,
-  which name registration requires. Stealth addresses are added with
+  over a 32-byte digest and EIP-1559 transactions, which name registration
+  requires. Stealth addresses are added with
   the first code that uses them.
 - **No BIP-32 public derivation.** We always hold the seed, so CKDpub, xpub
   serialization and fingerprints are not implemented. Non-hardened *private*
@@ -128,7 +128,7 @@ checksum.
 
 Like `Simplex.Messaging.Crypto.randomBytes`, `randomEntropy` takes a
 `TVar ChaChaDRG` and runs in `STM`. Every exported function that computes a
-public key takes the same generator for the context blinding seed, so this code
+public key from a private key takes the same generator for the context blinding seed, so this code
 never reads system entropy itself.
 
 A value of one of these types is valid by construction: `WalletEntropy` has one
@@ -179,7 +179,7 @@ Context randomisation blinds only the multiplication of a secret scalar by the
 generator, which only `secp256k1_ec_pubkey_create` performs here. `withContext`
 creates a context, randomises it with 32 bytes from the caller's
 `TVar ChaChaDRG`, passes it to the action and destroys it after. Each exported
-function that computes a public key creates one context: `deriveAddress` uses
+function that computes a public key from a private key creates one context: `deriveAddress` uses
 it for the derivation and the address of its result. Functions that end in `_`
 take the context and are defined for sharing it inside simplexmq.
 `secp256k1_ec_pubkey_serialize` and `secp256k1_ec_seckey_tweak_add` run on
@@ -189,9 +189,6 @@ libsecp256k1 runs in `IO`; `unsafePerformIO` is used only to read
 `secp256k1_context_static` once. The functions that take a `Secp256k1Context`
 are therefore not evaluated after the context is destroyed; the context is not
 retained past `withContext`.
-
-Recovery involves no secret, so `recoverPublicKey` and `recoverAddress` also
-run on `secp256k1_context_static` and take no generator.
 
 `Secp256k1PublicKey` is produced only by libsecp256k1 and has no encoding: its
 64-byte form is not portable between libsecp256k1 versions, and
@@ -278,7 +275,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 111 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 112 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:

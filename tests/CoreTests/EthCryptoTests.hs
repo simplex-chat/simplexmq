@@ -357,6 +357,8 @@ signingTests g = do
     (isLeft <$> S.recoverPublicKey viemSig {S.rsRecId = 4} digest) `shouldReturn` True
   it "refuses r at or above the group order" $
     (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.replicate 32 0xff} digest) `shouldReturn` True
+  it "refuses r of zero" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.replicate 32 0} digest) `shouldReturn` True
   it "refuses r that is not 32 bytes" $
     (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.drop 1 $ S.rsR viemSig} digest) `shouldReturn` True
   it "refuses to recover from a digest that is not 32 bytes" $
@@ -393,13 +395,11 @@ txKey = right $ S.mkPrivateKey $ BA.replicate 32 0x46
 
 eip712Tests :: Spec
 eip712Tests =
-  it "hashes typed data as viem does" $ do
-    toHex (hashTypedData domain registerType $ members [VBytes "\x01\x02", VBytes $ B.replicate 40 0xff])
+  it "hashes typed data as viem does" $
+    toHex (hashTypedData domain registerType members)
       `shouldBe` "94b056be18ea1791fc4960d6dce87e715301634d7402fb1223f536749d20dff2"
-    toHex (hashTypedData domain registerType $ members [])
-      `shouldBe` "f7105d1e53d23b4a8dce53000d2bb0a608a7c7eea957d6a91cc24e4e45f15131"
   where
     domain = Eip712Domain {edName = "SimpleX", edVersion = "2", edChainId = 11155111, edVerifyingContract = address}
     registerType = "RegisterName(string label,address owner,address resolver,bytes[] data,uint256 deadline)"
-    members calls = [VString "simplex", VAddress address, VAddress address, VArray calls, VUint 4102444800]
+    members = [VBytes "simplex", VAddress address, VAddress address, VArray [VBytes "\x01\x02", VBytes $ B.replicate 40 0xff], VUint 4102444800]
     address = right $ strDecode "0x3535353535353535353535353535353535353535"

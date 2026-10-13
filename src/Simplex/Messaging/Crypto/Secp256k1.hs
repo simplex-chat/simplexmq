@@ -212,6 +212,6 @@ recoverPublicKey RecoverableSignature {rsR, rsS, rsRecId} digest
           then pure $ Left "signature: r or s not below the group order"
           else do
             (rc', pk) <- BA.allocRet pubKeyInternalSize $ \pkPtr -> BA.withByteArray digest $ c_ecdsa_recover staticContext pkPtr sigPtr
-            pure $ if rc' == 1 then Right (Secp256k1PublicKey pk) else Left "secp256k1_ecdsa_recover failed"
+            pure $ if rc' == 1 then Right (Secp256k1PublicKey pk) else Left "signature: no public key can be recovered"
   where
     scalarSize = compactSigSize `div` 2
