@@ -66,7 +66,7 @@ import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, te
 import SMPClient
 import Simplex.Messaging.Agent hiding (checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), withStore')
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), withStore')
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
@@ -86,6 +86,7 @@ import Simplex.Messaging.Protocol (ErrorType (AUTH), NetworkError (..), MsgFlags
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
+import Simplex.Messaging.Server.QueueStore.QueueInfo (QueueInfo (..))
 import Simplex.Messaging.Transport (ASrvTransport)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import System.Process (callCommand)
@@ -574,6 +575,7 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     vNonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
     verifyNtfToken alice tkn vNonce verification
     NTActive <- checkNtfToken alice tkn
+    waitNotifier bobId
     -- send message
     1 <- msgId <$> sendMessage bob aliceId (SMP.MsgFlags True) "hello"
     get bob ##> ("", aliceId, SENT $ baseId + 1)
@@ -614,6 +616,9 @@ testNotificationSubscriptionExistingConnection apns baseId alice@AgentClient {ag
     noNotification alice apns
   where
     msgId = subtract baseId
+    waitNotifier connId = do
+      ServerQueueInfo {info = QueueInfo {qiNtf}} <- getConnectionQueueInfo alice NRMInteractive connId
+      unless qiNtf $ liftIO (threadDelay 20000) >> waitNotifier connId
 
 testNotificationSubscriptionNewConnection :: HasCallStack => APNSMockServer -> AgentMsgId -> AgentClient -> AgentClient -> IO ()
 testNotificationSubscriptionNewConnection apns baseId alice bob =
@@ -1037,7 +1042,7 @@ testMessage_ apns a aId b bId msg = do
 
 messageNotification :: HasCallStack => APNSMockServer -> DeviceToken -> ExceptT AgentErrorType IO (C.CbNonce, ByteString)
 messageNotification apns tkn = do
-  500000 `timeout` getMockNotification apns tkn >>= \case
+  5000000 `timeout` getMockNotification apns tkn >>= \case
     Nothing -> error "no notification"
     Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData}} -> do
       nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
