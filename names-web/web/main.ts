@@ -18,10 +18,10 @@ element("register").addEventListener("click", () => {
     contactLinks: lines("contact"),
     channelLinks: lines("channel"),
   }
+  element("commit-request").textContent = json({commitment: makeCommitment(registration)})
   const nonce = 0n
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600)
   const signature = signDigest(wallet.privateKey, registerIntentDigest(chainId, sponsor, registration, nonce, deadline))
-  element("commit-request").textContent = json({commitment: makeCommitment(registration)})
   element("register-request").textContent = json({...registration, nonce, deadline, signature})
 })
 

@@ -1,12 +1,13 @@
 # names-web
 
-Prototype page for buying a SimpleX name in the browser, without a wallet extension. It makes a wallet for the name, shows its redemption code, and prepares the two requests the store service sends to the chain: the commitment to commit, and the registration with the owner's signed `RegisterName` intent.
+Prototype page for buying a SimpleX name in the browser, without a wallet extension. It makes a wallet for the name, shows its redemption code, and prepares the two requests to the service: the commit request with the commitment, and the register request with the registration and the owner's signed `RegisterName` intent.
 
 ## Setup
 
 ```bash
 cd names-web
 npm install
+npx playwright install chromium
 npm run build
 ```
 

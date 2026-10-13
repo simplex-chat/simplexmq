@@ -1,7 +1,5 @@
 {
   "name": "@simplex-chat/names-web",
-  "version": "0.1.0",
-  "description": "SimpleX names purchase page: wallet, redemption code and signed registration intent in the browser",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",

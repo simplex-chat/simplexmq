@@ -39,6 +39,8 @@ function hashStruct(typeString: string, words: Uint8Array[]): Uint8Array {
 }
 
 function registrationTuple(r: Registration): Uint8Array {
+  const reverseRecord = uint256(0n)
+  const referrer = new Uint8Array(32)
   return abiTuple([
     dynamic(abiBytes(utf8ToBytes(r.label))),
     fixed(addressWord(r.owner)),
@@ -46,8 +48,8 @@ function registrationTuple(r: Registration): Uint8Array {
     fixed(r.secret),
     fixed(addressWord(r.resolver)),
     dynamic(abiArray(recordCalls(r).map(abiBytes))),
-    fixed(uint256(0n)),
-    fixed(new Uint8Array(32)),
+    fixed(reverseRecord),
+    fixed(referrer),
   ])
 }
 

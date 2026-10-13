@@ -17,7 +17,7 @@ test("prepares a commitment and a registration signed by the code's wallet", asy
 
   const wallet = walletFromEntropy(parseNameCode(code)!)
   expect(request.owner).toBe(bytesToHex(wallet.address))
-  expect(request.channelLinks).toEqual(["https://smp1.simplex.im/c#one", "https://smp2.simplex.im/c#two"])
+  expect(request).toMatchObject({label: "bakery1", contactLinks: ["https://smp.simplex.im/a#contact"], channelLinks: ["https://smp1.simplex.im/c#one", "https://smp2.simplex.im/c#two"]})
 
   const registration: Registration = {
     ...request,
@@ -26,7 +26,7 @@ test("prepares a commitment and a registration signed by the code's wallet", asy
     secret: hexToBytes(request.secret),
     resolver: hexToBytes(request.resolver),
   }
-  expect(bytesToHex(makeCommitment(registration))).toBe(commitment)
+  expect(commitment).toBe(bytesToHex(makeCommitment(registration)))
 
   const digest = registerIntentDigest(chainId, sponsor, registration, BigInt(request.nonce), BigInt(request.deadline))
   expect(request.signature).toBe(bytesToHex(signDigest(wallet.privateKey, digest)))
