@@ -718,6 +718,7 @@ importStoreLogToDatabase logPath storeLogFile dbOpts = do
   ps <- newJournalMsgStore logPath $ PQStoreCfg storeCfg
   sCnt <- batchInsertServices services' $ postgresQueueStore ps
   qCnt <- batchInsertQueues @(JournalQueue 'QSMemory) True queues $ postgresQueueStore ps
+  closeMsgStore ps
   renameFile storeLogFile $ storeLogFile <> ".bak"
   pure (sCnt, qCnt)
 
@@ -744,6 +745,7 @@ exportDatabaseToStoreLog logPath dbOpts storeLogFilePath = do
   Sum sCnt <- foldServiceRecs (postgresQueueStore ps) $ \sr -> logNewService sl sr $> Sum (1 :: Int)
   Sum qCnt <- foldQueueRecs True True (postgresQueueStore ps) $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
   closeStoreLog sl
+  closeMsgStore ps
   pure (sCnt, qCnt)
 #endif
 

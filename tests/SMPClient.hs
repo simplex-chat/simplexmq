@@ -393,7 +393,7 @@ serverBracket process afterProcess f = do
   stopped <- newEmptyTMVarIO
   E.bracket
     (forkIOWithUnmask (\unmask -> (unmask (process started) `E.catchAny` handleStartError started startError) `E.finally` atomically (putTMVar stopped ())))
-    (\t -> killThread t >> afterProcess >> waitStopped stopped)
+    (\t -> forkIO (killThread t) >> afterProcess >> waitStopped stopped)
     (\t -> checkStarted started startError >> f t >>= \r -> r <$ threadDelay 100000)
   where
     handleStartError started startError e = do
