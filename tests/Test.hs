@@ -42,6 +42,7 @@ import Simplex.FileTransfer.Server.Store (SFSType (..))
 import XFTPServerTests (xftpServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
+import NamesWebTests (namesWebTests)
 
 #if defined(dbPostgres)
 import Fixtures
@@ -182,6 +183,7 @@ main = do
 #else
         describe "XFTP Web Client" $ xftpWebTests (pure ())
 #endif
+        describe "Names Web" namesWebTests
         describe "XRCP" remoteControlTests
         describe "Web" webTests
         describe "Server CLIs" cliTests

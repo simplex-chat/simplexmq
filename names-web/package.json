@@ -1,0 +1,26 @@
+{
+  "name": "@simplex-chat/names-web",
+  "version": "0.1.0",
+  "description": "SimpleX names purchase page: wallet, redemption code and signed registration intent in the browser",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "vite",
+    "test:page": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "viem": "^2.57.5",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "@scure/bip32": "^1.7.0",
+    "@scure/bip39": "^1.6.0"
+  }
+}
