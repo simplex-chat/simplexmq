@@ -216,7 +216,7 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
     --- recipient
     withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> do
       FileDescriptionURI {description} <- either fail pure $ strDecode uri
-
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
       rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing True
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 65536 totalSize) -- extra RFPROG before switching to real file
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 totalSize)
@@ -261,6 +261,7 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
       FileDescriptionURI {description} <- either fail pure $ strDecode uri
       let ValidFileDescription FileDescription {redirect} = description
       redirect `shouldBe` Nothing
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
       rcvFileId <- runRight $ xftpReceiveFile rcp 1 description Nothing True
       -- NO extra "RFPROG 65k 65k" before switching to real file
       rfGet rcp `shouldReturn` ("", rcvFileId, RFPROG 4194304 totalSize)
@@ -350,6 +351,7 @@ testXFTPAgentSendReceiveMatrix = do
           (sfId, _, rfd1, _) <- runRight $ testSendCF' sndr (CF.plain filePath) (kb 320)
           rfd1 <$ xftpDeleteSndFileInternal sndr sfId
         withAgent 2 receiver initAgentServers testDB2 $ \rcp -> do
+          runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
           rfId <- runRight $ testReceiveCF' rcp rfd Nothing filePath (kb 320)
           xftpDeleteRcvFile rcp rfId
 

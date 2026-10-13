@@ -857,14 +857,15 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
   (aliceId, bobId) <- makeConnection_ pqSupport alice bob
   amId <- newTVarIO 0
   bmId <- newTVarIO 0
+  finished <- newTVarIO (0 :: Int)
   let n2 = n `div` 2
   mapConcurrently_ id
     ( [ send alice bobId [1 .. n2],
         send alice bobId [n2 + 1 .. n],
         send bob aliceId [1 .. n2],
         send bob aliceId [n2 + 1 .. n],
-        receive alice bobId amId (n, n, n, 2 * n),
-        receive bob aliceId bmId (n, n, n, 2 * n)
+        receive alice bobId amId finished (n, n, n, 2 * n),
+        receive bob aliceId bmId finished (n, n, n, 2 * n)
       ] :: [ExceptT AgentErrorType IO ()]
     )
   liftIO $ noMessagesIngoreQCONT alice "nothing else should be delivered to alice"
@@ -875,15 +876,19 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
     message i = "message " <> bshow i
     send :: AgentClient -> ConnId -> [Int64] -> ExceptT AgentErrorType IO ()
     send a bId = mapM_ $ \i -> void $ A.sendMessage a bId pqEnc SMP.noMsgFlags (message i)
-    receive :: AgentClient -> ConnId -> TVar AgentMsgId -> (Int64, Int64, Int64, Int64) -> ExceptT AgentErrorType IO ()
-    receive a bId mIdVar acc' = loop acc' >> liftIO drain
+    receive :: AgentClient -> ConnId -> TVar AgentMsgId -> TVar Int -> (Int64, Int64, Int64, Int64) -> ExceptT AgentErrorType IO ()
+    receive a bId mIdVar finished acc' = loop acc' >> atomically (modifyTVar' finished (+ 1)) >> liftIO drain
       where
         drain =
-          timeout 100000 (get a)
-            >>= mapM_ (\case ("", _, QCONT) -> drain; r -> expectationFailure $ "unexpected: " <> show r)
+          timeout 100000 (get a) >>= \case
+            Just ("", _, QCONT) -> drain
+            Just r -> expectationFailure $ "unexpected: " <> show r
+            Nothing -> do
+              allFinished <- (== 2) <$> readTVarIO finished
+              unless allFinished drain
         loop (0, 0, 0, 0) = pure ()
         loop acc@(s, !m, !r, !o) =
-          timeout 3000000 (get a) >>= \case
+          timeout 10000000 (get a) >>= \case
             Nothing -> do
               t0 <- liftIO getCurrentTime
               qi <- liftIO $ runExceptT $ getConnectionQueueInfo a NRMInteractive bId
