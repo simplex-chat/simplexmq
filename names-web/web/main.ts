@@ -15,8 +15,8 @@ element("register").addEventListener("click", () => {
     duration,
     secret: crypto.getRandomValues(new Uint8Array(32)),
     resolver,
-    contactLinks: lines("contact"),
-    channelLinks: lines("channel"),
+    contactLinks: links("contact"),
+    channelLinks: links("channel"),
   }
   element("commit-request").textContent = json({commitment: makeCommitment(registration)})
   const nonce = 0n
@@ -29,11 +29,9 @@ function element(id: string): HTMLElement {
   return document.getElementById(id)!
 }
 
-function lines(id: string): string[] {
-  return (element(id) as HTMLTextAreaElement).value
-    .split("\n")
-    .map(line => line.trim())
-    .filter(line => line !== "")
+function links(id: string): string[] {
+  const link = (element(id) as HTMLInputElement).value.trim()
+  return link === "" ? [] : [link]
 }
 
 function json(request: object): string {

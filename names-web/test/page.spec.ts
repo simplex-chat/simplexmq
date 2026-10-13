@@ -10,13 +10,13 @@ test("prepares a commitment and a registration signed by the code's wallet", asy
   const code = await page.locator("#code").innerText()
   await page.locator("#label").fill("bakery1")
   await page.locator("#contact").fill("https://smp.simplex.im/a#contact")
-  await page.locator("#channel").fill("https://smp1.simplex.im/c#one\nhttps://smp2.simplex.im/c#two")
+  await page.locator("#channel").fill("https://smp1.simplex.im/c#one")
   await page.locator("#register").click()
   const {commitment} = JSON.parse(await page.locator("#commit-request").innerText())
   const request = JSON.parse(await page.locator("#register-request").innerText())
 
   const wallet = walletFromEntropy(parseNameCode(code)!)
-  expect(request).toMatchObject({label: "bakery1", owner: bytesToHex(wallet.address), contactLinks: ["https://smp.simplex.im/a#contact"], channelLinks: ["https://smp1.simplex.im/c#one", "https://smp2.simplex.im/c#two"]})
+  expect(request).toMatchObject({label: "bakery1", owner: bytesToHex(wallet.address), contactLinks: ["https://smp.simplex.im/a#contact"], channelLinks: ["https://smp1.simplex.im/c#one"]})
 
   const registration: Registration = {
     ...request,

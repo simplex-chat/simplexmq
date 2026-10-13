@@ -40,7 +40,7 @@ test("registers the page's name through the sponsor on a hardhat node", async ({
   await page.goto("/")
   await page.locator("#label").fill("bakery1")
   await page.locator("#contact").fill("https://smp.simplex.im/a#contact")
-  await page.locator("#channel").fill("https://smp1.simplex.im/c#one\nhttps://smp2.simplex.im/c#two")
+  await page.locator("#channel").fill("https://smp1.simplex.im/c#one")
   await page.locator("#register").click()
   const {commitment} = JSON.parse(await page.locator("#commit-request").innerText())
   const request = JSON.parse(await page.locator("#register-request").innerText())
@@ -66,7 +66,7 @@ test("registers the page's name through the sponsor on a hardhat node", async ({
 
   expect(await read(baseRegistrar, "ownerOf", [BigInt(labelhash(request.label))])).toBe(getAddress(request.owner))
   expect(await read(resolver, "text", [node, "simplex.contact"])).toBe("https://smp.simplex.im/a#contact")
-  expect(await read(resolver, "text", [node, "simplex.channel"])).toBe("https://smp1.simplex.im/c#one;https://smp2.simplex.im/c#two")
+  expect(await read(resolver, "text", [node, "simplex.channel"])).toBe("https://smp1.simplex.im/c#one")
 })
 
 async function deployNames(owner: Address, guardian: Address) {
