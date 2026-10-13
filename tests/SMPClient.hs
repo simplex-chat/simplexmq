@@ -422,6 +422,13 @@ controlPortCommand h cmd n = do
   hFlush h
   replicateM n $ trimCR <$> B.hGetLine h
 
+checkUsageCounts :: HasCallStack => [(ByteString, ByteString)] -> Expectation
+checkUsageCounts counts =
+  withControlPort $ \h -> do
+    controlPortCommand h ("auth " <> unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
+    forM_ counts $ \(counter, n) ->
+      controlPortCommand h ("usage " <> counter) 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0," <> n]
+
 withSmpServerOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const
 

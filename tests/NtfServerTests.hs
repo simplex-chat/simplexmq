@@ -58,6 +58,8 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
+  describe "Client usage statistics" $
+    it "should count commands and errors by client address" $ testNtfUsageStats t
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -87,6 +89,27 @@ testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
       RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
         signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
       pure ()
+
+testNtfUsageStats :: ASrvTransport -> Expectation
+testNtfUsageStats (ATransport (t :: TProxy c 'TServer)) = do
+  g <- C.newRandom
+  (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  let tkn = DeviceToken PPApnsTest "abcd"
+      ntfCfg =
+        ntfServerCfg
+          { allowTestPushProvider = False,
+            transports = [(ntfTestPort, ATransport t, False)],
+            usageStatsPeriod = Just 300,
+            controlPort = Just testControlPort,
+            controlPortUserAuth = Just testControlPortUserAuth
+          }
+  withNtfServerCfg ntfCfg $ \_ ->
+    testNtfClient_ "127.0.0.1" $ \(nh :: THandleNTF c 'TClient) -> do
+      RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+      RespNtf "2" _ (NRErr AUTH) <- signSendRecvNtf nh tknKey ("2", EntityId "1234", TCHK)
+      RespNtf "3" NoEntity (NRErr (CMD NO_AUTH)) <- signSendRecvNtf nh tknKey ("3", NoEntity, TCHK)
+      checkUsageCounts [("connections", "1"), ("TNEW", "1"), ("other", "1"), ("errors", "2")]
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> Transmission (Either ErrorType NtfResponse)
 pattern RespNtf corrId queueId command <- (corrId, queueId, Right command)

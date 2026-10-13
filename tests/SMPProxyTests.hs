@@ -164,13 +164,8 @@ smpProxyTests = do
             }
         testProxyCounts = do
           deliverMessageViaProxy (SMPServer testHost2 testPort testKeyHash) (SMPServer testHost2 testPort2 testKeyHash) C.SEd448 "hello 1" "hello 2"
-          withControlPort $ \h -> do
-            controlPortCommand h ("auth " <> SMP.unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
-            controlPortCommand h "usage PRXY_failed" 1 `shouldReturn` ["address,previous,current"]
-            forM_ counts $ \(counter, n) ->
-              controlPortCommand h ("usage " <> counter) 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0," <> n]
-        counts :: [(ByteString, ByteString)]
-        counts = [("other", "2"), ("PRXY_new", "1"), ("PFWD", "3"), ("PFWD_failed", "1")]
+          proxyConnectDeadRelay 1 0 (SMPServer testHost2 testPort testKeyHash)
+          checkUsageCounts [("other", "3"), ("PRXY_new", "2"), ("PRXY_failed", "1"), ("PFWD", "3"), ("PFWD_failed", "1")]
     oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) testPort $ const test
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
     twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType

@@ -6,10 +6,11 @@
 
 module CoreTests.UsageStatsTests where
 
-import Control.Monad ((<=<))
+import Control.Monad (forM_, (<=<))
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.IORef (readIORef)
+import qualified Data.IntMap.Strict as IM
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
@@ -28,6 +29,7 @@ import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..))
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (supportedClientSMPRelayVRange, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Version (VersionRange (..))
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
@@ -138,17 +140,17 @@ closeUsagePeriodTests = do
     closeUsagePeriod stats
     readIORef histograms
       `shouldReturn` M.fromList
-        [ (TCConnections, UsageHistogram [2, 2, 2, 2] 2 2 1),
-          (TCSend, UsageHistogram [0, 0, 1, 2] 10 2 7),
-          (TCGet, UsageHistogram [0, 0, 0, 0] 0 0 0)
+        [ (TCConnections, UsageHistogram (IM.fromList [(0, 2)]) 2 1),
+          (TCSend, UsageHistogram (IM.fromList [(2, 1), (3, 1)]) 10 7),
+          (TCGet, UsageHistogram IM.empty 0 0)
         ]
     addUsage (usage addr1) TCSend 20
     closeUsagePeriod stats
     readIORef histograms
       `shouldReturn` M.fromList
-        [ (TCConnections, UsageHistogram [2, 2, 2, 2] 2 2 0),
-          (TCSend, UsageHistogram [0, 0, 1, 2] 30 3 20),
-          (TCGet, UsageHistogram [0, 0, 0, 0] 0 0 0)
+        [ (TCConnections, UsageHistogram (IM.fromList [(0, 2)]) 2 0),
+          (TCSend, UsageHistogram (IM.fromList [(2, 1), (3, 1), (4, 1)]) 30 20),
+          (TCGet, UsageHistogram IM.empty 0 0)
         ]
   it "should set previous counts to closed counts" $ do
     stats <- newUsageStats
@@ -175,6 +177,11 @@ closeUsagePeriodTests = do
     M.keys <$> readTVarIO clientCounts `shouldReturn` [addr1]
     closeUsagePeriod stats
     M.keys <$> readTVarIO clientCounts `shouldReturn` []
+  it "should close a period with counts of 40000 clients within 5 seconds" $ do
+    stats@UsageStats {histograms} <- newUsageStats
+    forM_ [1 .. 40000] $ \a -> incUsage (ClientUsage stats $ ClientIPv4 $ toEnum a) TCSend
+    timeout 5000000 (closeUsagePeriod stats) `shouldReturn` Just ()
+    M.lookup TCSend <$> readIORef histograms `shouldReturn` Just (UsageHistogram (IM.fromList [(0, 40000)]) 40000 1)
 
 topClientsTests :: Spec
 topClientsTests =
@@ -224,8 +231,8 @@ metricsTests =
   where
     usageHistograms =
       M.fromList
-        [ (TCSend, UsageHistogram [0, 0, 1, 2] 10 2 7),
-          (TCGet, UsageHistogram [0, 0, 0, 0] 12 1 12)
+        [ (TCSend, UsageHistogram (IM.fromList [(2, 1), (3, 1)]) 10 7),
+          (TCGet, UsageHistogram (IM.fromList [(4, 1)]) 12 12)
         ]
 
 commandCounterTests :: Spec

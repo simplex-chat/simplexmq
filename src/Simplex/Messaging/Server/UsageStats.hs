@@ -37,7 +37,7 @@ import qualified Data.IntMap.Strict as IM
 import Data.List (find, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Ord (Down (..))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -69,9 +69,8 @@ data ClientCounts c = ClientCounts
 data ClientUsage c = ClientUsage (UsageStats c) ClientAddr
 
 data UsageHistogram = UsageHistogram
-  { bucketCounts :: [Int],
+  { bucketCounts :: IM.IntMap Int,
     usageSum :: Int,
-    clientCount :: Int,
     lastPeriodMax :: Int
   }
   deriving (Eq, Show)
@@ -113,9 +112,9 @@ counterByName :: UsageCounter c => Text -> Maybe c
 counterByName name = find ((name ==) . counterName) [minBound .. maxBound]
 
 newUsageStats :: UsageCounter c => IO (UsageStats c)
-newUsageStats = UsageStats <$> TM.emptyIO <*> newIORef (M.fromList $ map (\c -> (c, emptyHistogram c)) [minBound .. maxBound])
+newUsageStats = UsageStats <$> TM.emptyIO <*> newIORef (M.fromList $ map (,emptyHistogram) [minBound .. maxBound])
   where
-    emptyHistogram c = UsageHistogram {bucketCounts = map (const 0) (counterBounds c), usageSum = 0, clientCount = 0, lastPeriodMax = 0}
+    emptyHistogram = UsageHistogram {bucketCounts = IM.empty, usageSum = 0, lastPeriodMax = 0}
 
 clientConnected :: UsageCounter c => Socket -> Maybe (UsageStats c) -> IO (Maybe (ClientUsage c))
 clientConnected sock stats_ =
@@ -135,7 +134,7 @@ addUsage (ClientUsage UsageStats {clientCounts} addr) c n = do
   TM.lookupIO c current >>= atomically . maybe (newCount current) add
   where
     add v = modifyTVar' v (+ n)
-    newCount current = TM.lookup c current >>= maybe (TM.insertM c (newTVar n) current) add
+    newCount current = TM.lookup c current >>= maybe (TM.insertM c (newTVar $! n) current) add
     newCounts = do
       counts <- ClientCounts <$> TM.emptyIO <*> newTVarIO M.empty
       atomically $ TM.lookup addr clientCounts >>= maybe (counts <$ TM.insert addr counts clientCounts) pure
@@ -143,8 +142,7 @@ addUsage (ClientUsage UsageStats {clientCounts} addr) c n = do
 closeUsagePeriod :: UsageCounter c => UsageStats c -> IO ()
 closeUsagePeriod UsageStats {clientCounts, histograms} = do
   closedCounts <- mapM closeClientPeriod . M.toList =<< readTVarIO clientCounts
-  let periodCounts = M.unionsWith (<>) $ map (M.map (: [])) closedCounts
-  atomicModifyIORef'_ histograms $ M.mapWithKey $ \c -> addPeriodCounts (counterBounds c) (M.findWithDefault [] c periodCounts)
+  atomicModifyIORef'_ histograms $ M.mapWithKey $ \c -> addPeriodCounts (counterBounds c) (mapMaybe (M.lookup c) closedCounts)
   where
     closeClientPeriod (addr, ClientCounts {current, previous}) = do
       counts <- atomically $ do
@@ -154,11 +152,10 @@ closeUsagePeriod UsageStats {clientCounts, histograms} = do
       pure counts
 
 addPeriodCounts :: [Int] -> [Int] -> UsageHistogram -> UsageHistogram
-addPeriodCounts bounds ns UsageHistogram {bucketCounts, usageSum, clientCount} =
+addPeriodCounts bounds ns UsageHistogram {bucketCounts, usageSum} =
   UsageHistogram
-    { bucketCounts = zipWith (+) bucketCounts $ scanl1 (+) $ map (\i -> IM.findWithDefault 0 i boundCounts) [0 .. length bounds - 1],
+    { bucketCounts = IM.unionWith (+) bucketCounts boundCounts,
       usageSum = usageSum + sum ns,
-      clientCount = clientCount + length ns,
       lastPeriodMax = maximum (0 : ns)
     }
   where
@@ -204,10 +201,13 @@ usageMetrics prefix tsEpoch usageHistograms =
     hs = M.toList usageHistograms
     usageMetric = prefix <> "_client_usage"
     maxMetric = prefix <> "_client_usage_max"
-    histogramLines (c, UsageHistogram {bucketCounts, usageSum, clientCount}) =
-      T.concat (zipWith (\b cnt -> sample (usageMetric <> "_bucket") c [("le", tshow b)] cnt) (counterBounds c) bucketCounts)
+    histogramLines (c, UsageHistogram {bucketCounts, usageSum}) =
+      T.concat (zipWith (\b cnt -> sample (usageMetric <> "_bucket") c [("le", tshow b)] cnt) (counterBounds c) cumulativeCounts)
         <> sample (usageMetric <> "_bucket") c [("le", "+Inf")] clientCount
         <> sample (usageMetric <> "_sum") c [] usageSum
         <> sample (usageMetric <> "_count") c [] clientCount
+      where
+        cumulativeCounts = scanl1 (+) $ map (\i -> IM.findWithDefault 0 i bucketCounts) [0 ..]
+        clientCount = sum bucketCounts
     sample metric c labels v =
       metric <> "{" <> T.intercalate "," (map (\(l, lv) -> l <> "=\"" <> lv <> "\"") (("counter", counterName c) : labels)) <> "} " <> tshow v <> " " <> tsEpoch <> "\n"

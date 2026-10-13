@@ -28,7 +28,7 @@ import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
-import SMPClient (controlPortCommand, testControlPort, testControlPortUserAuth, withControlPort)
+import SMPClient (checkUsageCounts, testControlPort, testControlPortUserAuth, testHost2, testKeyHash)
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -40,7 +40,7 @@ import Simplex.Messaging.Client (ProtocolClientError (..))
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
-import Simplex.Messaging.Protocol (BasicAuth (..), EntityId (..), RecipientId, SenderId, pattern NoEntity)
+import Simplex.Messaging.Protocol (BasicAuth, CommandError (..), EntityId (..), RecipientId, SenderId, pattern NoEntity, pattern XFTPServer)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
@@ -69,7 +69,7 @@ xftpServerTests =
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
-      it "should count commands, transfers and recipients by client address" testFileUsageStats
+      it "should count commands, errors, transfers and recipients by client address" testFileUsageStats
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -341,16 +341,15 @@ testFileUsageStats fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {usageStatsPeriod = Just 300, controlPort = Just testControlPort, controlPortUserAuth = Just testControlPortUserAuth}) $ \_ -> do
     ts <- getCurrentTime
     runRight_ $ do
-      c <- ExceptT $ getXFTPClient (1, "xftp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@127.0.0.1:8000", Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+      c <- ExceptT $ getXFTPClient (1, XFTPServer testHost2 xftpTestPort testKeyHash, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
       runTestFileChunkDelivery c c
-    withControlPort $ \h -> do
-      controlPortCommand h ("auth " <> unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
-      controlPortCommand h "usage errors" 1 `shouldReturn` ["address,previous,current"]
-      forM_ counts $ \(counter, n) ->
-        controlPortCommand h ("usage " <> counter) 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0," <> n]
-  where
-    counts :: [(ByteString, ByteString)]
-    counts = [("connections", "1"), ("FNEW", "2"), ("other", "4"), ("recipients", "2"), ("upload_kb", "128"), ("download_kb", "256")]
+      g <- liftIO C.newRandom
+      (_, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      deleteXFTPChunk c spKey (EntityId "1234")
+        `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
+      deleteXFTPChunk c spKey NoEntity
+        `catchError` (liftIO . (`shouldBe` PCEProtocolError (CMD NO_AUTH)))
+    checkUsageCounts [("connections", "1"), ("FNEW", "2"), ("other", "5"), ("errors", "2"), ("recipients", "2"), ("upload_kb", "128"), ("download_kb", "256")]
 
 testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =

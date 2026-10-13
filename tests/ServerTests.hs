@@ -1270,12 +1270,14 @@ testUsageStatsControlPort =
         (sId, _, _, _) <- createAndSecureQueue r sPub
         Resp "bcda" _ OK <- signSendRecv s sKey ("bcda", sId, _SEND "hello")
         Resp "cdab" _ OK <- signSendRecv s sKey ("cdab", sId, _SEND "hello again")
+        Resp "dabc" _ (ERR AUTH) <- signSendRecv s sKey ("dabc", EntityId "1234", _SEND "hello")
+        Resp "abcd" _ (ERR (CMD NO_ENTITY)) <- sendRecv s ("", "abcd", NoEntity, _SEND "hello")
         withControlPort $ \h -> do
           controlPortCommand h "usage SEND" 1 `shouldReturn` ["AUTH"]
           controlPortCommand h ("auth " <> unBasicAuth testControlPortUserAuth) 1 `shouldReturn` ["Current role is CPRUser"]
+          controlPortCommand h "usage SEND 0" 1 `shouldReturn` ["address,previous,current"]
           controlPortCommand h "usage unknown" 1 `shouldReturn` ["error: unknown counter"]
-          controlPortCommand h "usage SEND" 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0,2"]
-          controlPortCommand h "usage connections" 2 `shouldReturn` ["address,previous,current", "127.0.0.1,0,2"]
+        checkUsageCounts [("SEND", "3"), ("errors", "2"), ("connections", "2")]
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

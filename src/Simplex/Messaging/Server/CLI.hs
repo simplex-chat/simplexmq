@@ -61,6 +61,7 @@ import Data.ASN1.Types (asn1CharacterToString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (fromRight)
+import Data.Functor (($>))
 import Data.Ini (Ini, lookupValue)
 import Data.Int (Int64)
 import Data.List ((\\))
@@ -440,7 +441,7 @@ iniDBOptions ini _default@DBOpts {connstr, schema, poolSize} =
     }
 
 iniUsageStatsPeriod :: Ini -> Maybe Int64
-iniUsageStatsPeriod ini = readIniDefault defaultUsagePeriod "USAGE_STATS" "period" ini <$ settingIsOn "USAGE_STATS" "enable" ini
+iniUsageStatsPeriod ini = settingIsOn "USAGE_STATS" "enable" ini $> readIniDefault defaultUsagePeriod "USAGE_STATS" "period" ini
 
 usageStatsIniContent :: Text
 usageStatsIniContent =

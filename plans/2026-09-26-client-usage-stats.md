@@ -78,14 +78,14 @@ Commands with their own counter:
 
 SMP proxy counters:
 
-- `PRXY_new`: `PRXY` without a connected relay.
-- `PRXY_failed`: `PRXY` with an error.
+- `PRXY_new`: `PRXY` accepted by `allowProxy`, without a connected relay or an unexpired relay connection error.
+- `PRXY_failed`: `PRXY` accepted by `allowProxy`, with a response other than `PKEY`.
 - `PFWD_failed`: `PFWD` with an error other than a protocol error, or without a session.
 
 XFTP counters:
 
-- `upload_kb`: kilobytes of chunks stored by successful `FPUT`, rounded up.
-- `download_kb`: kilobytes of chunks sent for `FGET`, rounded up.
+- `upload_kb`: kilobytes of chunks stored by successful `FPUT`.
+- `download_kb`: kilobytes of chunks in prepared `FGET` responses with the file.
 - `recipients`: recipient keys added by successful `FNEW` and `FADD`.
 
 Bounds:
@@ -95,8 +95,8 @@ Bounds:
 
 ## Periods
 
-- A period lasts `period` seconds. The first period starts at server start.
-- Current counts are accumulated as events occur.
+- Periods are closed every `period` seconds from server start.
+- Current counts are increased by `addUsage`.
 - Previous counts are the counts of the last closed period.
 - The counts of closed periods are accumulated in histograms.
 
@@ -116,15 +116,14 @@ data ClientCounts c = ClientCounts
 data ClientUsage c = ClientUsage (UsageStats c) ClientAddr
 
 data UsageHistogram = UsageHistogram
-  { bucketCounts :: [Int],
+  { bucketCounts :: IM.IntMap Int,
     usageSum :: Int,
-    clientCount :: Int,
     lastPeriodMax :: Int
   }
 ```
 
-- `current`, `previous`: counts by counter. A counter without a key has count 0.
-- `bucketCounts`: cumulative client counts per bound, from server start.
+- `current`, `previous`: counts by counter. The count of a counter without a key is 0.
+- `bucketCounts`: client counts by bucket index, from server start. The bucket index of a count is the number of bounds below it.
 
 Bounds:
 
@@ -137,15 +136,16 @@ Functions:
 - `newUsageStats :: UsageCounter c => IO (UsageStats c)`
 - `counterByName :: UsageCounter c => Text -> Maybe c`
 - `clientConnected :: UsageCounter c => Socket -> Maybe (UsageStats c) -> IO (Maybe (ClientUsage c))`:
-  1. The peer address is read with `getPeerName`.
-  2. On an exception or an address type without `ClientAddr`: `Nothing`.
-  3. `connectionsCounter` is incremented.
+  1. Without `UsageStats`: `Nothing`.
+  2. The peer address is read with `getPeerName`.
+  3. On an exception or an address type without `ClientAddr`: `Nothing`.
+  4. `connectionsCounter` is incremented.
 - `incUsage :: UsageCounter c => ClientUsage c -> c -> IO ()`
 - `addUsage :: UsageCounter c => ClientUsage c -> c -> Int -> IO ()`:
   1. The client entry is read with `TM.lookupIO`.
   2. An absent entry is created, then looked up or inserted in one transaction.
   3. The counter is read from `current` with `TM.lookupIO`.
-  4. An absent counter is looked up or inserted with the amount in one transaction.
+  4. An absent counter is looked up or inserted with the evaluated amount in one transaction.
   5. A present counter is increased with `modifyTVar'`.
   
   The amount is positive at every call site.
@@ -155,10 +155,9 @@ Functions:
      - `previous` is set to the closed counts.
   2. The entry is deleted when the closed counts are empty.
   
-  Then, per counter, the closed counts are added to the histogram:
-  - to each bucket with a bound at or above the count
-  - to `usageSum`
-  - to `clientCount`
+  Then, per counter, the histogram is updated with the closed counts:
+  - `bucketCounts`: 1 is added at the bucket index of each count
+  - `usageSum`: the counts are added
   
   `lastPeriodMax` is set to the largest closed count, 0 without closed counts.
 - `usagePeriodThread :: UsageCounter c => Int64 -> UsageStats c -> IO ()`: `closeUsagePeriod` every `period` seconds.
@@ -168,11 +167,11 @@ Functions:
   - clients with sum 0 excluded
   - limited to the given number
 - `printTopClients :: UsageCounter c => Handle -> Text -> Maybe Int -> Maybe (UsageStats c) -> IO ()`: control port output.
-- `usageMetrics :: UsageCounter c => Text -> Text -> Map c UsageHistogram -> Text`: Prometheus text for a metric prefix and a timestamp.
+- `usageMetrics :: UsageCounter c => Text -> Text -> Map c UsageHistogram -> Text`: Prometheus text for a metric prefix and a timestamp. The `_bucket` sample of the bound at index i is the sum of `bucketCounts` at indexes 0 to i. The `+Inf` and `_count` samples are the sum of `bucketCounts`.
 
 Counts lost in `closeUsagePeriod`:
 
-- a count added to an entry between its read and its deletion;
+- a count added after the closing transaction to an entry deleted after it;
 - a count added after the closing transaction to a counter read with `TM.lookupIO` before it.
 
 ## Prometheus
@@ -287,12 +286,12 @@ In `Simplex.Messaging.Server`:
 - `runClient`: `clientConnected` is called before the handshake. Its result is passed to `runClientTransport`.
 - `clientUsage :: Maybe (ClientUsage SMPUsageCounter)` is added to `Client`, as the last parameter of `newClient`.
 - `receive`:
-  - The counter of each parsed transmission is incremented.
-  - `errors` is increased by the number of parse errors.
-  - `errors` is incremented for each failed verification.
+  - Before verification, the counter of each parsed command is incremented.
+  - After verification, `errors` is increased by the number of error responses.
 - `processProxiedCmd`:
   - `PRXY_new` is incremented before the connection to the relay is forked.
   - `incFailed own sel`: the proxy stat `sel` and `PRXY_failed` or `PFWD_failed` are incremented.
+- `processForwardedCommand`: the command forwarded in `RFWD` and its errors are not counted.
 
 ## NTF server
 
@@ -301,9 +300,9 @@ In `Simplex.Messaging.Notifications.Server`:
 - `runServer`: `runTransportServerState_` is called with a new `SocketState` and `TLSServerCredential {credential = srvCreds, sniCredential = Nothing}`. The socket is passed to `runClient`.
 - `runClient`: `clientConnected` is called before the handshake. Its result is passed to `runNtfClientTransport`.
 - `clientUsage :: Maybe (ClientUsage NtfUsageCounter)` is added to `NtfServerClient`, as the last parameter of `newNtfServerClient`.
-- `receive`:
+- `receive`, after verification:
+  - `errors` is increased by the number of error responses.
   - The counter of each parsed command is incremented.
-  - `errors` is incremented for each parse error and each failed verification.
 
 ## XFTP server
 
@@ -321,7 +320,7 @@ Other changes:
   - The counter of each decoded command is incremented.
   - `errors` is incremented for each block size error, decoding error and failed verification.
 - `processXFTPRequest` has the `ClientUsage` as a parameter:
-  - `upload_kb` is increased after a successful `FPUT`.
+  - `upload_kb` is increased after the chunk is stored by a successful `FPUT`.
   - `download_kb` is increased when the `FGET` response with the file is prepared.
   - `recipients` is increased after a successful `FNEW` or `FADD`.
 
@@ -338,13 +337,16 @@ Other changes:
 - bounds:
   - `countBounds` values
   - `kilobyteBounds` values
-- `counterByName` of each counter name
+- `counterByName`:
+  - each counter name
+  - unknown name: `Nothing`
 - `addUsage`: one entry per address
 - `closeUsagePeriod`:
-  - histogram buckets, sum, client count and max
+  - histogram buckets, sum and max
   - counters without counts excluded from histograms
   - previous counts set to closed counts
   - clients without counts in the closed period deleted
+  - a period with counts of 40000 clients closed within 5 seconds
 - `topClients`:
   - order by the sum of previous and current counts
   - number of clients limited
@@ -357,14 +359,16 @@ Other changes:
 Control port tests, with `usageStatsPeriod = Just 300`:
 
 - SMP server:
-  - output of `usage SEND` and `usage connections`: the test client address
+  - output of `usage SEND`, `usage errors` and `usage connections`: the test client address
+  - output of `usage SEND 0`: the header only
   - output of `usage` without authentication: `AUTH`
   - output of `usage` with an unknown counter: `error: unknown counter`
 - SMP proxy: `other`, `PRXY_new`, `PRXY_failed`, `PFWD` and `PFWD_failed`.
-- XFTP server: command, transfer and recipient counters.
+- XFTP server: command, error, connection, transfer and recipient counters.
+- NTF server: command, error and connection counters.
 
 Other tests:
 
-- `testPrometheusMetrics`: the metrics file contains the histogram type line.
+- `testPrometheusMetrics`: the histogram type line is checked in the metrics file.
 - `testServiceSubsTotalCount`: the metrics file is read strictly.
 - `CLITests`: `enable = off` and `period = 300` are checked in `[USAGE_STATS]` of each generated INI.

@@ -32,7 +32,7 @@ import Control.Monad.Reader
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (partitionEithers)
+import Data.Either (partitionEithers, rights)
 import Data.Functor (($>))
 import Data.Hashable (hash)
 import Data.IORef
@@ -75,7 +75,7 @@ import Simplex.Messaging.Server
 import Simplex.Messaging.Server.Control (CPClientRole (..))
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), periodStatCounts, periodStatDataCounts, updatePeriodStats)
-import Simplex.Messaging.Server.UsageStats (ClientUsage, UsageStats (..), clientConnected, incUsage, printTopClients, usagePeriodThread)
+import Simplex.Messaging.Server.UsageStats (ClientUsage, UsageStats (..), addUsage, clientConnected, incUsage, printTopClients, usagePeriodThread)
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
@@ -791,26 +791,25 @@ receive st th@THandle {params = THandleParams {thAuth}} NtfServerClient {rcvQ, s
   ts <- L.toList <$> tGetServer th
   atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
   (errs, cmds) <- partitionEithers <$> mapM cmdAction ts
+  forM_ clientUsage $ \usage -> do
+    unless (null errs) $ addUsage usage NUCErrors $ length errs
+    forM_ (rights ts) $ \(_, _, (_, _, cmd)) -> incUsage usage $ ntfCmdCounter cmd
   write sndQ errs
   write rcvQ cmds
   where
     cmdAction = \case
       Left (corrId, entId, e) -> do
-        incClientUsage NUCErrors
         logError $ "invalid client request: " <> tshow e
         pure $ Left (corrId, entId, NRErr e)
-      Right t@(_, _, (corrId, entId, cmd)) -> do
-        incClientUsage $ ntfCmdCounter cmd
+      Right t@(_, _, (corrId, entId, _)) ->
         verified =<< verifyNtfTransmission st thAuth t
         where
           verified = \case
             VRVerified req -> pure $ Right req
             VRFailed e -> do
-              incClientUsage NUCErrors
               logError "unauthorized client request"
               pure $ Left (corrId, entId, NRErr e)
     write q = mapM_ (atomically . writeTBQueue q) . L.nonEmpty
-    incClientUsage c = forM_ clientUsage (`incUsage` c)
 
 send :: Transport c => THandleNTF c 'TServer -> NtfServerClient -> IO ()
 send h@THandle {params} NtfServerClient {sndQ, sndActiveAt} = forever $ do

@@ -1164,9 +1164,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     atomically . (writeTVar rcvActiveAt $!) =<< getSystemTime
     let (es, ts') = partitionEithers $ L.toList ts
         errs = map (second ERR) es
-    forM_ clientUsage $ \usage -> do
-      unless (null es) $ addUsage usage SUCErrors $ length es
-      forM_ ts' $ \(_, _, (_, _, cmd)) -> incUsage usage $ smpCmdCounter cmd
+    forM_ clientUsage $ \usage -> forM_ ts' $ \(_, _, (_, _, cmd)) -> incUsage usage $ smpCmdCounter cmd
     errs' <- case ts' of
       (_, _, (_, _, Cmd p cmd)) : rest -> do
         let service = peerClientService =<< thAuth
@@ -1180,6 +1178,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
         mapM_ (atomically . writeTBQueue rcvQ) $ L.nonEmpty cmds
         pure $ errs ++ errs'
       [] -> pure errs
+    forM_ clientUsage $ \usage -> unless (null errs') $ addUsage usage SUCErrors $ length errs'
     mapM_ (atomically . writeTBQueue sndQ . (,[])) $ L.nonEmpty errs'
   where
     sameParty :: SParty p -> SignedTransmission Cmd -> Bool
@@ -1194,9 +1193,7 @@ receive h@THandle {params = THandleParams {thAuth, sessionId}} ms Client {rcvQ, 
     verified :: ServerStats -> SignedTransmission Cmd -> VerificationResult s -> IO (VerifiedTransmissionOrError s)
     verified stats (_, _, t@(corrId, entId, Cmd _ command)) = \case
       VRVerified q -> pure $ Right (q, t)
-      VRFailed e -> do
-        forM_ clientUsage (`incUsage` SUCErrors)
-        Left (corrId, entId, ERR e) <$ when (e == AUTH) incAuthStat
+      VRFailed e -> Left (corrId, entId, ERR e) <$ when (e == AUTH) incAuthStat
         where
           incAuthStat = case command of
             SEND {} -> incStat $ msgSentAuth stats

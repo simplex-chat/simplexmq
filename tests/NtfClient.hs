@@ -119,6 +119,10 @@ ntfTestDBCfg2 = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts2, dbStoreLogPath = Jus
 testNtfClient :: Transport c => (THandleNTF c 'TClient -> IO a) -> IO a
 testNtfClient client = do
   Right host <- pure $ chooseTransportHost defaultNetworkConfig testHost
+  testNtfClient_ host client
+
+testNtfClient_ :: Transport c => TransportHost -> (THandleNTF c 'TClient -> IO a) -> IO a
+testNtfClient_ host client =
   runTransportClient defaultTransportClientConfig Nothing host ntfTestPort (Just testKeyHash) $ \h ->
     runExceptT (ntfClientHandshake h testKeyHash supportedClientNTFVRange False Nothing) >>= \case
       Right th -> client th

@@ -49,6 +49,7 @@ import qualified Network.HTTP.Types as N
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Server as H
 import Network.Socket
+import Simplex.FileTransfer.Chunks (toKB)
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Control (ControlProtocol (..))
 import Simplex.FileTransfer.Server.Env
@@ -437,7 +438,7 @@ data ServerFile = ServerFile
 
 processRequest :: FileStoreClass s => XFTPTransportRequest -> M s ()
 processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS, clientUsage}
-  | B.length bodyHead /= xftpBlockSize = incClientUsage XUCErrors >> sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
+  | B.length bodyHead /= xftpBlockSize = sendError "" NoEntity BLOCK
   | otherwise =
       case xftpDecodeTServer thParams bodyHead of
         Right (Right t@(_, _, (corrId, fId, cmd))) -> do
@@ -446,13 +447,14 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               ent = peerEntitlement =<< thAuth
           verifyXFTPTransmission thAuth t >>= \case
             VRVerified req -> uncurry send =<< processXFTPRequest clientUsage ent body req
-            VRFailed e -> incClientUsage XUCErrors >> send (FRErr e) Nothing
+            VRFailed e -> sendError corrId fId e
           where
             send resp = sendXFTPResponse (corrId, fId, resp)
-        Right (Left (corrId, fId, e)) -> incClientUsage XUCErrors >> sendXFTPResponse (corrId, fId, FRErr e) Nothing
-        Left e -> incClientUsage XUCErrors >> sendXFTPResponse ("", NoEntity, FRErr e) Nothing
+        Right (Left (corrId, fId, e)) -> sendError corrId fId e
+        Left e -> sendError "" NoEntity e
   where
     incClientUsage c = liftIO $ forM_ clientUsage (`incUsage` c)
+    sendError corrId fId e = incClientUsage XUCErrors >> sendXFTPResponse (corrId, fId, FRErr e) Nothing
     sendXFTPResponse t' serverFile_ = do
       let t_ = xftpEncodeTransmission thParams t'
 #ifdef slow_servers
@@ -528,8 +530,6 @@ processXFTPRequest clientUsage ent HTTP2Body {bodyPart} = \case
     noFile resp = pure (resp, Nothing)
     addClientUsage :: XFTPUsageCounter -> Int -> M s ()
     addClientUsage c n = liftIO $ forM_ clientUsage $ \usage -> addUsage usage c n
-    kilobytes :: Word32 -> Int
-    kilobytes bytes = (fromIntegral bytes + 1023) `div` 1024
     createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Word32 -> M s FileResponse
     createFile file rks storageHours = do
       st <- asks fileStore
@@ -628,7 +628,7 @@ processXFTPRequest clientUsage ent HTTP2Body {bodyPart} = \case
                     incFileStat filesUploaded
                     incFileStat filesCount
                     liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
-                    addClientUsage XUCUploadKb $ kilobytes size
+                    addClientUsage XUCUploadKb $ fromIntegral $ toKB size
                     pure FROk
                   Left _e -> do
                     us <- asks usedStorage
@@ -658,7 +658,7 @@ processXFTPRequest clientUsage ent HTTP2Body {bodyPart} = \case
                   stats <- asks serverStats
                   incFileStat fileDownloads
                   liftIO $ updatePeriodStats (filesDownloaded stats) senderId
-                  addClientUsage XUCDownloadKb $ kilobytes size
+                  addClientUsage XUCDownloadKb $ fromIntegral $ toKB size
                   pure (FRFile sDhKey cbNonce, Just ServerFile {filePath = path, fileSize = size, sbState})
                 _ -> pure (FRErr INTERNAL, Nothing)
         _ -> pure (FRErr NO_FILE, Nothing)
