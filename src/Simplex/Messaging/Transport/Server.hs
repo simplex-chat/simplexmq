@@ -24,6 +24,7 @@ module Simplex.Messaging.Transport.Server
     runTransportServerSocket,
     runLocalTCPServer,
     startTCPServer,
+    startTCPServerConfigured,
     loadServerCredential,
     loadFingerprint,
     loadFileFingerprint,
@@ -52,7 +53,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Shared
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow, unlessM)
 import System.Exit (exitFailure)
-import System.IO.Error (tryIOError)
+import System.IO.Error (catchIOError, tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
@@ -230,11 +231,30 @@ closeServer started clients sock = do
   readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   void . atomically $ tryPutTMVar started False
 
+-- | Start TCP server binding to IPv6 wildcard address (dual stack), when host is not passed.
+-- It fails when IPv6 is not supported by the host, e.g. disabled in the kernel.
 startTCPServer :: TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket
-startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStarted
+startTCPServer = startTCPServer_ False
+
+-- | Start TCP server binding to the wildcard address of the family enabled on the host, when host is not passed.
+--
+-- It should only be used for the servers that have to accept connections when IPv6 is disabled,
+-- e.g. remote control server on the desktop, as its address is advertised as IPv4 in the invitation.
+startTCPServerConfigured :: TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket
+startTCPServerConfigured = startTCPServer_ True
+
+startTCPServer_ :: Bool -> TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket
+startTCPServer_ addrConfig started host port = withSocketsDo $ resolve >>= open >>= setStarted
   where
-    resolve =
-      let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
+    -- AI_ADDRCONFIG excludes address families that have no address configured on any interface,
+    -- so IPv6 wildcard address is only chosen when IPv6 is enabled, and IPv4 wildcard address is used otherwise.
+    -- Some systems do not report configured families in all cases (e.g., Windows does not count
+    -- loopback addresses), so when resolution with this flag fails the addresses are resolved without it.
+    resolve
+      | addrConfig = resolveWith [AI_PASSIVE, AI_ADDRCONFIG] `catchIOError` \_ -> resolveWith [AI_PASSIVE]
+      | otherwise = resolveWith [AI_PASSIVE]
+    resolveWith addrFlags =
+      let hints = defaultHints {addrFlags, addrSocketType = Stream}
        in select <$> getAddrInfo (Just hints) host (Just port)
     select as = fromJust $ family AF_INET6 <|> family AF_INET
       where
