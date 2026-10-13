@@ -23,9 +23,10 @@ export function registerIntentDigest(chainId: bigint, sponsor: Uint8Array, r: Re
     uint256(chainId),
     addressWord(sponsor),
   ])
-  const intent = hashStruct("RegisterName(string label,address owner,address resolver,bytes[] data,uint256 nonce,uint256 deadline)", [
+  const intent = hashStruct("RegisterName(string label,address owner,uint256 duration,address resolver,bytes[] data,uint256 nonce,uint256 deadline)", [
     keccak_256(utf8ToBytes(r.label)),
     addressWord(r.owner),
+    uint256(r.duration),
     addressWord(r.resolver),
     keccak_256(concatBytes(...recordCalls(r).map(keccak_256))),
     uint256(nonce),

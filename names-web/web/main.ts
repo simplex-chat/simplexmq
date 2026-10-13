@@ -2,14 +2,21 @@ import {bytesToHex} from "@noble/curves/utils"
 import {formatNameCode} from "../src/code"
 import {makeCommitment, registerIntentDigest, type Registration} from "../src/registration"
 import {signDigest, walletFromEntropy} from "../src/wallet"
-import {chainId, duration, resolver, sponsor, tld} from "./config"
+import {chainId, duration, minLabelLength, resolver, sponsor, tld} from "./config"
 
 const wallet = walletFromEntropy(crypto.getRandomValues(new Uint8Array(16)))
 element("code").textContent = formatNameCode(wallet.entropy)
 
 element("register").addEventListener("click", () => {
+  element("commit-request").textContent = ""
+  element("register-request").textContent = ""
+  const input = element("label") as HTMLInputElement
+  const label = input.value.trim().toLowerCase()
+  const valid = label.length >= minLabelLength && label.length <= 63 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(label)
+  input.setCustomValidity(valid ? "" : `${minLabelLength} to 63 letters, digits and single hyphens between them`)
+  if (!input.reportValidity()) return
   const registration: Registration = {
-    label: (element("label") as HTMLInputElement).value,
+    label,
     tld,
     owner: wallet.address,
     duration,

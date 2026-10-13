@@ -72,9 +72,9 @@ testChatVectors :: IO ()
 testChatVectors = do
   callNode ("makeCommitment(" <> knownRegistration <> ")") `shouldReturn` "43aeb4617085160f4dc7ad495d1119f39bca441276b1990123fd3ecb8a40a360"
   callNode (knownSignature knownRegistration)
-    `shouldReturn` "74af637cf246cd336c3713f95fd9ed19862971598fcab5f4fb5d044ed033a3854c2ce30ffd36c25ed5f9a8ef691d004b3662f3553113403416f658d9c604732b1b"
+    `shouldReturn` "7caacde8c40eab73721947d6d811746266da03d0cb50da2e7efea9c7c926b7124cc612132c7c5e178fcf75afcc709994ca96b16ef30d9763ab22102192e9ac441b"
   callNode (knownSignature $ "{..." <> knownRegistration <> ", contactLinks: [], channelLinks: []}")
-    `shouldReturn` "caac218bca1ac887c6438f41f9f55f4ad026b61f16951b420785cc8d98b990f2306eaa67f18adb7b537225fff38dcd6012e53492e2d07745b565d9b09bd0d9221b"
+    `shouldReturn` "1d0b3a477c99fbcadada2937b71127bf6da202f5cd25856649829653d8cf6a8c0ce0afb8505e398e23b3b01fcb3b17ffcf82d8ba6d24e9b854506894b2864ecf1c"
   where
     knownSignature r = "signDigest(walletFromEntropy(new Uint8Array(16)).privateKey, registerIntentDigest(31337n, " <> jsHex "9a676e781a523b5d0c0e43731313a708cb607508" <> ", " <> r <> ", 0n, 4102444800n))"
     knownRegistration =

@@ -8,7 +8,7 @@ import {chainId, sponsor} from "../web/config"
 test("prepares a commitment and a registration signed by the code's wallet", async ({page}) => {
   await page.goto("/")
   const code = await page.locator("#code").innerText()
-  await page.locator("#label").fill("bakery1")
+  await page.locator("#label").fill(" Bakery1 ")
   await page.locator("#contact").fill("https://smp.simplex.im/a#contact")
   await page.locator("#channel").fill("https://smp1.simplex.im/c#one")
   await page.locator("#register").click()
@@ -29,4 +29,17 @@ test("prepares a commitment and a registration signed by the code's wallet", asy
 
   const digest = registerIntentDigest(chainId, sponsor, registration, BigInt(request.nonce), BigInt(request.deadline))
   expect(request.signature).toBe(bytesToHex(signDigest(wallet.privateKey, digest)))
+})
+
+test("refuses labels that clients cannot resolve", async ({page}) => {
+  await page.goto("/")
+  await page.locator("#label").fill("bakery1")
+  await page.locator("#register").click()
+  await expect(page.locator("#commit-request")).not.toBeEmpty()
+  for (const label of ["bake1", "b".repeat(64), "bakery_1", "bäkery1", "-bakery1", "bakery1-", "bake--ry1"]) {
+    await page.locator("#label").fill(label)
+    await page.locator("#register").click()
+    await expect(page.locator("#commit-request")).toBeEmpty()
+    await expect(page.locator("#register-request")).toBeEmpty()
+  }
 })
