@@ -83,7 +83,7 @@ function abiTuple(values: AbiValue[]): Uint8Array {
   let offset = 32 * values.length
   const heads = values.map(v => {
     if (!v.dynamic) return v.bytes
-    const head = uint256(BigInt(offset))
+    const head = uint256(offset)
     offset += v.bytes.length
     return head
   })
@@ -91,14 +91,14 @@ function abiTuple(values: AbiValue[]): Uint8Array {
 }
 
 function abiBytes(bytes: Uint8Array): Uint8Array {
-  return concatBytes(uint256(BigInt(bytes.length)), bytes, new Uint8Array((32 - (bytes.length % 32)) % 32))
+  return concatBytes(uint256(bytes.length), bytes, new Uint8Array((32 - (bytes.length % 32)) % 32))
 }
 
 function abiArray(items: Uint8Array[]): Uint8Array {
-  return concatBytes(uint256(BigInt(items.length)), abiTuple(items.map(dynamic)))
+  return concatBytes(uint256(items.length), abiTuple(items.map(dynamic)))
 }
 
-function uint256(n: bigint): Uint8Array {
+function uint256(n: number | bigint): Uint8Array {
   return numberToBytesBE(n, 32)
 }
 

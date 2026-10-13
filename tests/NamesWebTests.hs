@@ -63,8 +63,8 @@ testNameCodes = do
       ("9e885d952ad362caeb4efe34a8e91bd2", "SN-KT45V-59ATD-HCNTT-EZRTA-HT8VT-8A0BT")
     ]
     $ \(entropy, code) -> do
-      callNode ("formatNameCode(" <> jsHex entropy <> ")") `shouldReturn` BC.pack code
-      callNode ("parseNameCode('" <> map toLower code <> "')") `shouldReturn` BC.pack entropy
+      callNode ("formatNameCode(" <> jsHex entropy <> ")") `shouldReturn` code
+      callNode ("parseNameCode('" <> map toLower code <> "')") `shouldReturn` entropy
   callNode "parseNameCode('SN-OOOOO-OOOOO-OOOOO-OOOOO-OOOOO-OVME2')" `shouldReturn` "00000000000000000000000000000000"
   callNode "String(parseNameCode('SN-KT45V-59ATD-HCNTT-EZRTA-HT8VT-8A0BV'))" `shouldReturn` "null"
 
@@ -84,12 +84,11 @@ testChatVectors = do
         <> jsHex "2279b7a0a67db372996a5fab50d91eaa73d2ebe6"
         <> ", contactLinks: ['https://smp.simplex.im/a#contact'], channelLinks: ['https://smp1.simplex.im/c#one', 'https://smp2.simplex.im/c#two']}"
 
-callNode :: String -> IO ByteString
+callNode :: String -> IO String
 callNode expr =
-  BC.pack
-    <$> readCreateProcess
-      (proc "node" ["--input-type=module", "-e", imports <> "const v = " <> expr <> "; process.stdout.write(typeof v === 'string' ? v : Buffer.from(v).toString('hex'));"]) {cwd = Just namesWebDir}
-      ""
+  readCreateProcess
+    (proc "node" ["--input-type=module", "-e", imports <> "const v = " <> expr <> "; process.stdout.write(typeof v === 'string' ? v : Buffer.from(v).toString('hex'));"]) {cwd = Just namesWebDir}
+    ""
   where
     imports =
       "import {formatNameCode, parseNameCode} from './dist/code.js';"
@@ -102,5 +101,5 @@ jsUint8 bs = "new Uint8Array([" <> intercalate "," (map show $ B.unpack bs) <> "
 jsHex :: String -> String
 jsHex = jsUint8 . either error id . BAE.convertFromBase BAE.Base16 . BC.pack
 
-hex :: ByteString -> ByteString
-hex = BAE.convertToBase BAE.Base16
+hex :: ByteString -> String
+hex = BC.unpack . BAE.convertToBase BAE.Base16

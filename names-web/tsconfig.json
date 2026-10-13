@@ -6,8 +6,7 @@
     "lib": ["ES2022"],
     "outDir": "dist",
     "rootDir": "src",
-    "strict": true,
-    "skipLibCheck": true
+    "strict": true
   },
   "include": ["src/**/*.ts"]
 }

@@ -16,8 +16,7 @@ test("prepares a commitment and a registration signed by the code's wallet", asy
   const request = JSON.parse(await page.locator("#register-request").innerText())
 
   const wallet = walletFromEntropy(parseNameCode(code)!)
-  expect(request.owner).toBe(bytesToHex(wallet.address))
-  expect(request).toMatchObject({label: "bakery1", contactLinks: ["https://smp.simplex.im/a#contact"], channelLinks: ["https://smp1.simplex.im/c#one", "https://smp2.simplex.im/c#two"]})
+  expect(request).toMatchObject({label: "bakery1", owner: bytesToHex(wallet.address), contactLinks: ["https://smp.simplex.im/a#contact"], channelLinks: ["https://smp1.simplex.im/c#one", "https://smp2.simplex.im/c#two"]})
 
   const registration: Registration = {
     ...request,

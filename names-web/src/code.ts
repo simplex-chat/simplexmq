@@ -5,7 +5,6 @@ const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 const PREFIX = "SN"
 const CODE_LENGTH = 30
 const CHECKSUM_BITS = 22n
-const ENTROPY_BYTES = 16
 
 export function formatNameCode(entropy: Uint8Array): string {
   let n = (bytesToNumberBE(entropy) << CHECKSUM_BITS) + checksum(entropy)
@@ -26,7 +25,7 @@ export function parseNameCode(code: string): Uint8Array | null {
     if (v === undefined) return null
     n = n * 32n + BigInt(v)
   }
-  const entropy = numberToBytesBE(n >> CHECKSUM_BITS, ENTROPY_BYTES)
+  const entropy = numberToBytesBE(n >> CHECKSUM_BITS, 16)
   return n % (1n << CHECKSUM_BITS) === checksum(entropy) ? entropy : null
 }
 
