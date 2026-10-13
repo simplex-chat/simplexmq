@@ -118,7 +118,7 @@ counterByNameTests = do
     testCounterNames cs = map (counterByName . counterName) cs `shouldBe` map Just cs
 
 addUsageTests :: Spec
-addUsageTests =
+addUsageTests = do
   it "should count usage of one address in one entry" $ do
     stats@UsageStats {clientCounts} <- newUsageStats
     incUsage (ClientUsage stats addr1) TCSend
@@ -127,6 +127,9 @@ addUsageTests =
     M.keys <$> readTVarIO clientCounts `shouldReturn` [addr1, addr2]
     counts stats addr1 TCSend `shouldReturn` Just (0, 2)
     counts stats addr2 TCGet `shouldReturn` Just (0, 1)
+  it "should evaluate the amount when a counter is created" $ do
+    stats <- newUsageStats
+    addUsage (ClientUsage stats addr1) TCSend undefined `shouldThrow` anyErrorCall
 
 closeUsagePeriodTests :: Spec
 closeUsagePeriodTests = do

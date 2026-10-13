@@ -144,11 +144,10 @@ closeUsagePeriod UsageStats {clientCounts, histograms} = do
   closedCounts <- mapM closeClientPeriod . M.toList =<< readTVarIO clientCounts
   atomicModifyIORef'_ histograms $ M.mapWithKey $ \c -> addPeriodCounts (counterBounds c) (mapMaybe (M.lookup c) closedCounts)
   where
-    closeClientPeriod (addr, ClientCounts {current, previous}) = do
-      counts <- atomically $ do
-        counts <- mapM readTVar =<< swapTVar current M.empty
-        counts <$ writeTVar previous counts
-      when (M.null counts) $ atomically $ TM.delete addr clientCounts
+    closeClientPeriod (addr, ClientCounts {current, previous}) = atomically $ do
+      counts <- mapM readTVar =<< swapTVar current M.empty
+      writeTVar previous counts
+      when (M.null counts) $ TM.delete addr clientCounts
       pure counts
 
 addPeriodCounts :: [Int] -> [Int] -> UsageHistogram -> UsageHistogram
@@ -169,11 +168,11 @@ usagePeriodThread period stats = do
 topClients :: UsageCounter c => UsageStats c -> c -> Int -> IO [(ClientAddr, Int, Int)]
 topClients UsageStats {clientCounts} c n = do
   entries <- M.toList <$> readTVarIO clientCounts
-  counts <- forM entries $ \(addr, ClientCounts {previous, current}) -> (addr,,) <$> previousCount previous <*> currentCount current
+  counts <- forM entries $ \(addr, ClientCounts {previous, current}) -> atomically $ (addr,,) <$> previousCount previous <*> currentCount current
   pure $ take n $ sortOn (\(_, p, cur) -> Down (p + cur)) $ filter (\(_, p, cur) -> p + cur > 0) counts
   where
-    previousCount = fmap (M.findWithDefault 0 c) . readTVarIO
-    currentCount = maybe (pure 0) readTVarIO <=< TM.lookupIO c
+    previousCount = fmap (M.findWithDefault 0 c) . readTVar
+    currentCount = maybe (pure 0) readTVar <=< TM.lookup c
 
 printTopClients :: UsageCounter c => Handle -> Text -> Maybe Int -> Maybe (UsageStats c) -> IO ()
 printTopClients h name n_ = \case

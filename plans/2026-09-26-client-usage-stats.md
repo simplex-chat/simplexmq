@@ -147,22 +147,22 @@ Functions:
   3. The counter is read from `current` with `TM.lookupIO`.
   4. An absent counter is looked up or inserted with the evaluated amount in one transaction.
   5. A present counter is increased with `modifyTVar'`.
-  
+
   The amount is positive at every call site.
-- `closeUsagePeriod :: UsageCounter c => UsageStats c -> IO ()`, per client:
-  1. In one transaction:
-     - `current` is set to an empty map; the counts of its counters are the closed counts;
-     - `previous` is set to the closed counts.
-  2. The entry is deleted when the closed counts are empty.
-  
+- `closeUsagePeriod :: UsageCounter c => UsageStats c -> IO ()`, per client, in one transaction:
+  - `current` is set to an empty map; the counts of its counters are the closed counts;
+  - `previous` is set to the closed counts;
+  - the entry is deleted when the closed counts are empty.
+
   Then, per counter, the histogram is updated with the closed counts:
   - `bucketCounts`: 1 is added at the bucket index of each count
   - `usageSum`: the counts are added
-  
+
   `lastPeriodMax` is set to the largest closed count, 0 without closed counts.
 - `usagePeriodThread :: UsageCounter c => Int64 -> UsageStats c -> IO ()`: `closeUsagePeriod` every `period` seconds.
 - `topClients :: UsageCounter c => UsageStats c -> c -> Int -> IO [(ClientAddr, Int, Int)]`:
   - address, previous count, current count
+  - both counts of a client read in one transaction
   - sorted by the sum of both counts, largest first
   - clients with sum 0 excluded
   - limited to the given number
@@ -171,7 +171,7 @@ Functions:
 
 Counts lost in `closeUsagePeriod`:
 
-- a count added after the closing transaction to an entry deleted after it;
+- a count added after the closing transaction to an entry deleted by it;
 - a count added after the closing transaction to a counter read with `TM.lookupIO` before it.
 
 ## Prometheus
@@ -340,7 +340,9 @@ Other changes:
 - `counterByName`:
   - each counter name
   - unknown name: `Nothing`
-- `addUsage`: one entry per address
+- `addUsage`:
+  - one entry per address
+  - amount evaluated when a counter is created
 - `closeUsagePeriod`:
   - histogram buckets, sum and max
   - counters without counts excluded from histograms
