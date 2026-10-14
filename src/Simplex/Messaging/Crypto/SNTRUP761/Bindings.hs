@@ -16,6 +16,8 @@ module Simplex.Messaging.Crypto.SNTRUP761.Bindings
   ) where
 
 import Control.Concurrent.STM
+import Control.Exception (throwIO)
+import Control.Monad (when)
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Bifunctor (bimap)
@@ -23,6 +25,7 @@ import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
 import Data.ByteString (ByteString)
 import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (rngFuncPtr, withDRG)
@@ -55,14 +58,13 @@ pattern KEMSharedKey s <- KEMSharedKey_ s
 type KEMKeyPair = (KEMPublicKey, KEMSecretKey)
 
 sntrup761Keypair :: TVar ChaChaDRG -> IO KEMKeyPair
-sntrup761Keypair drg =
-  bimap KEMPublicKey_ KEMSecretKey
-    <$> BA.allocRet
-      c_SNTRUP761_SECRETKEY_SIZE
-      ( \skPtr ->
-          BA.alloc c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
-            withDRG drg $ \cxtPtr -> c_sntrup761_keypair pkPtr skPtr cxtPtr rngFuncPtr
-      )
+sntrup761Keypair drg = do
+  ((r, pk), sk) <-
+    BA.allocRet c_SNTRUP761_SECRETKEY_SIZE $ \skPtr ->
+      BA.allocRet c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
+        withDRG drg $ \cxtPtr -> c_sntrup761_keypair pkPtr skPtr cxtPtr rngFuncPtr
+  when (r /= 0) $ throwIO C.CryptoKEMKeyGenError
+  pure (KEMPublicKey_ pk, KEMSecretKey sk)
 
 sntrup761Enc :: TVar ChaChaDRG -> KEMPublicKey -> IO (KEMCiphertext, KEMSharedKey)
 sntrup761Enc drg (KEMPublicKey pk) =

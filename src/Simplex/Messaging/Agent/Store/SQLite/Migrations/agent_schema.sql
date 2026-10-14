@@ -247,7 +247,7 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE commands(
-  command_id INTEGER PRIMARY KEY,
+  command_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   host TEXT,
   port TEXT,
@@ -261,6 +261,7 @@ CREATE TABLE commands(
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) STRICT;
+CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE snd_message_deliveries(
   snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -269,7 +270,6 @@ CREATE TABLE snd_message_deliveries(
   failed INTEGER DEFAULT 0,
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
-CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE users(
   user_id INTEGER PRIMARY KEY AUTOINCREMENT
   ,
@@ -573,10 +573,6 @@ CREATE INDEX idx_encrypted_rcv_message_hashes_hash ON encrypted_rcv_message_hash
   conn_id,
   hash
 );
-CREATE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
-  conn_id,
-  hash
-);
 CREATE INDEX idx_snd_messages_rcpt_internal_id ON snd_messages(
   conn_id,
   rcpt_internal_id
@@ -641,6 +637,15 @@ CREATE INDEX idx_connections_deleted ON connections(deleted);
 CREATE INDEX idx_connections_service_request_expires_at ON connections(
   service_request_expires_at
 );
+CREATE UNIQUE INDEX idx_processed_ratchet_key_hashes_hash ON processed_ratchet_key_hashes(
+  conn_id,
+  hash
+);
+CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_hashes(
+  conn_id,
+  processed_ratchet_key_hash_id
+);
+CREATE INDEX idx_rcv_queues_switch_status ON rcv_queues(switch_status);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW

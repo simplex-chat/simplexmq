@@ -130,7 +130,9 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("host = " <> T.pack host <> "\n")
     <> ("port = " <> defaultServerPorts <> "\n")
     <> "log_tls_errors = off\n\n\
-        \# Use `websockets = 443` to run websockets server in addition to plain TLS.\n\
+        \# Minimum time to respond with AUTH error, milliseconds.\n"
+    <> ("# auth_error_delay_ms = " <> tshow defaultAuthErrorDelayMs <> "\n\n")
+    <> "# Use `websockets = 443` to run websockets server in addition to plain TLS.\n\
         \# This option is deprecated and should be used for testing only.\n\
         \# , port 443 should be specified in port above\n\
         \websockets = off\n"

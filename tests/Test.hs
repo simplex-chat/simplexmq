@@ -109,7 +109,8 @@ main = do
           describe "SMP server schema dump" $
             postgresSchemaDumpTest
               serverMigrations
-              [ "20250320_short_links" -- snd_secure moves to the bottom on down migration
+              [ "20250320_short_links", -- snd_secure moves to the bottom on down migration
+                "20260918_expire_messages" -- msg_queue_expire moves to the bottom on down migration
               ] -- skipComparisonForDownMigrations
               testStoreDBOpts
               "src/Simplex/Messaging/Server/QueueStore/Postgres/server_schema.sql"

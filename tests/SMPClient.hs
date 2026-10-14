@@ -263,6 +263,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       prometheusMetricsFile = testPrometheusMetricsFile,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
+      authErrorDelay = 20000,
       smpCredentials =
         ServerCredentials
           { caCertificateFile = Just "tests/fixtures/ca.crt",
@@ -348,6 +349,16 @@ proxyCfgShortTimeout =
         cCfg = smpCfg aCfg
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
+
+proxyCfgVPrev :: AStoreType -> AServerConfig
+proxyCfgVPrev msType =
+  updateCfg (proxyCfgMS msType) $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+     in cfg'
+          { smpServerVRange = prevRange $ smpServerVRange cfg',
+            smpAgentCfg = aCfg {smpCfg = cCfg {serverVRange = prevRange $ serverVRange cCfg}}
+          }
 
 withSmpServerStoreMsgLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =

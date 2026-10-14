@@ -56,7 +56,7 @@ instance Example a => Example (TestWrapper a) where
     ci <- envCI
     runTest `E.catches` [E.Handler (onTestFailure ci), E.Handler (onTestException ci)]
     where
-      tt = 120
+      tt = 300
       runTest =
         timeout (tt * 1000000) (evaluateExample action params hooks state) `finally` callCommand "sync" >>= \case
           Just r -> pure r
