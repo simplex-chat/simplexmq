@@ -49,6 +49,7 @@ import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import System.Random (randomRIO)
+import Text.Read (readMaybe)
 import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
 import Util
@@ -81,6 +82,8 @@ smpProxyTests = do
       testClosedClientCommandsFail
     it "releases command kept for late response" $ \_ ->
       testLateResponseCommandReleased
+    it "rejects forwards above the relay concurrency limit" $ \_ ->
+      testProxyRelayConcurrencyLimit
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel

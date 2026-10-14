@@ -134,6 +134,7 @@ data ServerStats = ServerStats
     pMsgFwdsFrom23 :: IORef Int,
     pMsgFwdsRecvBelow23 :: IORef Int,
     pMsgFwdsRecvFrom23 :: IORef Int,
+    pMsgFwdsRelayLimit :: IORef Int,
     rcvServices :: ServiceStats,
     ntfServices :: ServiceStats,
     rcvServicesSubMsg :: IORef Int,
@@ -209,6 +210,7 @@ data ServerStatsData = ServerStatsData
     _pMsgFwdsFrom23 :: Int,
     _pMsgFwdsRecvBelow23 :: Int,
     _pMsgFwdsRecvFrom23 :: Int,
+    _pMsgFwdsRelayLimit :: Int,
     _ntfServices :: ServiceStatsData,
     _rcvServices :: ServiceStatsData,
     _rcvServicesSubMsg :: Int,
@@ -285,6 +287,7 @@ newServerStats trackPending ts = do
   pMsgFwdsFrom23 <- newIORef 0
   pMsgFwdsRecvBelow23 <- newIORef 0
   pMsgFwdsRecvFrom23 <- newIORef 0
+  pMsgFwdsRelayLimit <- newIORef 0
   rcvServices <- newServiceStats
   ntfServices <- newServiceStats
   rcvServicesSubMsg <- newIORef 0
@@ -358,6 +361,7 @@ newServerStats trackPending ts = do
         pMsgFwdsFrom23,
         pMsgFwdsRecvBelow23,
         pMsgFwdsRecvFrom23,
+        pMsgFwdsRelayLimit,
         rcvServices,
         ntfServices,
         rcvServicesSubMsg,
@@ -435,6 +439,7 @@ getServerStatsData s = do
   _pMsgFwdsFrom23 <- readIORef $ pMsgFwdsFrom23 s
   _pMsgFwdsRecvBelow23 <- readIORef $ pMsgFwdsRecvBelow23 s
   _pMsgFwdsRecvFrom23 <- readIORef $ pMsgFwdsRecvFrom23 s
+  _pMsgFwdsRelayLimit <- readIORef $ pMsgFwdsRelayLimit s
   _rcvServices <- getServiceStatsData $ rcvServices s
   _ntfServices <- getServiceStatsData $ ntfServices s
   _rcvServicesSubMsg <- readIORef $ rcvServicesSubMsg s
@@ -508,6 +513,7 @@ getServerStatsData s = do
         _pMsgFwdsFrom23,
         _pMsgFwdsRecvBelow23,
         _pMsgFwdsRecvFrom23,
+        _pMsgFwdsRelayLimit,
         _rcvServices,
         _ntfServices,
         _rcvServicesSubMsg,
@@ -584,6 +590,7 @@ setServerStats s d = do
   writeIORef (pMsgFwdsFrom23 s) $! _pMsgFwdsFrom23 d
   writeIORef (pMsgFwdsRecvBelow23 s) $! _pMsgFwdsRecvBelow23 d
   writeIORef (pMsgFwdsRecvFrom23 s) $! _pMsgFwdsRecvFrom23 d
+  writeIORef (pMsgFwdsRelayLimit s) $! _pMsgFwdsRelayLimit d
   setServiceStats (rcvServices s) $! _rcvServices d
   setServiceStats (ntfServices s) $! _ntfServices d
   writeIORef (rcvServicesSubMsg s) $! _rcvServicesSubMsg d
@@ -806,6 +813,7 @@ instance StrEncoding ServerStatsData where
           _pMsgFwdsFrom23,
           _pMsgFwdsRecvBelow23,
           _pMsgFwdsRecvFrom23,
+          _pMsgFwdsRelayLimit = 0,
           _rcvServices,
           _ntfServices,
           _rcvServicesSubMsg = 0,
