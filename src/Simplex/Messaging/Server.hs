@@ -1455,7 +1455,7 @@ client
                       _ -> ERR $ transportErr TEVersion
       PFWD fwdV pubKey encBlock -> do
         ProxyAgent {smpAgent = a, relayForwards} <- asks proxyAgent
-        ServerStats {pMsgFwds, pMsgFwdsOwn} <- asks serverStats
+        ServerStats {pMsgFwds, pMsgFwdsOwn, pMsgFwdsRelayLimit} <- asks serverStats
         let inc = mkIncProxyStats pMsgFwds pMsgFwdsOwn
         liftIO (lookupSMPServerClient a sessId) >>= \case
           Just (own, smp) -> do
@@ -1465,7 +1465,7 @@ client
             forkProxiedCmd $
               bracket (atomically $ reserve maxFwds relayForwards) (\r -> when r $ atomically $ release relayForwards) $ \case
                 -- the relay is not keeping up, the client retries TIMEOUT later
-                False -> ERR (smpProxyError PCEResponseTimeout) <$ inc own pErrorsOther
+                False -> ERR (smpProxyError PCEResponseTimeout) <$ (inc own pErrorsOther >> incStat pMsgFwdsRelayLimit)
                 True ->
                   liftIO (runExceptT (forwardSMPTransmission smp corrId fwdV pubKey encBlock) `E.catches` clientHandlers) >>= \case
                     Right r -> PRES r <$ inc own pSuccesses
