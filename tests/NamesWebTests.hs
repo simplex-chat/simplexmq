@@ -1,0 +1,106 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | Tests for the names-web TypeScript code: each test runs it via node and compares its output with the Haskell functions it must match.
+--
+-- Prerequisites: cd names-web && npm install && npm run build
+module NamesWebTests (namesWebTests) where
+
+import Control.Concurrent.STM (TVar, atomically)
+import Control.Monad (forM_, replicateM_)
+import Crypto.Random (ChaChaDRG)
+import qualified Data.ByteArray as BA
+import qualified Data.ByteArray.Encoding as BAE
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
+import Data.Char (toLower)
+import Data.List (intercalate)
+import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.BIP32 (masterKey, xkKey)
+import Simplex.Messaging.Crypto.BIP39 (EntropyStrength (..), entropySeed, randomEntropy, unEntropy)
+import Simplex.Messaging.Crypto.BIP44 (CoinType (..), bip44Path, mkAccountIndex)
+import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Eth.Address (deriveAddress)
+import Simplex.Messaging.Eth.EIP712
+import System.Directory (doesDirectoryExist)
+import System.Process (CreateProcess (..), proc, readCreateProcess)
+import Test.Hspec hiding (fit, it)
+import Util
+
+namesWebDir :: FilePath
+namesWebDir = "names-web"
+
+namesWebTests :: Spec
+namesWebTests = do
+  distExists <- runIO $ doesDirectoryExist (namesWebDir <> "/dist")
+  if distExists
+    then do
+      g <- runIO C.newRandom
+      it "derives the wallet and signs a digest as Haskell does" $ testWallet g
+      it "formats and parses the simplex-chat name codes" testNameCodes
+      it "encodes the simplex-chat registration vectors" testChatVectors
+    else
+      it "skipped (run 'cd names-web && npm install && npm run build' first)" $
+        pendingWith "TS project not compiled"
+
+testWallet :: TVar ChaChaDRG -> IO ()
+testWallet g =
+  replicateM_ 5 $ do
+    entropy <- atomically $ randomEntropy ES128 g
+    let master = either error id $ masterKey $ entropySeed entropy ""
+    (xk, addr) <- either error id <$> deriveAddress g master (bip44Path Ethereum $ either error id $ mkAccountIndex 0)
+    digest <- atomically $ C.randomBytes 32 g
+    signature <- either error id <$> S.signRecoverable g (xkKey xk) digest
+    let jsWallet = "walletFromEntropy(" <> jsUint8 (BA.convert $ unEntropy entropy) <> ")"
+    callNode ("checksumAddress(" <> jsWallet <> ".address)") `shouldReturn` BC.unpack (strEncode addr)
+    callNode ("signDigest(" <> jsWallet <> ".privateKey, " <> jsUint8 digest <> ")") `shouldReturn` hex (serializeSignature signature)
+
+testNameCodes :: IO ()
+testNameCodes = do
+  forM_
+    [ ("00000000000000000000000000000000", "SN-00000-00000-00000-00000-00000-0VME2"),
+      ("ffffffffffffffffffffffffffffffff", "SN-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-XDCD9"),
+      ("9e885d952ad362caeb4efe34a8e91bd2", "SN-KT45V-59ATD-HCNTT-EZRTA-HT8VT-8A0BT")
+    ]
+    $ \(entropy, code) -> do
+      callNode ("formatNameCode(" <> jsHex entropy <> ")") `shouldReturn` code
+      callNode ("parseNameCode('" <> map toLower code <> "')") `shouldReturn` entropy
+  callNode "parseNameCode('SN-OOOOO-OOOOO-OOOOO-OOOOO-OOOOO-OVME2')" `shouldReturn` "00000000000000000000000000000000"
+  callNode "String(parseNameCode('SN-KT45V-59ATD-HCNTT-EZRTA-HT8VT-8A0BV'))" `shouldReturn` "null"
+
+testChatVectors :: IO ()
+testChatVectors = do
+  callNode ("makeCommitment(" <> knownRegistration <> ")") `shouldReturn` "43aeb4617085160f4dc7ad495d1119f39bca441276b1990123fd3ecb8a40a360"
+  callNode (knownSignature knownRegistration)
+    `shouldReturn` "7caacde8c40eab73721947d6d811746266da03d0cb50da2e7efea9c7c926b7124cc612132c7c5e178fcf75afcc709994ca96b16ef30d9763ab22102192e9ac441b"
+  callNode (knownSignature $ "{..." <> knownRegistration <> ", contactLinks: [], channelLinks: []}")
+    `shouldReturn` "1d0b3a477c99fbcadada2937b71127bf6da202f5cd25856649829653d8cf6a8c0ce0afb8505e398e23b3b01fcb3b17ffcf82d8ba6d24e9b854506894b2864ecf1c"
+  where
+    knownSignature r = "signDigest(walletFromEntropy(new Uint8Array(16)).privateKey, registerIntentDigest(31337n, " <> jsHex "9a676e781a523b5d0c0e43731313a708cb607508" <> ", " <> r <> ", 0n, 4102444800n))"
+    knownRegistration =
+      "{label: 'bakery1', tld: 'simplex', owner: "
+        <> jsHex "9858effd232b4033e47d90003d41ec34ecaeda94"
+        <> ", duration: 63072000n, secret: new Uint8Array(32).fill(0x11), resolver: "
+        <> jsHex "2279b7a0a67db372996a5fab50d91eaa73d2ebe6"
+        <> ", contactLinks: ['https://smp.simplex.im/a#contact'], channelLinks: ['https://smp1.simplex.im/c#one', 'https://smp2.simplex.im/c#two']}"
+
+callNode :: String -> IO String
+callNode expr =
+  readCreateProcess
+    (proc "node" ["--input-type=module", "-e", imports <> "const v = " <> expr <> "; process.stdout.write(typeof v === 'string' ? v : Buffer.from(v).toString('hex'));"]) {cwd = Just namesWebDir}
+    ""
+  where
+    imports =
+      "import {formatNameCode, parseNameCode} from './dist/code.js';"
+        <> "import {makeCommitment, registerIntentDigest} from './dist/registration.js';"
+        <> "import {checksumAddress, signDigest, walletFromEntropy} from './dist/wallet.js';"
+
+jsUint8 :: ByteString -> String
+jsUint8 bs = "new Uint8Array([" <> intercalate "," (map show $ B.unpack bs) <> "])"
+
+jsHex :: String -> String
+jsHex = jsUint8 . either error id . BAE.convertFromBase BAE.Base16 . BC.pack
+
+hex :: ByteString -> String
+hex = BC.unpack . BAE.convertToBase BAE.Base16

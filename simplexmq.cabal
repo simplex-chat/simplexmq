@@ -595,6 +595,7 @@ test-suite simplexmq-test
       XFTPServerTests
       WebTests
       XFTPWebTests
+      NamesWebTests
       SMPWeb
       XFTPWeb
       Web.Embedded

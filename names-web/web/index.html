@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en" translate="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'">
+  <title>SimpleX Names</title>
+</head>
+<body>
+  <h1>SimpleX Names</h1>
+  <p>Your redemption code: <code id="code"></code></p>
+  <p>Wallet address: <code id="address"></code></p>
+  <p>Recovery phrase: <code id="mnemonic"></code></p>
+  <p><i>reload will destroy it and generate a new one</i></p>
+  <p><label>Name <input id="label">.simplex</label></p>
+  <p><label>Contact link <input id="contact" pattern="[^;]*" title="One link, without ;"></label></p>
+  <p><label>Channel link <input id="channel" pattern="[^;]*" title="One link, without ;"></label></p>
+  <p><button id="register">Register</button></p>
+  <h2>Payloads to send to StoreService</h2>
+  <i>will fill after "register" button tapped</i>
+  <h3>1. Commit request</h3>
+  <pre id="commit-request"></pre>
+  <h3>2. Wait for confirmation period to elapse</h3>
+  <h3>3. Register request</h3>
+  <pre id="register-request"></pre>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
