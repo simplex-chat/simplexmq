@@ -2206,28 +2206,34 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked (RSLV).
-          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
-            -- rejectOrVerify filters allowed commands, no need to repeat it here.
-            Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                -- no response when the slot wait timed out, as the proxy also times out the forward
-                Just nenv -> forkCmd_ serverResolverConcurrency NRMBackground (pure ()) $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
-                  rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                  atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+          let forwarded =
+                lift (rejectOrVerify clntThAuth t') >>= \case
+                  -- rejectOrVerify filters allowed commands, no need to repeat it here.
+                  Left r -> pure r
+                  Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                    Cmd SResolver (RSLV d) ->
+                      lift $
+                        rslvNamesEnv >>= \case
+                          Nothing -> pure (corrId', entId', ERR (NAME NO_RESOLVER))
+                          Just nenv -> (corrId',entId',) <$> resolveNameMsg (thVersion clntTHParams) nenv d
+                    -- INTERNAL because processCommand never returns Nothing for sender commands;
+                    -- `fst` drops the empty message only returned for SUB.
+                    _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+              -- commands of all clients of a proxy share its connection, so they are processed concurrently
+              concurrency = case t' of
+                Right (_, _, (_, _, Cmd SResolver _)) -> serverResolverConcurrency
+                _ -> serverClientConcurrency
+              sendResp rres = atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_ >>= \case
-            Just rres | any isAuthError r_ -> do
-              authDelay <- asks $ authErrorDelay . config
-              Nothing <$ liftIO (sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], []))
-            rres_ -> pure rres_
+          authDelay <- asks $ authErrorDelay . config
+          -- the delayed AUTH response is sent from another thread, so it does not hold the slot;
+          -- no response when the slot wait timed out, as the proxy also times out the forward
+          lift $ forkCmd_ concurrency NRMBackground (pure ()) $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
+            Right (r, rres)
+              | isAuthError r -> liftIO $ sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
+              | otherwise -> sendResp rres
+            Left e -> sendResp $ ERR e
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
