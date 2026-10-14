@@ -36,6 +36,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
+import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
@@ -58,7 +59,6 @@ import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util (whenM)
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
 import System.IO (IOMode (..), withFile)
-import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec hiding (fit, it)
@@ -97,6 +97,7 @@ serverTests = do
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Timing of AUTH error" testTiming
+  describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
@@ -167,7 +168,7 @@ signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, 
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t'
-      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.cbNonce corrId) t') <$> thAuth params
+      C.SX25519 -> (\THAuthClient {peerServerPubKey = k} -> TAAuthenticator $ C.cbAuthenticate k pk (C.unsafeCbNonce corrId) t') <$> thAuth params
 #if !MIN_VERSION_base(4,18,0)
       _sx448 -> undefined -- ghc8107 fails to the branch excluded by types
 #endif
@@ -195,12 +196,12 @@ _SEND = SEND noMsgFlags
 _SEND' :: MsgBody -> Command 'Sender
 _SEND' = SEND MsgFlags {notification = True}
 
-decryptMsgV2 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either C.CryptoError ByteString
-decryptMsgV2 dhShared = C.cbDecrypt dhShared . C.cbNonce
+decryptMsgV2 :: C.DhSecret 'C.X25519 -> MsgId -> ByteString -> Either C.CryptoError ByteString
+decryptMsgV2 = C.cbDecrypt
 
-decryptMsgV3 :: C.DhSecret 'C.X25519 -> ByteString -> ByteString -> Either String MsgBody
+decryptMsgV3 :: C.DhSecret 'C.X25519 -> MsgId -> ByteString -> Either String MsgBody
 decryptMsgV3 dhShared nonce body =
-  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared (C.cbNonce nonce) body) of
+  case parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt dhShared nonce body) of
     Right ClientRcvMsgBody {msgBody} -> Right msgBody
     Right ClientRcvMsgQuota {} -> Left "ClientRcvMsgQuota"
     Left e -> Left e
@@ -426,7 +427,7 @@ testCreateDelete =
       Resp "dabc" _ err8 <- sendRecv sh ("", "dabc", sId, _SEND "hello")
       (err8, ERR AUTH) #== "rejects unsigned SEND too when deleted"
 
-      Resp "abcd" _ err11 <- signSendRecv rh rKey ("abcd", rId, ACK "")
+      Resp "abcd" _ err11 <- signSendRecv rh rKey ("abcd", rId, ACK mId2)
       (err11, ERR AUTH) #== "rejects ACK when conn deleted - the second message is deleted"
 
       Resp "bcda" _ err9 <- signSendRecv rh rKey ("bcda", rId, OFF)
@@ -610,7 +611,7 @@ testGetSubCommands =
       Resp "4" _ (Msg mId2 msg2) <- signSendRecv rh1 rKey ("4", rId, ACK mId1)
       (dec mId2 msg2, Right "hello 2") #== "received from queue via SUB"
       -- bad msgId returns error
-      Resp "5" _ (ERR NO_MSG) <- signSendRecv rh2 rKey ("5", rId, ACK "1234")
+      Resp "5" _ (ERR NO_MSG) <- signSendRecv rh2 rKey ("5", rId, ACK mId2)
       -- already ACK'd by subscriber, but still returns OK when msgId matches
       Resp "5a" _ OK <- signSendRecv rh2 rKey ("5a", rId, ACK mId1)
       -- msg2 is not lost - even if subscriber does not ACK it, it is delivered to getter
@@ -905,7 +906,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 2
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 2
 
       -- Phase 2: associate 1 more queue via SUB, reconnect with SUBS 3, check metric = 3
       (rPub3, rKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -935,7 +936,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 3
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
@@ -1275,21 +1276,21 @@ testTiming =
         smpTest2Cfg (cfgMS msType) supportedServerSMPRelayVRange t $ \rh sh ->
           testSameTiming rh sh tst msType
   where
-    testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
-    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
-    timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
+    testName :: (C.AuthAlg, C.AuthAlg) -> String
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
+    timingTests :: [(C.AuthAlg, C.AuthAlg)]
     timingTests =
-      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 200), -- correct key type
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150), -- correct key type
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448, 150),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
+      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519), -- correct key type
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448),
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448), -- correct key type
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519) -- correct key type
       ]
-    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
+    timeRepeat = fmap fst . responseTime . replicateM_ 5
     similarTime t1 t2 msType
       | t1 <= t2 = abs (1 - t1 / t2) < diff
       | otherwise = similarTime t2 t1 msType
@@ -1298,14 +1299,14 @@ testTiming =
         diff = case msType of
           ASType SQSPostgres _ -> 0.45
           _ -> 0.3
-    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> AStoreType -> Expectation
-    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) msType = do
+    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg) -> AStoreType -> Expectation
+    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) msType = do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcd", NoEntity, New rPub dhPub)
+      Resp "abcdabcdabcdabcdabcdabcd" NoEntity (Ids rId sId srvDh) <- signSendRecv rh rKey ("abcdabcdabcdabcdabcdabcd", NoEntity, New rPub dhPub)
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-      Resp "cdab" _ resp <- signSendRecv rh rKey ("cdab", rId, SUB)
+      Resp "cdabcdabcdabcdabcdabcdab" _ resp <- signSendRecv rh rKey ("cdabcdabcdabcdabcdabcdab", rId, SUB)
       case resp of
         OK -> pure ()
         SOK Nothing -> pure ()
@@ -1315,9 +1316,9 @@ testTiming =
       runTimingTest rh badKey rId SUB
 
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
-      Resp "dabc" _ OK <- signSendRecv rh rKey ("dabc", rId, KEY sPub)
+      Resp "dabcdabcdabcdabcdabcdabc" _ OK <- signSendRecv rh rKey ("dabcdabcdabcdabcdabcdabc", rId, KEY sPub)
 
-      Resp "bcda" _ OK <- signSendRecv sh sKey ("bcda", sId, _SEND "hello")
+      Resp "bcdabcdabcdabcdabcdabcda" _ OK <- signSendRecv sh sKey ("bcdabcdabcdabcdabcdabcda", sId, _SEND "hello")
       Resp "" _ (Msg mId msg) <- tGet1 rh
       (dec mId msg, Right "hello") #== "delivered from queue"
 
@@ -1326,17 +1327,17 @@ testTiming =
         runTimingTest :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> EntityId -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
-          _ <- timeRepeat n $ do
+          _ <- timeRepeat $ do
             -- "warm up" the server
-            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", EntityId "1234", cmd)
+            Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           threadDelay 100000
-          timeWrongKey <- timeRepeat n $ do
-            Resp "cdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdab", qId, cmd)
+          timeWrongKey <- timeRepeat $ do
+            Resp "cdabcdabcdabcdabcdabcdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdabcdabcdabcdabcdabcdab", qId, cmd)
             return ()
           threadDelay 100000
-          timeNoQueue <- timeRepeat n $ do
-            Resp "dabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabc", EntityId "1234", cmd)
+          timeNoQueue <- timeRepeat $ do
+            Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey msType
           unless ok . putStrLn . unwords $
@@ -1347,6 +1348,33 @@ testTiming =
               show $ timeWrongKey / timeNoQueue - 1
             ]
           ok `shouldBe` True
+
+testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
+testAuthErrorDelay =
+  it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId _) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
+      (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (wrongKeyTime, Resp "2" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("2", rId, SUB)
+      (noQueueTime, Resp "3" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("3", EntityId "1234", SUB)
+      (noLinkTime, Resp "4" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "4", EntityId "1234", LGET)
+      (subTime, Resp "5" _ (SOK Nothing)) <- responseTime $ signSendRecv rh rKey ("5", rId, SUB)
+      Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, OFF)
+      (suspendedTime, Resp "7" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "7", sId, _SEND "hello")
+      wrongKeyTime `shouldSatisfy` (>= 0.5)
+      noQueueTime `shouldSatisfy` (>= 0.5)
+      suspendedTime `shouldSatisfy` (>= 0.5)
+      noLinkTime `shouldSatisfy` (>= 0.5)
+      subTime `shouldSatisfy` (< 0.5)
+
+responseTime :: IO a -> IO (NominalDiffTime, a)
+responseTime action = do
+  t <- getCurrentTime
+  r <- action
+  (,r) . (`diffUTCTime` t) <$> getCurrentTime
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =
@@ -1832,10 +1860,10 @@ serverSyntaxTests (ATransport t) = do
     it "no parameters" $ (sampleSig, "abcd", "12345678", SEND_) >#> ("", "abcd", "12345678", ERR $ CMD SYNTAX)
     it "no queue ID" $ (sampleSig, "bcda", "", (SEND_, ' ', noMsgFlags, ' ', "hello" :: ByteString)) >#> ("", "bcda", "", ERR $ CMD NO_ENTITY)
   describe "ACK" $ do
-    it "valid syntax" $ (sampleSig, "cdab", "12345678", (ACK_, ' ', "1234" :: ByteString)) >#> ("", "cdab", "12345678", ERR AUTH)
+    it "valid syntax" $ (sampleSig, "cdab", "12345678", (ACK_, ' ', "123456789012345678901234" :: ByteString)) >#> ("", "cdab", "12345678", ERR AUTH)
     it "no parameters" $ (sampleSig, "abcd", "12345678", ACK_) >#> ("", "abcd", "12345678", ERR $ CMD SYNTAX)
-    it "no queue ID" $ (sampleSig, "bcda", "", (ACK_, ' ', "1234" :: ByteString)) >#> ("", "bcda", "", ERR $ CMD NO_AUTH)
-    it "no signature" $ ("", "cdab", "12345678", (ACK_, ' ', "1234" :: ByteString)) >#> ("", "cdab", "12345678", ERR $ CMD NO_AUTH)
+    it "no queue ID" $ (sampleSig, "bcda", "", (ACK_, ' ', "123456789012345678901234" :: ByteString)) >#> ("", "bcda", "", ERR $ CMD NO_AUTH)
+    it "no signature" $ ("", "cdab", "12345678", (ACK_, ' ', "123456789012345678901234" :: ByteString)) >#> ("", "cdab", "12345678", ERR $ CMD NO_AUTH)
   describe "PING" $ do
     it "valid syntax" $ ("", "abcd", "", PING_) >#> ("", "abcd", "", PONG)
   describe "broker response not allowed" $ do

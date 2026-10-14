@@ -85,7 +85,7 @@ SMP agent protocol has 2 main parts:
 
 ![Duplex connection procedure](./diagrams/duplex-messaging/duplex-creating.svg)
 
-The procedure of establishing a duplex connection is explained on the example of Alice and Bob creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP routers (which could be the same router). It is shown on the diagram above and has these steps:
+The procedure of establishing a duplex connection is explained on the example of Alice (the initiating party) and Bob (the joining party) creating a bi-directional connection consisting of two unidirectional (simplex) queues, using SMP agents (A and B) to facilitate it, and two different SMP routers (which could be the same router). It is shown on the diagram above and has these steps:
 
 1. Alice requests the new connection from the SMP agent A using agent `createConnection` api function.
 2. Agent A creates an SMP queue on the router (using [SMP protocol](./simplex-messaging.md) `NEW` command) and responds to Alice with the invitation that contains queue information and the encryption keys Bob's agent B should use. The invitation format is described in [Connection link](connection-link-1-time-invitation-and-contact-address).
@@ -208,7 +208,7 @@ This syntax of decrypted SMP client message body is defined by `decryptedAgentMe
 Decrypted SMP message client body can be one of 4 types:
 - `agentConnInfo` - used by the initiating party when confirming reply queue - sent in `agentConfirmation` envelope.
 - `agentConnInfoReply` - used by accepting party, includes reply queue(s) in the initial confirmation - sent in `agentConfirmation` envelope.
-- `agentRatchetInfo` - used to pass additional information when renegotiating double ratchet encryption - sent in `agentRatchetKey` envelope.
+- `agentRatchetInfo` - used to pass additional information when renegotiating double ratchet encryption - sent in `agentRatchetKey` envelope. A key sent in reply to another key includes the hash of that key; agents do not reply to such keys.
 - `agentMessage` - all other agent messages.
 
 `agentMessage` contains these parts:
@@ -233,7 +233,8 @@ connInfo = *OCTET
 agentConnInfoReply = %s"D" smpQueues connInfo
 smpQueues = length 1*newQueueInfo ; NonEmpty list of reply queues
 agentRatchetInfo = %s"R" ratchetInfo
-ratchetInfo = *OCTET
+ratchetInfo = [answeredKeyHash *OCTET] ; bytes after answeredKeyHash are ignored
+answeredKeyHash = %s"0" / (%s"1" shortString) ; "0" in a key that starts renegotiation, otherwise SHA-256 of the two raw public keys of the answered key
 
 agentMessage = %s"M" agentMsgHeader aMessage
 agentMsgHeader = agentMsgId prevMsgHash

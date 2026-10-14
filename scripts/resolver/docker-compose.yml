@@ -38,14 +38,14 @@ services:
       - sh
       - -c
       - |
-        if [ -d /home/user/nimbus-eth2/build/data/${NETWORK}/db ]; then
+        if [ -d /home/user/nimbus-eth2/build/data/${NETWORK:-mainnet}/db ]; then
           echo "Nimbus data dir already initialised — skipping checkpoint sync";
           exit 0;
         fi;
         /home/user/nimbus-eth2/build/nimbus_beacon_node trustedNodeSync \
-          --network=${NETWORK} \
-          --data-dir=/home/user/nimbus-eth2/build/data/${NETWORK} \
-          --trusted-node-url=${TRUSTED_NODE_URL} \
+          --network=${NETWORK:-mainnet} \
+          --data-dir=/home/user/nimbus-eth2/build/data/${NETWORK:-mainnet} \
+          --trusted-node-url=${TRUSTED_NODE_URL:-https://mainnet-checkpoint-sync.attestant.io} \
           --backfill=false
     restart: "no"
 
@@ -69,8 +69,8 @@ services:
           echo "Reth data already initialised — skipping snapshot download";
           exit 0;
         fi;
-        echo "Downloading Reth ${NETWORK} --minimal snapshot...";
-        reth download --datadir /data --chain ${NETWORK} --minimal && \
+        echo "Downloading Reth ${NETWORK:-mainnet} --minimal snapshot...";
+        reth download --datadir /data --chain ${NETWORK:-mainnet} --minimal && \
         touch /data/.snapshot-done && \
         echo "Snapshot download complete"
     restart: "no"
@@ -92,7 +92,7 @@ services:
     command: >
       node
       --datadir /data
-      --chain ${NETWORK}
+      --chain ${NETWORK:-mainnet}
       --minimal
       --authrpc.jwtsecret /jwt/jwt.hex
       --authrpc.addr 0.0.0.0 --authrpc.port 8551
@@ -117,8 +117,8 @@ services:
       - "9000:9000/udp"
       - "127.0.0.1:5052:5052"
     command: >
-      --network=${NETWORK}
-      --data-dir=/home/user/nimbus-eth2/build/data/${NETWORK}
+      --network=${NETWORK:-mainnet}
+      --data-dir=/home/user/nimbus-eth2/build/data/${NETWORK:-mainnet}
       --el=http://reth:8551
       --jwt-secret=/jwt/jwt.hex
       --non-interactive
@@ -131,6 +131,7 @@ services:
   # smp-server points its [NAMES] resolver_endpoint at this URL.
   # To change the host port, edit the LEFT side of the port mapping below.
   resolver:
+    image: snrc-resolve:local
     build:
       context: ./service
       dockerfile: Dockerfile
@@ -156,8 +157,18 @@ services:
       # SNRC_REGISTRAR_SIMPLEX: 0x...
       # SNRC_CONTROLLER_TESTING: 0x...
       # SNRC_CONTROLLER_SIMPLEX: 0x...
+      # Set in .env (see .env.example); unset or empty means the resolver's default.
+      SNRC_WORKERS: ${SNRC_WORKERS:-}
+      SNRC_RPC_TIMEOUT: ${SNRC_RPC_TIMEOUT:-}
+      SNRC_LOG_FORMAT: ${SNRC_LOG_FORMAT:-}
+      SNRC_LOG_COLOR: ${SNRC_LOG_COLOR:-}
+      SNRC_LOG_LEVEL: ${SNRC_LOG_LEVEL:-}
+      SNRC_TRUSTED_PROXIES: ${SNRC_TRUSTED_PROXIES:-}
     ports:
       - "127.0.0.1:8000:8000"
+    # a line per lookup; the local driver keeps 5 rotated files of 20 MB
+    logging:
+      driver: local
     restart: unless-stopped
 
 volumes:

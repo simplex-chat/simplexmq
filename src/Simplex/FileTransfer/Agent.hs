@@ -568,9 +568,10 @@ runXFTPSndWorker c srv Worker {doWork} = do
       notify c sndFileEntityId $ SFPROG uploaded total
       when complete $ do
         (sndDescr, rcvDescrs) <- sndFileToDescrs sf
+        flip catchAllErrors (\e -> logError $ "XFTP snd worker error: " <> tshow e) $ do
+          lift . forM_ prefixPath $ removePath <=< toFSFilePath
+          withStore' c $ \db -> updateSndFileComplete db sndFileId
         notify c sndFileEntityId $ SFDONE sndDescr rcvDescrs (sndFileExpiresAt chunks)
-        lift . forM_ prefixPath $ removePath <=< toFSFilePath
-        withStore' c $ \db -> updateSndFileComplete db sndFileId
       where
         addRecipients :: SndFileChunk -> SndFileChunkReplica -> AM SndFileChunkReplica
         addRecipients ch@SndFileChunk {numRecipients} cr@SndFileChunkReplica {sndChunkReplicaId, rcvIdsKeys}

@@ -26,6 +26,7 @@ module Simplex.RemoteControl.Client
     -- for tests only
     sendRCPacket,
     receiveRCPacket,
+    findRCCtrlPairing,
   ) where
 
 import Control.Applicative ((<|>))
@@ -46,7 +47,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Maybe (isNothing)
 import qualified Data.Text as T
-import Data.Time.Clock.System (getSystemTime)
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Tuple (swap)
 import Data.Word (Word16)
 import qualified Data.X509 as X
@@ -395,8 +396,10 @@ findRCCtrlPairing :: NonEmpty RCCtrlPairing -> RCEncInvitation -> ExceptT RCErro
 findRCCtrlPairing pairings RCEncInvitation {dhPubKey, nonce, encInvitation} = do
   (pairing, signedInvStr) <- liftEither $ decrypt (L.toList pairings)
   signedInv <- liftEitherWith RCESyntax $ strDecode signedInvStr
-  inv@(RCVerifiedInvitation RCInvitation {dh = invDh}) <- maybe (throwE RCEInvitation) pure $ verifySignedInvitation signedInv
+  inv@(RCVerifiedInvitation RCInvitation {dh = invDh, ts}) <- maybe (throwE RCEInvitation) pure $ verifySignedInvitation signedInv
   unless (invDh == dhPubKey) $ throwE RCEInvitation
+  now <- systemSeconds <$> liftIO getSystemTime
+  unless (now - 3660 <= systemSeconds ts && systemSeconds ts <= now + 3600) $ throwE RCEInvitation
   pure (pairing, inv)
   where
     decrypt :: [RCCtrlPairing] -> Either RCErrorType (RCCtrlPairing, ByteString)
