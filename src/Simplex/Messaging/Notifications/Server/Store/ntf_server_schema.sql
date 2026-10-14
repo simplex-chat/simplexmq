@@ -1,6 +1,5 @@
 
 
-
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -310,7 +309,6 @@ ALTER TABLE ONLY ntf_server.subscriptions
 
 ALTER TABLE ONLY ntf_server.subscriptions
     ADD CONSTRAINT subscriptions_token_id_fkey FOREIGN KEY (token_id) REFERENCES ntf_server.tokens(token_id) ON UPDATE RESTRICT ON DELETE CASCADE;
-
 
 
 
