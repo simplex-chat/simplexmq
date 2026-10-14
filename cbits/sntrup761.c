@@ -719,23 +719,32 @@ Small_random (small * out, void *random_ctx, sntrup761_random_func * random)
 
 /* ----- Streamlined NTRU Prime Core */
 
+/* x^p-x-1 has a degree-19 factor mod 3, so a random g is not invertible in R3
+   with probability about 3^-19; KeyGen_attempts failures in a row mean a broken RNG */
+#define KeyGen_attempts 10
+
 /* h,(f,ginv) = KeyGen() */
-static void
+/* returns 0 if KeyGen succeeded; else -1 */
+static int
 KeyGen (Fq * h, small * f, small * ginv, void *random_ctx,
         sntrup761_random_func * random)
 {
   small g[p];
   Fq finv[p];
+  int i;
 
-  for (;;)
+  for (i = 0; i < KeyGen_attempts; ++i)
     {
       Small_random (g, random_ctx, random);
       if (R3_recip (ginv, g) == 0)
         break;
     }
+  if (i == KeyGen_attempts)
+    return -1;
   Short_random (f, random_ctx, random);
   Rq_recip3 (finv, f);          /* always works */
   Rq_mult_small (h, finv, g);
+  return 0;
 }
 
 /* c = Encrypt(r,h) */
@@ -884,18 +893,21 @@ typedef small Inputs[p];        /* passed by reference */
 #define PublicKeys_bytes Rq_bytes
 
 /* pk,sk = ZKeyGen() */
-static void
+/* returns 0 if KeyGen succeeded; else -1 */
+static int
 ZKeyGen (unsigned char *pk, unsigned char *sk, void *random_ctx,
          sntrup761_random_func * random)
 {
   Fq h[p];
   small f[p], v[p];
 
-  KeyGen (h, f, v, random_ctx, random);
+  if (KeyGen (h, f, v, random_ctx, random) != 0)
+    return -1;
   Rq_encode (pk, h);
   Small_encode (sk, f);
   sk += Small_bytes;
   Small_encode (sk, v);
+  return 0;
 }
 
 /* C = ZEncrypt(r,pk) */
@@ -960,19 +972,21 @@ HashSession (unsigned char *k, int b, const unsigned char *y,
 /* ----- Streamlined NTRU Prime */
 
 /* pk,sk = KEM_KeyGen() */
-void
+int
 sntrup761_keypair (unsigned char *pk, unsigned char *sk, void *random_ctx,
                    sntrup761_random_func * random)
 {
   int i;
 
-  ZKeyGen (pk, sk, random_ctx, random);
+  if (ZKeyGen (pk, sk, random_ctx, random) != 0)
+    return -1;
   sk += SecretKeys_bytes;
   for (i = 0; i < PublicKeys_bytes; ++i)
     *sk++ = pk[i];
   random (random_ctx, Inputs_bytes, sk);
   sk += Inputs_bytes;
   Hash_prefix (sk, 4, pk, PublicKeys_bytes);
+  return 0;
 }
 
 /* c,r_enc = Hide(r,pk,cache); cache is Hash4(pk) */

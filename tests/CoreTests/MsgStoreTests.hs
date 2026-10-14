@@ -34,7 +34,7 @@ import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import SMPClient (testStoreLogFile, testStoreMsgsDir, testStoreMsgsDir2, testStoreMsgsFile, testStoreMsgsFile2)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EntityId (..), ErrorType, LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags)
+import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
 import Simplex.Messaging.Server (exportMessages, importMessages, printMessageStats)
 import Simplex.Messaging.Server.Env.STM (MsgStore (..), journalMsgStoreDepth, readWriteQueueStore)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..), expireBeforeEpoch)
@@ -43,6 +43,7 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logCreateQueue)
 import System.Directory (copyFile, createDirectoryIfMissing, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>))
@@ -57,7 +58,6 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
-import Simplex.Messaging.Server.QueueStore.Types
 import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
 #endif
 
@@ -79,6 +79,7 @@ msgStoreTests = do
         someMsgStoreTests
         it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
         it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" testResetMessageCounts
+        it "should expire messages across commit batches" testExpireMessagesInBatches
 #endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
@@ -100,6 +101,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" testGetQueue
       it "should write/ack messages" testWriteAckMessages
       it "should not fail on EOF when changing read journal" testChangeReadJournal
+      it "should not add link data to secured messaging queue" testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -145,7 +147,7 @@ mkMessage :: MonadIO m => ByteString -> m Message
 mkMessage body = liftIO $ do
   g <- C.newRandom
   msgTs <- getSystemTime
-  msgId <- atomically $ C.randomBytes 24 g
+  msgId <- atomically $ randomMsgId 24 g
   pure Message {msgId, msgTs, msgFlags = noMsgFlags, msgBody = C.unsafeMaxLenBS body}
 
 pattern Msg :: ByteString -> Maybe Message
@@ -266,6 +268,33 @@ testChangeReadJournal ms = do
     (Msg "message 5", Nothing) <- tryDelPeekMsg ms q mId5
     void $ ExceptT $ deleteQueue ms q
 
+testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
+testLinkDataSecuredQueue ms = do
+  g <- C.newRandom
+  (sKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+      ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+      rndId = atomically $ EntityId <$> C.randomBytes 24 g
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  (cId, cqr) <- testNewQueueRec g QMContact
+  lnkId <- rndId
+  cLnkId <- rndId
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    -- the handle is read before SKEY, as in a command that raced with it
+    staleQ <- ExceptT $ getQueue ms SRecipient rId
+    ExceptT $ secureQueue st q sKey
+    liftIO $ addQueueLinkData st staleQ lnkId ld `shouldReturn` Left AUTH
+    freshQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ getQueueLinkData st freshQ lnkId `shouldReturn` Left AUTH
+    cq <- ExceptT $ addQueue ms cId cqr
+    ExceptT $ secureQueue st cq sKey
+    ExceptT $ addQueueLinkData st cq cLnkId ld
+    ld' <- ExceptT $ getQueueLinkData st cq cLnkId
+    liftIO $ ld' `shouldBe` ld
+    void $ ExceptT $ deleteQueue ms q
+    void $ ExceptT $ deleteQueue ms cq
+
 testExportImportStore :: JournalMsgStore 'QSMemory -> IO ()
 testExportImportStore ms = do
   g <- C.newRandom
@@ -327,35 +356,34 @@ testUpdateMessageCounts ms = do
     q <- ExceptT $ addQueue ms rId qr
     let write s = writeMsg ms q True =<< mkMessage s
         hasSize = checkQueueSize ms
-    q `hasSize` (0, True, False)
+    q `hasSize` (0, True)
     Just (Message {msgId = mId1}, True) <- write "message 1"
-    q `hasSize` (1, True, True)
+    q `hasSize` (1, True)
     Just (Message {msgId = mId2}, False) <- write "message 2"
-    q `hasSize` (2, True, True)
+    q `hasSize` (2, True)
     Just (Message {msgId = mId3}, False) <- write "message 3"
-    q `hasSize` (3, True, True)
+    q `hasSize` (3, True)
     Nothing <- write "message 4"
-    q `hasSize` (4, False, True)
+    q `hasSize` (4, False)
     Msg "message 1" <- tryPeekMsg ms q
-    q `hasSize` (4, False, True)
+    q `hasSize` (4, False)
     Msg "message 1" <- tryDelMsg ms q mId1
-    q `hasSize` (3, False, True)
+    q `hasSize` (3, False)
     Msg "message 2" <- tryPeekMsg ms q
     (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
-    q `hasSize` (2, False, True)
+    q `hasSize` (2, False)
     (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
-    q `hasSize` (1, False, True)
+    q `hasSize` (1, False)
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId4
-    q `hasSize` (0, True, False)
+    q `hasSize` (0, True)
 
-checkQueueSize :: PostgresMsgStore -> PostgresQueue -> (Int64, Bool, Bool) -> ExceptT ErrorType IO ()
-checkQueueSize ms q (size, canWrt, expire) = liftIO $ do
-  [(size', canWrt', expire')] <-
+checkQueueSize :: PostgresMsgStore -> PostgresQueue -> (Int64, Bool) -> ExceptT ErrorType IO ()
+checkQueueSize ms q (size, canWrt) = liftIO $ do
+  [(size', canWrt')] <-
     withTransaction (dbStore $ queueStore ms) $ \db ->
-      DB.query db "SELECT msg_queue_size, msg_can_write, msg_queue_expire FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
+      DB.query db "SELECT msg_queue_size, msg_can_write FROM msg_queues WHERE recipient_id = ?" (Only (recipientId q))
   size' `shouldBe` size
   canWrt' `shouldBe` canWrt
-  expire' `shouldBe` expire
 
 testResetMessageCounts :: PostgresMsgStore -> IO ()
 testResetMessageCounts ms = do
@@ -369,25 +397,63 @@ testResetMessageCounts ms = do
     Just (Message {msgId = mId2}, False) <- write "message 2"
     Just (Message {msgId = mId3}, False) <- write "message 3"
     Nothing <- write "message 4"
-    q `hasSize` (4, False, True)
+    q `hasSize` (4, False)
     liftIO $ setIncorrectSize q (10, True)
     Nothing <- write "message 5"
-    q `hasSize` (11, False, True)
+    q `hasSize` (11, False)
     (Msg "message 1", Msg "message 2") <- tryDelPeekMsg ms q mId1
-    q `hasSize` (10, False, True)
+    q `hasSize` (10, False)
     (Msg "message 2", Msg "message 3") <- tryDelPeekMsg ms q mId2
-    q `hasSize` (9, False, True)
+    q `hasSize` (9, False)
     (Msg "message 3", Just MessageQuota {msgId = mId4}) <- tryDelPeekMsg ms q mId3
-    q `hasSize` (8, False, True)
+    q `hasSize` (8, False)
     (Just MessageQuota {}, Just MessageQuota {msgId = mId5}) <- tryDelPeekMsg ms q mId4
-    q `hasSize` (7, False, True)
+    q `hasSize` (7, False)
     (Just MessageQuota {}, Nothing) <- tryDelPeekMsg ms q mId5
-    q `hasSize` (0, True, False) -- reset
+    q `hasSize` (0, True) -- reset
   where
     setIncorrectSize :: PostgresQueue -> (Int64, Bool) -> IO ()
     setIncorrectSize q (size, canWrt) =
       void $ withTransaction (dbStore $ queueStore ms) $ \db ->
         DB.execute db "UPDATE msg_queues SET msg_queue_size = ?, msg_can_write = ? WHERE recipient_id = ?" (size, canWrt, recipientId q)
+
+testExpireMessagesInBatches :: PostgresMsgStore -> IO ()
+testExpireMessagesInBatches ms = do
+  g <- C.newRandom
+  emptiedQs <- replicateM emptiedCount $ newQueue g
+  partialQs <- replicateM partialCount $ newQueue g
+  overQuotaQs <- replicateM overQuotaCount $ newQueue g
+  quotaMsgs <- runRight $ do
+    forM_ (emptiedQs <> partialQs) $ \q -> void $ write q "old 1"
+    forM_ emptiedQs $ \q -> void $ write q "old 2"
+    mapM fillPastQuota overQuotaQs
+  -- msg_ts has second granularity, so the recent messages need a new second to be kept
+  threadDelay 1100000
+  boundary <- systemSeconds <$> getSystemTime
+  runRight_ $ forM_ partialQs $ \q -> void $ write q "recent"
+
+  MessageStats {expiredMsgsCount, storedMsgsCount, storedQueues} <- expireOldMessages False ms boundary 0
+  expiredMsgsCount `shouldBe` (emptiedCount * 2 + partialCount + sum quotaMsgs)
+  storedMsgsCount `shouldBe` (partialCount + overQuotaCount) -- recent messages and quota markers
+  storedQueues `shouldBe` (emptiedCount + partialCount + overQuotaCount)
+  runRight_ $ do
+    forM_ emptiedQs $ \q -> checkQueueSize ms q (0, True)
+    forM_ partialQs $ \q -> checkQueueSize ms q (1, True)
+    -- the quota marker is never expired, and the queue stays blocked until it is acked
+    forM_ overQuotaQs $ \q -> checkQueueSize ms q (1, False)
+  where
+    -- expire_old_messages pages through expired messages and commits per page, so these
+    -- counts put a page boundary inside each group of queues.
+    emptiedCount = 120 :: Int
+    partialCount = 40 :: Int
+    overQuotaCount = 10 :: Int
+    newQueue g = do
+      (rId, qr) <- testNewQueueRec g QMMessaging
+      runRight $ ExceptT $ addQueue ms rId qr
+    write q s = writeMsg ms q True =<< mkMessage s
+    fillPastQuota q = go 0
+      where
+        go n = write q "fill" >>= maybe (pure n) (const $ go (n + 1))
 #endif
 
 testQueueState :: JournalMsgStore s -> IO ()

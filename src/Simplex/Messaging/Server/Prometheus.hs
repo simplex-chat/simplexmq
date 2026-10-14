@@ -127,6 +127,7 @@ prometheusMetrics sm rtm ts =
         _ntfServices,
         _rcvServicesSubMsg,
         _rcvServicesSubDuplicate,
+        _authDelayExceeded,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -193,6 +194,10 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_queues_notify_monthly Monthly active queues with notifications.\n\
       \# TYPE simplex_smp_queues_notify_monthly gauge\n\
       \simplex_smp_queues_notify_monthly " <> mstr (monthCount psNtf) <> "\n# monthCountNtf\n\
+      \\n\
+      \# HELP simplex_smp_auth_delay_exceeded Responses with AUTH errors sent without delay, as processing took longer than the delay.\n\
+      \# TYPE simplex_smp_auth_delay_exceeded counter\n\
+      \simplex_smp_auth_delay_exceeded " <> mshow _authDelayExceeded <> "\n# authDelayExceeded\n\
       \\n"
     subscriptions =
       "# Subscriptions\n\

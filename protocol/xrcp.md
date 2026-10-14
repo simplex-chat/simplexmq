@@ -71,7 +71,7 @@ The session invitation contains this data:
 
 Host application decrypts (except the first session) and validates the invitation:
 - Session signature is valid.
-- Timestamp is within some window from the current time.
+- Timestamp of a multicast announcement is not earlier than 3660 seconds before and not later than 3600 seconds after the current time of the host. The host ignores announcements outside of this interval and continues listening.
 - Long-term key signature is valid.
 - Long-term CA and signature key are the same as in the first session.
 - Some version in the offered range is supported.
