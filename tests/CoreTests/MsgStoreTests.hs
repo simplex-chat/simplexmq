@@ -685,7 +685,7 @@ testExpireIdleQueues = do
 
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
-  ntfMsgId <- atomically $ C.randomBytes 24 g
+  ntfMsgId <- atomically $ randomMsgId 24 g
   ntfNonce <- atomically $ C.randomCbNonce g
   pure MsgNtf {ntfMsgId, ntfTs = MkSystemTime ts 0, ntfNonce, ntfEncMeta = "meta"}
 
