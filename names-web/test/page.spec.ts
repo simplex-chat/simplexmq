@@ -1,5 +1,5 @@
 import {expect, test} from "@playwright/test"
-import {bytesToHex, hexToBytes} from "viem"
+import {bytesToHex, getAddress, hexToBytes} from "viem"
 import {parseNameCode} from "../src/code"
 import {makeCommitment, registerIntentDigest, type Registration} from "../src/registration"
 import {signDigest, walletFromEntropy} from "../src/wallet"
@@ -16,6 +16,8 @@ test("prepares a commitment and a registration signed by the code's wallet", asy
   const request = JSON.parse(await page.locator("#register-request").innerText())
 
   const wallet = walletFromEntropy(parseNameCode(code)!)
+  expect(await page.locator("#address").innerText()).toBe(getAddress(bytesToHex(wallet.address)))
+  expect(await page.locator("#mnemonic").innerText()).toBe(wallet.mnemonic)
   expect(request).toEqual({
     label: "bakery1",
     tld,

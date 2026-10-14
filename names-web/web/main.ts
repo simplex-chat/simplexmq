@@ -1,11 +1,13 @@
 import {bytesToHex} from "@noble/curves/utils"
 import {formatNameCode} from "../src/code"
 import {makeCommitment, registerIntentDigest, type Registration} from "../src/registration"
-import {signDigest, walletFromEntropy} from "../src/wallet"
+import {checksumAddress, signDigest, walletFromEntropy} from "../src/wallet"
 import {chainId, duration, minLabelLength, resolver, sponsor, tld} from "./config"
 
 const wallet = walletFromEntropy(crypto.getRandomValues(new Uint8Array(16)))
 element("code").textContent = formatNameCode(wallet.entropy)
+element("address").textContent = checksumAddress(wallet.address)
+element("mnemonic").textContent = wallet.mnemonic
 
 element("register").addEventListener("click", () => {
   element("commit-request").textContent = ""

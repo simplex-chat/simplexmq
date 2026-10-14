@@ -20,7 +20,8 @@ import Simplex.Messaging.Crypto.BIP32 (masterKey, xkKey)
 import Simplex.Messaging.Crypto.BIP39 (EntropyStrength (..), entropySeed, randomEntropy, unEntropy)
 import Simplex.Messaging.Crypto.BIP44 (CoinType (..), bip44Path, mkAccountIndex)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
-import Simplex.Messaging.Eth.Address (deriveAddress, unAddress)
+import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Eth.Address (deriveAddress)
 import Simplex.Messaging.Eth.EIP712
 import System.Directory (doesDirectoryExist)
 import System.Process (CreateProcess (..), proc, readCreateProcess)
@@ -52,7 +53,7 @@ testWallet g =
     digest <- atomically $ C.randomBytes 32 g
     signature <- either error id <$> S.signRecoverable g (xkKey xk) digest
     let jsWallet = "walletFromEntropy(" <> jsUint8 (BA.convert $ unEntropy entropy) <> ")"
-    callNode (jsWallet <> ".address") `shouldReturn` hex (unAddress addr)
+    callNode ("checksumAddress(" <> jsWallet <> ".address)") `shouldReturn` BC.unpack (strEncode addr)
     callNode ("signDigest(" <> jsWallet <> ".privateKey, " <> jsUint8 digest <> ")") `shouldReturn` hex (serializeSignature signature)
 
 testNameCodes :: IO ()
@@ -93,7 +94,7 @@ callNode expr =
     imports =
       "import {formatNameCode, parseNameCode} from './dist/code.js';"
         <> "import {makeCommitment, registerIntentDigest} from './dist/registration.js';"
-        <> "import {signDigest, walletFromEntropy} from './dist/wallet.js';"
+        <> "import {checksumAddress, signDigest, walletFromEntropy} from './dist/wallet.js';"
 
 jsUint8 :: ByteString -> String
 jsUint8 bs = "new Uint8Array([" <> intercalate "," (map show $ B.unpack bs) <> "])"

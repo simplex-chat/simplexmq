@@ -1,6 +1,6 @@
 # names-web
 
-Prototype page for buying a SimpleX name in the browser, without a wallet extension. It makes a wallet for the name, shows its redemption code, and prepares the two requests to the service: the commit request with the commitment, and the register request with the registration and the owner's signed `RegisterName` intent.
+Prototype page for buying a SimpleX name in the browser, without a wallet extension. It makes a wallet for the name, shows its redemption code, address and recovery phrase, and prepares the two requests to the service: the commit request with the commitment, and the register request with the registration and the owner's signed `RegisterName` intent.
 
 ## Setup
 
