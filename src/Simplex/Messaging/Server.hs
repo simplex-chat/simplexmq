@@ -11,6 +11,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -53,7 +54,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Control.Monad.STM (retry)
+import Control.Monad.STM (check)
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first, second)
 import qualified Data.Aeson as J
@@ -98,8 +99,8 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
-import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, netTimeoutInt, smpProxyError, temporaryClientError, pattern NRMInteractive)
+import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -1212,7 +1213,17 @@ sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
-    microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
+
+updateSlotWaitStats :: ServerStats -> SystemTime -> Bool -> IO ()
+updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, cmdSlotWaitTimeouts} since taken = do
+  waitMs <- fromIntegral . (`div` 1000) . subtract (microseconds since) . microseconds <$> getSystemTime
+  incStat cmdSlotWaits
+  atomicModifyIORef'_ cmdSlotWaitMs (+ waitMs)
+  atomicModifyIORef'_ cmdSlotWaitMaxMs (max waitMs)
+  unless taken $ incStat cmdSlotWaitTimeouts
+
+microseconds :: SystemTime -> Int64
+microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
 send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
@@ -1491,25 +1502,42 @@ client
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
-        forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
-    -- Run a slow command on a thread
-    forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
-    forkCmd concurrency corrId entId cmdAction = do
+        forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId) (ERR $ smpProxyError PCEResponseTimeout)
+    -- Run a slow command on a thread, responding with timeoutErr if it was not started before the client timeout
+    forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> BrokerMsg -> M s BrokerMsg -> M s (Maybe a)
+    forkCmd concurrency corrId entId timeoutErr cmdAction =
+      -- commands MUST be processed under a reasonable timeout or the client would halt
+      forkCmd_ concurrency NRMInteractive (sendResp timeoutErr) $ cmdAction >>= sendResp
+      where
+        sendResp t = atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+    -- Run a slow command on a thread that sends its response
+    forkCmd_ :: (ServerConfig s -> Int) -> NetworkRequestMode -> M s () -> M s () -> M s (Maybe a)
+    forkCmd_ concurrency nm onTimeout cmd = do
       -- the forked thread releases the slot when the command completes, the caller only if the fork failed
-      mask $ \restore -> do
-        wait
-        forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") (restore cmd `finally` signal)
-          `onException` signal
+      mask $ \restore ->
+        wait >>= \case
+          True ->
+            forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") (restore cmd `finally` signal)
+              `onException` signal
+          False -> restore onTimeout
       pure Nothing
       where
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        cmd = cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+        -- the wait is limited by the client timeout of the command, after which its response is not needed
         wait = do
           limit <- asks (concurrency . config)
-          atomically $ do
-            used <- readTVar procThreads
-            when (used >= limit) retry
-            writeTVar procThreads $! used + 1
+          ifM (atomically $ takeSlot limit) (pure True) $ do
+            clientTimeout <- asks $ (`netTimeoutInt` nm) . tcpTimeout . networkConfig . smpCfg . smpAgentCfg . config
+            waitStarted <- liftIO getSystemTime
+            expired <- liftIO $ registerDelay clientTimeout
+            taken <- atomically $ (True <$ (takeSlot limit >>= check)) `orElse` (False <$ (readTVar expired >>= check))
+            stats <- asks serverStats
+            liftIO $ updateSlotWaitStats stats waitStarted taken
+            pure taken
+        takeSlot limit = do
+          used <- readTVar procThreads
+          let free = used < limit
+          when free $ writeTVar procThreads $! used + 1
+          pure free
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
@@ -1549,7 +1577,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "timeout") (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2185,9 +2213,11 @@ client
             Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
               Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
+                -- no response when the slot wait timed out, as the proxy also times out the forward
+                Just nenv -> forkCmd_ serverResolverConcurrency NRMBackground (pure ()) $ do
                   msg <- resolveNameMsg (thVersion clntTHParams) nenv d
-                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                  rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                  atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
               _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
