@@ -604,7 +604,7 @@ testForwardOversizedNotKept =
     c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) proxyClientCfg [] Nothing ts (\_ -> pure ())
     (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
     let et = SMP.EncTransmission $ B.replicate smpBlockSize 'a'
-    runExceptT (forwardSMPTransmission c (SMP.CorrId "123456789012345678901234") currentClientSMPRelayVersion k et)
+    runExceptT (forwardSMPTransmission c (either error id $ C.corrCbNonce "123456789012345678901234") currentClientSMPRelayVersion k et)
       `shouldReturn` Left (PCETransportError TELargeMsg)
     pClientSentCommandsCount c `shouldReturn` 0
 
