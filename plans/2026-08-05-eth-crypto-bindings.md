@@ -13,9 +13,9 @@ held by the device.
 - **No EIP-7702 authorizations.** RLP is implemented only as far as EIP-1559
   transactions need it, for registering names; the `RSLV` resolver path in
   this repo stays strictly read-only.
-- **No stealth addresses and no EIP-712.** Signing covers recoverable ECDSA
+- **No stealth addresses.** Signing covers recoverable ECDSA
   over a 32-byte digest and EIP-1559 transactions, which name registration
-  requires. EIP-712 typed-data hashing and stealth addresses are added with
+  requires. Stealth addresses are added with
   the first code that uses them.
 - **No BIP-32 public derivation.** We always hold the seed, so CKDpub, xpub
   serialization and fingerprints are not implemented. Non-hardened *private*
@@ -38,6 +38,7 @@ Simplex.Messaging.Crypto.BIP39.English  embedded upstream 2048-word list
 Simplex.Messaging.Crypto.BIP32          HD derivation, WalletMaster
 Simplex.Messaging.Crypto.BIP44          BIP-44 paths, AccountIndex
 Simplex.Messaging.Eth.Address           addresses, EIP-55
+Simplex.Messaging.Eth.EIP712            typed data hashing
 Simplex.Messaging.Eth.RLP               Recursive Length Prefix encoding
 Simplex.Messaging.Eth.Transaction       signed EIP-1559 transactions
 ```
@@ -127,7 +128,7 @@ checksum.
 
 Like `Simplex.Messaging.Crypto.randomBytes`, `randomEntropy` takes a
 `TVar ChaChaDRG` and runs in `STM`. Every exported function that computes a
-public key takes the same generator for the context blinding seed, so this code
+public key from a private key takes the same generator for the context blinding seed, so this code
 never reads system entropy itself.
 
 A value of one of these types is valid by construction: `WalletEntropy` has one
@@ -178,7 +179,7 @@ Context randomisation blinds only the multiplication of a secret scalar by the
 generator, which only `secp256k1_ec_pubkey_create` performs here. `withContext`
 creates a context, randomises it with 32 bytes from the caller's
 `TVar ChaChaDRG`, passes it to the action and destroys it after. Each exported
-function that computes a public key creates one context: `deriveAddress` uses
+function that computes a public key from a private key creates one context: `deriveAddress` uses
 it for the derivation and the address of its result. Functions that end in `_`
 take the context and are defined for sharing it inside simplexmq.
 `secp256k1_ec_pubkey_serialize` and `secp256k1_ec_seckey_tweak_add` run on
@@ -274,7 +275,7 @@ the C code independently of the Haskell build.
 
 ## Tests
 
-`tests/CoreTests/EthCryptoTests.hs`, 104 examples, with published vectors read
+`tests/CoreTests/EthCryptoTests.hs`, 112 examples, with published vectors read
 from vendored upstream files in `tests/fixtures`, each pinned by a sha256 test:
 
 - **BIP-39**: all 24 English vectors of `trezor/python-mnemonic/vectors.json`:

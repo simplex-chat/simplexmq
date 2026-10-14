@@ -17,6 +17,7 @@ module Simplex.Messaging.Crypto.Secp256k1
     serializePublicKey,
     privateKeyTweakAdd,
     signRecoverable,
+    recoverPublicKey,
   )
 where
 
@@ -116,6 +117,12 @@ foreign import ccall "secp256k1_ecdsa_sign_recoverable"
 foreign import ccall "secp256k1_ecdsa_recoverable_signature_serialize_compact"
   c_ecdsa_recoverable_signature_serialize_compact :: Ptr Ctx -> Ptr Word8 -> Ptr CInt -> Ptr RecSigRaw -> IO CInt
 
+foreign import ccall "secp256k1_ecdsa_recoverable_signature_parse_compact"
+  c_ecdsa_recoverable_signature_parse_compact :: Ptr Ctx -> Ptr RecSigRaw -> Ptr Word8 -> CInt -> IO CInt
+
+foreign import ccall "secp256k1_ecdsa_recover"
+  c_ecdsa_recover :: Ptr Ctx -> Ptr PubKeyRaw -> Ptr RecSigRaw -> Ptr Word8 -> IO CInt
+
 -- SECP256K1_CONTEXT_NONE = SECP256K1_FLAGS_TYPE_CONTEXT
 contextNone :: CUInt
 contextNone = 1
@@ -193,3 +200,18 @@ signRecoverable g (Secp256k1PrivateKey sk) digest
                 peek recIdPtr
             let (rsR, rsS) = B.splitAt (compactSigSize `div` 2) compact
             pure $ Right RecoverableSignature {rsR, rsS, rsRecId = fromIntegral recId}
+
+recoverPublicKey :: RecoverableSignature -> ByteString -> IO (Either String Secp256k1PublicKey)
+recoverPublicKey RecoverableSignature {rsR, rsS, rsRecId} digest
+  | B.length digest /= digestSize = pure $ Left $ "digest: expected 32 bytes, got " <> show (B.length digest)
+  | B.length rsR /= scalarSize || B.length rsS /= scalarSize || rsRecId > 3 = pure $ Left "signature: malformed"
+  | otherwise =
+      allocaBytes recSigInternalSize $ \sigPtr -> do
+        rc <- BA.withByteArray (rsR <> rsS) $ \inPtr -> c_ecdsa_recoverable_signature_parse_compact staticContext sigPtr inPtr (fromIntegral rsRecId)
+        if rc /= 1
+          then pure $ Left "signature: r or s not below the group order"
+          else do
+            (rc', pk) <- BA.allocRet pubKeyInternalSize $ \pkPtr -> BA.withByteArray digest $ c_ecdsa_recover staticContext pkPtr sigPtr
+            pure $ if rc' == 1 then Right (Secp256k1PublicKey pk) else Left "signature: no public key can be recovered"
+  where
+    scalarSize = compactSigSize `div` 2

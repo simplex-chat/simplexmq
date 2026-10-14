@@ -32,6 +32,7 @@ import Simplex.Messaging.Crypto.BIP44
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
+import Simplex.Messaging.Eth.EIP712
 import Simplex.Messaging.Eth.RLP
 import Simplex.Messaging.Eth.Transaction
 import Simplex.Messaging.Util ((<$$>))
@@ -50,6 +51,7 @@ ethCryptoTests = do
   describe "RLP" rlpTests
   describe "recoverable signing" $ signingTests g
   describe "EIP-1559 transactions" $ transactionTests g
+  describe "EIP-712 typed data" eip712Tests
 
 -- helpers
 
@@ -347,6 +349,28 @@ signingTests g = do
           }
   it "refuses a digest that is not 32 bytes" $
     (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
+  it "serializes a signature as r, s and v, as viem does" $
+    serializeSignature viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
+  it "recovers the address that signed a digest" $
+    (strEncode <$$> recoverAddress viemSig digest) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+  it "refuses a recovery id above 3" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsRecId = 4} digest) `shouldReturn` True
+  it "refuses r at or above the group order" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.replicate 32 0xff} digest) `shouldReturn` True
+  it "refuses r of zero" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.replicate 32 0} digest) `shouldReturn` True
+  it "refuses r that is not 32 bytes" $
+    (isLeft <$> S.recoverPublicKey viemSig {S.rsR = B.drop 1 $ S.rsR viemSig} digest) `shouldReturn` True
+  it "refuses to recover from a digest that is not 32 bytes" $
+    (isLeft <$> S.recoverPublicKey viemSig "digest") `shouldReturn` True
+  where
+    digest = C.keccak256 "simplex"
+    viemSig =
+      S.RecoverableSignature
+        { S.rsR = hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b0",
+          S.rsS = hx "3eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb1",
+          S.rsRecId = 1
+        }
 
 transactionTests :: TVar ChaChaDRG -> Spec
 transactionTests g = do
@@ -368,3 +392,14 @@ transactionTests g = do
 
 txKey :: S.Secp256k1PrivateKey
 txKey = right $ S.mkPrivateKey $ BA.replicate 32 0x46
+
+eip712Tests :: Spec
+eip712Tests =
+  it "hashes typed data as viem does" $
+    toHex (hashTypedData domain registerType members)
+      `shouldBe` "94b056be18ea1791fc4960d6dce87e715301634d7402fb1223f536749d20dff2"
+  where
+    domain = Eip712Domain {edName = "SimpleX", edVersion = "2", edChainId = 11155111, edVerifyingContract = address}
+    registerType = "RegisterName(string label,address owner,address resolver,bytes[] data,uint256 deadline)"
+    members = [VBytes "simplex", VAddress address, VAddress address, VArray [VBytes "\x01\x02", VBytes $ B.replicate 40 0xff], VUint 4102444800]
+    address = right $ strDecode "0x3535353535353535353535353535353535353535"
