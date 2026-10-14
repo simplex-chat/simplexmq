@@ -1,5 +1,5 @@
-import {sha256} from "@noble/hashes/sha2"
 import {bytesToNumberBE, numberToBytesBE} from "@noble/curves/utils"
+import {sha256} from "@noble/hashes/sha2"
 
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 const PREFIX = "SN"

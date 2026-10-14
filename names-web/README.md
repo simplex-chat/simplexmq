@@ -21,7 +21,7 @@ cabal test --test-option=--match="/Names Web/"
 cd names-web && npm run test:page
 
 # Also register the page's name on a hardhat node running the contracts,
-# from a compiled checkout of ens-contracts PR #35
+# from a compiled checkout of ens-contracts PR #36
 ENS_CONTRACTS_DIR=../path/to/ens-contracts npm run test:page
 ```
 

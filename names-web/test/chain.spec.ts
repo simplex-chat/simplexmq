@@ -28,7 +28,7 @@ const transport = http("http://127.0.0.1:8645")
 const publicClient = createPublicClient({chain: hardhat, transport})
 const walletClient = createWalletClient({chain: hardhat, transport})
 
-test.skip(!ensContractsDir, "set ENS_CONTRACTS_DIR to a compiled checkout of ens-contracts PR #35")
+test.skip(!ensContractsDir, "set ENS_CONTRACTS_DIR to a compiled checkout of ens-contracts PR #36")
 
 test("registers the page's name through the sponsor on a hardhat node", async ({page}) => {
   const [owner, guardian, registrar] = await walletClient.getAddresses()

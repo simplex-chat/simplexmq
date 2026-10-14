@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" translate="no">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,8 +10,8 @@
   <h1>SimpleX Names</h1>
   <p>Your redemption code: <code id="code"></code></p>
   <p><label>Name <input id="label"></label></p>
-  <p><label>Contact link <input id="contact"></label></p>
-  <p><label>Channel link <input id="channel"></label></p>
+  <p><label>Contact link <input id="contact" pattern="[^;]*" title="One link, without ;"></label></p>
+  <p><label>Channel link <input id="channel" pattern="[^;]*" title="One link, without ;"></label></p>
   <p><button id="register">Register</button></p>
   <h2>Commit request</h2>
   <pre id="commit-request"></pre>

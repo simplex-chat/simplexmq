@@ -13,8 +13,9 @@ element("register").addEventListener("click", () => {
   const input = element("label") as HTMLInputElement
   const label = input.value.trim().toLowerCase()
   const valid = label.length >= minLabelLength && label.length <= 63 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(label)
-  input.setCustomValidity(valid ? "" : `${minLabelLength} to 63 letters, digits and single hyphens between them`)
-  if (!input.reportValidity()) return
+  input.setCustomValidity(valid ? "" : `${minLabelLength} to 63 letters a-z, digits 0-9 and single hyphens between them`)
+  const fields = [input, element("contact"), element("channel")] as HTMLInputElement[]
+  if (!fields.every(field => field.reportValidity())) return
   const registration: Registration = {
     label,
     tld,
