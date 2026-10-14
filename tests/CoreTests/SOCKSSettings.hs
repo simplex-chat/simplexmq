@@ -2,15 +2,18 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module CoreTests.SOCKSSettings where
 
 import Network.Socket (SockAddr (..), tupleToHostAddress)
+import Simplex.Messaging.Agent.Client (ipAddressProtected)
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Protocol (ErrorType)
+import Simplex.Messaging.Protocol (ErrorType, pattern SMPServer)
 import Simplex.Messaging.Transport.Client
 import Test.Hspec hiding (fit, it)
 import Util
@@ -19,6 +22,7 @@ socksSettingsTests :: Spec
 socksSettingsTests = do
   describe "hostMode and requiredHostMode settings" testHostMode
   describe "socksMode setting, independent of hostMode setting" testSocksMode
+  describe "ipAddressProtected, consistent with chosen host and socksMode" testIPAddressProtected
   describe "socks proxy address encoding" testSocksProxyEncoding
 
 testPublicHost :: TransportHost
@@ -93,6 +97,19 @@ testSocksMode = do
     transportSocksCfg cfg host =
       let TransportClientConfig {socksProxy} = transportClientConfig cfg NRMInteractive host False Nothing
        in socksProxy
+
+testIPAddressProtected :: Spec
+testIPAddressProtected = do
+  it "should be protected if SOCKS proxy is used for the chosen host" $ do
+    protected SMAlways HMOnionViaSocks [testPublicHost] `shouldBe` True
+    protected SMOnion HMOnionViaSocks [testPublicHost, testOnionHost] `shouldBe` True
+    protected SMOnion HMPublic [testOnionHost] `shouldBe` True
+  it "should not be protected if SOCKS proxy is not used for the chosen host" $ do
+    protected SMOnion HMOnionViaSocks [testPublicHost] `shouldBe` False
+    protected SMOnion HMPublic [testPublicHost, testOnionHost] `shouldBe` False
+  where
+    protected socksMode hostMode hosts =
+      ipAddressProtected defaultNetworkConfig {socksProxy = Just defaultSocksProxyWithAuth, socksMode, hostMode} (SMPServer hosts "" (C.KeyHash ""))
 
 testSocksProxyEncoding :: Spec
 testSocksProxyEncoding = do

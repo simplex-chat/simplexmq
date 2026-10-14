@@ -20,6 +20,8 @@ module AgentTests.ConnectionRequestTests
 
 import AgentTests.EqInstances ()
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Either (isLeft)
 import Network.HTTP.Types (urlEncode)
 import Simplex.Messaging.Agent.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -285,6 +287,9 @@ connectionRequestTests =
       contactAddressV6 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v6
       contactAddressV6 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
       contactAddressClientData #==# ("simplex:/contact#/?v=6-8&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
+    it "should reject KEM ciphertext without KEM key in e2e params" $
+      strDecode @(RcvE2ERatchetParamsUri 'C.X448) (strEncode testE2ERatchetParams <> "&kem_ct=" <> strEncode (B.replicate 1039 '\0'))
+        `shouldSatisfy` isLeft
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
       smpEncodingTest queue
       smpEncodingTest queueNoQM -- this passes, no queue mode patch in SMPQueueUri encoding
@@ -357,6 +362,10 @@ connectionRequestTests =
       smpEncodingTest $ AgentServiceRequest [qInfo] Nothing "service request payload"
       smpEncodingTest $ AgentServiceResponse "service response payload"
       smpEncodingTest $ AgentRejection "rejected: not allowed"
+    it "should serialize and parse ratchet key info" $ do
+      smpDecode "R" `shouldBe` Right (AgentRatchetInfo RatchetInfo {answeredKeyHash = Nothing})
+      smpDecode "R1\3abcdef" `shouldBe` Right (AgentRatchetInfo RatchetInfo {answeredKeyHash = Just "abc"})
+      smpEncodingTest $ AgentRatchetInfo RatchetInfo {answeredKeyHash = Just "0123456789abcdef0123456789abcdef"}
   where
     smpEncodingTest :: (Encoding a, Eq a, Show a, HasCallStack) => a -> Expectation
     smpEncodingTest a = smpDecode (smpEncode a) `shouldBe` Right a
