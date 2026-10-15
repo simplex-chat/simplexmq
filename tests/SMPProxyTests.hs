@@ -154,9 +154,9 @@ smpProxyTests = do
         it "25 agents, 300 pairs, 17 messages" $ oneServer $ withNumCapabilities 4 $ deliver 25 17
   where
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
-    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
-    twoServersMoreConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 128}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
-    twoServersNoConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 1}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
+    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
+    twoServersMoreConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 128}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
+    twoServersNoConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 1}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
     twoServersPrevProxy test msType = twoServers_ (proxyCfgVPrev msType) (cfgMS msType) test msType
     twoServersPrevRelay test msType = twoServers_ (proxyCfgMS msType) (prevServerVRange $ cfgMS msType) test msType
     prevServerVRange cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {smpServerVRange = prevRange $ smpServerVRange cfg_}
@@ -164,8 +164,8 @@ smpProxyTests = do
     twoServers_ cfg1 cfg2 runTest (ASType qsType _) =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         let cfg2' = case qsType of
-              SQSMemory -> journalCfg cfg2 testStoreLogFile2 testStoreMsgsDir2
-              SQSPostgres -> journalCfgDB cfg2 testStoreDBOpts2 testStoreMsgsDir2
+              SQSMemory -> memoryCfg cfg2 testStoreLogFile2 testStoreMsgsFile2
+              SQSPostgres -> databaseCfg cfg2 testStoreDBOpts2
          in withSmpServerConfigOn (transport @TLS) cfg2' testPort2 $ const runTest
 
 smpProxyCapabilityTests :: SpecWith AStoreType
@@ -175,7 +175,7 @@ smpProxyCapabilityTests = do
   it "5 agents, 10 pairs, 50 messages. N4" $ oneServer $ withNumCapabilities 4 $ deliver 5 50
 
 oneServer :: HasTestEnv => IO a -> AStoreType -> IO a
-oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) testPort $ const test
+oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) testPort $ const test
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 deliverMessageViaProxy proxyServ relayServ alg msg msg' = deliverMessagesViaProxy proxyServ relayServ alg [msg] [msg']
@@ -405,15 +405,15 @@ agentViaProxyRetryOffline = do
             ackMessage alice bobId (baseId + 4) Nothing
   where
     withServer :: (ThreadId -> IO a) -> IO a
-    withServer = withServer_ testStoreLogFile testStoreMsgsDir testStoreNtfsFile testPort
+    withServer = withServer_ testStoreLogFile testStoreMsgsFile testStoreNtfsFile testPort
     -- TODO [postgres]
     -- withServer = withServer_ testStoreDBOpts testStoreMsgsDir testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
-    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
+    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testStoreNtfsFile2 testPort2
     -- TODO [postgres]
     -- withServer2 = withServer_ testStoreDBOpts2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
     withServer_ storeLog storeMsgs storeNtfs =
-      let cfg' = updateCfg (journalCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
+      let cfg' = updateCfg (memoryCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
        in withSmpServerConfigOn (transport @TLS) cfg'
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
@@ -439,7 +439,7 @@ agentViaProxyRetryNoSession = do
           _ <- runRight $ makeConnection b a
           pure ()
   where
-    withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2
+    withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
 testNoProxy :: HasTestEnv => AStoreType -> IO ()
@@ -483,7 +483,7 @@ testChangedFwdVersion =
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-    withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ ->
       testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
         g <- C.newRandom
@@ -495,7 +495,7 @@ testFwdCorrIdSize =
 testForwardedAuthErrorDelay :: HasTestEnv => IO ()
 testForwardedAuthErrorDelay =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-    withSmpServerConfigOn (transport @TLS) (updateCfg cfgJ2 $ \cfg_ -> cfg_ {authErrorDelay = 500000}) testPort2 $ \_ -> do
+    withSmpServerConfigOn (transport @TLS) (updateCfg cfgS2 $ \cfg_ -> cfg_ {authErrorDelay = 500000}) testPort2 $ \_ -> do
       g <- C.newRandom
       ts <- getCurrentTime
       pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
@@ -510,7 +510,7 @@ testForwardedAuthErrorDelay =
 -- let any stored connection error expire, then require the proxy to establish the session (PKEY).
 requireProxyReconnect :: HasTestEnv => IO ()
 requireProxyReconnect =
-  withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2 $ \_ -> do
+  withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
       reply `shouldBe` Right SMP.PONG
@@ -566,7 +566,7 @@ testAgentClientReconnectAfterCancel =
       t <- async $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
       threadDelay 1000000 -- let the connect to the stalling relay start, then kill it mid-flight
       cancel t
-    withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ -> do
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ -> do
       testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
         reply `shouldBe` Right SMP.PONG -- the relay is up and reachable, so a timeout can only be the poisoned var

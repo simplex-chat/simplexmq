@@ -162,7 +162,7 @@ instance MsgStoreClass PostgresMsgStore where
     loadedQueueCount <- M.size <$> readTVarIO queues
     loadedNotifierCount <- M.size <$> readTVarIO notifiers
     notifierLockCount <- M.size <$> readTVarIO notifierLocks
-    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount = 0, queueLockCount = 0, notifierLockCount}
+    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, queueLockCount = 0, notifierLockCount}
     where
       PostgresQueueStore {queues, notifiers, notifierLocks} = queueStore_ ms
 
