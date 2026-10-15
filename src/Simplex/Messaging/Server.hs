@@ -2222,7 +2222,8 @@ client
                     -- INTERNAL because processCommand never returns Nothing for sender commands;
                     -- `fst` drops the empty message only returned for SUB.
                     _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
-              -- commands of all clients of a proxy share its connection, so they are processed concurrently
+              -- All clients of a proxy share its one connection to this relay, so their commands are
+              -- processed concurrently, otherwise one slow command would delay all of them.
               concurrency = case t' of
                 Right (_, _, (_, _, Cmd SResolver _)) -> serverResolverConcurrency
                 _ -> serverClientConcurrency
@@ -2230,8 +2231,9 @@ client
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           authDelay <- asks $ authErrorDelay . config
-          -- the delayed AUTH response is sent from another thread, so it does not hold the slot;
-          -- no response when the slot wait timed out, as the proxy also times out the forward
+          -- The proxy waits for forwarded commands with the background timeout.
+          -- If no slot is free before it, there is no response, as the proxy has already timed out.
+          -- A delayed AUTH response is sent from another thread, so the delay does not hold the slot.
           lift $ forkCmd_ concurrency NRMBackground (pure ()) $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
             Right (r, rres)
               | isAuthError r -> liftIO $ sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
