@@ -407,11 +407,11 @@ agentViaProxyRetryOffline = do
     withServer :: (ThreadId -> IO a) -> IO a
     withServer = withServer_ testStoreLogFile testStoreMsgsFile testStoreNtfsFile testPort
     -- TODO [postgres]
-    -- withServer = withServer_ testStoreDBOpts testStoreMsgsDir testStoreNtfsFile testPort
+    -- withServer = withServer_ testStoreDBOpts testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
     withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testStoreNtfsFile2 testPort2
     -- TODO [postgres]
-    -- withServer2 = withServer_ testStoreDBOpts2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
+    -- withServer2 = withServer_ testStoreDBOpts2 testStoreNtfsFile2 testPort2
     withServer_ storeLog storeMsgs storeNtfs =
       let cfg' = updateCfg (memoryCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
        in withSmpServerConfigOn (transport @TLS) cfg'
