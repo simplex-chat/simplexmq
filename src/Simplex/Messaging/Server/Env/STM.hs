@@ -68,6 +68,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
+    defaultMaxClientCmdWait,
     defaultAuthErrorDelayMs,
     defaultMaxJournalMsgCount,
     defaultMaxJournalStateLines,
@@ -201,11 +202,12 @@ data ServerConfig s = ServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
-    -- | max concurrent name resolutions per connection, enforced in forkCmd.
+    -- | max concurrent forwarded name resolutions per proxy connection, enforced in forkCmd.
     -- Much higher than serverClientConcurrency: forwarded RSLVs from many clients
     -- aggregate over a single proxy->relay connection (only servers send proxied
     -- requests), so bounding them by the per-client limit would throttle unduly.
     serverResolverConcurrency :: Int,
+    maxClientCmdWait :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
     -- | server public information
@@ -252,10 +254,13 @@ defaultInactiveClientExpiration =
     }
 
 defaultProxyClientConcurrency :: Int
-defaultProxyClientConcurrency = 32
+defaultProxyClientConcurrency = 500
 
 defaultNameResolverConcurrency :: Int
-defaultNameResolverConcurrency = 1000
+defaultNameResolverConcurrency = 5000
+
+defaultMaxClientCmdWait :: Int
+defaultMaxClientCmdWait = 60000000 -- microseconds
 
 defaultAuthErrorDelayMs :: Int64
 defaultAuthErrorDelayMs = 50
