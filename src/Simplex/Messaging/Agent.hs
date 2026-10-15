@@ -4112,21 +4112,21 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                           liftIO $ mapM_ (deleteConnSndQueue db connId) delSqs
                           addConnSndQueue db connId (sq_ :: NewSndQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
                         logServer "<--" c srv rId $ "MSG <QADD>:" <> logSecret' (SMP.unMsgId srvMsgId) <> " " <> logSecret (senderId queueAddress)
-                        let switchStarted swchStatus = do
-                              sq1 <- withStore' c $ \db -> setSndSwitchStatus db sq $ Just swchStatus
-                              let sqs'' = updatedQs sq1 sqs' <> [sq2]
-                                  conn' = DuplexConnection cData' rqs sqs''
-                              cStats <- connectionStats c conn'
-                              notify $ SWITCH QDSnd SPStarted cStats
-                        if connAgentVersion >= rpcAddressSMPAgentVersion
-                          then do
-                            withStore' c $ \db -> copyPendingSndDeliveries db sq sq2
-                            enqueueCommand c "" connId (Just $ qServer sq2) $ AInternalCommand $ ICQSndSecure (snd $ qAddress sq2)
-                            switchStarted SSSecuringQueue
-                          else do
-                            switchStarted SSSendingQKEY
-                            let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = queueAddress {dhPublicKey}}
-                            void . enqueueMessages c cData' sqs SMP.noMsgFlags $ QKEY [(sqInfo', C.toPublic sndPrivateKey)]
+                        swchStatus <-
+                          if connAgentVersion >= rpcAddressSMPAgentVersion
+                            then do
+                              withStore' c $ \db -> copyPendingSndDeliveries db sq sq2
+                              enqueueCommand c "" connId (Just $ qServer sq2) $ AInternalCommand $ ICQSndSecure (snd $ qAddress sq2)
+                              pure SSSecuringQueue
+                            else pure SSSendingQKEY
+                        sq1 <- withStore' c $ \db -> setSndSwitchStatus db sq $ Just swchStatus
+                        when (connAgentVersion < rpcAddressSMPAgentVersion) $ do
+                          let sqInfo' = (sqInfo :: SMPQueueInfo) {queueAddress = queueAddress {dhPublicKey}}
+                          void . enqueueMessages c cData' sqs SMP.noMsgFlags $ QKEY [(sqInfo', C.toPublic sndPrivateKey)]
+                        let sqs'' = updatedQs sq1 sqs' <> [sq2]
+                            conn' = DuplexConnection cData' rqs sqs''
+                        cStats <- connectionStats c conn'
+                        notify $ SWITCH QDSnd SPStarted cStats
                       _ -> qError "QADD: won't delete all snd queues in connection"
                   _ -> qError "QADD: replaced queue address is not found in connection"
               _ -> throwE $ AGENT A_VERSION
