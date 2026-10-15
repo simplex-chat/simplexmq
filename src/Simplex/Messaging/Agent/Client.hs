@@ -698,8 +698,10 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
   unlessM (readTVarIO active) $ throwE INACTIVE
   proxySrv <- maybe (getNextServer c userId proxySrvs [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
-  (tSess, auth) <- atomically $ proxiedTransportSession proxySrv
-  withGetSessVar workerSeq tSess smpClients ts (newProxyClient tSess auth ts) (waitForProxyClient tSess auth)
+  (tSess@(_, srv, _), auth) <- atomically $ proxiedTransportSession proxySrv
+  withGetSessVar workerSeq tSess smpClients ts (newProxyClient tSess auth ts) (waitForProxyClient tSess auth) `catchAllErrors` \case
+    e@(BROKER _ TIMEOUT) -> throwE e
+    e -> atomically (deleteProxiedRelay c destSess srv) >> throwE e
   where
     proxiedTransportSession :: SMPServerWithAuth -> STM (SMPTransportSession, Maybe SMP.BasicAuth)
     proxiedTransportSession proxySrv = do
@@ -728,7 +730,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
           atomically $ do
             unless (serverHostError e) $ do
               removeSessVar rv destSrv prs
-              TM.delete destSess smpProxiedRelays
+              deleteProxiedRelay c destSess $ protocolClientServer' smp
             putTMVar (sessionVar rv) (Left e)
             pure $ Left e
       where
@@ -779,7 +781,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       (Nothing, Nothing) -> pure ()
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
-smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, cId) env v prs client = do
+smpClientDisconnected c@AgentClient {active, smpClients} tSess@(userId, srv, cId) env v prs client = do
   removeClientAndSubs >>= serverDown
   logInfo . decodeUtf8 $ "Agent disconnected from " <> showServer srv
   where
@@ -799,7 +801,7 @@ smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess
               cs = nubOrd $ map qConnId qs
           -- this removes proxied relays that this client created sessions to
           destSrvs <- M.keys <$> readTVar prs
-          forM_ destSrvs $ \destSrv -> TM.delete (userId, destSrv, cId) smpProxiedRelays
+          forM_ destSrvs $ \destSrv -> deleteProxiedRelay c (userId, destSrv, cId) srv
           pure (qs, cs, serviceSub_)
 
     serverDown :: ([RcvQueueSub], [ConnId], Maybe ServiceSub) -> IO ()
@@ -1223,6 +1225,8 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
                   -- sendViaProxy is called recursively here to re-create the session via the same server
                   -- to avoid failure in interactive calls that don't retry after the session disconnection.
                   Nothing -> sendViaProxy (Just $ ProtoServerWithAuth proxySrv prBasicAuth) destSess
+              ProxyProtocolError (SMP.PROXY (SMP.BROKER e))
+                | not (brokerHostError e) -> atomically (deleteProxiedRelay c destSess proxySrv) >> proxyError
               _ -> proxyError
             where
               proxyError =
@@ -1630,11 +1634,16 @@ serverHostError = \case
   SMP _ (SMP.PROXY (SMP.BROKER e)) -> brokerHostError e
   PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER e))) -> brokerHostError e
   _ -> False
-  where
-    brokerHostError = \case
-      HOST -> True
-      SMP.TRANSPORT TEVersion -> True
-      _ -> False
+
+brokerHostError :: BrokerErrorType -> Bool
+brokerHostError = \case
+  HOST -> True
+  SMP.TRANSPORT TEVersion -> True
+  _ -> False
+
+deleteProxiedRelay :: AgentClient -> SMPTransportSession -> SMPServer -> STM ()
+deleteProxiedRelay AgentClient {smpProxiedRelays} destSess proxySrv =
+  TM.lookup destSess smpProxiedRelays >>= mapM_ (\(ProtoServerWithAuth srv _) -> when (srv == proxySrv) $ TM.delete destSess smpProxiedRelays)
 
 -- | Batch by transport session and subscribe queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> Bool -> [RcvQueueSub] -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
