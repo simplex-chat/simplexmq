@@ -182,6 +182,7 @@ testXFTPAgentSendReceiveRedirect = withXFTPServer $ do
   let fileSize = mb 17
       totalSize = fileSize + mb 1
   withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+    runRight_ $ xftpStartWorkers sndr (Just senderFiles)
     directFileId <- runRight $ xftpSendFile sndr 1 (CryptoFile filePathIn Nothing) 1
     sfGet sndr `shouldReturn` ("", directFileId, SFPROG 4194304 totalSize)
     sfGet sndr `shouldReturn` ("", directFileId, SFPROG 8388608 totalSize)
@@ -239,6 +240,7 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
   let fileSize = mb 5
   filePathIn <- createRandomFile_ fileSize "testfile"
   withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+    runRight_ $ xftpStartWorkers sndr (Just senderFiles)
     directFileId <- runRight $ xftpSendFile sndr 1 (CryptoFile filePathIn Nothing) 1
     let totalSize = fileSize + mb 1
     sfGet sndr `shouldReturn` ("", directFileId, SFPROG 4194304 totalSize)

@@ -28,8 +28,9 @@ import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
 import System.Directory (createDirectory, removePathForcibly)
-import System.Environment (setEnv)
+import System.Environment (getArgs, setEnv, withArgs)
 import Test.Hspec hiding (fit, it)
+import Test.Hspec.Core.Runner (defaultConfig, evalSpec, evaluateResult, readConfig, runSpecForest)
 import Util
 import XFTPAgent
 import XFTPCLI (xftpCLIFileTests)
@@ -72,7 +73,7 @@ main = do
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
-    withTmpDir . hspec
+    hspecInTmpDir
 #if defined(dbPostgres)
       . aroundAll_ (postgressBracket testDBConnectInfo)
 #endif
@@ -207,6 +208,12 @@ main = do
           after_ (listDirectory tmpDir >>= mapM_ (removeFileIfExists . (tmpDir </>))) $
             describe "Agent SQLite schema dump" schemaDumpTest
 #endif
+
+hspecInTmpDir :: Spec -> IO ()
+hspecInTmpDir spec = do
+  (config, forest) <- evalSpec defaultConfig spec
+  config' <- getArgs >>= readConfig config
+  withTmpDir (withArgs [] $ runSpecForest forest config') >>= evaluateResult
 
 withTmpDir :: IO a -> IO a
 withTmpDir = bracket_ (removePathForcibly tmpDir >> createDirectory tmpDir) (eventuallyRemove tmpDir 3)

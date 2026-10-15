@@ -1338,10 +1338,8 @@ testTiming =
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey msType
-          putStrLn . unwords $
-            [ "DEBUG timing",
-              show ok,
-              show goodKeyAlg,
+          unless ok . putStrLn . unwords $
+            [ show goodKeyAlg,
               show badKeyAlg,
               show timeWrongKey,
               show timeNoQueue,

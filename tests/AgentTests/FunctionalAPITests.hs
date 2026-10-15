@@ -88,7 +88,7 @@ import SMPAgentClient
 import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (AgentWorkersDetails (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), getAgentWorkersDetails, sendAgentMessage, waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
@@ -178,7 +178,7 @@ nGet c = withFrozenCallStack $ get' @'AENone c
 
 get' :: forall e m. (MonadIO m, AEntityI e, HasCallStack) => AgentClient -> m (AEntityTransmission e)
 get' c = withFrozenCallStack $ do
-  (corrId, connId, AEvt e cmd) <- liftIO (timeout 120000000 (pGet c)) >>= maybe (error "DEBUG get timeout") pure
+  (corrId, connId, AEvt e cmd) <- pGet c
   case testEquality e (sAEntity @e) of
     Just Refl -> pure (corrId, connId, cmd)
     _ -> error $ "unexpected command " <> show cmd
@@ -889,19 +889,7 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
         loop (0, 0, 0, 0) = pure ()
         loop acc@(s, !m, !r, !o) =
           timeout 10000000 (get a) >>= \case
-            Nothing -> do
-              t0 <- liftIO getCurrentTime
-              qi <- liftIO $ runExceptT $ getConnectionQueueInfo a NRMInteractive bId
-              aInfo <- liftIO $ dbInfo alice
-              bInfo <- liftIO $ dbInfo bob
-              liftIO $ putStrLn $ "DEBUG stall " <> show acc <> " at " <> show t0 <> ", queue info: " <> show qi <> ", alice: " <> show aInfo <> ", bob: " <> show bInfo
-              aWorkers <- liftIO $ smpDeliveryWorkers_ <$> getAgentWorkersDetails alice
-              bWorkers <- liftIO $ smpDeliveryWorkers_ <$> getAgentWorkersDetails bob
-              liftIO $ putStrLn $ "DEBUG stall workers, alice: " <> show aWorkers <> ", bob: " <> show bWorkers
-              evt_ <- liftIO $ timeout 60000000 (get a)
-              t1 <- liftIO getCurrentTime
-              liftIO $ putStrLn $ "DEBUG stall next event after " <> show (diffUTCTime t1 t0) <> ": " <> show evt_
-              error $ "timeout " <> show acc
+            Nothing -> error $ "timeout " <> show acc
             Just evt -> case evt of
               ("", c, A.SENT _mId srv) -> do
                 liftIO $ c == bId && srv == proxySrv `shouldBe` True
@@ -928,13 +916,6 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
                 unless (o > 0) $ error "unexpected OK"
                 loop (s, m, r, o - 1)
               _ -> liftIO $ expectationFailure $ "unexpected: " <> show r
-    dbInfo c = withTransaction (store $ agentEnv c) $ \db -> do
-      cmds :: [(ByteString, Int)] <- DB.query_ db "SELECT command_tag, failed FROM commands"
-      dels :: [(Int64, Int, ByteString, Maybe Int64, Maybe Int64)] <-
-        DB.query_
-          db
-          "SELECT d.internal_id, d.failed, m.msg_type, s.retry_int_slow, s.retry_int_fast FROM snd_message_deliveries d JOIN messages m ON m.conn_id = d.conn_id AND m.internal_id = d.internal_id JOIN snd_messages s ON s.conn_id = d.conn_id AND s.internal_id = d.internal_id ORDER BY d.internal_id"
-      pure (cmds, dels)
 
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
 testEnablePQEncryption =
@@ -3210,7 +3191,6 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
     delete c cs = do
       r <- deleteConnections c cs
       liftIO $ do
-        unless (all isRight r) $ putStrLn $ "DEBUG batch delete errors: " <> show (M.elems $ M.filter (not . isRight) r)
         all isRight r `shouldBe` True
         M.keys r `shouldMatchList` cs
     deleteFail :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
