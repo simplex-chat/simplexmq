@@ -254,10 +254,10 @@ defaultInactiveClientExpiration =
     }
 
 defaultProxyClientConcurrency :: Int
-defaultProxyClientConcurrency = 32
+defaultProxyClientConcurrency = 500
 
 defaultNameResolverConcurrency :: Int
-defaultNameResolverConcurrency = 1000
+defaultNameResolverConcurrency = 5000
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds
