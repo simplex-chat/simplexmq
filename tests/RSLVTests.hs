@@ -11,11 +11,14 @@
 
 module RSLVTests (rslvTests) where
 
+import Control.Concurrent (threadDelay)
+import Control.Monad (forM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.IORef (IORef, readIORef)
 import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time.Clock (getCurrentTime)
@@ -47,6 +50,7 @@ import Simplex.Messaging.Protocol
     tPut,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
 import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
@@ -102,6 +106,10 @@ rslvTests = do
     it "RSLV sends the 2LD as its hash" testRslvSendsTheHash
     it "a name with subnames is sent as text" testSubnameKeepsItsLabels
     it "a record naming a different name is rejected" testRslvWrongName
+  describe "RSLV resource use" $ do
+    it "one connection has at most client_concurrency lookups in flight" testRslvConnectionCap
+    it "a lookup waiting for a slot runs when a slot is released" testRslvSlotWait
+    it "a lookup waiting for a slot fails when the client times out" testRslvSlotWaitTimeout
 
 -- | /v2/resolve answers 200, 400 or 502, so a 404 is a resolver that predates
 -- the route, not a name that does not exist.
@@ -274,6 +282,85 @@ testRslvWrongName =
     case r of
       Left (PCEUnexpectedResponse _) -> pure ()
       _ -> expectationFailure $ "expected Left (PCEUnexpectedResponse ..), got: " <> show r
+
+-- The resolver answers after 3s and the server gives up after 1s, so a request
+-- that reached the resolver stays in flight for the whole check.
+testRslvConnectionCap :: IO ()
+testRslvConnectionCap =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = connCap}) testPort $ const $
+      testSMPClient @TLS $ \h -> do
+        sendRslvs h "cap" 16
+        threadDelay 800000
+        length <$> resolvePaths reqs `shouldReturn` connCap
+        recvResponses h 16 `shouldReturn` replicate 16 (Right (ERR (NAME (RESOLVER "timeout"))))
+  where
+    connCap = 4
+
+-- 4 lookups take the slots for the 1s resolver timeout, the 5th waits for a slot.
+testRslvSlotWait :: IO ()
+testRslvSlotWait =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (slotWaitCfg port 10000000) testPort $ const $
+      testSMPClient @TLS $ \h -> do
+        sendRslvs h "wait" 5
+        recvResponses h 5 `shouldReturn` replicate 5 (Right (ERR (NAME (RESOLVER "timeout"))))
+        length <$> resolvePaths reqs `shouldReturn` 5
+        threadDelay 1500000
+        SlotWaitMetrics {waits, waitTimeouts, waitMaxMs, waitSumMs} <- readSlotWaitMetrics
+        (waits, waitTimeouts) `shouldBe` (1, 0)
+        waitMaxMs `shouldSatisfy` (\t -> t >= 500 && t < 2000)
+        waitSumMs `shouldBe` waitMaxMs
+
+-- The client times out after 0.2s, so the 2 waiting lookups fail before the slots are released.
+-- The connection does not process further commands while one waits, so the 6th waits after the 5th times out.
+testRslvSlotWaitTimeout :: IO ()
+testRslvSlotWaitTimeout =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (slotWaitCfg port 200000) testPort $ const $
+      testSMPClient @TLS $ \h -> do
+        sendRslvs h "wait" 6
+        recvResponses h 6 `shouldReturn` (replicate 2 (Right (ERR (NAME (RESOLVER "too many requests")))) <> replicate 4 (Right (ERR (NAME (RESOLVER "timeout")))))
+        threadDelay 1500000
+        length <$> resolvePaths reqs `shouldReturn` 4
+        SlotWaitMetrics {waits, waitTimeouts, waitMaxMs, waitSumMs} <- readSlotWaitMetrics
+        (waits, waitTimeouts) `shouldBe` (2, 2)
+        waitMaxMs `shouldSatisfy` (\t -> t >= 200 && t < 1000)
+        waitSumMs `shouldSatisfy` (>= 400)
+
+slotWaitCfg :: Int -> Int -> AServerConfig
+slotWaitCfg port clientTimeout =
+  updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = 4, prometheusInterval = Just 1, maxClientCmdWait = clientTimeout}
+
+data SlotWaitMetrics = SlotWaitMetrics {waits :: Int, waitTimeouts :: Int, waitMaxMs :: Int, waitSumMs :: Int}
+
+readSlotWaitMetrics :: IO SlotWaitMetrics
+readSlotWaitMetrics = do
+  ms <- map words . lines <$> readFile testPrometheusMetricsFile
+  -- metric lines are "name value timestamp"
+  let metric name = case [v | n : v : _ <- ms, n == name] of
+        [v] -> pure $ read v
+        _ -> fail $ "no metric " <> name
+  SlotWaitMetrics
+    <$> metric "simplex_smp_cmd_slot_wait_ms_count"
+    <*> metric "simplex_smp_cmd_slot_wait_timeouts"
+    <*> metric "simplex_smp_cmd_slot_wait_ms_max"
+    <*> metric "simplex_smp_cmd_slot_wait_ms_sum"
+
+-- | One RSLV per block, so no batch limit applies.
+sendRslvs :: THandleSMP TLS 'TClient -> String -> Int -> IO ()
+sendRslvs h@THandle {params} prefix n =
+  forM_ [1 .. n] $ \i -> do
+    let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId (B.pack $ prefix <> show i), NoEntity, Cmd SResolver (RSLV (NQDomain (domain "alice.simplex"))))
+    [Right ()] <- tPut h (Right (Nothing, tToSend) :| [])
+    pure ()
+
+recvResponses :: THandleSMP TLS 'TClient -> Int -> IO [Either ErrorType BrokerMsg]
+recvResponses h n
+  | n <= 0 = pure []
+  | otherwise = do
+      rs <- map (\(_, _, r) -> r) . L.toList <$> tGetClient h
+      (rs <>) <$> recvResponses h (n - length rs)
 
 runExceptT' :: Show e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either (fail . show) pure
