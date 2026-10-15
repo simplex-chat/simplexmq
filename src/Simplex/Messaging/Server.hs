@@ -1221,6 +1221,9 @@ updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, 
   atomicModifyIORef'_ cmdSlotWaitMaxMs (max waitMs)
   unless taken $ incStat cmdSlotWaitTimeouts
 
+rslvTooManyRequests :: BrokerMsg
+rslvTooManyRequests = ERR $ NAME $ RESOLVER "too many requests"
+
 forwardedCmdWait :: ServerConfig s -> Int
 forwardedCmdWait = (`netTimeoutInt` NRMBackground) . tcpTimeout . networkConfig . smpCfg . smpAgentCfg
 
@@ -1582,7 +1585,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "too many requests") (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity rslvTooManyRequests (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2226,17 +2229,17 @@ client
                     _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
               -- All clients of a proxy share its one connection to this relay, so their commands are
               -- processed concurrently, otherwise one slow command would delay all of them.
-              concurrency = case t' of
-                Right (_, _, (_, _, Cmd SResolver _)) -> serverResolverConcurrency
-                _ -> serverClientConcurrency
+              (concurrency, onTimeout) = case t' of
+                Right (_, _, (corrId', entId', Cmd SResolver _)) -> (serverResolverConcurrency, runExceptT (encodeResp (corrId', entId', rslvTooManyRequests)) >>= sendResp . either ERR id)
+                _ -> (serverClientConcurrency, pure ())
               sendResp rres = atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           authDelay <- asks $ authErrorDelay . config
           -- The proxy waits for forwarded commands with the background timeout.
-          -- If no slot is free before it, there is no response, as the proxy has already timed out.
+          -- If no slot is free before it, only RSLV gets a response, as the proxy has already timed out.
           -- A delayed AUTH response is sent from another thread, so the delay does not hold the slot.
-          lift $ forkCmd_ concurrency forwardedCmdWait (pure ()) $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
+          lift $ forkCmd_ concurrency forwardedCmdWait onTimeout $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
             Right (r, rres)
               | isAuthError r -> liftIO $ sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
               | otherwise -> sendResp rres
