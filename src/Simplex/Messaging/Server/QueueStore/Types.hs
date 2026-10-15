@@ -14,7 +14,6 @@ import Control.Concurrent.STM
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
-import Data.Text (Text)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.SystemTime
@@ -22,7 +21,6 @@ import Simplex.Messaging.SystemTime
 class StoreQueueClass q where
   recipientId :: q -> RecipientId
   queueRec :: q -> TVar (Maybe QueueRec)
-  withQueueLock :: q -> Text -> IO a -> IO a
 
 class StoreQueueClass q => QueueStoreClass q s where
   type QueueStoreCfg s
@@ -31,8 +29,8 @@ class StoreQueueClass q => QueueStoreClass q s where
   getEntityCounts :: s -> IO EntityCounts
   compactQueues :: s -> IO Int64
   addQueue_ :: s -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
-  getQueue_ :: QueueParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
-  getQueues_ :: BatchParty p => s -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueue_ :: QueueParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueues_ :: BatchParty p => s -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueueLinkData :: s -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   addQueueLinkData :: s -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
   deleteQueueLinkData :: s -> q -> IO (Either ErrorType ())

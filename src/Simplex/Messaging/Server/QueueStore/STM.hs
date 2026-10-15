@@ -133,7 +133,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
       hasLink = maybe (pure False) (\(lnkId, _) -> TM.member lnkId links) queueData
 
-  getQueue_ :: QueueParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
@@ -143,7 +143,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       STMQueueStore {queues, senders, notifiers, links} = st
 
-  getQueues_ :: BatchParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueues_ :: BatchParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueues_ st _ party qIds = case party of
     SRecipient -> do
       qs <- readTVarIO queues

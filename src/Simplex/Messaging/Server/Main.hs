@@ -617,7 +617,7 @@ importStoreLogToDatabase :: FilePath -> DBOpts -> IO (Int64, Int64)
 importStoreLogToDatabase storeLogFile dbOpts = do
   ms <- newMsgStore STMStoreConfig {storePath = Nothing, quota = defaultMsgQueueQuota}
   let st = queueStore ms
-  sl <- readWriteQueueStore True (mkQueue ms False) storeLogFile st
+  sl <- readWriteQueueStore True (mkQueue ms) storeLogFile st
   closeStoreLog sl
   qs <- readTVarIO $ queues st
   services' <- M.elems <$> readTVarIO (services st)

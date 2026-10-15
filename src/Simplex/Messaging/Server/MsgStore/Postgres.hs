@@ -81,8 +81,6 @@ instance StoreQueueClass PostgresQueue where
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  withQueueLock PostgresQueue {} _ = id -- TODO [messages] maybe it's just transaction?
-  {-# INLINE withQueueLock #-}
 
 newtype DBTransaction = DBTransaction {dbConn :: DB.Connection}
 
@@ -158,10 +156,10 @@ instance MsgStoreClass PostgresMsgStore where
   {-# INLINE queueStore #-}
 
   loadedQueueCounts :: PostgresMsgStore -> IO LoadedQueueCounts
-  loadedQueueCounts _ = pure LoadedQueueCounts {loadedQueueCount = 0, loadedNotifierCount = 0, queueLockCount = 0}
+  loadedQueueCounts _ = pure LoadedQueueCounts {loadedQueueCount = 0, loadedNotifierCount = 0}
 
-  mkQueue :: PostgresMsgStore -> Bool -> RecipientId -> QueueRec -> IO PostgresQueue
-  mkQueue _ _keepLock rId qr = PostgresQueue rId <$> newTVarIO (Just qr)
+  mkQueue :: PostgresMsgStore -> RecipientId -> QueueRec -> IO PostgresQueue
+  mkQueue _ rId qr = PostgresQueue rId <$> newTVarIO (Just qr)
   {-# INLINE mkQueue #-}
 
   getMsgQueue _ _ _ = pure ()

@@ -61,8 +61,6 @@ instance StoreQueueClass STMQueue where
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  withQueueLock _ _ = id
-  {-# INLINE withQueueLock #-}
 
 instance MsgStoreClass STMMsgStore where
   type StoreMonad STMMsgStore = STM
@@ -103,9 +101,9 @@ instance MsgStoreClass STMMsgStore where
   loadedQueueCounts STMMsgStore {queueStore_ = st} = do
     loadedQueueCount <- M.size <$> readTVarIO (queues st)
     loadedNotifierCount <- M.size <$> readTVarIO (notifiers st)
-    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, queueLockCount = 0}
+    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount}
 
-  mkQueue _ _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
+  mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
 
   getMsgQueue :: STMMsgStore -> STMQueue -> Bool -> STM STMMsgQueue

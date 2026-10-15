@@ -150,39 +150,38 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           (SRMessaging, SRNotifier)
       pure EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount}
 
-  -- this implementation assumes that the lock is already taken by addQueue
-  -- and relies on unique constraints in the database to prevent duplicate IDs.
+  -- this implementation relies on unique constraints in the database to prevent duplicate IDs.
   addQueue_ :: PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr = do
     sq <- mkQ rId qr
-    withQueueLock sq "addQueue_" $ E.uninterruptibleMask_ $ runExceptT $ do
+    E.uninterruptibleMask_ $ runExceptT $ do
       void $ withDB "addQueue_" st $ \db ->
         E.try (DB.execute db insertQueueQuery $ queueRecToRow (rId, qr))
           >>= bimapM handleDuplicate pure
       withLog "addStoreQueue" st $ \s -> logCreateQueue s rId qr
       pure sq
 
-  getQueue_ :: QueueParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
     SRecipient -> loadQueueNoCache " WHERE recipient_id = ?"
     SSender -> loadQueueNoCache " WHERE sender_id = ?"
     SSenderLink -> loadQueueNoCache " WHERE link_id = ?"
     SNotifier -> loadQueueNoCache " WHERE notifier_id = ?"
     where
-      loadQueueNoCache cond = mask $ loadQueue cond >>= liftIO . uncurry (mkQ True)
+      loadQueueNoCache cond = mask $ loadQueue cond >>= liftIO . uncurry mkQ
       mask = E.uninterruptibleMask_ . runExceptT
       loadQueue condition =
         withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
           DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
 
-  getQueues_ :: forall p. BatchParty p => PostgresQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueues_ :: forall p. BatchParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueues_ st mkQ party qIds
     | null qIds = pure []
     | otherwise = E.uninterruptibleMask_ $ case party of
         SRecipient -> loadQueuesNoCache " WHERE recipient_id IN ?" $ \(rId, qRec) ->
-          Just . (rId,) <$> mkQ False rId qRec
+          Just . (rId,) <$> mkQ rId qRec
         SNotifier -> loadQueuesNoCache " WHERE notifier_id IN ?" $ \(rId, qRec) ->
-          forM (notifier qRec) $ \NtfCreds {notifierId = nId} -> (nId,) <$> mkQ False rId qRec
+          forM (notifier qRec) $ \NtfCreds {notifierId = nId} -> (nId,) <$> mkQ rId qRec
     where
       dbLoadQueues qIds' cond mkQueue' =
         runExceptT $ fmap M.fromList $
@@ -206,7 +205,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   addQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
   addQueueLinkData st sq lnkId d =
-    withQueueRec sq "addQueueLinkData" $ \q -> case queueData q of
+    withQueueRec sq $ \q -> case queueData q of
       Nothing ->
         addLink q $ \db -> DB.execute db qry (d :. (lnkId, rId, QMContact))
       Just (lnkId', _) | lnkId' == lnkId ->
@@ -223,7 +222,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
-    withQueueRec sq "deleteQueueLinkData" $ \q -> case queueData q of
+    withQueueRec sq $ \q -> case queueData q of
       Just _ -> do
         assertUpdated $ withDB' "deleteQueueLinkData" st $ \db ->
           DB.execute db "UPDATE msg_queues SET link_id = NULL, fixed_data = NULL, user_data = NULL WHERE recipient_id = ? AND deleted_at IS NULL" (Only rId)
@@ -235,7 +234,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   secureQueue :: PostgresQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
-    withQueueRec sq "secureQueue" $ \q -> do
+    withQueueRec sq $ \q -> do
       verify q
       assertUpdated $ withDB' "secureQueue" st $ \db ->
         DB.execute db "UPDATE msg_queues SET sender_key = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR sender_key = ?)" (sKey, rId, sKey)
@@ -249,7 +248,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   updateKeys :: PostgresQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
   updateKeys st sq rKeys =
-    withQueueRec sq "updateKeys" $ \q -> do
+    withQueueRec sq $ \q -> do
       assertUpdated $ withDB' "updateKeys" st $ \db ->
         DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL" (rKeys, rId)
       atomically $ writeTVar (queueRec sq) $ Just q {recipientKeys = rKeys}
@@ -259,7 +258,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NtfCreds))
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
-    withQueueRec sq "addQueueNotifier" $ \q -> do
+    withQueueRec sq $ \q -> do
       assertUpdated $ withDB "addQueueNotifier" st $ \db ->
         E.try (update db) >>= bimapM handleDuplicate pure
       let !q' = q {notifier = Just ntfCreds}
@@ -280,7 +279,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NtfCreds))
   deleteQueueNotifier st sq =
-    withQueueRec sq "deleteQueueNotifier" $ \q ->
+    withQueueRec sq $ \q ->
       forM (notifier q) $ \nc -> do
         assertUpdated $ withDB' "deleteQueueNotifier" st update
         atomically $ writeTVar (queueRec sq) $ Just q {notifier = Nothing}
@@ -315,7 +314,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   updateQueueTime :: PostgresQueueStore q -> q -> SystemDate -> IO (Either ErrorType QueueRec)
   updateQueueTime st sq t =
-    withQueueRec sq "updateQueueTime" $ \q@QueueRec {updatedAt} ->
+    withQueueRec sq $ \q@QueueRec {updatedAt} ->
       if updatedAt == Just t
         then pure q
         else do
@@ -328,7 +327,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     where
       rId = recipientId sq
 
-  -- this method is called from JournalMsgStore deleteQueue that already locks the queue
   deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType QueueRec)
   deleteStoreQueue st sq = E.uninterruptibleMask_ $ runExceptT $ do
     q <- ExceptT $ readQueueRecIO qr
@@ -358,7 +356,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       pure serviceId
 
   setQueueService :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueService st sq party serviceId = withQueueRec sq "setQueueService" $ \q -> case party of
+  setQueueService st sq party serviceId = withQueueRec sq $ \q -> case party of
     SRecipientService
       | rcvServiceId q == serviceId -> pure ()
       | otherwise -> do
@@ -625,15 +623,15 @@ rowToServiceRec (serviceId, serviceRole, serviceCert, Binary fp, serviceCreatedA
 
 setStatusDB :: StoreQueueClass q => Text -> PostgresQueueStore q -> q -> ServerEntityStatus -> ExceptT ErrorType IO () -> IO (Either ErrorType ())
 setStatusDB op st sq status writeLog =
-  withQueueRec sq op $ \q -> do
+  withQueueRec sq $ \q -> do
     assertUpdated $ withDB' op st $ \db ->
       DB.execute db "UPDATE msg_queues SET status = ? WHERE recipient_id = ? AND deleted_at IS NULL" (status, recipientId sq)
     atomically $ writeTVar (queueRec sq) $ Just q {status}
     writeLog
 
-withQueueRec :: StoreQueueClass q => q -> Text -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
-withQueueRec sq op action =
-  withQueueLock sq op $ E.uninterruptibleMask_ $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
+withQueueRec :: StoreQueueClass q => q -> (QueueRec -> ExceptT ErrorType IO a) -> IO (Either ErrorType a)
+withQueueRec sq action =
+  E.uninterruptibleMask_ $ runExceptT $ ExceptT (readQueueRecIO $ queueRec sq) >>= action
 
 assertUpdated :: ExceptT ErrorType IO Int64 -> ExceptT ErrorType IO ()
 assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
