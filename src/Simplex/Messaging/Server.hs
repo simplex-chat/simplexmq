@@ -1513,7 +1513,8 @@ client
     -- Run a slow command on a thread that sends its response
     forkCmd_ :: (ServerConfig s -> Int) -> NetworkRequestMode -> M s () -> M s () -> M s (Maybe a)
     forkCmd_ concurrency nm onTimeout cmd = do
-      -- the forked thread releases the slot when the command completes, the caller only if the fork failed
+      -- Exceptions are masked so the slot is never lost between taking it and starting the thread.
+      -- The thread frees the slot when the command finishes; the caller frees it only if forking failed.
       mask $ \restore ->
         wait >>= \case
           True ->
@@ -1522,7 +1523,9 @@ client
           False -> restore onTimeout
       pure Nothing
       where
-        -- the wait is limited by the client timeout of the command, after which its response is not needed
+        -- Takes a free slot at once if there is one. Otherwise waits for a slot until the client
+        -- timeout, after which the client no longer expects the response.
+        -- Other commands of this client are not processed while it waits.
         wait = do
           limit <- asks (concurrency . config)
           ifM (atomically $ takeSlot limit) (pure True) $ do
