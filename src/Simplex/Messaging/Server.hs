@@ -1550,7 +1550,7 @@ client
         Nothing -> incStat (rslvDisabled st) $> Nothing
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
-    -- concurrency is limited by serverResolverConcurrency in forkCmd.
+    -- concurrency is limited in forkCmd by serverClientConcurrency for direct and serverResolverConcurrency for forwarded RSLV.
     resolveNameMsg :: VersionSMP -> NamesEnv -> NameQuery -> M s BrokerMsg
     resolveNameMsg v nenv q = do
       st <- asks (rslvStats . serverStats)
@@ -1580,7 +1580,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "timeout") (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "timeout") (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
