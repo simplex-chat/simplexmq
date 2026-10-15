@@ -321,7 +321,7 @@ testRslvSlotWaitTimeout =
     withSmpServerConfigOn (transport @TLS) (slotWaitCfg port 200000) testPort $ const $
       testSMPClient @TLS $ \h -> do
         sendRslvs h "wait" 6
-        recvResponses h 6 `shouldReturn` replicate 6 (Right (ERR (NAME (RESOLVER "timeout"))))
+        recvResponses h 6 `shouldReturn` (replicate 2 (Right (ERR (NAME (RESOLVER "too many requests")))) <> replicate 4 (Right (ERR (NAME (RESOLVER "timeout")))))
         threadDelay 1500000
         length <$> resolvePaths reqs `shouldReturn` 4
         SlotWaitMetrics {waits, waitTimeouts, waitMaxMs, waitSumMs} <- readSlotWaitMetrics

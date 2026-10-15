@@ -1580,7 +1580,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "timeout") (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "too many requests") (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
