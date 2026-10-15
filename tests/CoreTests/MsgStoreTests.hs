@@ -58,50 +58,47 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
-import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
+import SMPClient (testStoreDBOpts)
 #endif
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
-  around (withMsgStore $ testJournalStoreCfg MQStoreCfg) $ describe "Journal message store" $ do
-    someMsgStoreTests
-    journalMsgStoreTests
-    it "should export and import journal store" testExportImportStore
+  describe "STM message store" $ someMsgStoreTests testSMTStoreConfig
+  describe "Journal message store" $ do
+    someMsgStoreTests $ testJournalStoreCfg MQStoreCfg
+    journalMsgStoreTests $ testJournalStoreCfg MQStoreCfg
+    it "should export and import journal store" $ withMsgStore (testJournalStoreCfg MQStoreCfg) testExportImportStore
 #if defined(dbServerPostgres)
-  around_ (postgressBracket testServerDBConnectInfo) $ do
-    around (withMsgStore $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg) $
-      describe "Postgres+journal message store" $ do
-        someMsgStoreTests
-        journalMsgStoreTests
-    around (withMsgStore testPostgresStoreConfig) $
-      describe "Postgres-only message store" $ do
-        someMsgStoreTests
-        it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
-        it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" testResetMessageCounts
-        it "should expire messages across commit batches" testExpireMessagesInBatches
+  describe "Postgres+journal message store" $ do
+    someMsgStoreTests $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg
+    journalMsgStoreTests $ testJournalStoreCfg $ PQStoreCfg testPostgresStoreCfg
+  describe "Postgres-only message store" $ do
+    someMsgStoreTests testPostgresStoreConfig
+    it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
+    it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
+    it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
 #endif
   describe "Journal message store: queue state backup expiration" $ do
     it "should remove old queue state backups" testRemoveQueueStateBackups
     it "should expire messages in idle queues" testExpireIdleQueues
   where
-    journalMsgStoreTests :: SpecWith (JournalMsgStore s)
-    journalMsgStoreTests = do
+    journalMsgStoreTests :: (HasTestEnv => JournalStoreConfig s) -> Spec
+    journalMsgStoreTests cfg = do
       describe "queue state" $ do
-        it "should restore queue state from the last line" testQueueState
-        it "should recover when message is written and state is not" testMessageState
-        it "should remove journal files when queue is empty" testRemoveJournals
+        it "should restore queue state from the last line" $ withMsgStore cfg testQueueState
+        it "should recover when message is written and state is not" $ withMsgStore cfg testMessageState
+        it "should remove journal files when queue is empty" $ withMsgStore cfg testRemoveJournals
       describe "missing files" $ do
-        it "should create read file when missing" testReadFileMissing
-        it "should switch to write file when read file missing" testReadFileMissingSwitch
-        it "should create write file when missing" testWriteFileMissing
-        it "should create read file when read and write files are missing" testReadAndWriteFilesMissing
-    someMsgStoreTests :: MsgStoreClass s => SpecWith s
-    someMsgStoreTests = do
-      it "should get queue and store/read messages" testGetQueue
-      it "should write/ack messages" testWriteAckMessages
-      it "should not fail on EOF when changing read journal" testChangeReadJournal
-      it "should not add link data to secured messaging queue" testLinkDataSecuredQueue
+        it "should create read file when missing" $ withMsgStore cfg testReadFileMissing
+        it "should switch to write file when read file missing" $ withMsgStore cfg testReadFileMissingSwitch
+        it "should create write file when missing" $ withMsgStore cfg testWriteFileMissing
+        it "should create read file when read and write files are missing" $ withMsgStore cfg testReadAndWriteFilesMissing
+    someMsgStoreTests :: MsgStoreClass s => (HasTestEnv => MsgStoreConfig s) -> Spec
+    someMsgStoreTests cfg = do
+      it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
+      it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
+      it "should not fail on EOF when changing read journal" $ withMsgStore cfg testChangeReadJournal
+      it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -110,7 +107,7 @@ withMsgStore cfg = bracket (newMsgStore cfg) closeMsgStore
 testSMTStoreConfig :: STMStoreConfig
 testSMTStoreConfig = STMStoreConfig {storePath = Nothing, quota = 3}
 
-testJournalStoreCfg :: QStoreCfg s -> JournalStoreConfig s
+testJournalStoreCfg :: HasTestEnv => QStoreCfg s -> JournalStoreConfig s
 testJournalStoreCfg queueStoreCfg =
   JournalStoreConfig
     { storePath = testStoreMsgsDir,
@@ -126,14 +123,14 @@ testJournalStoreCfg queueStoreCfg =
     }
 
 #if defined(dbServerPostgres)
-testPostgresStoreConfig :: PostgresMsgStoreCfg
+testPostgresStoreConfig :: HasTestEnv => PostgresMsgStoreCfg
 testPostgresStoreConfig =
   PostgresMsgStoreCfg
     { queueStoreCfg = testPostgresStoreCfg,
       quota = 3
     }
 
-testPostgresStoreCfg :: PostgresStoreCfg
+testPostgresStoreCfg :: HasTestEnv => PostgresStoreCfg
 testPostgresStoreCfg =
   PostgresStoreCfg
     { dbOpts = testStoreDBOpts,
@@ -295,7 +292,7 @@ testLinkDataSecuredQueue ms = do
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
 
-testExportImportStore :: JournalMsgStore 'QSMemory -> IO ()
+testExportImportStore :: HasTestEnv => JournalMsgStore 'QSMemory -> IO ()
 testExportImportStore ms = do
   g <- C.newRandom
   (rId1, qr1) <- testNewQueueRec g QMMessaging
@@ -608,7 +605,7 @@ testRemoveJournals ms = do
     journalFilesCount dir = length . filter ("messages." `isPrefixOf`) <$> listDirectory dir
     stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
 
-testRemoveQueueStateBackups :: IO ()
+testRemoveQueueStateBackups :: HasTestEnv => IO ()
 testRemoveQueueStateBackups = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging
@@ -644,7 +641,7 @@ testRemoveQueueStateBackups = do
   where
     stateBackupCount dir = length . filter (".bak" `isSuffixOf`) <$> listDirectory dir
 
-testExpireIdleQueues :: IO ()
+testExpireIdleQueues :: HasTestEnv => IO ()
 testExpireIdleQueues = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging

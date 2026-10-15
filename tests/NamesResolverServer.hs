@@ -30,6 +30,7 @@ import SMPClient (AServerConfig (..), cfgMS, proxyCfgMS, testStoreLogFile2, test
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Names (NamesConfig (..))
+import Util (HasTestEnv)
 
 -- | Run an action with a local HTTP resolver on a free port.
 withResolverServer :: ([Text] -> (Status, LB.ByteString)) -> (Int -> IORef [[Text]] -> IO a) -> IO a
@@ -64,13 +65,13 @@ testNamesConfig port =
       resolverMaxResponseBytes = 65536
     }
 
-memCfg :: AServerConfig
+memCfg :: HasTestEnv => AServerConfig
 memCfg = cfgMS (ASType SQSMemory SMSMemory)
 
-memProxyCfg :: AServerConfig
+memProxyCfg :: HasTestEnv => AServerConfig
 memProxyCfg = proxyCfgMS (ASType SQSMemory SMSMemory)
 
-memCfg2 :: AServerConfig
+memCfg2 :: HasTestEnv => AServerConfig
 memCfg2 = case memCfg of
   ASrvCfg qt mt c -> ASrvCfg qt mt c {serverStoreCfg = newStoreCfg (serverStoreCfg c)}
   where

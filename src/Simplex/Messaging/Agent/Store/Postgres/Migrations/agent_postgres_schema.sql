@@ -1,5 +1,3 @@
-
-
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -1531,6 +1529,3 @@ ALTER TABLE ONLY smp_agent_test_protocol_schema.snd_queues
 
 ALTER TABLE ONLY smp_agent_test_protocol_schema.snd_queues
     ADD CONSTRAINT snd_queues_host_port_fkey FOREIGN KEY (host, port) REFERENCES smp_agent_test_protocol_schema.servers(host, port) ON UPDATE CASCADE ON DELETE RESTRICT;
-
-
-
