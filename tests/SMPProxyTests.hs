@@ -23,13 +23,14 @@ import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
+import qualified Data.Map.Strict as M
 import Data.Time.Clock (getCurrentTime)
 import SMPAgentClient
 import SMPClient
 import ServerTests (decryptMsgV3, responseTime, sendRecv)
 import Simplex.Messaging.Agent hiding (createConnection, joinConnection, sendMessage)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers (..))
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), ServerRoles (..), presetServerCfg)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Client
@@ -44,7 +45,7 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
-import System.Random (randomRIO)
+import System.Random (mkStdGen, randomR, randomRIO)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
@@ -152,6 +153,10 @@ smpProxyTests = do
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
+        it "chooses another proxy when the chosen proxy is offline" $ \_ ->
+          agentViaProxyRepick Nothing
+        it "chooses another proxy when the chosen proxy cannot forward to destination relay" $ \_ ->
+          agentViaProxyRepick $ Just proxyCfgRelayTimeout
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" . oneServer $ deliver 2 250
@@ -441,6 +446,38 @@ agentViaProxyRetryNoSession = do
   where
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
+
+agentViaProxyRepick :: Maybe AServerConfig -> IO ()
+agentViaProxyRepick badProxyCfg_ =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2 $ \_ ->
+      withBadProxy $
+        withAgent 1 aCfg aliceServers testDB $ \alice ->
+          withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> do
+            atomically $ writeTVar (randomServer $ agentEnv alice) (mkStdGen badProxyFirst)
+            (bobId, CCLink qInfo Nothing) <- runRight $ A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
+            (aliceId, _) <- runRight $ A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+            _ <- runRight $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+            ("", _, A.CONF confId _ _ "bob's connInfo") <- get alice
+            runRight_ $ allowConnection alice bobId confId "alice's connInfo"
+            timeout 10000000 (get alice) >>= \case
+              Just ("", c, A.CON _) | c == bobId -> pure ()
+              r -> expectationFailure $ "connection did not complete via another proxy: " <> show r
+            get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+            get bob ##> ("", aliceId, A.CON CR.PQEncOn)
+            runRight_ $ do
+              2 <- fst <$> A.sendMessage alice bobId CR.PQEncOn noMsgFlags "hello"
+              get alice ##> ("", bobId, A.SENT 2 (Just testSMPServer2))
+              get bob =##> \case ("", c, Msg' _ _ "hello") -> c == aliceId; _ -> False
+  where
+    withBadProxy = maybe id (\cfg' -> withSmpServerConfigOn (transport @TLS) cfg' testPort3 . const) badProxyCfg_
+    badProxy = SMPServer testHost2 testPort3 testKeyHash
+    badProxyFirst = head [s | s <- [0 ..], fst (randomR (0, 1 :: Int) (mkStdGen s)) == 0]
+    aliceServers = initAgentServersProxy {smp = M.fromList [(1, [srvCfg relayRoles testSMPServer, srvCfg proxyRoles badProxy, srvCfg proxyRoles testSMPServer2])]}
+    srvCfg roles = presetServerCfg True roles (Just 1) . noAuthSrv
+    relayRoles = ServerRoles {storage = True, proxy = False, names = False}
+    proxyRoles = ServerRoles {storage = False, proxy = True, names = False}
+    aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
 
 testNoProxy :: AStoreType -> IO ()
 testNoProxy msType = do
