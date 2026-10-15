@@ -3,18 +3,34 @@
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module CoreTests.SOCKSSettings where
 
-import Network.Socket (SockAddr (..), tupleToHostAddress)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.Async (race_, withAsync)
+import Control.Concurrent.STM
+import qualified Control.Exception as E
+import Control.Monad
+import qualified Data.ByteString as BS
+import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Time.Clock (getCurrentTime)
+import Data.Word (Word8)
+import Network.Socket
+import Network.Socket.ByteString (recv, sendAll)
+import SMPClient (testKeyHash, testPort, withSmpServerConfigOn)
+import qualified SMPClient
 import Simplex.Messaging.Agent.Client (ipAddressProtected)
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType, pattern SMPServer)
+import Simplex.Messaging.Transport (TLS, transport)
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.Server (startTCPServer)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -24,6 +40,7 @@ socksSettingsTests = do
   describe "socksMode setting, independent of hostMode setting" testSocksMode
   describe "ipAddressProtected, consistent with chosen host and socksMode" testIPAddressProtected
   describe "socks proxy address encoding" testSocksProxyEncoding
+  describe "socks proxy connection" testSocksProxyConnection
 
 testPublicHost :: TransportHost
 testPublicHost = "smp.example.com"
@@ -127,7 +144,11 @@ testSocksProxyEncoding = do
     strDecode "[::1]:9050" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)
     strDecode "[::1]:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 8080 0 (0, 0, 0, 1) 0)
     strDecode "[fd12:3456:789a:1::1]:8080" `shouldBe` authIsolate (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strDecode "localhost" `shouldBe` authIsolate (SocksProxyDomain "localhost" 9050)
+    strDecode "localhost:9050" `shouldBe` authIsolate (SocksProxyDomain "localhost" 9050)
+    strDecode "tor:9150" `shouldBe` authIsolate (SocksProxyDomain "tor" 9150)
     strEncode (SocksProxyWithAuth SocksIsolateByAuth defaultSocksProxy) `shouldBe` "127.0.0.1:9050"
+    strEncode (SocksProxyWithAuth SocksIsolateByAuth (SocksProxyDomain "tor" 9150)) `shouldBe` "tor:9150"
     strEncode (SocksProxyWithAuth SocksIsolateByAuth (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)) `shouldBe` "[::1]:9050"
     strEncode (SocksProxyWithAuth SocksIsolateByAuth (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)) `shouldBe` "[fd12:3456:789a:1::1]:8080"
   it "should decode SOCKS proxy without credentials" $ do
@@ -138,7 +159,9 @@ testSocksProxyEncoding = do
     strDecode "@1.1.1.1" `shouldBe` authNull (SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress (1, 1, 1, 1))
     strDecode "@127.0.0.1:9050" `shouldBe` authNull defaultSocksProxy
     strDecode "@[fd12:3456:789a:1::1]:8080" `shouldBe` authNull (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strDecode "@tor:9150" `shouldBe` authNull (SocksProxyDomain "tor" 9150)
     strEncode (SocksProxyWithAuth SocksAuthNull defaultSocksProxy) `shouldBe` "@127.0.0.1:9050"
+    strEncode (SocksProxyWithAuth SocksAuthNull (SocksProxyDomain "tor" 9150)) `shouldBe` "@tor:9150"
     strEncode (SocksProxyWithAuth SocksAuthNull (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)) `shouldBe` "@[::1]:9050"
     strEncode (SocksProxyWithAuth SocksAuthNull (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)) `shouldBe` "@[fd12:3456:789a:1::1]:8080"
   it "should decode SOCKS proxy with credentials" $ do
@@ -150,6 +173,72 @@ testSocksProxyEncoding = do
     strDecode "user:pass@127.0.0.1:9050" `shouldBe` authUser defaultSocksProxy
     strDecode "user:pass@fd12:3456:789a:1::1" `shouldBe` authUser (SocksProxy $ SockAddrInet6 9050 0 (0xfd123456, 0x789a0001, 0, 1) 0)
     strDecode "user:pass@[fd12:3456:789a:1::1]:8080" `shouldBe` authUser (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)
+    strDecode "user:pass@tor:9150" `shouldBe` authUser (SocksProxyDomain "tor" 9150)
     strEncode (SocksProxyWithAuth auth defaultSocksProxy) `shouldBe` "user:pass@127.0.0.1:9050"
+    strEncode (SocksProxyWithAuth auth (SocksProxyDomain "tor" 9150)) `shouldBe` "user:pass@tor:9150"
     strEncode (SocksProxyWithAuth auth (SocksProxy $ SockAddrInet6 9050 0 (0, 0, 0, 1) 0)) `shouldBe` "user:pass@[::1]:9050"
     strEncode (SocksProxyWithAuth auth (SocksProxy $ SockAddrInet6 8080 0 (0xfd123456, 0x789a0001, 0, 1) 0)) `shouldBe` "user:pass@[fd12:3456:789a:1::1]:8080"
+
+testSocksProxyConnection :: Spec
+testSocksProxyConnection = do
+  it "should connect via SOCKS proxy with IPv4 address" $ socksConnectionTest "127.0.0.1" "127.0.0.1:5050"
+  it "should connect via SOCKS proxy with IPv6 address" $ socksConnectionTest "::1" "[::1]:5050"
+  it "should connect via SOCKS proxy with domain name" $ socksConnectionTest "127.0.0.1" "localhost:5050"
+  it "should connect via SOCKS proxy with domain name without credentials" $ socksConnectionTest "127.0.0.1" "@localhost:5050"
+
+socksConnectionTest :: HostName -> ByteString -> IO ()
+socksConnectionTest proxyHost proxy =
+  withSmpServerConfigOn (transport @TLS) SMPClient.cfg testPort $ \_ ->
+    withSocksProxy proxyHost "5050" $ \destinations -> do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      let networkConfig = defaultNetworkConfig {socksProxy = either error Just $ strDecode proxy, socksMode = SMAlways}
+          srv = SMPServer ["localhost"] testPort testKeyHash
+      (c :: SMPClient) <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {networkConfig} [] Nothing ts (\_ -> pure ())
+      closeProtocolClient c
+      readTVarIO destinations `shouldReturn` ["localhost:5001"]
+
+-- | Minimal SOCKS5 proxy (RFC 1928) for CONNECT command to domain names,
+-- with optional username/password authentication (RFC 1929), that records requested destinations.
+withSocksProxy :: HostName -> ServiceName -> (TVar [ByteString] -> IO a) -> IO a
+withSocksProxy host port action = do
+  destinations <- newTVarIO []
+  started <- newEmptyTMVarIO
+  E.bracket (startTCPServer started (Just host) port) close $ \sock ->
+    withAsync (forever $ accept sock >>= \(conn, _) -> forkIO $ socksConnection destinations conn `E.finally` close conn) $ \_ ->
+      action destinations
+
+socksConnection :: TVar [ByteString] -> Socket -> IO ()
+socksConnection destinations conn = do
+  [5, nMethods] <- recvBytes 2
+  methods <- recvBytes nMethods
+  if 2 `elem` methods
+    then do
+      sendAll conn "\5\2"
+      [1, uLen] <- recvBytes 2
+      [pLen] <- recvBytes uLen >> recvBytes 1
+      void $ recvBytes pLen
+      sendAll conn "\1\0"
+    else sendAll conn "\5\0"
+  [5, 1, 0, 3, hLen] <- recvBytes 5
+  host <- B.unpack . BS.pack <$> recvBytes hLen
+  [p1, p2] <- recvBytes 2
+  let port = show (fromIntegral p1 * 256 + fromIntegral p2 :: Int)
+  atomically $ modifyTVar' destinations (<> [B.pack $ host <> ":" <> port])
+  addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just host) (Just port)
+  E.bracket (socket (addrFamily addr) Stream defaultProtocol) close $ \dst -> do
+    connect dst $ addrAddress addr
+    sendAll conn "\5\0\0\1\0\0\0\0\0\0"
+    race_ (relay conn dst) (relay dst conn)
+  where
+    recvBytes :: Word8 -> IO [Word8]
+    recvBytes n = BS.unpack <$> recvAll (fromIntegral n)
+    recvAll n
+      | n <= 0 = pure ""
+      | otherwise = do
+          s <- recv conn n
+          when (BS.null s) $ E.throwIO $ userError "connection closed"
+          (s <>) <$> recvAll (n - BS.length s)
+    relay from to = do
+      s <- recv from 16384
+      unless (BS.null s) $ sendAll to s >> relay from to
