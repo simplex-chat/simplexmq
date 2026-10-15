@@ -531,6 +531,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               serverResolverConcurrency = readIniDefault defaultNameResolverConcurrency "NAMES" "resolver_concurrency" ini,
+              maxClientCmdWait = defaultMaxClientCmdWait,
               namesConfig = readNamesConfig ini,
               information = serverPublicInfo ini,
               startOptions
@@ -624,6 +625,7 @@ importStoreLogToDatabase storeLogFile dbOpts = do
   ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue (storeCfg, False)
   sCnt <- batchInsertServices services' ps
   qCnt <- batchInsertQueues @STMQueue True queues ps
+  closeQueueStore @PostgresQueue ps
   renameFile storeLogFile $ storeLogFile <> ".bak"
   pure (sCnt, qCnt)
 
@@ -650,6 +652,7 @@ exportDatabaseToStoreLog dbOpts storeLogFilePath = do
   Sum sCnt <- foldServiceRecs ps $ \sr -> logNewService sl sr $> Sum (1 :: Int)
   Sum qCnt <- foldQueueRecs True True ps $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)
   closeStoreLog sl
+  closeQueueStore @PostgresQueue ps
   pure (sCnt, qCnt)
 #endif
 

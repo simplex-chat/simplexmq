@@ -127,6 +127,10 @@ prometheusMetrics sm rtm ts =
         _rcvServicesSubMsg,
         _rcvServicesSubDuplicate,
         _authDelayExceeded,
+        _cmdSlotWaits,
+        _cmdSlotWaitMs,
+        _cmdSlotWaitMaxMs,
+        _cmdSlotWaitTimeouts,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -197,6 +201,19 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_auth_delay_exceeded Responses with AUTH errors sent without delay, as processing took longer than the delay.\n\
       \# TYPE simplex_smp_auth_delay_exceeded counter\n\
       \simplex_smp_auth_delay_exceeded " <> mshow _authDelayExceeded <> "\n# authDelayExceeded\n\
+      \\n\
+      \# HELP simplex_smp_cmd_slot_wait_ms Time commands waited for a free slot of the connection concurrency limit, in ms.\n\
+      \# TYPE simplex_smp_cmd_slot_wait_ms summary\n\
+      \simplex_smp_cmd_slot_wait_ms_sum " <> mshow _cmdSlotWaitMs <> "\n# cmdSlotWaitMs\n\
+      \simplex_smp_cmd_slot_wait_ms_count " <> mshow _cmdSlotWaits <> "\n# cmdSlotWaits\n\
+      \\n\
+      \# HELP simplex_smp_cmd_slot_wait_ms_max The longest wait for a free command slot, in ms.\n\
+      \# TYPE simplex_smp_cmd_slot_wait_ms_max gauge\n\
+      \simplex_smp_cmd_slot_wait_ms_max " <> mshow _cmdSlotWaitMaxMs <> "\n# cmdSlotWaitMaxMs\n\
+      \\n\
+      \# HELP simplex_smp_cmd_slot_wait_timeouts Commands not processed because the client timed out while they waited for a free slot.\n\
+      \# TYPE simplex_smp_cmd_slot_wait_timeouts counter\n\
+      \simplex_smp_cmd_slot_wait_timeouts " <> mshow _cmdSlotWaitTimeouts <> "\n# cmdSlotWaitTimeouts\n\
       \\n"
     subscriptions =
       "# Subscriptions\n\

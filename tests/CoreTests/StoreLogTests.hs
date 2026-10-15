@@ -207,8 +207,8 @@ deriving instance Eq FileRecipient
 
 deriving instance Eq FileStoreLogRecord
 
-testFileStoreLogFile :: FilePath
-testFileStoreLogFile = "tests/tmp/xftp-server-store.log"
+testFileStoreLogFile :: HasTestEnv => FilePath
+testFileStoreLogFile = testPath "xftp-server-store.log"
 
 fileExpirationTests :: Spec
 fileExpirationTests =

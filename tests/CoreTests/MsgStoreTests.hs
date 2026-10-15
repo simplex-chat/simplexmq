@@ -47,28 +47,26 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
-import SMPClient (postgressBracket, testServerDBConnectInfo, testStoreDBOpts)
+import SMPClient (testStoreDBOpts)
 #endif
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  around (withMsgStore testSMTStoreConfig) $ describe "STM message store" someMsgStoreTests
+  describe "STM message store" $ someMsgStoreTests testSMTStoreConfig
 #if defined(dbServerPostgres)
-  around_ (postgressBracket testServerDBConnectInfo) $ do
-    around (withMsgStore testPostgresStoreConfig) $
-      describe "Postgres-only message store" $ do
-        someMsgStoreTests
-        it "should correctly update message counts and canWrite flag" testUpdateMessageCounts
-        it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" testResetMessageCounts
-        it "should expire messages across commit batches" testExpireMessagesInBatches
+  describe "Postgres-only message store" $ do
+    someMsgStoreTests testPostgresStoreConfig
+    it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
+    it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
+    it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
 #endif
   where
-    someMsgStoreTests :: MsgStoreClass s => SpecWith s
-    someMsgStoreTests = do
-      it "should get queue and store/read messages" testGetQueue
-      it "should write/ack messages" testWriteAckMessages
-      it "should not fail on EOF when changing read journal" testChangeReadJournal
-      it "should not add link data to secured messaging queue" testLinkDataSecuredQueue
+    someMsgStoreTests :: MsgStoreClass s => (HasTestEnv => MsgStoreConfig s) -> Spec
+    someMsgStoreTests cfg = do
+      it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
+      it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
+      it "should not fail on EOF when changing read journal" $ withMsgStore cfg testChangeReadJournal
+      it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -78,14 +76,14 @@ testSMTStoreConfig :: STMStoreConfig
 testSMTStoreConfig = STMStoreConfig {storePath = Nothing, quota = 3}
 
 #if defined(dbServerPostgres)
-testPostgresStoreConfig :: PostgresMsgStoreCfg
+testPostgresStoreConfig :: HasTestEnv => PostgresMsgStoreCfg
 testPostgresStoreConfig =
   PostgresMsgStoreCfg
     { queueStoreCfg = testPostgresStoreCfg,
       quota = 3
     }
 
-testPostgresStoreCfg :: PostgresStoreCfg
+testPostgresStoreCfg :: HasTestEnv => PostgresStoreCfg
 testPostgresStoreCfg =
   PostgresStoreCfg
     { dbOpts = testStoreDBOpts,

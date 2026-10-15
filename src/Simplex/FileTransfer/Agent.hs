@@ -279,6 +279,7 @@ retryOnError name loop done e = do
 
 rcvWorkerInternalError :: AgentClient -> DBRcvFileId -> RcvFileId -> Maybe RcvFileId -> Maybe FilePath -> AgentErrorType -> AM ()
 rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ tmpPath err = do
+  liftIO $ throwWhenInactive c
   lift $ forM_ tmpPath (removePath <=< toFSFilePath)
   withStore' c $ \db -> updateRcvFileError db rcvFileId (show err)
   notify c (fromMaybe rcvFileEntityId redirectEntityId_) (RFERR err)
@@ -318,9 +319,6 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
           withStore' c (`updateRcvFileComplete` rcvFileId)
         Just RcvFileRedirect {redirectFileInfo, redirectDbId} -> do
           let RedirectFileInfo {size = redirectSize, digest = redirectDigest} = redirectFileInfo
-          lift $ forM_ tmpPath (removePath <=< toFSFilePath)
-          liftIO $ waitUntilForeground c
-          withStore' c (`updateRcvFileComplete` rcvFileId)
           -- proceed with redirect
           yaml <- liftError (FILE . FILE_IO . show) (CF.readFile $ CryptoFile fsSavePath cfArgs) `allFinally` (lift $ toFSFilePath fsSavePath >>= removePath)
           next@FileDescription {chunks = nextChunks} <- case strDecode (LB.toStrict yaml) of
@@ -330,9 +328,12 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
               | dstSize /= redirectSize -> throwE . FILE $ REDIRECT "size mismatch"
               | dstDigest /= redirectDigest -> throwE . FILE $ REDIRECT "digest mismatch"
               | otherwise -> pure fd
+          liftIO $ waitUntilForeground c
           -- register and download chunks from the actual file
-          withStore c $ \db -> updateRcvFileRedirect db redirectDbId next
+          withStore c $ \db -> updateRcvFileComplete db rcvFileId >> updateRcvFileRedirect db redirectDbId next
           forM_ nextChunks (downloadChunk c)
+          flip catchAllErrors (\e -> logError $ "XFTP rcv worker error: " <> tshow e) $
+            lift $ forM_ tmpPath (removePath <=< toFSFilePath)
       where
         getChunkPaths :: [RcvFileChunk] -> AM [FilePath]
         getChunkPaths [] = pure []
@@ -512,6 +513,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
 
 sndWorkerInternalError :: AgentClient -> DBSndFileId -> SndFileId -> Maybe FilePath -> AgentErrorType -> AM ()
 sndWorkerInternalError c sndFileId sndFileEntityId prefixPath err = do
+  liftIO $ throwWhenInactive c
   lift . forM_ prefixPath $ removePath <=< toFSFilePath
   withStore' c $ \db -> updateSndFileError db sndFileId (show err)
   notify c sndFileEntityId $ SFERR err
@@ -733,6 +735,7 @@ runXFTPDelWorker c srv Worker {doWork} = do
 
 delWorkerInternalError :: AgentClient -> Int64 -> AgentErrorType -> AM ()
 delWorkerInternalError c deletedSndChunkReplicaId e = do
+  liftIO $ throwWhenInactive c
   withStore' c $ \db -> deleteDeletedSndChunkReplica db deletedSndChunkReplicaId
   notify c "" $ SFERR e
 
