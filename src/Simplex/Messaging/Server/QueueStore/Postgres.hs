@@ -161,14 +161,14 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   getQueue_ :: QueueParty p => PostgresQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st mkQ party qId = case party of
-    SRecipient -> loadQueueNoCache " WHERE recipient_id = ?"
-    SSender -> loadQueueNoCache " WHERE sender_id = ?"
-    SSenderLink -> loadQueueNoCache " WHERE link_id = ?"
-    SNotifier -> loadQueueNoCache " WHERE notifier_id = ?"
+    SRecipient -> loadQueue " WHERE recipient_id = ?"
+    SSender -> loadQueue " WHERE sender_id = ?"
+    SSenderLink -> loadQueue " WHERE link_id = ?"
+    SNotifier -> loadQueue " WHERE notifier_id = ?"
     where
-      loadQueueNoCache cond = mask $ loadQueue cond >>= liftIO . uncurry mkQ
+      loadQueue cond = mask $ loadQueueRec cond >>= liftIO . uncurry mkQ
       mask = E.uninterruptibleMask_ . runExceptT
-      loadQueue condition =
+      loadQueueRec condition =
         withDB "getQueue_" st $ \db -> firstRow rowToQueueRec AUTH $
           DB.query db (queueRecQuery <> condition <> " AND deleted_at IS NULL") (Only qId)
 
@@ -176,16 +176,16 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   getQueues_ st mkQ party qIds
     | null qIds = pure []
     | otherwise = E.uninterruptibleMask_ $ case party of
-        SRecipient -> loadQueuesNoCache " WHERE recipient_id IN ?" $ \(rId, qRec) ->
+        SRecipient -> loadQueues " WHERE recipient_id IN ?" $ \(rId, qRec) ->
           Just . (rId,) <$> mkQ rId qRec
-        SNotifier -> loadQueuesNoCache " WHERE notifier_id IN ?" $ \(rId, qRec) ->
+        SNotifier -> loadQueues " WHERE notifier_id IN ?" $ \(rId, qRec) ->
           forM (notifier qRec) $ \NtfCreds {notifierId = nId} -> (nId,) <$> mkQ rId qRec
     where
       dbLoadQueues qIds' cond mkQueue' =
         runExceptT $ fmap M.fromList $
           withDB' "getQueues_" st (\db -> DB.query db (queueRecQuery <> cond <> " AND deleted_at IS NULL") (Only (In qIds')))
             >>= liftIO . fmap catMaybes . mapM (mkQueue' . rowToQueueRec)
-      loadQueuesNoCache cond mkQueue' = do
+      loadQueues cond mkQueue' = do
         qs_ <- dbLoadQueues qIds cond mkQueue'
         pure $ map (result qs_) qIds
         where
