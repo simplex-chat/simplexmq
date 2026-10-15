@@ -53,7 +53,7 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
-import Control.Monad.STM (check)
+import Control.Monad.STM (retry)
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first, second)
 import qualified Data.Aeson as J
@@ -1537,7 +1537,7 @@ client
             clientTimeout <- asks $ waitTimeout . config
             waitStarted <- liftIO getSystemTime
             expired <- liftIO $ registerDelay clientTimeout
-            taken <- atomically $ (True <$ (takeSlot limit >>= check)) `orElse` (False <$ (readTVar expired >>= check))
+            taken <- atomically $ ifM (takeSlot limit) (pure True) (ifM (readTVar expired) (pure False) retry)
             stats <- asks serverStats
             liftIO $ updateSlotWaitStats stats waitStarted taken
             pure taken
