@@ -624,6 +624,7 @@ importStoreLogToDatabase storeLogFile dbOpts = do
   ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
   sCnt <- batchInsertServices services' ps
   qCnt <- batchInsertQueues True qs ps
+  closeQueueStore @PostgresQueue ps
   renameFile storeLogFile $ storeLogFile <> ".bak"
   pure (sCnt, qCnt)
 

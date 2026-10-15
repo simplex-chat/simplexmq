@@ -59,11 +59,11 @@ msgStoreTests = do
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
 #endif
   where
-    someMsgStoreTests :: (MsgStoreClass s, HasTestEnv) => SpecWith s
-    someMsgStoreTests = do
-      it "should get queue and store/read messages" testGetQueue
-      it "should write/ack messages" testWriteAckMessages
-      it "should not add link data to secured messaging queue" testLinkDataSecuredQueue
+    someMsgStoreTests :: MsgStoreClass s => (HasTestEnv => MsgStoreConfig s) -> Spec
+    someMsgStoreTests cfg = do
+      it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
+      it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
+      it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
