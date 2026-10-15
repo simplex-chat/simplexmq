@@ -1221,6 +1221,9 @@ updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, 
   atomicModifyIORef'_ cmdSlotWaitMaxMs (max waitMs)
   unless taken $ incStat cmdSlotWaitTimeouts
 
+rslvTooManyRequests :: BrokerMsg
+rslvTooManyRequests = ERR $ NAME $ RESOLVER "too many requests"
+
 forwardedCmdWait :: ServerConfig s -> Int
 forwardedCmdWait = (`netTimeoutInt` NRMBackground) . tcpTimeout . networkConfig . smpCfg . smpAgentCfg
 
@@ -1582,7 +1585,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity (ERR $ NAME $ RESOLVER "too many requests") (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity rslvTooManyRequests (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2218,12 +2221,12 @@ client
             Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
               Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                -- The proxy waits for forwarded commands with the background timeout.
-                -- If no slot is free before it, there is no response, as the proxy has already timed out.
-                Just nenv -> forkCmd_ serverResolverConcurrency forwardedCmdWait (pure ()) $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
-                  rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                  atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                Just nenv -> do
+                  let sendResolved msg = do
+                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
+                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
               _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
