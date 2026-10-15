@@ -27,7 +27,6 @@ import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
 import qualified NamesResolverServer as NRS
 import SMPClient
 import Simplex.Messaging.Client
-import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
 import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
@@ -331,11 +330,7 @@ testRslvSlotWaitTimeout =
 
 slotWaitCfg :: Int -> Int -> AServerConfig
 slotWaitCfg port clientTimeout =
-  updateCfg (withNames port memCfg) $ \c ->
-    let aCfg = smpAgentCfg c
-        cCfg = smpCfg aCfg
-        nt = NetworkTimeout {backgroundTimeout = clientTimeout, interactiveTimeout = clientTimeout}
-     in c {serverClientConcurrency = 4, prometheusInterval = Just 1, smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
+  updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = 4, prometheusInterval = Just 1, maxClientCmdWait = clientTimeout}
 
 data SlotWaitMetrics = SlotWaitMetrics {waits :: Int, waitTimeouts :: Int, waitMaxMs :: Int, waitSumMs :: Int}
 
