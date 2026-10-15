@@ -18,6 +18,7 @@ module Simplex.Messaging.Server.QueueStore.STM
   ( STMQueueStore (..),
     STMService (..),
     foldRcvServiceQueues,
+    withLoadedQueues,
     setStoreLog,
     withLog',
     readQueueRecIO,
@@ -91,8 +92,6 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     atomically $ TM.clear senders
     atomically $ TM.clear notifiers
 
-  loadedQueues = queues
-  {-# INLINE loadedQueues #-}
   compactQueues _ = pure 0
   {-# INLINE compactQueues #-}
 
@@ -378,6 +377,11 @@ foldRcvServiceQueues st serviceId f acc =
         >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc . fst
   where
     get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
+
+withLoadedQueues :: Monoid a => STMQueueStore q -> (q -> IO a) -> IO a
+withLoadedQueues st f = readTVarIO (queues st) >>= foldM run mempty
+  where
+    run !acc = fmap (acc <>) . f
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

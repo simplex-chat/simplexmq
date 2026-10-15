@@ -596,11 +596,7 @@ prometheusMetrics sm rtm ts =
       \\n\
       \# HELP simplex_smp_loaded_queues_queue_lock_count Total queue locks (0 for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_lock_count gauge\n\
-      \simplex_smp_loaded_queues_queue_lock_count " <> mshow (queueLockCount loadedCounts) <> "\n# loadedCounts.queueLockCount\n\
-      \\n\
-      \# HELP simplex_smp_loaded_queues_ntf_lock_count Total notifier locks (0 for memory storage)\n\
-      \# TYPE simplex_smp_loaded_queues_ntf_lock_count gauge\n\
-      \simplex_smp_loaded_queues_ntf_lock_count " <> mshow (notifierLockCount loadedCounts) <> "\n# loadedCounts.notifierLockCount\n"
+      \simplex_smp_loaded_queues_queue_lock_count " <> mshow (queueLockCount loadedCounts) <> "\n# loadedCounts.queueLockCount\n"
 
     showTimeBuckets :: Text -> IM.IntMap Int -> Text
     showTimeBuckets metric = T.concat . snd . mapAccumL accumBucket (0, 0) . IM.assocs

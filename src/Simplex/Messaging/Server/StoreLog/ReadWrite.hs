@@ -23,7 +23,7 @@ import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ASubscriberParty (..), ErrorType, RecipientId, SParty (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..), withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)

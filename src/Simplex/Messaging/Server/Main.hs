@@ -95,7 +95,7 @@ import Data.Semigroup (Sum (..))
 import Simplex.Messaging.Agent.Store.Postgres (checkSchemaExists)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
-import Simplex.Messaging.Server.MsgStore.STM (STMQueue, STMStoreConfig (..))
+import Simplex.Messaging.Server.MsgStore.STM (STMStoreConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), newMsgStore)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config
 import Simplex.Messaging.Server.QueueStore.Postgres (PostgresQueueStore, batchInsertQueues, batchInsertServices, foldQueueRecs, foldServiceRecs)
@@ -619,13 +619,12 @@ importStoreLogToDatabase storeLogFile dbOpts = do
   let st = queueStore ms
   sl <- readWriteQueueStore True (mkQueue ms False) storeLogFile st
   closeStoreLog sl
-  queues <- readTVarIO $ loadedQueues st
+  qs <- readTVarIO $ queues st
   services' <- M.elems <$> readTVarIO (services st)
   let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
-  ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue (storeCfg, False)
+  ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
   sCnt <- batchInsertServices services' ps
-  qCnt <- batchInsertQueues @STMQueue True queues ps
-  closeQueueStore @PostgresQueue ps
+  qCnt <- batchInsertQueues True qs ps
   renameFile storeLogFile $ storeLogFile <> ".bak"
   pure (sCnt, qCnt)
 
@@ -647,7 +646,7 @@ importMessagesToDatabase msgsLogFile dbOpts = do
 exportDatabaseToStoreLog :: DBOpts -> FilePath -> IO (Int, Int)
 exportDatabaseToStoreLog dbOpts storeLogFilePath = do
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
-  ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue (storeCfg, False)
+  ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
   sl <- openWriteStoreLog False storeLogFilePath
   Sum sCnt <- foldServiceRecs ps $ \sr -> logNewService sl sr $> Sum (1 :: Int)
   Sum qCnt <- foldQueueRecs True True ps $ \(rId, qr) -> logCreateQueue sl rId qr $> Sum (1 :: Int)

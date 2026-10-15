@@ -97,7 +97,7 @@ instance MsgStoreClass PostgresMsgStore where
 
   newMsgStore :: PostgresMsgStoreCfg -> IO PostgresMsgStore
   newMsgStore config = do
-    queueStore_ <- newQueueStore @PostgresQueue (queueStoreCfg config, False)
+    queueStore_ <- newQueueStore @PostgresQueue (queueStoreCfg config)
     pure PostgresMsgStore {config, queueStore_}
 
   closeMsgStore :: PostgresMsgStore -> IO ()
@@ -158,13 +158,7 @@ instance MsgStoreClass PostgresMsgStore where
   {-# INLINE queueStore #-}
 
   loadedQueueCounts :: PostgresMsgStore -> IO LoadedQueueCounts
-  loadedQueueCounts ms = do
-    loadedQueueCount <- M.size <$> readTVarIO queues
-    loadedNotifierCount <- M.size <$> readTVarIO notifiers
-    notifierLockCount <- M.size <$> readTVarIO notifierLocks
-    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, queueLockCount = 0, notifierLockCount}
-    where
-      PostgresQueueStore {queues, notifiers, notifierLocks} = queueStore_ ms
+  loadedQueueCounts _ = pure LoadedQueueCounts {loadedQueueCount = 0, loadedNotifierCount = 0, queueLockCount = 0}
 
   mkQueue :: PostgresMsgStore -> Bool -> RecipientId -> QueueRec -> IO PostgresQueue
   mkQueue _ _keepLock rId qr = PostgresQueue rId <$> newTVarIO (Just qr)

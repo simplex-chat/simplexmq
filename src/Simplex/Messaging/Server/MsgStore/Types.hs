@@ -154,8 +154,7 @@ instance Semigroup MessageStats where
 data LoadedQueueCounts = LoadedQueueCounts
   { loadedQueueCount :: Int,
     loadedNotifierCount :: Int,
-    queueLockCount :: Int,
-    notifierLockCount :: Int
+    queueLockCount :: Int
   }
 
 newMessageStats :: MessageStats

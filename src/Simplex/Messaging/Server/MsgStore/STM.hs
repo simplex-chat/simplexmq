@@ -103,7 +103,7 @@ instance MsgStoreClass STMMsgStore where
   loadedQueueCounts STMMsgStore {queueStore_ = st} = do
     loadedQueueCount <- M.size <$> readTVarIO (queues st)
     loadedNotifierCount <- M.size <$> readTVarIO (notifiers st)
-    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, queueLockCount = 0, notifierLockCount = 0}
+    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, queueLockCount = 0}
 
   mkQueue _ _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing
   {-# INLINE mkQueue #-}
