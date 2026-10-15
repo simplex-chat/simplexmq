@@ -285,7 +285,7 @@ testRslvWrongName =
 
 -- The resolver answers after 3s and the server gives up after 1s, so a request
 -- that reached the resolver stays in flight for the whole check.
-testRslvConnectionCap :: IO ()
+testRslvConnectionCap :: HasTestEnv => IO ()
 testRslvConnectionCap =
   NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
     withSmpServerConfigOn (transport @TLS) (updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = connCap}) testPort $ const $
@@ -298,7 +298,7 @@ testRslvConnectionCap =
     connCap = 4
 
 -- 4 lookups take the slots for the 1s resolver timeout, the 5th waits for a slot.
-testRslvSlotWait :: IO ()
+testRslvSlotWait :: HasTestEnv => IO ()
 testRslvSlotWait =
   NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
     withSmpServerConfigOn (transport @TLS) (slotWaitCfg port 10000000) testPort $ const $
@@ -314,7 +314,7 @@ testRslvSlotWait =
 
 -- The client times out after 0.2s, so the 2 waiting lookups fail before the slots are released.
 -- The connection does not process further commands while one waits, so the 6th waits after the 5th times out.
-testRslvSlotWaitTimeout :: IO ()
+testRslvSlotWaitTimeout :: HasTestEnv => IO ()
 testRslvSlotWaitTimeout =
   NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
     withSmpServerConfigOn (transport @TLS) (slotWaitCfg port 200000) testPort $ const $
@@ -328,13 +328,13 @@ testRslvSlotWaitTimeout =
         waitMaxMs `shouldSatisfy` (\t -> t >= 200 && t < 1000)
         waitSumMs `shouldSatisfy` (>= 400)
 
-slotWaitCfg :: Int -> Int -> AServerConfig
+slotWaitCfg :: HasTestEnv => Int -> Int -> AServerConfig
 slotWaitCfg port clientTimeout =
   updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = 4, prometheusInterval = Just 1, maxClientCmdWait = clientTimeout}
 
 data SlotWaitMetrics = SlotWaitMetrics {waits :: Int, waitTimeouts :: Int, waitMaxMs :: Int, waitSumMs :: Int}
 
-readSlotWaitMetrics :: IO SlotWaitMetrics
+readSlotWaitMetrics :: HasTestEnv => IO SlotWaitMetrics
 readSlotWaitMetrics = do
   ms <- map words . lines <$> readFile testPrometheusMetricsFile
   -- metric lines are "name value timestamp"
