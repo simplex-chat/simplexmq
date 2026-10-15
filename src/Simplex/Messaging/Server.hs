@@ -11,7 +11,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
@@ -99,7 +98,7 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, netTimeoutInt, smpProxyError, temporaryClientError, pattern NRMInteractive)
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, netTimeoutInt, smpProxyError, temporaryClientError)
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -1222,6 +1221,9 @@ updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, 
   atomicModifyIORef'_ cmdSlotWaitMaxMs (max waitMs)
   unless taken $ incStat cmdSlotWaitTimeouts
 
+forwardedCmdWait :: ServerConfig s -> Int
+forwardedCmdWait = (`netTimeoutInt` NRMBackground) . tcpTimeout . networkConfig . smpCfg . smpAgentCfg
+
 microseconds :: SystemTime -> Int64
 microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
 
@@ -1507,12 +1509,12 @@ client
     forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> BrokerMsg -> M s BrokerMsg -> M s (Maybe a)
     forkCmd concurrency corrId entId timeoutErr cmdAction =
       -- commands MUST be processed under a reasonable timeout or the client would halt
-      forkCmd_ concurrency NRMInteractive (sendResp timeoutErr) $ cmdAction >>= sendResp
+      forkCmd_ concurrency maxClientCmdWait (sendResp timeoutErr) $ cmdAction >>= sendResp
       where
         sendResp t = atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
     -- Run a slow command on a thread that sends its response
-    forkCmd_ :: (ServerConfig s -> Int) -> NetworkRequestMode -> M s () -> M s () -> M s (Maybe a)
-    forkCmd_ concurrency nm onTimeout cmd = do
+    forkCmd_ :: (ServerConfig s -> Int) -> (ServerConfig s -> Int) -> M s () -> M s () -> M s (Maybe a)
+    forkCmd_ concurrency waitTimeout onTimeout cmd = do
       let label = B.unpack $ "client $" <> encode sessionId <> " cmd"
       -- Exceptions are masked so the slot is never lost between taking it and starting the thread.
       -- The thread frees the slot when the command finishes; the caller frees it only if forking failed.
@@ -1529,7 +1531,7 @@ client
         wait = do
           limit <- asks (concurrency . config)
           ifM (atomically $ takeSlot limit) (pure True) $ do
-            clientTimeout <- asks $ (`netTimeoutInt` nm) . tcpTimeout . networkConfig . smpCfg . smpAgentCfg . config
+            clientTimeout <- asks $ waitTimeout . config
             waitStarted <- liftIO getSystemTime
             expired <- liftIO $ registerDelay clientTimeout
             taken <- atomically $ (True <$ (takeSlot limit >>= check)) `orElse` (False <$ (readTVar expired >>= check))
@@ -2234,7 +2236,7 @@ client
           -- The proxy waits for forwarded commands with the background timeout.
           -- If no slot is free before it, there is no response, as the proxy has already timed out.
           -- A delayed AUTH response is sent from another thread, so the delay does not hold the slot.
-          lift $ forkCmd_ concurrency NRMBackground (pure ()) $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
+          lift $ forkCmd_ concurrency forwardedCmdWait (pure ()) $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
             Right (r, rres)
               | isAuthError r -> liftIO $ sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
               | otherwise -> sendResp rres
