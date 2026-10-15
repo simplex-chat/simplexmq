@@ -569,23 +569,19 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_subscription_ntf_service_subs_total gauge\n\
       \simplex_smp_subscription_ntf_service_subs_total " <> mshow (subServiceSubsCount ntfSubs) <> "\n# ntf.subServiceSubsCount\n\
       \\n\
-      \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory/journal storage)\n\
+      \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_count gauge\n\
       \simplex_smp_loaded_queues_queue_count " <> mshow (loadedQueueCount loadedCounts) <> "\n# loadedCounts.loadedQueueCount\n\
       \\n\
-      \# HELP simplex_smp_loaded_queues_ntf_count Total loaded ntf credential references (all ntf credentials for memory/journal storage)\n\
+      \# HELP simplex_smp_loaded_queues_ntf_count Total loaded ntf credential references (all ntf credentials for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_ntf_count gauge\n\
       \simplex_smp_loaded_queues_ntf_count " <> mshow (loadedNotifierCount loadedCounts) <> "\n# loadedCounts.loadedNotifierCount\n\
-      \\n\
-      \# HELP simplex_smp_loaded_queues_open_journal_count Total opened queue journals (0 for memory storage)\n\
-      \# TYPE simplex_smp_loaded_queues_open_journal_count gauge\n\
-      \simplex_smp_loaded_queues_open_journal_count " <> mshow (openJournalCount loadedCounts) <> "\n# loadedCounts.openJournalCount\n\
       \\n\
       \# HELP simplex_smp_loaded_queues_queue_lock_count Total queue locks (0 for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_lock_count gauge\n\
       \simplex_smp_loaded_queues_queue_lock_count " <> mshow (queueLockCount loadedCounts) <> "\n# loadedCounts.queueLockCount\n\
       \\n\
-      \# HELP simplex_smp_loaded_queues_ntf_lock_count Total notifier locks (0 for memory/journal storage)\n\
+      \# HELP simplex_smp_loaded_queues_ntf_lock_count Total notifier locks (0 for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_ntf_lock_count gauge\n\
       \simplex_smp_loaded_queues_ntf_lock_count " <> mshow (notifierLockCount loadedCounts) <> "\n# loadedCounts.notifierLockCount\n"
 

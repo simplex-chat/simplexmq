@@ -869,7 +869,7 @@ testNotificationsSMPRestartBatch n ps@(t, ASType qsType _) apns =
     runServers :: ExceptT AgentErrorType IO a -> IO a
     runServers a = do
       withSmpServerStoreLogOn ps testPort $ \t1 -> do
-        res <- withSmpServerConfigOn t (cfgJ2QS qsType) testPort2 $ \t2 ->
+        res <- withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \t2 ->
           runRight a `finally` killThread t2
         killThread t1
         pure res

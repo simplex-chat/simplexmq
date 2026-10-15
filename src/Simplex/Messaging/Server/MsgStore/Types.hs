@@ -124,13 +124,12 @@ class (Monad (StoreMonad s), QueueStoreClass (StoreQueue s) (QueueStore s)) => M
   getQueueSize st q = withPeekMsgQueue st q "getQueueSize" $ maybe (pure 0) (getQueueSize_ . fst)
   {-# INLINE getQueueSize #-}
 
-data MSType = MSMemory | MSJournal | MSPostgres
+data MSType = MSMemory | MSPostgres
 
 data QSType = QSMemory | QSPostgres
 
 data SMSType :: MSType -> Type where
   SMSMemory :: SMSType 'MSMemory
-  SMSJournal :: SMSType 'MSJournal
   SMSPostgres :: SMSType 'MSPostgres
 
 data SQSType :: QSType -> Type where
@@ -155,7 +154,6 @@ instance Semigroup MessageStats where
 data LoadedQueueCounts = LoadedQueueCounts
   { loadedQueueCount :: Int,
     loadedNotifierCount :: Int,
-    openJournalCount :: Int,
     queueLockCount :: Int,
     notifierLockCount :: Int
   }

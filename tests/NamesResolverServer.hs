@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
@@ -77,7 +78,9 @@ memCfg2 = case memCfg of
     newStoreCfg :: ServerStoreCfg s -> ServerStoreCfg s
     newStoreCfg = \case
       SSCMemory _ -> SSCMemory (Just StorePaths {storeLogFile = testStoreLogFile2, storeMsgsFile = Just testStoreMsgsFile2})
+#if defined(dbServerPostgres)
       other -> other
+#endif
 
 withNames :: Int -> AServerConfig -> AServerConfig
 withNames port c = updateCfg c $ \cfg_ -> cfg_ {namesConfig = Just (testNamesConfig port)}
