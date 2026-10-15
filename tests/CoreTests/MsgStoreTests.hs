@@ -23,6 +23,7 @@ import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
+import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
@@ -31,7 +32,9 @@ import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.TMap (TMap)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -50,7 +53,9 @@ import SMPClient (testStoreDBOpts)
 
 msgStoreTests :: Spec
 msgStoreTests = do
-  describe "STM message store" $ someMsgStoreTests testSMTStoreConfig
+  describe "STM message store" $ do
+    someMsgStoreTests testSMTStoreConfig
+    it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
@@ -125,6 +130,18 @@ testNewQueueRecData g qm queueData = do
   pure (rId, qr)
   where
     rndId = atomically $ EntityId <$> C.randomBytes 24 g
+
+testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
+testNtfCreds g = do
+  (notifierKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
+  (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
+  pure
+    NtfCreds
+      { notifierId = EntityId "ijkl",
+        notifierKey,
+        rcvNtfDhSecret = C.dh' k pk,
+        ntfServiceId = Nothing
+      }
 
 testGetQueue :: MsgStoreClass s => s -> IO ()
 testGetQueue ms = do
@@ -216,6 +233,56 @@ testLinkDataSecuredQueue ms = do
     liftIO $ ld' `shouldBe` ld
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
+
+-- sizes of queues, senders, links and notifiers maps
+type QueueMapSizes = (Int, Int, Int, Int)
+
+queueMapSizes :: STMMsgStore -> IO QueueMapSizes
+queueMapSizes ms = (,,,) <$> size queues <*> size senders <*> size links <*> size notifiers
+  where
+    STMQueueStore {queues, senders, links, notifiers} = queueStore ms
+    size :: TMap k v -> IO Int
+    size = fmap M.size . readTVarIO
+
+testDeleteQueueMaps :: STMMsgStore -> IO ()
+testDeleteQueueMaps ms = do
+  g <- C.newRandom
+  ntfCreds <- testNtfCreds g
+  let newLinkId = atomically $ EntityId <$> C.randomBytes 24 g
+  lnkId1 <- newLinkId
+  lnkId2 <- newLinkId
+  lnkId3 <- newLinkId
+  (rId1, qr1) <- testNewQueueRec g QMMessaging
+  (rId2, qr2) <- testNewQueueRecData g QMContact (Just (lnkId1, testLinkData))
+  (rId3, qr3) <- testNewQueueRec g QMMessaging
+  (rId4, qr4) <- testNewQueueRec g QMMessaging
+  let rIds = [rId1, rId2, rId3, rId4] :: [RecipientId]
+      sIds = map senderId [qr1, qr2, qr3, qr4]
+      lnkIds = [lnkId1, lnkId2, lnkId3] :: [LinkId]
+  queueMapSizes ms `shouldReturn` (0, 0, 0, 0)
+  runRight_ $ do
+    q1 <- ExceptT $ addQueue ms rId1 qr1 {notifier = Just ntfCreds}
+    q2 <- ExceptT $ addQueue ms rId2 qr2
+    q3 <- ExceptT $ addQueue ms rId3 qr3
+    q4 <- ExceptT $ addQueue ms rId4 qr4
+    ExceptT $ addQueueLinkData (queueStore ms) q3 lnkId2 testLinkData
+    ExceptT $ addQueueLinkData (queueStore ms) q4 lnkId3 testLinkData
+    forM_ sIds $ void . ExceptT . getQueue ms SSender
+    forM_ lnkIds $ void . ExceptT . getQueue ms SSenderLink
+    liftIO $ queueMapSizes ms `shouldReturn` (4, 4, 3, 1)
+    ExceptT $ deleteQueueLinkData (queueStore ms) q3
+    liftIO $ queueMapSizes ms `shouldReturn` (4, 4, 2, 1)
+    forM_ ([q1, q2, q3, q4] :: [STMQueue]) $ void . ExceptT . deleteQueue ms
+  queueMapSizes ms `shouldReturn` (0, 0, 0, 0)
+  forM_ rIds $ \rId -> getQueue ms SRecipient rId >>= expectAuth
+  forM_ sIds $ \sId -> getQueue ms SSender sId >>= expectAuth
+  forM_ lnkIds $ \lnkId -> getQueue ms SSenderLink lnkId >>= expectAuth
+  queueMapSizes ms `shouldReturn` (0, 0, 0, 0)
+  where
+    expectAuth = either (`shouldBe` AUTH) (\_ -> expectationFailure "deleted queue is still found")
+
+testLinkData :: QueueLinkData
+testLinkData = (EncDataBytes "fixed data", EncDataBytes "user data")
 
 #if defined(dbServerPostgres)
 testUpdateMessageCounts :: PostgresMsgStore -> IO ()
