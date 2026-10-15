@@ -1513,14 +1513,14 @@ client
     -- Run a slow command on a thread that sends its response
     forkCmd_ :: (ServerConfig s -> Int) -> NetworkRequestMode -> M s () -> M s () -> M s (Maybe a)
     forkCmd_ concurrency nm onTimeout cmd = do
+      let label = B.unpack $ "client $" <> encode sessionId <> " cmd"
       -- Exceptions are masked so the slot is never lost between taking it and starting the thread.
       -- The thread frees the slot when the command finishes; the caller frees it only if forking failed.
       mask $ \restore ->
-        wait >>= \case
-          True ->
-            forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") (restore cmd `finally` signal)
-              `onException` signal
-          False -> restore onTimeout
+        ifM
+          wait
+          (forkClient clnt label (restore cmd `finally` signal) `onException` signal)
+          (restore onTimeout)
       pure Nothing
       where
         -- Takes a free slot at once if there is one. Otherwise waits for a slot until the client
