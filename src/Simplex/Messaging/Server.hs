@@ -33,9 +33,6 @@ module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
     controlPortAuth,
-    importMessages,
-    exportMessages,
-    printMessageStats,
     disconnectTransport,
     verifyCmdAuthorization,
     dummyVerifyCmd,
@@ -2385,7 +2382,7 @@ processServerMessages StartOptions {skipWarnings} = do
       processMessages old_ _ = \case
 #endif
         StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)
+          Just f -> ifM (doesFileExist f) (Just <$> importMessages ms f old_ skipWarnings) (pure Nothing)
           Nothing -> pure Nothing
 #if defined(dbServerPostgres)
         StoreDatabase ms -> processDbMessages old_ expire ms
@@ -2400,11 +2397,11 @@ processServerMessages StartOptions {skipWarnings} = do
         | otherwise = logWarn "skipping message expiration" $> Nothing
 #endif
 
-importMessages :: Bool -> STMMsgStore -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
-importMessages tty ms f old_ skipWarnings  = do
+importMessages :: STMMsgStore -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
+importMessages ms f old_ skipWarnings  = do
   logNote $ "restoring messages from file " <> T.pack f
   (_, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
-    foldLogLines tty f restoreMsg (Nothing, (0, 0, M.empty))
+    foldLogLines False f restoreMsg (Nothing, (0, 0, M.empty))
   renameFile f $ f <> ".bak"
   mapM_ setOverQuota_ overQuota
   EntityCounts {queueCount} <- liftIO $ getEntityCounts @STMQueue $ queueStore ms
@@ -2418,7 +2415,6 @@ importMessages tty ms f old_ skipWarnings  = do
         | otherwise -> exitErr $ parsingErr e
       where
         exitErr e = do
-          when tty $ putStrLn ""
           logError $ "error restoring messages: " <> e
           liftIO exitFailure
         parsingErr :: String -> Text
@@ -2431,7 +2427,6 @@ importMessages tty ms f old_ skipWarnings  = do
           case qOrErr of
             Right q -> addToQueue_ q rId msg
             Left AUTH -> liftIO $ do
-              when tty $ putStrLn ""
               warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
               pure (Nothing, counts)
             Left e -> throwE e
@@ -2442,7 +2437,6 @@ importMessages tty ms f old_ skipWarnings  = do
                   writeMsg ms q False msg >>= \case
                     Just _ -> pure (stored + 1, expired, overQuota)
                     Nothing -> liftIO $ do
-                      when tty $ putStrLn ""
                       logError $ decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
                       pure counts
               | otherwise -> pure (stored, expired + 1, overQuota)

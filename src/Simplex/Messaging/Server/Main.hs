@@ -28,7 +28,6 @@ module Simplex.Messaging.Server.Main
     importMessagesToDatabase,
     exportDatabaseToStoreLog,
 #endif
-    storeMsgsJournalDir',
     getServerSourceCode,
     simplexmqSource,
     serverPublicInfo,

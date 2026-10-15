@@ -24,9 +24,7 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     batchInsertServices,
     batchInsertQueues,
     foldServiceRecs,
-    foldRcvServiceQueueRecs,
     foldQueueRecs,
-    foldRecentQueueRecs,
     handleDuplicate,
     rowToQueueRec,
     withLog_,
@@ -481,11 +479,6 @@ foldServiceRecs st f =
     DB.fold_ db "SELECT service_id, service_role, service_cert, service_cert_hash, created_at FROM services" mempty $
       \ !acc -> fmap (acc <>) . f . rowToServiceRec
 
-foldRcvServiceQueueRecs :: PostgresQueueStore q -> ServiceId -> (a -> (RecipientId, QueueRec) -> IO a) -> a -> IO (Either ErrorType a)
-foldRcvServiceQueueRecs st serviceId f acc =
-  runExceptT $ withDB' "foldRcvServiceQueueRecs" st $ \db ->
-    DB.fold db (queueRecQuery <> " WHERE rcv_service_id = ? AND deleted_at IS NULL") (Only serviceId) acc $ \a -> f a . rowToQueueRec
-
 foldQueueRecs :: Monoid a => Bool -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
 foldQueueRecs withData = foldQueueRecs_ foldRecs
   where
@@ -493,12 +486,6 @@ foldQueueRecs withData = foldQueueRecs_ foldRecs
       | withData = DB.fold_ db (queueRecQueryWithData <> cond) acc $ \acc' -> f' acc' . rowToQueueRecWithData
       | otherwise = DB.fold_ db (queueRecQuery <> cond) acc $ \acc' -> f' acc' . rowToQueueRec
     cond = " WHERE deleted_at IS NULL ORDER BY recipient_id ASC"
-
-foldRecentQueueRecs :: Monoid a => Int64 -> Bool -> PostgresQueueStore q -> ((RecipientId, QueueRec) -> IO a) -> IO a
-foldRecentQueueRecs old = foldQueueRecs_ foldRecs
-  where
-    foldRecs db acc f' = DB.fold db (queueRecQuery <> cond) (Only old) acc $ \acc' -> f' acc' . rowToQueueRec
-    cond = " WHERE deleted_at IS NULL AND updated_at > ? ORDER BY recipient_id ASC"
 
 foldQueueRecs_ ::
   Monoid a =>
