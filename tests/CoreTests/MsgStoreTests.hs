@@ -9,9 +9,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module CoreTests.MsgStoreTests where
@@ -65,7 +63,6 @@ msgStoreTests = do
     someMsgStoreTests cfg = do
       it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
-      it "should not fail on EOF when changing read journal" $ withMsgStore cfg testChangeReadJournal
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
@@ -192,25 +189,6 @@ testWriteAckMessages ms = do
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q2 mId3
     void $ ExceptT $ deleteQueue ms q1
     void $ ExceptT $ deleteQueue ms q2
-
-testChangeReadJournal :: MsgStoreClass s => s -> IO ()
-testChangeReadJournal ms = do
-  g <- C.newRandom
-  (rId, qr) <- testNewQueueRec g QMMessaging
-  runRight_ $ do
-    q <- ExceptT $ addQueue ms rId qr
-    let write s = writeMsg ms q True =<< mkMessage s
-    Just (Message {msgId = mId1}, True) <- write "message 1"
-    (Msg "message 1", Nothing) <- tryDelPeekMsg ms q mId1
-    Just (Message {msgId = mId2}, True) <- write "message 2"
-    (Msg "message 2", Nothing) <- tryDelPeekMsg ms q mId2
-    Just (Message {msgId = mId3}, True) <- write "message 3"
-    (Msg "message 3", Nothing) <- tryDelPeekMsg ms q mId3
-    Just (Message {msgId = mId4}, True) <- write "message 4"
-    (Msg "message 4", Nothing) <- tryDelPeekMsg ms q mId4
-    Just (Message {msgId = mId5}, True) <- write "message 5"
-    (Msg "message 5", Nothing) <- tryDelPeekMsg ms q mId5
-    void $ ExceptT $ deleteQueue ms q
 
 testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
 testLinkDataSecuredQueue ms = do

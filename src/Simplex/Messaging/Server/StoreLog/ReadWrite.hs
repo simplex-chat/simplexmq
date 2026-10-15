@@ -23,7 +23,7 @@ import Data.Text.Encoding (decodeLatin1)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ASubscriberParty (..), ErrorType, RecipientId, SParty (..))
 import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..), withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.Util (tshow)
@@ -71,7 +71,7 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
         withQueue qId op a = runExceptT go >>= qError qId op
           where
             go = do
-              q <- ExceptT $ getQueue_ st (\_ -> mkQ) SRecipient qId
+              q <- ExceptT $ getQueue_ st mkQ SRecipient qId
               liftIO (readTVarIO $ queueRec q) >>= \case
                 Nothing -> logWarn $ logPfx qId op <> "already deleted"
                 Just _ -> void $ ExceptT $ a q

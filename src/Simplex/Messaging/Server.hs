@@ -33,9 +33,6 @@ module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
     controlPortAuth,
-    importMessages,
-    exportMessages,
-    printMessageStats,
     disconnectTransport,
     verifyCmdAuthorization,
     dummyVerifyCmd,
@@ -115,6 +112,7 @@ import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.Prometheus
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.QueueStore.STM (withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (foldLogLines)
@@ -144,7 +142,7 @@ import GHC.Conc.Sync (threadLabel)
 #endif
 
 #if defined(dbServerPostgres)
-import Simplex.Messaging.Server.MsgStore.Postgres (exportDbMessages, getDbMessageStats)
+import Simplex.Messaging.Server.MsgStore.Postgres (getDbMessageStats)
 #endif
 
 -- | Runs an SMP server using passed configuration.
@@ -2346,34 +2344,27 @@ randomId = fmap EntityId . randomId'
 
 saveServerMessages :: Bool -> MsgStore s -> IO ()
 saveServerMessages drainMsgs ms = case ms of
-  StoreMemory STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-    Just f -> exportMessages False ms f drainMsgs
+  StoreMemory ms'@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+    Just f -> exportMessages ms' f drainMsgs
     Nothing -> logNote "undelivered messages are not saved"
 #if defined(dbServerPostgres)
   StoreDatabase _ -> logNote "closed postgres message storage"
 #endif
 
-exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath -> Bool -> IO ()
-exportMessages tty st f drainMsgs = do
+exportMessages :: STMMsgStore -> FilePath -> Bool -> IO ()
+exportMessages ms f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
-  run $ case st of
-    StoreMemory ms -> exportMessages_ ms $ getMsgs ms
-#if defined(dbServerPostgres)
-    StoreDatabase ms -> exportDbMessages tty ms
-#endif
+  run $ fmap (\(Sum n) -> n) . withLoadedQueues (queueStore ms) . saveQueueMsgs
   where
-    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
     run :: (Handle -> IO Int) -> IO ()
     run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
       Right n -> logNote $ "messages saved: " <> tshow n
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
-    getMsgs :: MsgStoreClass s' => s' -> StoreQueue s' -> IO [Message]
-    getMsgs ms q = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
-    saveQueueMsgs :: (StoreQueue s -> IO [Message]) -> Handle -> StoreQueue s -> IO (Sum Int)
-    saveQueueMsgs get h q = do
-      msgs <- get q
+    saveQueueMsgs :: Handle -> STMQueue -> IO (Sum Int)
+    saveQueueMsgs h q = do
+      msgs <- atomically $ getQueueMessages_ drainMsgs =<< getMsgQueue q
       unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
       pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
@@ -2391,7 +2382,7 @@ processServerMessages StartOptions {skipWarnings} = do
       processMessages old_ _ = \case
 #endif
         StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)
+          Just f -> ifM (doesFileExist f) (Just <$> importMessages ms f old_ skipWarnings) (pure Nothing)
           Nothing -> pure Nothing
 #if defined(dbServerPostgres)
         StoreDatabase ms -> processDbMessages old_ expire ms
@@ -2406,18 +2397,17 @@ processServerMessages StartOptions {skipWarnings} = do
         | otherwise = logWarn "skipping message expiration" $> Nothing
 #endif
 
-importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
-importMessages tty ms f old_ skipWarnings  = do
+importMessages :: STMMsgStore -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
+importMessages ms f old_ skipWarnings  = do
   logNote $ "restoring messages from file " <> T.pack f
   (_, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
-    foldLogLines tty f restoreMsg (Nothing, (0, 0, M.empty))
+    foldLogLines False f restoreMsg (Nothing, (0, 0, M.empty))
   renameFile f $ f <> ".bak"
   mapM_ setOverQuota_ overQuota
-  logQueueStates ms
-  EntityCounts {queueCount} <- liftIO $ getEntityCounts @(StoreQueue s) $ queueStore ms
+  EntityCounts {queueCount} <- liftIO $ getEntityCounts @STMQueue $ queueStore ms
   pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = queueCount}
   where
-    restoreMsg :: (Maybe (RecipientId, StoreQueue s), (Int, Int, Map RecipientId (StoreQueue s))) -> Bool -> ByteString -> IO (Maybe (RecipientId, StoreQueue s), (Int, Int, Map RecipientId (StoreQueue s)))
+    restoreMsg :: (Maybe (RecipientId, STMQueue), (Int, Int, Map RecipientId STMQueue)) -> Bool -> ByteString -> IO (Maybe (RecipientId, STMQueue), (Int, Int, Map RecipientId STMQueue))
     restoreMsg (q_, counts@(!stored, !expired, !overQuota)) eof s = case strDecode s of
       Right (MLRv3 rId msg) -> runExceptT (addToMsgQueue rId msg) >>= either (exitErr . tshow) pure
       Left e
@@ -2425,7 +2415,6 @@ importMessages tty ms f old_ skipWarnings  = do
         | otherwise -> exitErr $ parsingErr e
       where
         exitErr e = do
-          when tty $ putStrLn ""
           logError $ "error restoring messages: " <> e
           liftIO exitFailure
         parsingErr :: String -> Text
@@ -2438,7 +2427,6 @@ importMessages tty ms f old_ skipWarnings  = do
           case qOrErr of
             Right q -> addToQueue_ q rId msg
             Left AUTH -> liftIO $ do
-              when tty $ putStrLn ""
               warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
               pure (Nothing, counts)
             Left e -> throwE e
@@ -2449,7 +2437,6 @@ importMessages tty ms f old_ skipWarnings  = do
                   writeMsg ms q False msg >>= \case
                     Just _ -> pure (stored + 1, expired, overQuota)
                     Nothing -> liftIO $ do
-                      when tty $ putStrLn ""
                       logError $ decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
                       pure counts
               | otherwise -> pure (stored, expired + 1, overQuota)
@@ -2460,8 +2447,8 @@ importMessages tty ms f old_ skipWarnings  = do
               where
                 -- if the first message in queue head is "quota", remove it.
                 mergeQuotaMsgs =
-                  withPeekMsgQueue ms q "mergeQuotaMsgs" $ maybe (pure ()) $ \case
-                    (mq, MessageQuota {}) -> tryDeleteMsg_ q mq False
+                  withPeekMsgQueue q $ maybe (pure ()) $ \case
+                    (mq, MessageQuota {}) -> tryDeleteMsg_ mq
                     _ -> pure ()
         warnOrExit e
           | skipWarnings = logWarn e'

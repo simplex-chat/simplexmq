@@ -1226,7 +1226,7 @@ testRestoreExpireMessages =
           closeMsgStore ms'
         readWriteQueues = do
           ms <- newMsgStore testSMTStoreConfig
-          readWriteQueueStore True (mkQueue ms True) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
           removeFileIfExists testStoreMsgsFile
           pure ms
 #else
