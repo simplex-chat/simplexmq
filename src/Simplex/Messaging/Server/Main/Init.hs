@@ -154,7 +154,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
         \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
         \# socks_mode = onion\n\n\
-        \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
+        \# Limit number of threads a client can spawn to process proxy commands and name resolutions in parallel.\n"
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
     <> "\n\n\
         \[NAMES]\n\
@@ -169,7 +169,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# resolver_auth: basic <username>:<password>\n\
         \# resolver_timeout_ms: 3000\n\
         \# resolver_max_response_bytes: 16000\n\
-        \# Max concurrent name resolutions per connection (forwarded RSLVs from many\n\
+        \# Max concurrent forwarded name resolutions per proxy connection (forwarded RSLVs from many\n\
         \# clients share one proxy connection, so this is much higher than PROXY client_concurrency).\n"
     <> ("# resolver_concurrency = " <> tshow defaultNameResolverConcurrency)
     <> "\n\n\

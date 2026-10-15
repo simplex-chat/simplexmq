@@ -108,7 +108,7 @@ rslvTests = do
     it "a name with subnames is sent as text" testSubnameKeepsItsLabels
     it "a record naming a different name is rejected" testRslvWrongName
   describe "RSLV resource use" $ do
-    it "one connection has at most resolver_concurrency lookups in flight" testRslvConnectionCap
+    it "one connection has at most client_concurrency lookups in flight" testRslvConnectionCap
     it "a lookup waiting for a slot runs when a slot is released" testRslvSlotWait
     it "a lookup waiting for a slot fails when the client times out" testRslvSlotWaitTimeout
 
@@ -289,7 +289,7 @@ testRslvWrongName =
 testRslvConnectionCap :: IO ()
 testRslvConnectionCap =
   NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
-    withSmpServerConfigOn (transport @TLS) (updateCfg (withNames port memCfg) $ \c -> c {serverResolverConcurrency = connCap}) testPort $ const $
+    withSmpServerConfigOn (transport @TLS) (updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = connCap}) testPort $ const $
       testSMPClient @TLS $ \h -> do
         sendRslvs h "cap" 16
         threadDelay 800000
@@ -321,7 +321,7 @@ testRslvSlotWaitTimeout =
     withSmpServerConfigOn (transport @TLS) (slotWaitCfg port 200000) testPort $ const $
       testSMPClient @TLS $ \h -> do
         sendRslvs h "wait" 6
-        recvResponses h 6 `shouldReturn` replicate 6 (Right (ERR (NAME (RESOLVER "timeout"))))
+        recvResponses h 6 `shouldReturn` (replicate 2 (Right (ERR (NAME (RESOLVER "too many requests")))) <> replicate 4 (Right (ERR (NAME (RESOLVER "timeout")))))
         threadDelay 1500000
         length <$> resolvePaths reqs `shouldReturn` 4
         SlotWaitMetrics {waits, waitTimeouts, waitMaxMs, waitSumMs} <- readSlotWaitMetrics
@@ -335,7 +335,7 @@ slotWaitCfg port clientTimeout =
     let aCfg = smpAgentCfg c
         cCfg = smpCfg aCfg
         nt = NetworkTimeout {backgroundTimeout = clientTimeout, interactiveTimeout = clientTimeout}
-     in c {serverResolverConcurrency = 4, prometheusInterval = Just 1, smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
+     in c {serverClientConcurrency = 4, prometheusInterval = Just 1, smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
 
 data SlotWaitMetrics = SlotWaitMetrics {waits :: Int, waitTimeouts :: Int, waitMaxMs :: Int, waitSumMs :: Int}
 
