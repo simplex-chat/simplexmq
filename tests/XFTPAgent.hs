@@ -13,6 +13,7 @@ module XFTPAgent where
 
 import AgentTests.FunctionalAPITests (get, rfGet, runRight, runRight_, sfGet, withAgent, testServerInformation)
 
+import Control.Concurrent.STM (retry)
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -25,6 +26,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Clock.System (getSystemTime, systemSeconds)
+import GHC.Conc (BlockReason (BlockedOnSTM), ThreadStatus (ThreadBlocked), threadStatus)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
 import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
@@ -37,6 +39,7 @@ import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpPrepareReceiveFile, xftpPrepareSendFile, xftpReceiveFile, xftpSendDescription, xftpStartReceiveFile, xftpStartSendFile, xftpStartWorkers)
 import qualified Simplex.Messaging.Agent as XA
 import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..))
+import qualified Simplex.Messaging.Agent.Client as AC
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
 import qualified Simplex.Messaging.Agent.Env.SQLite as AEnv
 import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
@@ -52,9 +55,11 @@ import Simplex.Messaging.Protocol (BasicAuth, NetworkError (..), ProtoServerWith
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
-import Simplex.Messaging.Util (tshow)
+import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (ifM, tshow)
 import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
 import System.FilePath ((</>))
+import System.Mem.Weak (deRefWeak)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import UnliftIO.Concurrent
@@ -84,6 +89,7 @@ xftpAgentTests =
       it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
       it "should send and receive large file with a redirect" testXFTPAgentSendReceiveRedirect
       it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
+      it "should remove received chunks before publishing completion" testXFTPAgentCompletionCleanup
       it "should receive prepared file only after it is started" testXFTPAgentPrepareReceive
       it "should send prepared file only after it is started" testXFTPAgentPrepareSend
       it "should extend storage time with an entitlement proof and report the granted expiry" $ \_ -> testXFTPAgentEntitlement
@@ -279,6 +285,62 @@ testXFTPAgentSendReceiveNoRedirect = withXFTPServer $ do
 
       inBytes <- B.readFile filePathIn
       B.readFile out `shouldReturn` inBytes
+
+-- A full event queue is a barrier at RFDONE, after real download/decryption.
+-- Holding the not-yet-started local worker lets us install that barrier after
+-- draining RFPROG, without sleeps or changing the transfer implementation.
+testXFTPAgentCompletionCleanup :: HasCallStack => AFStoreType -> IO ()
+testXFTPAgentCompletionCleanup = withXFTPServer $ do
+  filePathIn <- createRandomFile_ (kb 64) "completion-order"
+  sentBytes <- B.readFile filePathIn
+  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+    _ <- runRight $ xftpSendFile sndr 1 (CryptoFile filePathIn Nothing) 1
+    sfProgress sndr (kb 128)
+    (_, _, SFDONE _ (description : _)) <- sfGet sndr
+    withAgent 2 agentCfg {AEnv.tbqSize = 1} initAgentServers testDB2 $ \rcp -> do
+      let AEnv.XFTPAgent {AEnv.xftpWorkDir, AEnv.xftpRcvWorkers} = AEnv.xftpAgent $ AC.agentEnv rcp
+      AEnv.Worker {AEnv.action, AEnv.doWork, AEnv.restarts} <- atomically $ do
+        writeTVar xftpWorkDir $ Just recipientFiles
+        workerId <- stateTVar (AC.workerSeq rcp) $ \next -> (next, next + 1)
+        w <- AEnv.Worker workerId <$> newTMVar () <*> newEmptyTMVar <*> newTVar (AEnv.RestartCount 0 0)
+        TM.insert Nothing w xftpRcvWorkers
+        pure w
+      let releaseWorker = atomically $ void $ tryPutTMVar action Nothing
+      flip finally releaseWorker $ do
+        rfId <- runRight $ xftpReceiveFile rcp 1 description Nothing True
+        rfProgress rcp (kb 128)
+        [prefixDir] <- listDirectory recipientFiles
+        let prefixPath = recipientFiles </> prefixDir
+            tmpPath = prefixPath </> "xftp.encrypted"
+            outputPath = prefixPath </> "xftp.decrypted"
+        doesDirectoryExist tmpPath `shouldReturn` True
+        -- No producer can publish completion until this sentinel is consumed.
+        atomically $ writeTBQueue (AC.subQ rcp) ("barrier", rfId, AEvt SAERcvFile $ RFPROG 0 (kb 128))
+        releaseWorker
+        weak <- atomically $ readTMVar action >>= maybe retry pure
+        Just tid <- deRefWeak weak
+        let awaitPublish = do
+              blocked <- (== ThreadBlocked BlockedOnSTM) <$> threadStatus tid
+              decrypted <-
+                if blocked
+                  then ifM (doesFileExist outputPath) ((== sentBytes) <$> B.readFile outputPath) (pure False)
+                  else pure False
+              unless (blocked && decrypted) $ yield >> awaitPublish
+        timeout 10000000 awaitPublish `shouldReturn` Just ()
+        -- This fails on the old order: its worker is blocked in notify while
+        -- the encrypted chunk directory still exists.
+        doesDirectoryExist tmpPath `shouldReturn` False
+        rfGet rcp `shouldReturn` ("barrier", rfId, RFPROG 0 (kb 128))
+        rfGet rcp `shouldReturn` ("", rfId, RFDONE outputPath)
+        -- Model the consumer immediately deleting its completed receive.
+        xftpDeleteRcvFile rcp rfId
+        let awaitIdle = do
+              idle <- atomically $ isEmptyTMVar doWork
+              blocked <- (== ThreadBlocked BlockedOnSTM) <$> threadStatus tid
+              unless (idle && blocked) $ yield >> awaitIdle
+        timeout 10000000 awaitIdle `shouldReturn` Just ()
+        AEnv.restartCount <$> readTVarIO restarts `shouldReturn` 0
+        atomically (tryReadTBQueue $ AC.subQ rcp) `shouldReturn` Nothing
 
 testXFTPAgentPrepareReceive :: HasCallStack => AFStoreType -> IO ()
 testXFTPAgentPrepareReceive = withXFTPServer $ do
