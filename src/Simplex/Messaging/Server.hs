@@ -2211,9 +2211,9 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-              forkFwdCmd corrId' entId' timeoutErr cmdAction = forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved timeoutErr) (cmdAction >>= sendResolved)
+              forkFwdCmd corrId' entId' timeoutErr cmdAction = forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResp timeoutErr) (cmdAction >>= sendResp)
                 where
-                  sendResolved msg = do
+                  sendResp msg = do
                     rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
                     atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
           -- the inner response, or Nothing if forked (RSLV).
