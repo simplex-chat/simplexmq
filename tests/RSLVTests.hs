@@ -56,7 +56,7 @@ import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (mapConcurrently)
+import UnliftIO.Async (replicateConcurrently)
 import Util (HasTestEnv, it)
 
 domain :: Text -> SimplexDomain
@@ -154,10 +154,7 @@ testRslvVersion =
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
 forwardedResolveAlice :: HasTestEnv => IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
-forwardedResolveAlice = proxiedRelaySession >>= uncurry resolveAliceVia
-
-proxiedRelaySession :: HasTestEnv => IO (SMPClient, ProxiedRelay)
-proxiedRelaySession = do
+forwardedResolveAlice = do
   g <- C.newRandom
   ts <- getCurrentTime
   let proxyServ = SMPServer testHost testPort testKeyHash
@@ -166,10 +163,7 @@ proxiedRelaySession = do
   pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pcE
   sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
-  pure (pc, sess)
-
-resolveAliceVia :: SMPClient -> ProxiedRelay -> IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
-resolveAliceVia pc sess = runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+  runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
 
 testRslvForwardedDisabled :: HasTestEnv => IO ()
 testRslvForwardedDisabled =
@@ -182,8 +176,7 @@ testRslvForwardedSlotWaitTimeout =
   NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port _ ->
     withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
       withSmpServerConfigOn (transport @TLS) (relayCfg port) testPort2 $ \_ -> do
-        (pc, sess) <- proxiedRelaySession
-        rs <- mapConcurrently (const $ resolveAliceVia pc sess) [1, 2 :: Int]
+        rs <- replicateConcurrently 2 forwardedResolveAlice
         rs `shouldMatchList` map rslvErr ["timeout", "too many requests"]
   where
     rslvErr :: Text -> Either SMPClientError (Either ProxyClientError SMP.NameResponse)
