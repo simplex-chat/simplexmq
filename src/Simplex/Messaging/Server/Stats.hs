@@ -130,6 +130,11 @@ data ServerStats = ServerStats
     rcvServicesSubMsg :: IORef Int,
     rcvServicesSubDuplicate :: IORef Int,
     authDelayExceeded :: IORef Int,
+    -- commands that waited for a free slot in forkCmd, total and max wait in ms, and waits that timed out
+    cmdSlotWaits :: IORef Int,
+    cmdSlotWaitMs :: IORef Int,
+    cmdSlotWaitMaxMs :: IORef Int,
+    cmdSlotWaitTimeouts :: IORef Int,
     qCount :: IORef Int,
     msgCount :: IORef Int,
     ntfCount :: IORef Int,
@@ -194,6 +199,10 @@ data ServerStatsData = ServerStatsData
     _rcvServicesSubMsg :: Int,
     _rcvServicesSubDuplicate :: Int,
     _authDelayExceeded :: Int,
+    _cmdSlotWaits :: Int,
+    _cmdSlotWaitMs :: Int,
+    _cmdSlotWaitMaxMs :: Int,
+    _cmdSlotWaitTimeouts :: Int,
     _qCount :: Int,
     _msgCount :: Int,
     _ntfCount :: Int,
@@ -260,6 +269,10 @@ newServerStats ts = do
   rcvServicesSubMsg <- newIORef 0
   rcvServicesSubDuplicate <- newIORef 0
   authDelayExceeded <- newIORef 0
+  cmdSlotWaits <- newIORef 0
+  cmdSlotWaitMs <- newIORef 0
+  cmdSlotWaitMaxMs <- newIORef 0
+  cmdSlotWaitTimeouts <- newIORef 0
   qCount <- newIORef 0
   msgCount <- newIORef 0
   ntfCount <- newIORef 0
@@ -323,6 +336,10 @@ newServerStats ts = do
         rcvServicesSubMsg,
         rcvServicesSubDuplicate,
         authDelayExceeded,
+        cmdSlotWaits,
+        cmdSlotWaitMs,
+        cmdSlotWaitMaxMs,
+        cmdSlotWaitTimeouts,
         qCount,
         msgCount,
         ntfCount,
@@ -388,6 +405,10 @@ getServerStatsData s = do
   _rcvServicesSubMsg <- readIORef $ rcvServicesSubMsg s
   _rcvServicesSubDuplicate <- readIORef $ rcvServicesSubDuplicate s
   _authDelayExceeded <- readIORef $ authDelayExceeded s
+  _cmdSlotWaits <- readIORef $ cmdSlotWaits s
+  _cmdSlotWaitMs <- readIORef $ cmdSlotWaitMs s
+  _cmdSlotWaitMaxMs <- readIORef $ cmdSlotWaitMaxMs s
+  _cmdSlotWaitTimeouts <- readIORef $ cmdSlotWaitTimeouts s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
   _ntfCount <- readIORef $ ntfCount s
@@ -451,6 +472,10 @@ getServerStatsData s = do
         _rcvServicesSubMsg,
         _rcvServicesSubDuplicate,
         _authDelayExceeded,
+        _cmdSlotWaits,
+        _cmdSlotWaitMs,
+        _cmdSlotWaitMaxMs,
+        _cmdSlotWaitTimeouts,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -517,6 +542,10 @@ setServerStats s d = do
   writeIORef (rcvServicesSubMsg s) $! _rcvServicesSubMsg d
   writeIORef (rcvServicesSubDuplicate s) $! _rcvServicesSubDuplicate d
   writeIORef (authDelayExceeded s) $! _authDelayExceeded d
+  writeIORef (cmdSlotWaits s) $! _cmdSlotWaits d
+  writeIORef (cmdSlotWaitMs s) $! _cmdSlotWaitMs d
+  writeIORef (cmdSlotWaitMaxMs s) $! _cmdSlotWaitMaxMs d
+  writeIORef (cmdSlotWaitTimeouts s) $! _cmdSlotWaitTimeouts d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
@@ -721,6 +750,10 @@ instance StrEncoding ServerStatsData where
           _rcvServicesSubMsg = 0,
           _rcvServicesSubDuplicate = 0,
           _authDelayExceeded = 0,
+          _cmdSlotWaits = 0,
+          _cmdSlotWaitMs = 0,
+          _cmdSlotWaitMaxMs = 0,
+          _cmdSlotWaitTimeouts = 0,
           _qCount,
           _msgCount = 0,
           _ntfCount = 0,

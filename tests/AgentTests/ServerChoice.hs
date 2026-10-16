@@ -57,7 +57,7 @@ storageOnly = ServerRoles {storage = True, proxy = False, names = False}
 proxyOnly :: ServerRoles
 proxyOnly = ServerRoles {storage = False, proxy = True, names = False}
 
-initServers :: InitialAgentServers
+initServers :: HasTestEnv => InitialAgentServers
 initServers =
   InitialAgentServers
     { smp = M.fromList [(1, testSMPServers)],
@@ -70,7 +70,7 @@ initServers =
       presetServers = []
     }
 
-testChooseDifferentOperator :: IO ()
+testChooseDifferentOperator :: HasTestEnv => IO ()
 testChooseDifferentOperator = withAgent 1 agentCfg initServers testDB $ \c -> runRight_ $ do
     -- chooses the only operator with storage role
     srv1 <- withAgentEnv c $ getNextServer c 1 storageSrvs []

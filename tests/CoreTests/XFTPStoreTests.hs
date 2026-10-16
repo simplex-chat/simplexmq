@@ -47,7 +47,7 @@ xftpMigrationTests = describe "XFTP migration round-trip" $ do
 
 -- Test helpers
 
-withPgStore :: (PostgresFileStore -> IO ()) -> IO ()
+withPgStore :: HasTestEnv => (PostgresFileStore -> IO ()) -> IO ()
 withPgStore test = do
   st <- newFileStore testXFTPPostgresCfg :: IO PostgresFileStore
   test st
@@ -75,7 +75,7 @@ testExpiresAt = RoundedSystemTime 2000000
 
 -- Tests
 
-testAddGetFileSender :: Expectation
+testAddGetFileSender :: HasTestEnv => Expectation
 testAddGetFileSender = withPgStore $ \st -> do
   g <- C.newRandom
   (sk, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -91,7 +91,7 @@ testAddGetFileSender = withPgStore $ \st -> do
       key `shouldBe` sk
     Left e -> expectationFailure $ "getFile failed: " <> show e
 
-testAddGetFileRecipient :: Expectation
+testAddGetFileRecipient :: HasTestEnv => Expectation
 testAddGetFileRecipient = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -106,7 +106,7 @@ testAddGetFileRecipient = withPgStore $ \st -> do
       key `shouldBe` rcpKey
     Left e -> expectationFailure $ "getFile failed: " <> show e
 
-testDuplicateFile :: Expectation
+testDuplicateFile :: HasTestEnv => Expectation
 testDuplicateFile = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -114,12 +114,12 @@ testDuplicateFile = withPgStore $ \st -> do
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Left DUPLICATE_
 
-testGetNonexistent :: Expectation
+testGetNonexistent :: HasTestEnv => Expectation
 testGetNonexistent = withPgStore $ \st -> do
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
 
-testSetFilePath :: Expectation
+testSetFilePath :: HasTestEnv => Expectation
 testSetFilePath = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -134,7 +134,7 @@ testSetFilePath = withPgStore $ \st -> do
     Right (FileRec {filePath}, _) -> readTVarIO filePath `shouldReturn` Just "/tmp/test_file"
     Left e -> expectationFailure $ "getFile failed: " <> show e
 
-testDuplicateRecipient :: Expectation
+testDuplicateRecipient :: HasTestEnv => Expectation
 testDuplicateRecipient = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -144,7 +144,7 @@ testDuplicateRecipient = withPgStore $ \st -> do
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Left DUPLICATE_
 
-testDeleteFileCascade :: Expectation
+testDeleteFileCascade :: HasTestEnv => Expectation
 testDeleteFileCascade = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -157,7 +157,7 @@ testDeleteFileCascade = withPgStore $ \st -> do
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
 
-testBlockFile :: Expectation
+testBlockFile :: HasTestEnv => Expectation
 testBlockFile = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -170,7 +170,7 @@ testBlockFile = withPgStore $ \st -> do
     Right (FileRec {fileStatus}, _) -> readTVarIO fileStatus `shouldReturn` EntityBlocked blockInfo
     Left e -> expectationFailure $ "getFile failed: " <> show e
 
-testAckFile :: Expectation
+testAckFile :: HasTestEnv => Expectation
 testAckFile = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -186,7 +186,7 @@ testAckFile = withPgStore $ \st -> do
     Right _ -> pure ()
     Left e -> expectationFailure $ "getFile failed: " <> show e
 
-testExpiredFiles :: Expectation
+testExpiredFiles :: HasTestEnv => Expectation
 testExpiredFiles = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -207,7 +207,7 @@ testExpiredFiles = withPgStore $ \st -> do
       sz `shouldBe` 128000
     _ -> expectationFailure "expected 1 expired file"
 
-testExpiredFilesStoredExpiration :: Expectation
+testExpiredFilesStoredExpiration :: HasTestEnv => Expectation
 testExpiredFilesStoredExpiration = withPgStore $ \st -> do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -219,7 +219,7 @@ testExpiredFilesStoredExpiration = withPgStore $ \st -> do
   expired <- expiredFiles st (RoundedSystemTime 500000) 0 100
   map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
 
-testStorageAndCount :: Expectation
+testStorageAndCount :: HasTestEnv => Expectation
 testStorageAndCount = withPgStore $ \st -> do
   testStorageAndCountForStore st
 
@@ -250,10 +250,10 @@ testStorageAndCountForStore st = do
 
 -- Migration round-trip test
 
-testMigrationRoundTrip :: Expectation
+testMigrationRoundTrip :: HasTestEnv => Expectation
 testMigrationRoundTrip = do
-  let storeLogPath = "tests/tmp/xftp-migration-test.log"
-      storeLogPath2 = "tests/tmp/xftp-migration-test2.log"
+  let storeLogPath = testPath "xftp-migration-test.log"
+      storeLogPath2 = testPath "xftp-migration-test2.log"
   -- 1. Create STM store with test data
   stmStore <- newFileStore () :: IO STMFileStore
   g <- C.newRandom
