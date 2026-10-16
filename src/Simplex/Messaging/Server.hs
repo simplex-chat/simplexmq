@@ -2211,7 +2211,7 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-              forkFwdCmd corrId' entId' timeoutErr cmdAction = forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResp timeoutErr) (cmdAction >>= sendResp)
+              forkFwdCmd corrId' entId' timeoutErr cmdAction = forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResp timeoutErr) $ cmdAction >>= sendResp
                 where
                   sendResp msg = do
                     rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
@@ -2221,7 +2221,7 @@ client
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
             Left r -> pure $ Just r
             -- `fst` drops the empty message only returned for SUB.
-            Right t'' -> fmap fst <$> lift (processCommand (thVersion clntTHParams) forkFwdCmd Nothing (Right (M.empty, M.empty, M.empty)) t'')
+            Right t'' -> fst <$$> lift (processCommand (thVersion clntTHParams) forkFwdCmd Nothing (Right (M.empty, M.empty, M.empty)) t'')
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           traverse encodeResp r_ >>= \case
