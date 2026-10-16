@@ -83,7 +83,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("enable = " <> onOff enableStoreLog <> "\n\n")
     <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
         \# `memory` - in-memory persistence, with optional append-only log (`enable = on`).\n\
-        \# `database`- PostgreSQL databass (requires `store_messages = journal`).\n\
+        \# `database`- PostgreSQL databass (requires `store_messages = database`).\n\
         \store_queues = memory\n\n\
         \# Database connection settings for PostgreSQL database (`store_queues = database`).\n"
     <> iniDbOpts dbOptions defaultDBOpts
@@ -91,7 +91,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# db_store_log = off\n\n\
         \# Time to retain deleted queues in the database, days.\n"
     <> ("# db_deleted_ttl = " <> tshow defaultDeletedTTL <> "\n\n")
-    <> "# Message storage mode: `memory` or `journal`.\n\
+    <> "# Message storage mode: `memory` or `database` (requires `store_queues = database`).\n\
         \store_messages = memory\n\n\
         \# When store_messages is `memory`, undelivered messages are optionally saved and restored\n\
         \# when the server restarts, they are preserved in the .bak file until the next restart.\n"
@@ -130,7 +130,9 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("host = " <> T.pack host <> "\n")
     <> ("port = " <> defaultServerPorts <> "\n")
     <> "log_tls_errors = off\n\n\
-        \# Use `websockets = 443` to run websockets server in addition to plain TLS.\n\
+        \# Minimum time to respond with AUTH error, milliseconds.\n"
+    <> ("# auth_error_delay_ms = " <> tshow defaultAuthErrorDelayMs <> "\n\n")
+    <> "# Use `websockets = 443` to run websockets server in addition to plain TLS.\n\
         \# This option is deprecated and should be used for testing only.\n\
         \# , port 443 should be specified in port above\n\
         \websockets = off\n"
@@ -152,7 +154,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# `socks_mode` can be 'onion' for SOCKS proxy to be used for .onion destination hosts only (default)\n\
         \# or 'always' to be used for all destination hosts (can be used if it is an .onion server).\n\
         \# socks_mode = onion\n\n\
-        \# Limit number of threads a client can spawn to process proxy commands in parrallel.\n"
+        \# Limit number of threads a client can spawn to process proxy commands and name resolutions in parallel.\n"
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
     <> "\n\n\
         \[NAMES]\n\
@@ -169,7 +171,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# resolver_max_response_bytes: 16000\n\
         \# Max concurrent requests to the resolver from all connections.\n\
         \# resolver_global_concurrency: 32\n\
-        \# Max concurrent name resolutions per connection (forwarded RSLVs from many\n\
+        \# Max concurrent forwarded name resolutions per proxy connection (forwarded RSLVs from many\n\
         \# clients share one proxy connection, so this is much higher than PROXY client_concurrency).\n"
     <> ("# resolver_concurrency = " <> tshow defaultNameResolverConcurrency)
     <> "\n\n\

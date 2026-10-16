@@ -9,13 +9,15 @@ module RemoteControl where
 
 import AgentTests.FunctionalAPITests (runRight)
 import Control.Logger.Simple
+import Control.Monad (void)
+import Control.Monad.Trans.Except (runExceptT)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (stripPrefix)
 import Data.List.NonEmpty (NonEmpty (..))
-import Data.Time.Clock.System (SystemTime (..))
+import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Transport (TSbChainKeys (..))
@@ -24,8 +26,10 @@ import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
 import Simplex.RemoteControl.Invitation
-  ( RCInvitation (..),
+  ( RCEncInvitation (..),
+    RCInvitation (..),
     RCSignedInvitation,
+    signInvitation,
     verifySignedInvitation,
   )
 import Simplex.RemoteControl.Types
@@ -45,6 +49,7 @@ remoteControlTests = do
     it "should connect to existing pairing" testExistingPairing
   describe "Multicast discovery" $ do
     it "should find paired host and connect" testMulticast
+    it "should accept announcement only within timestamp window" testAnnouncementTimestamp
 
 testPreferAddress :: Spec
 testPreferAddress = do
@@ -243,6 +248,26 @@ testMulticast = do
       timeout 5000000 (waitBoth ctrl' host') >>= \case
         Nothing -> fail "timeout"
         Just _ -> pure ()
+
+testAnnouncementTimestamp :: IO ()
+testAnnouncementTimestamp = do
+  drg <- C.newRandom
+  RCHostPairing {caKey, caCert, idPrivKey} <- RC.newRCHostPairing drg
+  (hostDhPubKey, dhPrivKey) <- atomically $ C.generateKeyPair @'C.X25519 drg
+  (skey, sessPrivKey) <- atomically $ C.generateKeyPair @'C.Ed25519 drg
+  (dh, ctrlDhPrivKey) <- atomically $ C.generateKeyPair @'C.X25519 drg
+  nonce <- atomically $ C.randomCbNonce drg
+  now <- systemSeconds <$> getSystemTime
+  let pairing = RCCtrlPairing {caKey, caCert, ctrlFingerprint = C.KeyHash "test-ca", idPubKey = C.publicKey idPrivKey, dhPrivKey, prevDhPrivKey = Nothing}
+      announce offset = do
+        let inv = RCInvitation {ca = C.KeyHash "test-ca", host = "127.0.0.1", port = 5223, v = supportedRCPVRange, app = J.String "app", ts = MkSystemTime (now + offset) 0, skey, idkey = C.publicKey idPrivKey, dh}
+        encInvitation <- either (fail . show) pure $ C.cbEncrypt (C.dh' hostDhPubKey ctrlDhPrivKey) nonce (strEncode $ signInvitation sessPrivKey idPrivKey inv) 900
+        runExceptT . void $ RC.findRCCtrlPairing (pairing :| []) RCEncInvitation {dhPubKey = dh, nonce, encInvitation}
+  announce 0 `shouldReturn` Right ()
+  announce (-3600) `shouldReturn` Right ()
+  announce 3500 `shouldReturn` Right ()
+  announce (-3700) `shouldReturn` Left RCEInvitation
+  announce 3700 `shouldReturn` Left RCEInvitation
 
 runCtrl :: TVar ChaChaDRG -> Bool -> RCHostPairing -> MVar RCSignedInvitation -> IO (Async RCHostPairing)
 runCtrl drg multicast hp invVar = async . runRight $ do

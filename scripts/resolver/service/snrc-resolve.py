@@ -46,6 +46,15 @@ Environment:
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
+  SNRC_WORKERS           Worker processes sharing the port (default: CPU count, at most 4)
+  SNRC_RPC_TIMEOUT       Seconds to wait for each RPC request (default: 5)
+  SNRC_MULTICALL         Multicall3 contract that runs a round of reads as one call
+                         (default: 0xcA11bde05977b3631167028862bE2a173976CA11)
+  SNRC_LOG_FORMAT        text (key=value) or json (default: text)
+  SNRC_LOG_COLOR         auto (on a terminal), always or never (default: auto)
+  SNRC_LOG_LEVEL         debug, info, warning or error (default: info)
+  SNRC_TRUSTED_PROXIES   Comma-separated addresses or CIDRs of reverse proxies whose
+                         X-Forwarded-For names the client (default: none)
 
 Each TLD is a separate SNRC deployment with its own ENSRegistry; the
 resolver dispatches by the queried name's rightmost label.
@@ -64,19 +73,45 @@ Unrecognised payloads fall back to `0x`-prefixed raw hex.
 """
 
 import hashlib
+import ipaddress
 import json
+import logging
 import os
+import queue
+import signal
+import socket
 import sys
+import threading
 import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from functools import lru_cache
+from http.client import BadStatusLine, HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
-from urllib.request import Request, urlopen
 
 from eth_hash.auto import keccak
 
 RPC = os.environ.get("SNRC_RPC", "http://127.0.0.1:8545")
 BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
+# The smp-server gives up after 3 s, so a slower call only holds a thread.
+RPC_TIMEOUT_S = float(os.environ.get("SNRC_RPC_TIMEOUT", "") or 5)
+# The node and the beacon client usually share the host, so not every core.
+MAX_DEFAULT_WORKERS = 4
+WORKERS = int(os.environ.get("SNRC_WORKERS", "") or min(MAX_DEFAULT_WORKERS, os.cpu_count() or 1))
+# Multicall3, at this address on mainnet and most chains. A node runs a JSON-RPC
+# batch one call after another, so a round of reads is sent as one eth_call.
+MULTICALL = os.environ.get("SNRC_MULTICALL", "") or "0xcA11bde05977b3631167028862bE2a173976CA11"
+LOG_FORMAT = os.environ.get("SNRC_LOG_FORMAT", "") or "text"
+LOG_COLOR = os.environ.get("SNRC_LOG_COLOR", "") or "auto"
+LOG_LEVEL = os.environ.get("SNRC_LOG_LEVEL", "") or "info"
+# Peers whose X-Forwarded-For is believed, such as the Docker gateway a reverse proxy on the host
+# connects through. Anyone else could put any address there.
+TRUSTED_PROXIES = tuple(
+    ipaddress.ip_network(p.strip(), strict=False) for p in os.environ.get("SNRC_TRUSTED_PROXIES", "").split(",") if p.strip()
+)
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
 # happens on the rightmost label of the queried name. Empty / unset means
@@ -121,32 +156,289 @@ COIN_ETH = 60
 COIN_BTC = 0
 COIN_XMR = 128
 COIN_DOT = 354
+RECORD_COINS = (COIN_ETH, COIN_BTC, COIN_XMR, COIN_DOT)
 
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 # The registry prices in attoUSD (1e-18 USD); the protocol carries US cents.
 
 
+# ---------- Logging ----------
+
+LOGGER = logging.getLogger("snrc_resolve")
+LEVEL_NAMES = {logging.DEBUG: "DEBUG", logging.INFO: "INFO", logging.WARNING: "WARN", logging.ERROR: "ERROR"}
+# ANSI SGR codes
+DIM, BOLD, GREEN, YELLOW, RED = "2", "1", "32", "33", "31"
+LEVEL_COLORS = {"DEBUG": DIM, "INFO": GREEN, "WARN": YELLOW, "ERROR": RED}
+STATUS_COLORS = {2: GREEN, 3: GREEN, 4: YELLOW, 5: RED}
+
+
+def log_event(level: int, name: str, /, exc_info=None, **fields):
+    LOGGER.log(level, name, exc_info=exc_info, extra={"fields": fields})
+
+
+def _log_time(record: logging.LogRecord) -> str:
+    return datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _log_value(value) -> str:
+    """A logfmt value: bare when it cannot be misread, JSON-quoted otherwise."""
+    if value is None:
+        return "-"
+    s = str(value)
+    if not s or any(c in s for c in ' ="\\') or not s.isprintable():
+        return json.dumps(s)
+    return s
+
+
+class TextFormatter(logging.Formatter):
+    def __init__(self, color: bool):
+        super().__init__()
+        self.color = color
+
+    def _paint(self, code: str, text: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if self.color and code else text
+
+    def format(self, record: logging.LogRecord) -> str:
+        level = LEVEL_NAMES.get(record.levelno, record.levelname)
+        fields = " ".join(
+            self._paint(DIM, f"{k}=") + self._paint(STATUS_COLORS.get(v // 100, "") if k == "status" and isinstance(v, int) else "", _log_value(v))
+            for k, v in getattr(record, "fields", {}).items()
+        )
+        line = f"{self._paint(DIM, _log_time(record))} {self._paint(LEVEL_COLORS.get(level, ''), f'{level:<5}')} {self._paint(BOLD, record.getMessage())}"
+        if fields:
+            line += "  " + fields
+        if record.exc_info:
+            line += "\n" + self.formatException(record.exc_info)
+        return line
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        out = {
+            "time": _log_time(record),
+            "level": LEVEL_NAMES.get(record.levelno, record.levelname).lower(),
+            "event": record.getMessage(),
+            **getattr(record, "fields", {}),
+        }
+        if record.exc_info:
+            out["exception"] = self.formatException(record.exc_info)
+        return json.dumps(out, default=str)
+
+
+def setup_logging(stream=None):
+    """Sends the resolver's events to stderr in the configured format."""
+    stream = stream or sys.stderr
+    if LOG_FORMAT not in ("text", "json"):
+        raise ValueError(f"SNRC_LOG_FORMAT must be text or json, not {LOG_FORMAT!r}")
+    if LOG_COLOR not in ("auto", "always", "never"):
+        raise ValueError(f"SNRC_LOG_COLOR must be auto, always or never, not {LOG_COLOR!r}")
+    level = logging.getLevelName(LOG_LEVEL.upper())
+    if not isinstance(level, int):
+        raise ValueError(f"SNRC_LOG_LEVEL must be debug, info, warning or error, not {LOG_LEVEL!r}")
+    color = LOG_COLOR == "always" or (LOG_COLOR == "auto" and stream.isatty())
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter() if LOG_FORMAT == "json" else TextFormatter(color))
+    LOGGER.handlers[:] = [handler]
+    LOGGER.setLevel(level)
+    LOGGER.propagate = False
+
+
 # ---------- RPC + ABI helpers (mirrors ens-lookup.py shape) ----------
 
+RPC_URL = urlparse(RPC)
+# Set a non-default User-Agent; Cloudflare-fronted public RPCs (drpc,
+# publicnode, etc.) reject `Python-urllib/3.x` with 403.
+RPC_HEADERS = {"Content-Type": "application/json", "User-Agent": "snrc-resolve/1.0"}
+
+# Idle keep-alive connections to SNRC_RPC. A connection per call costs most of
+# a lookup's CPU and leaves a TIME_WAIT socket per call, which exhausts local
+# ports at a few dozen lookups per second.
+# Idle connections kept per worker; more are closed after use. 4 workers stay well
+# under reth's default limit of 500 connections.
+RPC_POOL_SIZE = 32
+_rpc_pool = queue.LifoQueue(maxsize=RPC_POOL_SIZE)
+
+
+def _new_rpc_connection():
+    conn_class = HTTPSConnection if RPC_URL.scheme == "https" else HTTPConnection
+    return conn_class(RPC_URL.hostname, RPC_URL.port, timeout=RPC_TIMEOUT_S)
+
+
+def _post_rpc(conn, body: bytes) -> bytes:
+    path = (RPC_URL.path or "/") + (f"?{RPC_URL.query}" if RPC_URL.query else "")
+    conn.request("POST", path, body, RPC_HEADERS)
+    res = conn.getresponse()
+    data = res.read()
+    # HTTPError, as urlopen raised: RuntimeError means the call itself failed
+    if not 200 <= res.status < 300:
+        raise HTTPError(RPC, res.status, res.reason, res.headers, None)
+    return data
+
+
+def _post_pooled(conn, body: bytes) -> bytes:
+    try:
+        data = _post_rpc(conn, body)
+    except BaseException:
+        conn.close()
+        raise
+    try:
+        _rpc_pool.put_nowait(conn)
+    except queue.Full:
+        conn.close()
+    return data
+
+
+def _send_rpc(payload) -> object:
+    body = json.dumps(payload).encode()
+    try:
+        idle = _rpc_pool.get_nowait()
+    except queue.Empty:
+        return json.loads(_post_pooled(_new_rpc_connection(), body))
+    try:
+        return json.loads(_post_pooled(idle, body))
+    except (ConnectionError, BadStatusLine):
+        # the node closed the idle connection; every call is a read, so resending is safe
+        return json.loads(_post_pooled(_new_rpc_connection(), body))
+
+
+# Reads prefetched for the request being answered, keyed by _read_key. Only set
+# inside request_reads(), so code called outside a request reads one call at a time.
+_request = threading.local()
+_UNREAD = object()
+
+
+def _read_key(method, params) -> str:
+    return method + json.dumps(params, sort_keys=True)
+
+
+@contextmanager
+def request_reads():
+    _request.reads = {}
+    try:
+        yield
+    finally:
+        del _request.reads
+
+
 def rpc(method, params):
-    body = json.dumps(
-        {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-    ).encode()
-    # Set a non-default User-Agent; Cloudflare-fronted public RPCs (drpc,
-    # publicnode, etc.) reject `Python-urllib/3.x` with 403.
-    req = Request(
-        RPC,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "snrc-resolve/1.0",
-        },
-    )
-    res = json.loads(urlopen(req, timeout=15).read())
+    reads = getattr(_request, "reads", None)
+    if reads is not None:
+        read = reads.get(_read_key(method, params), _UNREAD)
+        if isinstance(read, RuntimeError):
+            raise read
+        if read is not _UNREAD:
+            return read
+    res = _send_rpc({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
     if "error" in res:
         raise RuntimeError(res["error"])
     return res["result"]
+
+
+def _send_batch(requests):
+    """Answers of a JSON-RPC batch in request order, None for a request left
+    unanswered; all None when the node does not batch."""
+    res = _send_rpc([{"jsonrpc": "2.0", "id": i, "method": m, "params": p} for i, (m, p) in enumerate(requests)])
+    # a node that does not batch answers with a single error object
+    by_id = {r.get("id"): r for r in res if isinstance(r, dict)} if isinstance(res, list) else {}
+    return [by_id.get(i) for i in range(len(requests))]
+
+
+def _is_latest_call(method, params) -> bool:
+    return method == "eth_call" and params[1] == "latest"
+
+
+_multicall_failed_logged = False
+
+
+def _remember(reads, requests, answers):
+    for (m, p), r in zip(requests, answers, strict=True):
+        if r is not None and ("result" in r or "error" in r):
+            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r["result"]
+
+
+def prefetch(requests):
+    """Sends reads the request will make in one round trip, with its contract
+    reads as one multicall. A read left unanswered is made on its own when the
+    code gets to it."""
+    global _multicall_failed_logged
+    reads = getattr(_request, "reads", None)
+    if reads is None:
+        return
+    todo = [(m, p) for m, p in requests if _read_key(m, p) not in reads]
+    if len(todo) < 2:
+        return
+    calls = [(m, p) for m, p in todo if _is_latest_call(m, p)]
+    if len(calls) < 2:
+        _remember(reads, todo, _send_batch(todo))
+        return
+    others = [(m, p) for m, p in todo if not _is_latest_call(m, p)]
+    multicall = eth_call_read(MULTICALL, encode_aggregate3([(p[0]["to"], p[0]["data"]) for _, p in calls]))
+    answers = _send_batch(others + [multicall])
+    if all(r is None for r in answers):
+        return
+    _remember(reads, others, answers[:-1])
+    try:
+        result = (answers[-1] or {}).get("result")
+        if not isinstance(result, str):
+            raise ValueError(f"multicall answered {answers[-1]!r}")
+        results = decode_aggregate3(result)
+        if len(results) != len(calls):
+            raise ValueError("multicall answered a different number of calls")
+    except (KeyError, TypeError, ValueError) as e:
+        if not _multicall_failed_logged:
+            _multicall_failed_logged = True
+            log_event(logging.WARNING, "multicall_unavailable", multicall=MULTICALL, error=repr(e), fallback="batch")
+        _remember(reads, calls, _send_batch(calls))
+        return
+    for (m, p), (success, data) in zip(calls, results, strict=True):
+        reads[_read_key(m, p)] = "0x" + data.hex() if success else RuntimeError("execution reverted")
+
+
+AGGREGATE3 = "0x82ad56cb"  # aggregate3((address,bool,bytes)[])
+
+
+def encode_aggregate3(calls) -> str:
+    """Calldata for Multicall3.aggregate3 with every call allowed to fail."""
+    tuples = []
+    for to, data in calls:
+        b = bytes.fromhex(data[2:])
+        tuples.append(
+            int(to, 16).to_bytes(32, "big")
+            + (1).to_bytes(32, "big")
+            + (0x60).to_bytes(32, "big")
+            + len(b).to_bytes(32, "big")
+            + b
+            + b"\x00" * ((-len(b)) % 32)
+        )
+    offsets, at = [], 32 * len(tuples)
+    for t in tuples:
+        offsets.append(at.to_bytes(32, "big"))
+        at += len(t)
+    body = (0x20).to_bytes(32, "big") + len(tuples).to_bytes(32, "big") + b"".join(offsets) + b"".join(tuples)
+    return AGGREGATE3 + body.hex()
+
+
+def decode_aggregate3(hex_data: str):
+    """Multicall3.aggregate3's (bool success, bytes returnData)[]."""
+    raw = bytes.fromhex(hex_data[2:] if hex_data.startswith("0x") else hex_data)
+
+    def word(at: int) -> int:
+        if at + 32 > len(raw):
+            raise ValueError("multicall answer is truncated")
+        return int.from_bytes(raw[at:at + 32], "big")
+
+    array = word(0)
+    base = array + 32
+    out = []
+    for i in range(word(array)):
+        item = base + word(base + 32 * i)
+        data = item + word(item + 32)
+        length = word(data)
+        if data + 32 + length > len(raw):
+            raise ValueError("multicall answer is truncated")
+        out.append((word(item) != 0, raw[data + 32:data + 32 + length]))
+    return out
 
 
 def namehash(name: str) -> bytes:
@@ -184,11 +476,14 @@ def node_of(name: str) -> bytes:
 # ---------- Registration status ----------
 
 
+BLOCK_READ = ("eth_getBlockByNumber", ["latest", False])
+
+
 def head_block():
     """How far behind the node is. Unlike expiry, this is the one thing that has
     to be measured against the host clock: a node that stops still has a block."""
     try:
-        block = rpc("eth_getBlockByNumber", ["latest", False])
+        block = rpc(*BLOCK_READ)
         return {
             "blockNumber": decode_uint(block["number"]),
             "chainLagSeconds": int(time.time()) - decode_uint(block["timestamp"]),
@@ -199,13 +494,13 @@ def head_block():
 
 def chain_now() -> int:
     """Expiry is compared against the block timestamp, never the host clock."""
-    block = rpc("eth_getBlockByNumber", ["latest", False])
+    block = rpc(*BLOCK_READ)
     return decode_uint(block["timestamp"])
 
 
 def grace_period(registrar: str) -> int:
     """A deployment can configure a different window, so it is read on chain."""
-    return decode_uint(eth_call(registrar, selector("GRACE_PERIOD()")))
+    return decode_uint(eth_call(*grace_call(registrar)))
 
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
@@ -225,8 +520,7 @@ def reservation_reason(tld: str, token: int) -> int:
     controller = CONTROLLERS.get(tld)
     if not controller:
         return 0
-    raw = eth_call(controller, selector("reservedNames(bytes32)") + encode_uint(token))
-    return decode_uint(raw)
+    return decode_uint(eth_call(*reserved_call(controller, token)))
 
 
 def pricing_params(tld: str):
@@ -235,7 +529,8 @@ def pricing_params(tld: str):
     controller = CONTROLLERS.get(tld)
     if not controller:
         return None
-    oracle = decode_address(eth_call(controller, selector("prices()")))
+    prefetch([eth_call_read(*prices_call(controller)), eth_call_read(*min_length_call(controller))])
+    oracle = decode_address(eth_call(*prices_call(controller)))
     if oracle == ZERO_ADDR:
         return None
     try:
@@ -247,6 +542,8 @@ def pricing_params(tld: str):
 
 
 SECONDS_PER_YEAR = 31536000
+# an ENS-shaped oracle prices names by length up to six letters
+LETTER_TIERS = range(1, 7)
 ATTO_PER_CENT = 10**16
 
 
@@ -255,13 +552,15 @@ def read_oracle_prices(controller: str, oracle: str):
     protocol carries. An ENS-shaped oracle prices in attoUSD per second and
     charges a premium on lapsed names that it does not expose, so a quote from
     it is only safe for a name that was never registered."""
+    # either oracle shape is answered in the same round trip
+    prefetch([eth_call_read(*prices_call(oracle))] + [eth_call_read(*letter_price_call(oracle, n)) for n in LETTER_TIERS])
     try:
-        base, tiers = decode_prices(eth_call(oracle, selector("prices()")))
+        base, tiers = decode_prices(eth_call(*prices_call(oracle)))
         premium_unknown = False
     except RuntimeError:
         base, tiers = decode_letter_prices(oracle)
         premium_unknown = True
-    min_len = decode_uint(eth_call(controller, selector("minCharLength()")))
+    min_len = decode_uint(eth_call(*min_length_call(controller)))
     return {
         # lengths the registry refuses are left out rather than priced at zero
         "registrationPrices": {n: c for n, c in tiers.items() if n >= min_len},
@@ -277,9 +576,9 @@ def decode_letter_prices(oracle: str):
     the six-letter tier stops at five, and charges its highest tier for anything
     longer, which is what basePrice means here."""
     tiers = {}
-    for n in range(1, 7):
+    for n in LETTER_TIERS:
         try:
-            rate = decode_uint(eth_call(oracle, selector(f"price{n}Letter()")))
+            rate = decode_uint(eth_call(*letter_price_call(oracle, n)))
         except RuntimeError:
             if n <= 5:
                 raise
@@ -301,6 +600,9 @@ def decode_prices(hex_data: str):
     base = int.from_bytes(raw[:32], "big")
     at = int.from_bytes(raw[32:64], "big")
     count = int.from_bytes(raw[at:at + 32], "big")
+    # the count comes from the answer, so it is checked against the answer's length
+    if at + 32 + count * 64 > len(raw):
+        raise RuntimeError("prices(): short response")
     tiers = {}
     for i in range(count):
         item = at + 32 + i * 64
@@ -328,9 +630,7 @@ def name_status(name: str):
     # The 2LD's label is that key at any depth. node_of decodes a bracket only
     # in a two-label name, so a bracket subname gets a status but no record.
     token = label_token(labels[-2])
-    expires = decode_uint(
-        eth_call(registrar, selector("nameExpires(uint256)") + encode_uint(token))
-    )
+    expires = decode_uint(eth_call(*expires_call(registrar, token)))
     grace = grace_period(registrar) if expires else 0
     now = chain_now()
     status = expiry_status(expires, grace, now)
@@ -358,12 +658,17 @@ def name_status(name: str):
     return out
 
 
+@lru_cache(maxsize=None)
 def selector(signature: str) -> str:
     return "0x" + keccak(signature.encode())[:4].hex()
 
 
+def eth_call_read(to: str, data: str):
+    return "eth_call", [{"to": to, "data": data}, "latest"]
+
+
 def eth_call(to: str, data: str) -> str:
-    result = rpc("eth_call", [{"to": to, "data": data}, "latest"])
+    result = rpc(*eth_call_read(to, data))
     if result == "0x":
         raise RuntimeError(f"empty return from {to}: no contract at that address?")
     return result
@@ -385,7 +690,7 @@ def registered_label(registrar: str, token: int):
     """The plaintext label the registrar recorded at registration, keyed by the
     hash of that label. None when the name was registered without
     registerWithLabel, so the registrar cannot name it."""
-    raw = decode_bytes(eth_call(registrar, selector("labelOf(uint256)") + encode_uint(token)))
+    raw = decode_bytes(eth_call(*label_call(registrar, token)))
     return raw.decode("utf-8", errors="replace") if raw else None
 
 
@@ -427,7 +732,7 @@ def encode_text_call(node: bytes, key: str) -> str:
 
 
 def text(resolver: str, node: bytes, key: str) -> str:
-    raw = decode_bytes(eth_call(resolver, encode_text_call(node, key)))
+    raw = decode_bytes(eth_call(*text_call(resolver, node, key)))
     return raw.decode("utf-8", errors="replace") if raw else ""
 
 
@@ -446,7 +751,7 @@ def addr_multicoin(resolver: str, node: bytes, coin_type: int):
     payload doesn't match any recognised on-chain shape. Returns None when
     the record is unset."""
     try:
-        raw = decode_bytes(eth_call(resolver, encode_addr_multicoin_call(node, coin_type)))
+        raw = decode_bytes(eth_call(*addr_call(resolver, node, coin_type)))
     except RuntimeError:
         return None
     if not raw:
@@ -463,6 +768,81 @@ def addr_multicoin(resolver: str, node: bytes, coin_type: int):
         return encoder(raw) or ("0x" + raw.hex())
     except Exception:
         return "0x" + raw.hex()
+
+
+# ---------- Contract calls, as (to, data) ----------
+# Shared by the reads and prefetch, so a prefetched read is found by the code that makes it.
+
+
+def expires_call(registrar: str, token: int):
+    return registrar, selector("nameExpires(uint256)") + encode_uint(token)
+
+
+def grace_call(registrar: str):
+    return registrar, selector("GRACE_PERIOD()")
+
+
+def label_call(registrar: str, token: int):
+    return registrar, selector("labelOf(uint256)") + encode_uint(token)
+
+
+def reserved_call(controller: str, token: int):
+    return controller, selector("reservedNames(bytes32)") + encode_uint(token)
+
+
+def prices_call(contract: str):
+    return contract, selector("prices()")
+
+
+def letter_price_call(oracle: str, letters: int):
+    return oracle, selector(f"price{letters}Letter()")
+
+
+def min_length_call(controller: str):
+    return controller, selector("minCharLength()")
+
+
+def resolver_call(registry: str, node: bytes):
+    return registry, selector("resolver(bytes32)") + node.hex()
+
+
+def owner_call(registry: str, node: bytes):
+    return registry, selector("owner(bytes32)") + node.hex()
+
+
+def text_call(resolver: str, node: bytes, key: str):
+    return resolver, encode_text_call(node, key)
+
+
+def addr_call(resolver: str, node: bytes, coin_type: int):
+    return resolver, encode_addr_multicoin_call(node, coin_type)
+
+
+def lookup_reads(name: str):
+    """The reads a lookup makes before it knows the name's resolver."""
+    labels = name.split(".")
+    tld = labels[-1]
+    reads = []
+    registrar = REGISTRARS.get(tld)
+    if registrar and len(labels) >= 2:
+        token = label_token(labels[-2])
+        reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
+        if len(labels) == 2 and is_encoded_labelhash(labels[0]):
+            reads.append(eth_call_read(*label_call(registrar, token)))
+        if CONTROLLERS.get(tld):
+            reads.append(eth_call_read(*reserved_call(CONTROLLERS[tld], token)))
+    registry = REGISTRIES.get(tld)
+    if registry:
+        node = node_of(name)
+        reads += [eth_call_read(*resolver_call(registry, node)), eth_call_read(*owner_call(registry, node))]
+    return reads
+
+
+def record_reads(resolver: str, node: bytes):
+    """The reads of a name's record from its resolver."""
+    return [eth_call_read(*text_call(resolver, node, k)) for k in TEXT_KEYS] + [
+        eth_call_read(*addr_call(resolver, node, coin)) for coin in RECORD_COINS
+    ]
 
 
 # ---------- Coin-specific address encoders ----------
@@ -665,9 +1045,9 @@ def split_links(value: str) -> list:
 
 
 def upstream_error(subject: dict, e: Exception) -> dict:
-    """urlopen puts the failing URL into its message and SNRC_RPC can carry a
-    provider key, so the text goes to the log and only the type to the caller."""
-    print(f"upstream error: {type(e).__name__}: {e}", file=sys.stderr)
+    """The exception can carry the failing URL and SNRC_RPC can carry a provider
+    key, so the text goes to the log and only the type to the caller."""
+    log_event(logging.WARNING, "upstream_error", **subject, error=type(e).__name__, message=str(e))
     return {
         **subject,
         "error": "upstreamError",
@@ -680,9 +1060,8 @@ def name_record(name: str):
     has one, with every field unset."""
     registry = REGISTRIES[name.rsplit(".", 1)[-1]]
     node = node_of(name)
-    node_hex = node.hex()
-    resolver_addr = decode_address(eth_call(registry, selector("resolver(bytes32)") + node_hex))
-    owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+    resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
+    owner = decode_address(eth_call(*owner_call(registry, node)))
     rec = {
         "name": canonical_name(name),
         "nickname": "",
@@ -699,6 +1078,7 @@ def name_record(name: str):
     }
     if resolver_addr == ZERO_ADDR:
         return rec
+    prefetch(record_reads(resolver_addr, node))
     texts = {}
     for k in TEXT_KEYS:
         try:
@@ -734,6 +1114,7 @@ def registration(name: str):
     tld = name.rsplit(".", 1)[-1]
     if not REGISTRIES.get(tld):
         return 400, {"name": name, "error": "tldNotConfigured"}
+    prefetch(lookup_reads(name))
     reg = name_status(name)
     status = reg["status"]
     if status in ("registered", "grace"):
@@ -788,7 +1169,7 @@ def resolve(name: str):
         }
 
     node = node_of(name)
-    node_hex = node.hex()
+    prefetch(lookup_reads(name))
 
     # Before the resolver lookup, so a lapsed name is not reported as noResolver.
     reg = name_status(name)
@@ -806,13 +1187,12 @@ def resolve(name: str):
         }
         return (404 if reg["status"] == "unregistered" else 410), body
 
-    resolver_raw = eth_call(registry, selector("resolver(bytes32)") + node_hex)
-    resolver_addr = decode_address(resolver_raw)
+    resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
         # answerable. For a subname, no owner means nobody created it.
-        owner = decode_address(eth_call(registry, selector("owner(bytes32)") + node_hex))
+        owner = decode_address(eth_call(*owner_call(registry, node)))
         if len(name.split(".")) > 2 and owner == ZERO_ADDR:
             return 404, {
                 "name": name,
@@ -837,9 +1217,9 @@ def resolve(name: str):
             **reg,
         }
 
-    owner_raw = eth_call(registry, selector("owner(bytes32)") + node_hex)
-    owner = decode_address(owner_raw)
+    owner = decode_address(eth_call(*owner_call(registry, node)))
 
+    prefetch(record_reads(resolver_addr, node))
     texts = {}
     for k in TEXT_KEYS:
         try:
@@ -878,12 +1258,34 @@ def resolve(name: str):
 # ---------- HTTP layer ----------
 
 class Handler(BaseHTTPRequestHandler):
+    # the smp-server reuses a connection only after an HTTP/1.1 response
+    protocol_version = "HTTP/1.1"
+    # idle seconds before a kept-alive connection is closed; the smp-server closes
+    # its idle ones after 30-35 s, so it is the one to close them
+    timeout = 60
+
+    def setup(self):
+        super().setup()
+        # headers and body go out in separate writes, which Nagle holds for the client's delayed ACK
+        self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+    def handle_one_request(self):
+        # on a kept-alive connection these still hold the previous request's values
+        self._started = self._sent = self.path = self.headers = None
+        super().handle_one_request()
+
     def do_GET(self):  # noqa: N802 - http.server contract
+        self._started = time.monotonic()
+        if self._has_body():
+            # an unread body would be taken for the next request on this connection, which a
+            # reverse proxy reusing it would pass to another client (request smuggling)
+            self._respond(400, {"error": "unexpectedBody"}, close=True)
+            return
         path = urlparse(self.path).path
         parts = [unquote(p) for p in path.split("/") if p]
 
         if parts == ["health"]:
-            self._respond(200, {"ok": True, "rpc": RPC, "registries": REGISTRIES, **head_block()})
+            self._respond(200, {"ok": True, "rpc": public_endpoint(RPC), "registries": REGISTRIES, **head_block()})
             return
 
         if len(parts) == 3 and parts[0] == "v2" and parts[1] == "resolve":
@@ -892,7 +1294,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(400, {"name": name, "error": "notFullyQualified"})
                 return
             try:
-                status, body = registration(name)
+                with request_reads():
+                    status, body = registration(name)
             except Exception as e:  # surface upstream errors as 502
                 status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
@@ -915,7 +1318,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                status, body = resolve(name)
+                with request_reads():
+                    status, body = resolve(name)
             except Exception as e:  # surface upstream errors as 502
                 status, body = 502, upstream_error({"name": name}, e)
             self._respond(status, body)
@@ -930,34 +1334,176 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def _respond(self, status: int, body: dict):
+    def _has_body(self) -> bool:
+        # a malformed header line ends parsing, leaving the rest, Content-Length included, as payload
+        if self.headers.defects or self.headers.get_payload():
+            return True
+        if self.headers.get_all("Transfer-Encoding"):
+            return True
+        return any(length.strip() != "0" for length in self.headers.get_all("Content-Length") or [])
+
+    def _respond(self, status: int, body: dict, close: bool = False):
         data = json.dumps(body, indent=2).encode()
+        # send_response logs the request, so the size is known before it
+        self._sent = len(data)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if close:
+            # also sets close_connection, so the server closes it after this response
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
+    def address_string(self) -> str:
+        forwarded = self.headers.get_all("X-Forwarded-For") if self.headers else None
+        return client_address(self.client_address[0], ",".join(forwarded) if forwarded else None)
+
+    def log_request(self, code="-", size="-"):
+        started = self._started
+        path = urlparse(self.path).path if self.path else None
+        log_event(
+            # the container's health check runs every 30 s
+            logging.DEBUG if path == "/health" else logging.INFO,
+            "request",
+            client=self.address_string(),
+            worker=os.getpid(),
+            method=getattr(self, "command", None),
+            path=unquote(self.path) if self.path else None,
+            status=getattr(code, "value", code),
+            bytes=self._sent,
+            ms=round((time.monotonic() - started) * 1000) if started else None,
+        )
+
+    def log_error(self, fmt, *args):
+        message = fmt % args
+        # a kept-alive connection left idle is closed on purpose
+        level = logging.DEBUG if message.startswith("Request timed out") else logging.WARNING
+        log_event(level, "http_error", client=self.address_string(), worker=os.getpid(), message=message)
+
     def log_message(self, fmt, *args):
-        # Quiet the default per-request access log; route to stderr in one line.
-        sys.stderr.write(f"{self.address_string()} - {fmt % args}\n")
+        log_event(logging.INFO, "http", client=self.address_string(), message=fmt % args)
+
+
+class ResolverServer(ThreadingHTTPServer):
+    # socketserver's default of 5 drops simultaneous connections, each retried by
+    # TCP after 1 s, and the smp-server gives up after 3 s. The kernel caps it at somaxconn.
+    request_queue_size = 128
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, ConnectionError):
+            # the smp-server hung up, usually after its own timeout
+            log_event(logging.WARNING, "client_gone", client=client_address[0], worker=os.getpid(), error=type(error).__name__)
+        else:
+            log_event(logging.ERROR, "request_failed", client=client_address[0], worker=os.getpid(), exc_info=True)
+
+
+def public_endpoint(url: str) -> str:
+    """The RPC endpoint without credentials, path or query, where a provider key would be."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc.rpartition('@')[2]}"
+
+
+def client_address(peer: str, forwarded_for: str | None) -> str:
+    """The peer, or behind trusted proxies the last X-Forwarded-For address none of them added."""
+    if not forwarded_for or not _trusted(peer):
+        return peer
+    hops = [hop.strip() for hop in forwarded_for.split(",")]
+    for hop in reversed(hops):
+        # an address it cannot read, and anything claimed before it, is not believed
+        if _address(hop) is None:
+            return peer
+        if not _trusted(hop):
+            return hop
+    return hops[0]
+
+
+def _address(text: str):
+    try:
+        ip = ipaddress.ip_address(text)
+    except ValueError:
+        return None
+    return ip.ipv4_mapped or ip if ip.version == 6 else ip
+
+
+def _trusted(text: str) -> bool:
+    ip = _address(text)
+    return ip is not None and any(ip in net for net in TRUSTED_PROXIES)
+
+
+def serve(reuse_port: bool):
+    server = ResolverServer((BIND, PORT), Handler, bind_and_activate=False)
+    server.allow_reuse_port = reuse_port
+    try:
+        server.server_bind()
+        server.server_activate()
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def stop_on(signum, _frame):
+    log_event(logging.INFO, "stopping", signal=signal.Signals(signum).name)
+    sys.exit(0)
+
+
+def supervise(workers: int):
+    """Runs the workers, each with its own socket on the shared port. One worker
+    exiting stops the others, so the container restarts instead of running short."""
+    children = []
+
+    def stop(*_):
+        for pid in children:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    def stop_and_exit(signum, frame):
+        stop()
+        stop_on(signum, frame)
+
+    # before forking, so a signal during startup cannot orphan the workers
+    signal.signal(signal.SIGTERM, stop_and_exit)
+    signal.signal(signal.SIGINT, stop_and_exit)
+    for _ in range(workers):
+        pid = os.fork()
+        if pid == 0:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            code = 0
+            try:
+                serve(reuse_port=True)
+            except BaseException:
+                log_event(logging.ERROR, "worker_failed", worker=os.getpid(), exc_info=True)
+                code = 1
+            os._exit(code)
+        children.append(pid)
+    pid, status = os.wait()
+    log_event(logging.ERROR, "worker_exited", worker=pid, status=status, action="stopping")
+    stop()
+    sys.exit(1)
 
 
 def main():
-    server = ThreadingHTTPServer((BIND, PORT), Handler)
-    sys.stderr.write(
-        f"snrc-resolve listening on {BIND}:{PORT}\n"
-        f"  RPC = {RPC}\n"
-        f"  Registries:\n"
+    setup_logging()
+    log_event(
+        logging.INFO,
+        "listening",
+        bind=BIND,
+        port=PORT,
+        workers=WORKERS,
+        rpc=public_endpoint(RPC),
+        registries=",".join(f"{tld}={addr or '-'}" for tld, addr in REGISTRIES.items()),
+        trusted_proxies=",".join(map(str, TRUSTED_PROXIES)) or None,
     )
-    for tld, addr in REGISTRIES.items():
-        sys.stderr.write(f"    .{tld:<8s} = {addr or '(not configured)'}\n")
-    sys.stderr.write("  GET /v2/resolve/<name>   GET /v1/resolve/<name>   GET /health\n")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        sys.stderr.write("\nshutting down\n")
-        server.server_close()
+    if WORKERS > 1:
+        supervise(WORKERS)
+    else:
+        signal.signal(signal.SIGTERM, stop_on)
+        signal.signal(signal.SIGINT, stop_on)
+        serve(reuse_port=False)
 
 
 if __name__ == "__main__":

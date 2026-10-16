@@ -9,5 +9,14 @@ dependencies = [
   "eth-hash[pycryptodome]>=0.7",
 ]
 
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
 [tool.uv]
 package = false
+
+[tool.ruff.lint]
+select = ["E9", "F", "B"]

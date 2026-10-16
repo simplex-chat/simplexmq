@@ -6,8 +6,9 @@
 
 module CoreTests.CryptoTests (cryptoTests) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Exception (evaluate)
+import Control.Exception (bracket, evaluate)
 import Control.Monad.Except
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -22,9 +23,12 @@ import Data.Time.Clock (UTCTime (..))
 import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Encoding as LE
 import Data.Type.Equality
+import Data.Word (Word8)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
 import qualified Data.X509.Validation as XV
+import Foreign (FunPtr, allocaBytes, fillBytes, freeHaskellFunPtr, nullPtr)
+import Foreign.C.Types (CInt, CSize (..))
 import qualified SMPClient
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -32,9 +36,12 @@ import Simplex.Messaging.Crypto.BBS
 import Simplex.Messaging.Crypto.Entitlement
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.Defines
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI (c_sntrup761_keypair)
+import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (RNGFunc)
 import Simplex.Messaging.Encoding (Large (..), smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Transport.Client
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
 import Test.QuickCheck hiding (Large)
@@ -113,6 +120,7 @@ cryptoTests = do
   describe "sntrup761" $ do
     it "should enc/dec key" testSNTRUP761
     it "should reject malformed KEM encodings" testSNTRUP761RejectsMalformedEncodings
+    it "should fail key generation with degenerate RNG" testSNTRUP761KeypairDegenerateRNG
   describe "BBS+" $ do
     it "should sign and verify" testBBSSignVerify
     it "should derive public key from secret key" testBBSPublicKeyDerivation
@@ -138,9 +146,9 @@ instance Eq C.APrivateKey where
     Just Refl -> k == k'
     Nothing -> False
 
-testPadUnpadFile :: IO ()
+testPadUnpadFile :: HasTestEnv => IO ()
 testPadUnpadFile = do
-  let f = "tests/tmp/testpad"
+  let f = testPath "testpad"
       paddedLen = 1024 * 1024
       len = 1000000
       s = LB.replicate len 'a'
@@ -200,7 +208,7 @@ testLazySecretBoxFile = it "should lazily encrypt / decrypt file with a random s
   g <- C.newRandom
   k <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  let f = "tests/tmp/testsecretbox"
+  let f = testPath "testsecretbox"
       paddedLen = 4 * 1024 * 1024
       len = 4 * 1000 * 1000 :: Int64
       s = LC.fastReplicate len 'a'
@@ -228,7 +236,7 @@ testLazySecretBoxFileTailTag = it "should lazily encrypt / decrypt file with a r
   g <- C.newRandom
   k <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
-  let f = "tests/tmp/testsecretbox"
+  let f = testPath "testsecretbox"
       paddedLen = 4 * 1024 * 1024
       len = 4 * 1000 * 1000 :: Int64
       s = LC.fastReplicate len 'a'
@@ -297,6 +305,26 @@ testSNTRUP761 = do
   (c, KEMSharedKey k) <- sntrup761Enc drg pk
   KEMSharedKey k' <- sntrup761Dec c sk
   k' `shouldBe` k
+
+foreign import ccall "wrapper"
+  mkRNGFunc :: RNGFunc -> IO (FunPtr RNGFunc)
+
+testSNTRUP761KeypairDegenerateRNG :: IO ()
+testSNTRUP761KeypairDegenerateRNG = do
+  -- constant byte 0 draws invertible g = -(1 + x + ... + x^760), byte 0x20 draws g = 0
+  keypairWithConstantRNG 0 `shouldReturn` Just 0
+  keypairWithConstantRNG 0x20 `shouldReturn` Just (-1)
+  where
+    keypairWithConstantRNG :: Word8 -> IO (Maybe CInt)
+    keypairWithConstantRNG b = do
+      result <- newEmptyMVar
+      -- timeout cannot interrupt a foreign call, so the call runs in another thread
+      _ <- forkIO $
+        bracket (mkRNGFunc $ \_ sz buf -> fillBytes buf b (fromIntegral sz)) freeHaskellFunPtr $ \rng ->
+          allocaBytes c_SNTRUP761_PUBLICKEY_SIZE $ \pkPtr ->
+            allocaBytes c_SNTRUP761_SECRETKEY_SIZE $ \skPtr ->
+              c_sntrup761_keypair pkPtr skPtr nullPtr rng >>= putMVar result
+      timeout 10000000 $ takeMVar result
 
 testSNTRUP761RejectsMalformedEncodings :: IO ()
 testSNTRUP761RejectsMalformedEncodings = do

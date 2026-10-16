@@ -219,6 +219,7 @@ canAbortRcvSwitch ConnData {connAgentVersion} = maybe False canAbort . rcvSwchSt
       -- if switch is in RSReceivedMessage status, aborting switch (deleting new queue)
       -- will break the connection because the sender would have original queue deleted
       RSReceivedMessage -> False
+      RSReceivedQEND -> False
 
 data ClientNtfCreds = ClientNtfCreds
   { -- | key pair to be used by the notification server to authorize transmissions

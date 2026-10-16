@@ -1,7 +1,7 @@
 cabal-version: 3.0
 
 name:           simplexmq
-version:        7.1.0.9
+version:        7.1.0.11
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -195,6 +195,8 @@ library
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260712_address_dr_rpc
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260823_snd_files_entitlement
           Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260919_ratchet_verify_codes
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20260929_ratchet_indexes
+          Simplex.Messaging.Agent.Store.Postgres.Migrations.M20261008_rcv_switch_status
   else
       exposed-modules:
           Simplex.Messaging.Agent.Store.SQLite
@@ -250,6 +252,9 @@ library
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260712_address_dr_rpc
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260823_snd_files_entitlement
           Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260919_ratchet_verify_codes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20260929_ratchet_indexes
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261005_commands_autoincrement
+          Simplex.Messaging.Agent.Store.SQLite.Migrations.M20261008_rcv_switch_status
           Simplex.Messaging.Agent.Store.SQLite.Util
   if flag(client_postgres) || flag(server_postgres)
       exposed-modules:
@@ -279,8 +284,6 @@ library
           Simplex.Messaging.Server.Main.Init
           Simplex.Messaging.Server.Web
           Simplex.Messaging.Server.MsgStore
-          Simplex.Messaging.Server.MsgStore.Journal
-          Simplex.Messaging.Server.MsgStore.Journal.SharedLock
           Simplex.Messaging.Server.MsgStore.STM
           Simplex.Messaging.Server.MsgStore.Types
           Simplex.Messaging.Server.Names
@@ -597,7 +600,7 @@ test-suite simplexmq-test
   default-extensions:
       StrictData
   -- add -fhpc to ghc-options to run tests with coverage
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts -with-rtsopts=-A64M -with-rtsopts=-N1
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts "-with-rtsopts=-A64M -N"
   build-depends:
       base
     , aeson
@@ -635,7 +638,6 @@ test-suite simplexmq-test
     , stm
     , text
     , time
-    , timeit ==2.0.*
     , tls >=1.9.0 && <1.10
     , transformers
     , unliftio
