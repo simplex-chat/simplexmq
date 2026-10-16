@@ -178,6 +178,10 @@ testRslvForwardedSlotWaitTimeout =
       withSmpServerConfigOn (transport @TLS) (relayCfg port) testPort2 $ \_ -> do
         rs <- replicateConcurrently 2 forwardedResolveAlice
         rs `shouldMatchList` map rslvErr ["timeout", "too many requests"]
+        threadDelay 1500000
+        SlotWaitMetrics {waits, waitTimeouts, waitMaxMs} <- readSlotWaitMetrics
+        (waits, waitTimeouts) `shouldBe` (1, 1)
+        waitMaxMs `shouldSatisfy` (\t -> t >= 300 && t < 1000)
   where
     rslvErr :: Text -> Either SMPClientError (Either ProxyClientError SMP.NameResponse)
     rslvErr = Left . PCEProtocolError . SMP.NAME . SMP.RESOLVER
@@ -185,7 +189,7 @@ testRslvForwardedSlotWaitTimeout =
       let aCfg = smpAgentCfg c
           cCfg = smpCfg aCfg
           nt = NetworkTimeout {backgroundTimeout = 300000, interactiveTimeout = 300000}
-       in c {serverResolverConcurrency = 1, smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
+       in c {serverResolverConcurrency = 1, prometheusInterval = Just 1, smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
 
 testRslvForwarded :: HasTestEnv => IO ()
 testRslvForwarded =
