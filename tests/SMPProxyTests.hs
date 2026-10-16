@@ -570,7 +570,7 @@ testProxyForwardTimeoutStuckSession =
     rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
     rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
 
-testProxyRelayConcurrencyLimit :: IO ()
+testProxyRelayConcurrencyLimit :: HasTestEnv => IO ()
 testProxyRelayConcurrencyLimit =
   withSmpServerConfigOn (transport @TLS) cfg' testPort $ \_ -> do
     g <- C.newRandom
