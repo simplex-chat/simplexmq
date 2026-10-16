@@ -372,6 +372,14 @@ jobs:
             dist-postgres
           key: ${{ steps.keys.outputs.dist }}-${{ env.opt }}-${{ env.branch }}-${{ github.sha }}
 
+      - name: Increase PostgreSQL connection limit
+        if: matrix.should_run == true && matrix.arch == 'x86-64'
+        shell: bash
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -c "ALTER SYSTEM SET max_connections = 500"
+          docker restart ${{ job.services.postgres.id }}
+          timeout 60 sh -c 'until docker exec ${{ job.services.postgres.id }} pg_isready -U postgres; do sleep 1; done'
+
       - name: Test
         if: matrix.should_run == true && matrix.arch == 'x86-64'
         timeout-minutes: 120

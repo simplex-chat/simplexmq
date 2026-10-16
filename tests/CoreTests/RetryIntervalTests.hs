@@ -29,9 +29,9 @@ testRI =
   RetryInterval2
     { riSlow =
         RetryInterval
-          { initialInterval = 20000,
-            increaseAfter = 40000,
-            maxInterval = 40000
+          { initialInterval = 100000,
+            increaseAfter = 200000,
+            maxInterval = 200000
           },
       riFast = testFastRI
     }
@@ -39,9 +39,9 @@ testRI =
 testFastRI :: RetryInterval
 testFastRI =
   RetryInterval
-    { initialInterval = 10000,
-      increaseAfter = 20000,
-      maxInterval = 40000
+    { initialInterval = 50000,
+      increaseAfter = 100000,
+      maxInterval = 200000
     }
 
 type WithRetry2 = RetryInterval2 -> (RI2State -> (RetryIntervalMode -> IO ()) -> IO ()) -> IO ()
@@ -61,15 +61,15 @@ testRetryIntervalSameMode withRetry =
       when (length ints < 9) $ loop RIFast
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ (20000, 10000),
-                       (20000, 10000),
-                       (20000, 15000),
-                       (20000, 22500),
-                       (20000, 33750),
-                       (20000, 40000),
-                       (20000, 40000),
-                       (20000, 40000),
-                       (20000, 40000)
+      `shouldReturn` [ (100000, 50000),
+                       (100000, 50000),
+                       (100000, 75000),
+                       (100000, 112500),
+                       (100000, 168750),
+                       (100000, 200000),
+                       (100000, 200000),
+                       (100000, 200000),
+                       (100000, 200000)
                      ]
 
 testRetryIntervalSwitchMode :: WithRetry2 -> Spec
@@ -84,17 +84,17 @@ testRetryIntervalSwitchMode withRetry =
       when (length ints < 11) $ loop $ if length ints <= 5 then RIFast else RISlow
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 2, 2, 3, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [ (20000, 10000),
-                       (20000, 10000),
-                       (20000, 15000),
-                       (20000, 22500),
-                       (20000, 33750),
-                       (20000, 40000),
-                       (20000, 40000),
-                       (30000, 40000),
-                       (40000, 40000),
-                       (40000, 40000),
-                       (40000, 40000)
+      `shouldReturn` [ (100000, 50000),
+                       (100000, 50000),
+                       (100000, 75000),
+                       (100000, 112500),
+                       (100000, 168750),
+                       (100000, 200000),
+                       (100000, 200000),
+                       (150000, 200000),
+                       (200000, 200000),
+                       (200000, 200000),
+                       (200000, 200000)
                      ]
 
 testRetryForeground :: Spec
@@ -110,7 +110,7 @@ testRetryForeground =
       when (length ints < 8) $ loop
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+      `shouldReturn` [50000, 50000, 75000, 112500, 168750, 200000, 200000, 200000]
 
 testRetryToBackground :: Spec
 testRetryToBackground =
@@ -121,7 +121,7 @@ testRetryToBackground =
     foreground <- newTVarIO True
     concurrently_
       ( do
-          threadDelay 50000
+          threadDelay 250000
           atomically $ writeTVar foreground False
       )
       ( withRetryForeground testFastRI (readTVar foreground) (pure True) $ \delay loop -> do
@@ -131,7 +131,7 @@ testRetryToBackground =
       )
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 3, 4, 4]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [10000, 10000, 15000, 22500, 33750, 40000, 40000, 40000]
+      `shouldReturn` [50000, 50000, 75000, 112500, 168750, 200000, 200000, 200000]
 
 testRetrySkipWhenForeground :: Spec
 testRetrySkipWhenForeground =
@@ -142,11 +142,11 @@ testRetrySkipWhenForeground =
     foreground <- newTVarIO False
     concurrently_
       ( do
-          threadDelay 65000
+          threadDelay 312500
           atomically $ writeTVar foreground True
-          threadDelay 10000
+          threadDelay 150000
           atomically $ writeTVar foreground False
-          threadDelay 100000
+          threadDelay 381250
           atomically $ writeTVar foreground True
       )
       ( withRetryForeground testFastRI (readTVar foreground) (pure True) $ \delay loop -> do
@@ -156,11 +156,11 @@ testRetrySkipWhenForeground =
       )
     (reverse <$> readTVarIO intervals) `shouldReturn` [0, 1, 1, 1, 2, 0, 1, 1, 1, 2, 3, 1]
     (reverse <$> readTVarIO reportedIntervals)
-      `shouldReturn` [10000, 10000, 15000, 22500, 33750, 10000, 10000, 15000, 22500, 33750, 40000, 10000]
+      `shouldReturn` [50000, 50000, 75000, 112500, 168750, 50000, 50000, 75000, 112500, 168750, 200000, 50000]
 
 addInterval :: TVar [Int] -> TVar UTCTime -> IO [Int]
 addInterval intervals ts = do
   ts' <- getCurrentTime
   atomically $ do
-    int :: Int <- truncate . (* 100) . nominalDiffTimeToSeconds <$> stateTVar ts (\t -> (diffUTCTime ts' t, ts'))
+    int :: Int <- truncate . (* 20) . nominalDiffTimeToSeconds <$> stateTVar ts (\t -> (diffUTCTime ts' t, ts'))
     stateTVar intervals $ \ints -> (int : ints, int : ints)

@@ -127,6 +127,10 @@ prometheusMetrics sm rtm ts =
         _rcvServicesSubMsg,
         _rcvServicesSubDuplicate,
         _authDelayExceeded,
+        _cmdSlotWaits,
+        _cmdSlotWaitMs,
+        _cmdSlotWaitMaxMs,
+        _cmdSlotWaitTimeouts,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -197,6 +201,19 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_auth_delay_exceeded Responses with AUTH errors sent without delay, as processing took longer than the delay.\n\
       \# TYPE simplex_smp_auth_delay_exceeded counter\n\
       \simplex_smp_auth_delay_exceeded " <> mshow _authDelayExceeded <> "\n# authDelayExceeded\n\
+      \\n\
+      \# HELP simplex_smp_cmd_slot_wait_ms Time commands waited for a free slot of the connection concurrency limit, in ms.\n\
+      \# TYPE simplex_smp_cmd_slot_wait_ms summary\n\
+      \simplex_smp_cmd_slot_wait_ms_sum " <> mshow _cmdSlotWaitMs <> "\n# cmdSlotWaitMs\n\
+      \simplex_smp_cmd_slot_wait_ms_count " <> mshow _cmdSlotWaits <> "\n# cmdSlotWaits\n\
+      \\n\
+      \# HELP simplex_smp_cmd_slot_wait_ms_max The longest wait for a free command slot, in ms.\n\
+      \# TYPE simplex_smp_cmd_slot_wait_ms_max gauge\n\
+      \simplex_smp_cmd_slot_wait_ms_max " <> mshow _cmdSlotWaitMaxMs <> "\n# cmdSlotWaitMaxMs\n\
+      \\n\
+      \# HELP simplex_smp_cmd_slot_wait_timeouts Commands not processed because the client timed out while they waited for a free slot.\n\
+      \# TYPE simplex_smp_cmd_slot_wait_timeouts counter\n\
+      \simplex_smp_cmd_slot_wait_timeouts " <> mshow _cmdSlotWaitTimeouts <> "\n# cmdSlotWaitTimeouts\n\
       \\n"
     subscriptions =
       "# Subscriptions\n\
@@ -569,25 +586,13 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_subscription_ntf_service_subs_total gauge\n\
       \simplex_smp_subscription_ntf_service_subs_total " <> mshow (subServiceSubsCount ntfSubs) <> "\n# ntf.subServiceSubsCount\n\
       \\n\
-      \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory/journal storage)\n\
+      \# HELP simplex_smp_loaded_queues_queue_count Total loaded queues count (all queues for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_queue_count gauge\n\
       \simplex_smp_loaded_queues_queue_count " <> mshow (loadedQueueCount loadedCounts) <> "\n# loadedCounts.loadedQueueCount\n\
       \\n\
-      \# HELP simplex_smp_loaded_queues_ntf_count Total loaded ntf credential references (all ntf credentials for memory/journal storage)\n\
+      \# HELP simplex_smp_loaded_queues_ntf_count Total loaded ntf credential references (all ntf credentials for memory storage)\n\
       \# TYPE simplex_smp_loaded_queues_ntf_count gauge\n\
-      \simplex_smp_loaded_queues_ntf_count " <> mshow (loadedNotifierCount loadedCounts) <> "\n# loadedCounts.loadedNotifierCount\n\
-      \\n\
-      \# HELP simplex_smp_loaded_queues_open_journal_count Total opened queue journals (0 for memory storage)\n\
-      \# TYPE simplex_smp_loaded_queues_open_journal_count gauge\n\
-      \simplex_smp_loaded_queues_open_journal_count " <> mshow (openJournalCount loadedCounts) <> "\n# loadedCounts.openJournalCount\n\
-      \\n\
-      \# HELP simplex_smp_loaded_queues_queue_lock_count Total queue locks (0 for memory storage)\n\
-      \# TYPE simplex_smp_loaded_queues_queue_lock_count gauge\n\
-      \simplex_smp_loaded_queues_queue_lock_count " <> mshow (queueLockCount loadedCounts) <> "\n# loadedCounts.queueLockCount\n\
-      \\n\
-      \# HELP simplex_smp_loaded_queues_ntf_lock_count Total notifier locks (0 for memory/journal storage)\n\
-      \# TYPE simplex_smp_loaded_queues_ntf_lock_count gauge\n\
-      \simplex_smp_loaded_queues_ntf_lock_count " <> mshow (notifierLockCount loadedCounts) <> "\n# loadedCounts.notifierLockCount\n"
+      \simplex_smp_loaded_queues_ntf_count " <> mshow (loadedNotifierCount loadedCounts) <> "\n# loadedCounts.loadedNotifierCount\n"
 
     showTimeBuckets :: Text -> IM.IntMap Int -> Text
     showTimeBuckets metric = T.concat . snd . mapAccumL accumBucket (0, 0) . IM.assocs

@@ -33,7 +33,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
@@ -45,12 +44,13 @@ import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
 #if defined(dbServerPostgres)
 import Database.PostgreSQL.Simple (defaultConnectInfo)
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -72,29 +72,29 @@ testHost = "localhost"
 testHost2 :: NonEmpty TransportHost
 testHost2 = "127.0.0.1"
 
-testPort :: ServiceName
-testPort = "5001"
+testPort :: HasTestEnv => ServiceName
+testPort = testServerPort 1
 
-testPort2 :: ServiceName
-testPort2 = "5002"
+testPort2 :: HasTestEnv => ServiceName
+testPort2 = testServerPort 2
 
-ntfTestPort :: ServiceName
-ntfTestPort = "6001"
+ntfTestPort :: HasTestEnv => ServiceName
+ntfTestPort = testServerPort 3
 
-ntfTestPort2 :: ServiceName
-ntfTestPort2 = "6002"
+ntfTestPort2 :: HasTestEnv => ServiceName
+ntfTestPort2 = testServerPort 4
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
 
-testStoreLogFile :: FilePath
-testStoreLogFile = "tests/tmp/smp-server-store.log"
+testStoreLogFile :: HasTestEnv => FilePath
+testStoreLogFile = testPath "smp-server-store.log"
 
-testStoreLogFile2 :: FilePath
-testStoreLogFile2 = "tests/tmp/smp-server-store.log.2"
+testStoreLogFile2 :: HasTestEnv => FilePath
+testStoreLogFile2 = testPath "smp-server-store.log.2"
 
-testStoreDBOpts :: DBOpts
-testStoreDBOpts =
+testServerDBOpts :: DBOpts
+testServerDBOpts =
   DBOpts
     { connstr = testServerDBConnstr,
       schema = "smp_server",
@@ -102,8 +102,11 @@ testStoreDBOpts =
       createSchema = True
     }
 
-testStoreDBOpts2 :: DBOpts
-testStoreDBOpts2 = testStoreDBOpts {schema = "smp_server2"}
+testStoreDBOpts :: HasTestEnv => DBOpts
+testStoreDBOpts = testServerDBOpts {schema = testSchemaName "smp_server"}
+
+testStoreDBOpts2 :: HasTestEnv => DBOpts
+testStoreDBOpts2 = testStoreDBOpts {schema = testSchemaName "smp_server2"}
 
 testServerDBConnstr :: ByteString
 testServerDBConnstr = "postgresql://test_server_user@/test_server_db"
@@ -117,48 +120,42 @@ testServerDBConnectInfo =
   }
 #endif
 
-testStoreMsgsFile :: FilePath
-testStoreMsgsFile = "tests/tmp/smp-server-messages.log"
+testStoreMsgsFile :: HasTestEnv => FilePath
+testStoreMsgsFile = testPath "smp-server-messages.log"
 
-testStoreMsgsFile2 :: FilePath
-testStoreMsgsFile2 = "tests/tmp/smp-server-messages.log.2"
+testStoreMsgsFile2 :: HasTestEnv => FilePath
+testStoreMsgsFile2 = testPath "smp-server-messages.log.2"
 
-testStoreMsgsDir :: FilePath
-testStoreMsgsDir = "tests/tmp/messages"
+testStoreNtfsFile :: HasTestEnv => FilePath
+testStoreNtfsFile = testPath "smp-server-ntfs.log"
 
-testStoreMsgsDir2 :: FilePath
-testStoreMsgsDir2 = "tests/tmp/messages.2"
+testStoreNtfsFile2 :: HasTestEnv => FilePath
+testStoreNtfsFile2 = testPath "smp-server-ntfs.log.2"
 
-testStoreNtfsFile :: FilePath
-testStoreNtfsFile = "tests/tmp/smp-server-ntfs.log"
+testPrometheusMetricsFile :: HasTestEnv => FilePath
+testPrometheusMetricsFile = testPath "smp-server-metrics.txt"
 
-testStoreNtfsFile2 :: FilePath
-testStoreNtfsFile2 = "tests/tmp/smp-server-ntfs.log.2"
+testServerStatsBackupFile :: HasTestEnv => FilePath
+testServerStatsBackupFile = testPath "smp-server-stats.log"
 
-testPrometheusMetricsFile :: FilePath
-testPrometheusMetricsFile = "tests/tmp/smp-server-metrics.txt"
+xit' :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
+xit' d t = if os == "linux" then skip "skipped on Linux" $ it d t else it d t
 
-testServerStatsBackupFile :: FilePath
-testServerStatsBackupFile = "tests/tmp/smp-server-stats.log"
-
-xit' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
-xit' d = if os == "linux" then skip "skipped on Linux" . it d else it d
-
-xit'' :: (HasCallStack, Example a) => String -> a -> SpecWith (Arg a)
-xit'' d = skipOnCI . it d
+xit'' :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
+xit'' d t = skipOnCI $ it d t
 
 skipOnCI :: SpecWith a -> SpecWith a
 skipOnCI t = ifM (runIO envCI) (skip "skipped on CI" t) t
 
-testSMPClient :: Transport c => (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClient :: (HasTestEnv, Transport c) => (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
 
-testSMPClientVR :: Transport c => VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPClientVR :: (HasTestEnv, Transport c) => VersionRangeSMP -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClientVR vr client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
   testSMPClient_ useHost testPort vr Nothing client
 
-testSMPServiceClient :: Transport c => (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
+testSMPServiceClient :: (HasTestEnv, Transport c) => (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPServiceClient serviceCreds client = do
   Right useHost <- pure $ chooseTransportHost defaultNetworkConfig testHost
   testSMPClient_ useHost testPort supportedClientSMPRelayVRange (Just serviceCreds) client
@@ -181,13 +178,13 @@ testSMPClient_ host port vr serviceCreds_ client = do
   where
     clientALPN = Just alpnSupportedSMPHandshakes
 
-runSMPClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+runSMPClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
 runSMPClient _ test' = testSMPClient test'
 
-runSMPServiceClient :: Transport c => TProxy c 'TServer -> (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
+runSMPServiceClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (TLS.Credential, C.KeyPairEd25519) -> (THandleSMP c 'TClient -> IO a) -> IO a
 runSMPServiceClient _ serviceCreds test' = testSMPServiceClient serviceCreds test'
 
-testNtfServiceClient :: Transport c => TProxy c 'TServer -> C.KeyPairEd25519 -> (THandleSMP c 'TClient -> IO a) -> IO a
+testNtfServiceClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> C.KeyPairEd25519 -> (THandleSMP c 'TClient -> IO a) -> IO a
 testNtfServiceClient _ keys client = do
   tlsNtfServerCreds <- loadServerCredential ntfTestServerCredentials
   serviceCertHash <- loadFingerprint ntfTestServerCredentials
@@ -211,35 +208,44 @@ ntfTestServerCredentials =
       certificateFile = "tests/fixtures/server.crt"
     }
 
-cfg :: AServerConfig
-cfg = cfgMS (ASType SQSMemory SMSJournal)
+cfg :: HasTestEnv => AServerConfig
+cfg = cfgMS (ASType SQSMemory SMSMemory)
 
-cfgJ2 :: AServerConfig
-cfgJ2 = journalCfg cfg testStoreLogFile2 testStoreMsgsDir2
+cfgS2 :: HasTestEnv => AServerConfig
+cfgS2 = memoryCfg cfg testStoreLogFile2 testStoreMsgsFile2
 
-cfgJ2QS :: SQSType s -> AServerConfig
-cfgJ2QS = \case
-  SQSMemory -> journalCfg (cfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
-  SQSPostgres -> journalCfgDB (cfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
+cfgS2QS :: HasTestEnv => SQSType s -> AServerConfig
+cfgS2QS = \case
+  SQSMemory -> memoryCfg (cfgMS $ ASType SQSMemory SMSMemory) testStoreLogFile2 testStoreMsgsFile2
+  SQSPostgres -> databaseCfg (cfgMS postgresStoreType) testStoreDBOpts2
 
-journalCfg :: AServerConfig -> FilePath -> FilePath -> AServerConfig
-journalCfg (ASrvCfg _ _ cfg') storeLogFile storeMsgsPath =
-  ASrvCfg SQSMemory SMSJournal cfg' {serverStoreCfg = SSCMemoryJournal {storeLogFile, storeMsgsPath}}
+memoryCfg :: AServerConfig -> FilePath -> FilePath -> AServerConfig
+memoryCfg (ASrvCfg _ _ cfg') storeLogFile storeMsgsFile =
+  ASrvCfg SQSMemory SMSMemory cfg' {serverStoreCfg = SSCMemory $ Just StorePaths {storeLogFile, storeMsgsFile = Just storeMsgsFile}}
 
-journalCfgDB :: AServerConfig -> DBOpts -> FilePath -> AServerConfig
-journalCfgDB (ASrvCfg _ _ cfg') dbOpts storeMsgsPath' =
+databaseCfg :: AServerConfig -> DBOpts -> AServerConfig
+#if defined(dbServerPostgres)
+databaseCfg (ASrvCfg _ _ cfg') dbOpts =
   let storeCfg = PostgresStoreCfg {dbOpts, dbStoreLogPath = Nothing, confirmMigrations = MCYesUp, deletedTTL = 86400}
-   in ASrvCfg SQSPostgres SMSJournal cfg' {serverStoreCfg = SSCDatabaseJournal {storeCfg, storeMsgsPath'}}
+   in ASrvCfg SQSPostgres SMSPostgres cfg' {serverStoreCfg = SSCDatabase storeCfg}
+#else
+databaseCfg _ _ = error "no dbServerPostgres flag"
+#endif
 
-cfgMS :: AStoreType -> AServerConfig
+postgresStoreType :: AStoreType
+#if defined(dbServerPostgres)
+postgresStoreType = ASType SQSPostgres SMSPostgres
+#else
+postgresStoreType = error "no dbServerPostgres flag"
+#endif
+
+cfgMS :: HasTestEnv => AStoreType -> AServerConfig
 cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
   ServerConfig
     { transports = [],
       smpHandshakeTimeout = 60000000,
       tbqSize = 4,
       msgQueueQuota = 4,
-      maxJournalMsgCount = 5,
-      maxJournalStateLines = 2,
       queueIdBytes = 24,
       msgIdBytes = 24,
       serverStoreCfg,
@@ -252,12 +258,11 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       messageExpiration = Just defaultMessageExpiration,
       expireMessagesOnStart = True,
       expireMessagesOnSend = False,
-      idleQueueInterval = defaultIdleQueueInterval,
       notificationExpiration = defaultNtfExpiration,
       inactiveClientExpiration = Just defaultInactiveClientExpiration,
       logStatsInterval = Nothing,
       logStatsStartTime = 0,
-      serverStatsLogFile = "tests/tmp/smp-server-stats.daily.log",
+      serverStatsLogFile = testPath "smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
       prometheusInterval = Nothing,
       prometheusMetricsFile = testPrometheusMetricsFile,
@@ -278,6 +283,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       serverResolverConcurrency = defaultNameResolverConcurrency,
+      maxClientCmdWait = defaultMaxClientCmdWait,
       namesConfig = Nothing,
       information = Nothing,
       startOptions = defaultStartOptions
@@ -289,26 +295,28 @@ withStoreCfg (ASSCfg qt mt storeCfg) f = ASrvCfg qt mt (f storeCfg)
 defaultStartOptions :: StartOptions
 defaultStartOptions = StartOptions {maintenance = False, compactLog = False, logLevel = testLogLevel, skipWarnings = False, confirmMigrations = MCYesUp}
 
-testServerStoreConfig :: AStoreType -> AServerStoreCfg
+testServerStoreConfig :: HasTestEnv => AStoreType -> AServerStoreCfg
 testServerStoreConfig = serverStoreConfig_ False
 
-serverStoreConfig_ :: Bool -> AStoreType -> AServerStoreCfg
+serverStoreConfig_ :: HasTestEnv => Bool -> AStoreType -> AServerStoreCfg
+#if defined(dbServerPostgres)
 serverStoreConfig_ useDbStoreLog = \case
+#else
+serverStoreConfig_ _ = \case
+#endif
   ASType SQSMemory SMSMemory ->
     ASSCfg SQSMemory SMSMemory $ SSCMemory $ Just StorePaths {storeLogFile = testStoreLogFile, storeMsgsFile = Just testStoreMsgsFile}
-  ASType SQSMemory SMSJournal ->
-    ASSCfg SQSMemory SMSJournal $ SSCMemoryJournal {storeLogFile = testStoreLogFile, storeMsgsPath = testStoreMsgsDir}
-  ASType SQSPostgres SMSJournal ->
-    ASSCfg SQSPostgres SMSJournal SSCDatabaseJournal {storeCfg, storeMsgsPath' = testStoreMsgsDir}
 #if defined(dbServerPostgres)
   ASType SQSPostgres SMSPostgres ->
     ASSCfg SQSPostgres SMSPostgres $ SSCDatabase storeCfg
-#endif
   where
     dbStoreLogPath = if useDbStoreLog then Just testStoreLogFile else Nothing
     storeCfg = PostgresStoreCfg {dbOpts = testStoreDBOpts, dbStoreLogPath, confirmMigrations = MCYesUp, deletedTTL = 86400}
+#else
+  ASType SQSPostgres _ -> error "no dbServerPostgres flag"
+#endif
 
-cfgVPrev :: AStoreType -> AServerConfig
+cfgVPrev :: HasTestEnv => AStoreType -> AServerConfig
 cfgVPrev msType = updateCfg (cfgMS msType) $ \cfg' -> cfg' {smpServerVRange = prevRange $ smpServerVRange cfg'}
 
 prevRange :: VersionRange v -> VersionRange v
@@ -320,10 +328,10 @@ prevVersion (Version v) = Version (v - 1)
 nextVersion :: Version v -> Version v
 nextVersion (Version v) = Version (v + 1)
 
-proxyCfg :: AServerConfig
-proxyCfg = proxyCfgMS (ASType SQSMemory SMSJournal)
+proxyCfg :: HasTestEnv => AServerConfig
+proxyCfg = proxyCfgMS (ASType SQSMemory SMSMemory)
 
-proxyCfgMS :: AStoreType -> AServerConfig
+proxyCfgMS :: HasTestEnv => AStoreType -> AServerConfig
 proxyCfgMS msType =
   updateCfg (cfgMS msType) $ \cfg' ->
     let smpAgentCfg' = smpAgentCfg cfg'
@@ -332,17 +340,17 @@ proxyCfgMS msType =
             smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
           }
 
-proxyCfgJ2 :: AServerConfig
-proxyCfgJ2 = journalCfg proxyCfg testStoreLogFile2 testStoreMsgsDir2
+proxyCfgS2 :: HasTestEnv => AServerConfig
+proxyCfgS2 = memoryCfg proxyCfg testStoreLogFile2 testStoreMsgsFile2
 
-proxyCfgJ2QS :: SQSType qs -> AServerConfig
-proxyCfgJ2QS = \case
-  SQSMemory -> journalCfg (proxyCfgMS $ ASType SQSMemory SMSJournal) testStoreLogFile2 testStoreMsgsDir2
-  SQSPostgres -> journalCfgDB (proxyCfgMS $ ASType SQSPostgres SMSJournal) testStoreDBOpts2 testStoreMsgsDir2
+proxyCfgS2QS :: HasTestEnv => SQSType qs -> AServerConfig
+proxyCfgS2QS = \case
+  SQSMemory -> memoryCfg (proxyCfgMS $ ASType SQSMemory SMSMemory) testStoreLogFile2 testStoreMsgsFile2
+  SQSPostgres -> databaseCfg (proxyCfgMS postgresStoreType) testStoreDBOpts2
 
 -- Proxy config with a short relay-connection timeout, to bound how long a failing
 -- proxy->relay connection attempt blocks in the relay reconnection tests.
-proxyCfgShortTimeout :: AServerConfig
+proxyCfgShortTimeout :: HasTestEnv => AServerConfig
 proxyCfgShortTimeout =
   updateCfg proxyCfg $ \cfg' ->
     let aCfg = smpAgentCfg cfg'
@@ -350,7 +358,7 @@ proxyCfgShortTimeout =
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
 
-proxyCfgVPrev :: AStoreType -> AServerConfig
+proxyCfgVPrev :: HasTestEnv => AStoreType -> AServerConfig
 proxyCfgVPrev msType =
   updateCfg (proxyCfgMS msType) $ \cfg' ->
     let aCfg = smpAgentCfg cfg'
@@ -360,11 +368,11 @@ proxyCfgVPrev msType =
             smpAgentCfg = aCfg {smpCfg = cCfg {serverVRange = prevRange $ serverVRange cCfg}}
           }
 
-withSmpServerStoreMsgLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerStoreMsgLogOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =
   withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}
 
-withSmpServerStoreLogOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerStoreLogOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreLogOn (t, msType) =
   withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {serverStatsBackupFile = Just testServerStatsBackupFile}
 
@@ -380,26 +388,32 @@ withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
 
-withSmpServerThreadOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerThreadOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)
 
 serverBracket :: HasCallStack => (TMVar Bool -> IO ()) -> IO () -> (HasCallStack => ThreadId -> IO a) -> IO a
 serverBracket process afterProcess f = do
   started <- newEmptyTMVarIO
+  startError <- newEmptyTMVarIO
+  stopped <- newEmptyTMVarIO
   E.bracket
-    (forkIOWithUnmask (\unmask -> unmask (process started) `E.catchAny` handleStartError started))
-    (\t -> killThread t >> afterProcess >> waitFor started "stop")
-    (\t -> waitFor started "start" >> f t >>= \r -> r <$ threadDelay 100000)
+    (forkIOWithUnmask (\unmask -> (unmask (process started) `E.catchAny` handleStartError started startError) `E.finally` atomically (putTMVar stopped ())))
+    (\t -> forkIO (killThread t) >> afterProcess >> waitStopped stopped)
+    (\t -> checkStarted started startError >> f t >>= \r -> r <$ threadDelay 100000)
   where
-    -- it putTMVar is called twise to unlock both parts of the bracket in case of start failure
-    handleStartError started e = do
-      atomically $ putTMVar started False
+    handleStartError started startError e = do
+      atomically $ putTMVar startError e
       atomically $ putTMVar started False
       E.throwIO e
-    waitFor started s =
+    checkStarted started startError =
       5_000_000 `timeout` atomically (takeTMVar started) >>= \case
-        Nothing -> error $ "server did not " <> s
-        _ -> pure ()
+        Nothing -> error "server did not start"
+        Just True -> pure ()
+        Just False -> atomically (readTMVar startError) >>= \e -> error $ "server did not start: " <> show e
+    waitStopped stopped = do
+      delay <- registerDelay 30_000_000
+      ok <- atomically $ (True <$ takeTMVar stopped) `orElse` (False <$ (readTVar delay >>= checkSTM))
+      unless ok $ error "server did not stop"
 
 -- A TCP server that accepts connections but never performs a TLS handshake, so a client
 -- connecting to it stays blocked in the TLS handshake until its connection timeout.
@@ -410,28 +424,28 @@ withStallingServerOn port action =
     (pure ())
     (const action)
 
-withSmpServerOn :: HasCallStack => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
+withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const
 
-withSmpServer :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO a
+withSmpServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO a -> IO a
 withSmpServer ps = withSmpServerOn ps testPort
 
-withSmpServerProxy :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO a
+withSmpServerProxy :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO a -> IO a
 withSmpServerProxy (t, msType) = withSmpServerConfigOn t (proxyCfgMS msType) testPort . const
 
-withSmpServers2 :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO a
-withSmpServers2 ps@(t, ASType qs _ms) = withSmpServer ps . withSmpServerConfigOn t (cfgJ2QS qs) testPort2 . const
+withSmpServers2 :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO a -> IO a
+withSmpServers2 ps@(t, ASType qs _ms) = withSmpServer ps . withSmpServerConfigOn t (cfgS2QS qs) testPort2 . const
 
-withSmpServersProxy2 :: HasCallStack => (ASrvTransport, AStoreType) -> IO a -> IO a
-withSmpServersProxy2 ps@(t, ASType qs _ms) = withSmpServerProxy ps . withSmpServerConfigOn t (proxyCfgJ2QS qs) testPort2 . const
+withSmpServersProxy2 :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO a -> IO a
+withSmpServersProxy2 ps@(t, ASType qs _ms) = withSmpServerProxy ps . withSmpServerConfigOn t (proxyCfgS2QS qs) testPort2 . const
 
-runSmpTest :: forall c a. (HasCallStack, Transport c) => AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
+runSmpTest :: forall c a. (HasCallStack, HasTestEnv, Transport c) => AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO a) -> IO a
 runSmpTest msType test = withSmpServerConfigOn (transport @c) (cfgMS msType) testPort $ \_ -> testSMPClient test
 
-runSmpTestN :: forall c a. (HasCallStack, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
+runSmpTestN :: forall c a. (HasCallStack, HasTestEnv, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
 runSmpTestN msType = runSmpTestNCfg (cfgMS msType) supportedClientSMPRelayVRange
 
-runSmpTestNCfg :: forall c a. (HasCallStack, Transport c) => AServerConfig -> VersionRangeSMP -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
+runSmpTestNCfg :: forall c a. (HasCallStack, HasTestEnv, Transport c) => AServerConfig -> VersionRangeSMP -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO a) -> IO a
 runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c) srvCfg testPort $ \_ -> run nClients []
   where
     run :: Int -> [THandleSMP c 'TClient] -> IO a
@@ -440,11 +454,11 @@ runSmpTestNCfg srvCfg clntVR nClients test = withSmpServerConfigOn (transport @c
 
 smpServerTest ::
   forall c smp.
-  (Transport c, Encoding smp) =>
+  (HasTestEnv, Transport c, Encoding smp) =>
   TProxy c 'TServer ->
   (Maybe TAuthorizations, ByteString, ByteString, smp) ->
   IO (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg)
-smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >> tGet' h
+smpServerTest _ t = runSmpTest (ASType SQSMemory SMSMemory) $ \h -> tPut' h t >> tGet' h
   where
     tPut' :: THandleSMP c 'TClient -> (Maybe TAuthorizations, ByteString, ByteString, smp) -> IO ()
     tPut' h@THandle {params = THandleParams {sessionId, implySessId}} (sig, corrId, queueId, smp) = do
@@ -455,30 +469,30 @@ smpServerTest _ t = runSmpTest (ASType SQSMemory SMSJournal) $ \h -> tPut' h t >
       [(CorrId corrId, EntityId qId, Right cmd)] <- tGetClient h
       pure (Nothing, corrId, qId, cmd)
 
-smpTest :: (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest :: (HasCallStack, HasTestEnv, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest _ msType test' = runSmpTest msType test' `shouldReturn` ()
 
-smpTestN :: (HasCallStack, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO ()) -> Expectation
+smpTestN :: (HasCallStack, HasTestEnv, Transport c) => AStoreType -> Int -> (HasCallStack => [THandleSMP c 'TClient] -> IO ()) -> Expectation
 smpTestN msType n test' = runSmpTestN msType n test' `shouldReturn` ()
 
-smpTest2 :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest2 :: forall c. (HasCallStack, HasTestEnv, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2 t msType = smpTest2Cfg (cfgMS msType) supportedClientSMPRelayVRange t
 
-smpTest2Cfg :: forall c. (HasCallStack, Transport c) => AServerConfig -> VersionRangeSMP -> TProxy c 'TServer -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest2Cfg :: forall c. (HasCallStack, HasTestEnv, Transport c) => AServerConfig -> VersionRangeSMP -> TProxy c 'TServer -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest2Cfg srvCfg clntVR _ test' = runSmpTestNCfg srvCfg clntVR 2 _test `shouldReturn` ()
   where
     _test :: HasCallStack => [THandleSMP c 'TClient] -> IO ()
     _test [h1, h2] = test' h1 h2
     _test _ = error "expected 2 handles"
 
-smpTest3 :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest3 :: forall c. (HasCallStack, HasTestEnv, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest3 _ msType test' = smpTestN msType 3 _test
   where
     _test :: HasCallStack => [THandleSMP c 'TClient] -> IO ()
     _test [h1, h2, h3] = test' h1 h2 h3
     _test _ = error "expected 3 handles"
 
-smpTest4 :: forall c. (HasCallStack, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
+smpTest4 :: forall c. (HasCallStack, HasTestEnv, Transport c) => TProxy c 'TServer -> AStoreType -> (HasCallStack => THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO ()) -> Expectation
 smpTest4 _ msType test' = smpTestN msType 4 _test
   where
     _test :: HasCallStack => [THandleSMP c 'TClient] -> IO ()
