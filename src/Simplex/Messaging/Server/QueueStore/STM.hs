@@ -277,9 +277,11 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       rId = recipientId sq
       qr = queueRec sq
-      delete q@QueueRec {senderId, rcvServiceId} = do
+      delete q@QueueRec {senderId, queueData, rcvServiceId} = do
         writeTVar qr Nothing
+        TM.delete rId $ queues st
         TM.delete senderId $ senders st
+        forM_ queueData $ \(lnkId, _) -> TM.delete lnkId $ links st
         mapM_ (removeServiceQueue st serviceRcvQueues rId) rcvServiceId
         mapM_ (removeNotifier st) $ notifier q
         pure q
