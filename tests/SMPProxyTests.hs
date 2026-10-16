@@ -46,13 +46,9 @@ import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import System.Random (randomRIO)
-import Test.Hspec hiding (fit, it)
+import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
 import Util
-#if defined(dbPostgres)
-import Fixtures
-import Simplex.Messaging.Agent.Store.Postgres.Util (dropAllSchemasExceptSystem)
-#endif
 
 smpProxyTests :: SpecWith AStoreType
 smpProxyTests = do
@@ -85,73 +81,71 @@ smpProxyTests = do
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
   describe "deliver message via SMP proxy" $ do
-    let srv1 = SMPServer testHost testPort testKeyHash
+    let srv1, srv2 :: HasTestEnv => SMPServer
+        srv1 = SMPServer testHost testPort testKeyHash
         srv2 = SMPServer testHost2 testPort2 testKeyHash
     describe "client API" $ do
       let maxLen = maxMessageLength
       describe "one server" $ do
-        it "deliver via proxy" . oneServer $ do
+        it "deliver via proxy" $ oneServer $ do
           deliverMessageViaProxy srv1 srv1 C.SEd448 "hello 1" "hello 2"
       describe "two servers" $ do
-        let proxyServ = srv1
+        let proxyServ, relayServ :: HasTestEnv => SMPServer
+            proxyServ = srv1
             relayServ = srv2
         (msg1, msg2) <- runIO $ do
           g <- C.newRandom
           atomically $ (,) <$> C.randomBytes maxLen g <*> C.randomBytes maxLen g
-        it "deliver via proxy" . twoServersFirstProxy $
+        it "deliver via proxy" $ twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd448 "hello 1" "hello 2"
-        it "max message size, Ed448 keys" . twoServersFirstProxy $
+        it "max message size, Ed448 keys" $ twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd448 msg1 msg2
-        it "max message size, Ed25519 keys" . twoServersFirstProxy $
+        it "max message size, Ed25519 keys" $ twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SEd25519 msg1 msg2
-        it "max message size, X25519 keys" . twoServersFirstProxy $
+        it "max message size, X25519 keys" $ twoServersFirstProxy $
           deliverMessageViaProxy proxyServ relayServ C.SX25519 msg1 msg2
       describe "version compatibility" $ do
         let deliver clientVR = deliverMessagesViaProxyVR clientVR srv1 srv2 C.SEd448 ["hello 1"] ["hello 2"]
-        it "prev client" . twoServersFirstProxy $ deliver (prevRange supportedClientSMPRelayVRange)
-        it "prev proxy" . twoServersPrevProxy $ deliver supportedClientSMPRelayVRange
-        it "prev relay" . twoServersPrevRelay $ deliver supportedClientSMPRelayVRange
+        it "prev client" $ twoServersFirstProxy $ deliver (prevRange supportedClientSMPRelayVRange)
+        it "prev proxy" $ twoServersPrevProxy $ deliver supportedClientSMPRelayVRange
+        it "prev relay" $ twoServersPrevRelay $ deliver supportedClientSMPRelayVRange
       describe "stress test 1k" $ do
         let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
-        it "1x1000" . twoServersFirstProxy $ deliver 1000
-        it "5x200" . twoServersFirstProxy $ 5 `inParrallel` deliver 200
-        it "10x100" . twoServersFirstProxy $ 10 `inParrallel` deliver 100
+        it "1x1000" $ twoServersFirstProxy $ deliver 1000
+        it "5x200" $ twoServersFirstProxy $ 5 `inParrallel` deliver 200
+        it "10x100" $ twoServersFirstProxy $ 10 `inParrallel` deliver 100
       describe "stress test - no host" $ do
-        it "1x1000, no delay" . oneServer $ proxyConnectDeadRelay 1000 0 srv1
-        xit "1x1000, 100ms" . oneServer $ proxyConnectDeadRelay 1000 100000 srv1
-        xit "100x1000, 100ms" . oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 1000 100000 srv1)
+        it "1x1000, no delay" $ oneServer $ proxyConnectDeadRelay 1000 0 srv1
+        xit "1x1000, 100ms" $ oneServer $ proxyConnectDeadRelay 1000 100000 srv1
+        xit "100x1000, 100ms" $ oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 1000 100000 srv1)
       xdescribe "stress test 10k" $ do
         let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
-        it "1x10000" . twoServersFirstProxy $ deliver 10000
-        it "5x2000" . twoServersFirstProxy $ 5 `inParrallel` deliver 2000
-        it "10x1000" . twoServersFirstProxy $ 10 `inParrallel` deliver 1000
-        it "100x100 N1" . twoServersFirstProxy $ withNumCapabilities 1 $ 100 `inParrallel` deliver 100
-        it "100x100 N4 C1" . twoServersNoConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
-        it "100x100 N4 C2" . twoServersFirstProxy $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
-        it "100x100 N4 C16" . twoServersMoreConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
-        it "100x100 N" . twoServersFirstProxy $ withNCPUCapabilities $ 100 `inParrallel` deliver 100
-        it "500x20" . twoServersFirstProxy $ 500 `inParrallel` deliver 20
-#if defined(dbPostgres)
-    after_ (dropAllSchemasExceptSystem testDBConnectInfo) . describe "agent API" $ do
-#else
+        it "1x10000" $ twoServersFirstProxy $ deliver 10000
+        it "5x2000" $ twoServersFirstProxy $ 5 `inParrallel` deliver 2000
+        it "10x1000" $ twoServersFirstProxy $ 10 `inParrallel` deliver 1000
+        it "100x100 N1" $ twoServersFirstProxy $ withNumCapabilities 1 $ 100 `inParrallel` deliver 100
+        it "100x100 N4 C1" $ twoServersNoConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
+        it "100x100 N4 C2" $ twoServersFirstProxy $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
+        it "100x100 N4 C16" $ twoServersMoreConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
+        it "100x100 N" $ twoServersFirstProxy $ withNCPUCapabilities $ 100 `inParrallel` deliver 100
+        it "500x20" $ twoServersFirstProxy $ 500 `inParrallel` deliver 20
     describe "agent API" $ do
-#endif
       describe "one server" $ do
-        it "always via proxy" . oneServer $
+        it "always via proxy" $ oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv1], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1
-        it "without proxy" . oneServer $
+        it "without proxy" $ oneServer $
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv1], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
       describe "two servers" $ do
         it "always via proxy" $ \msType -> twoServers
           (agentDeliverMessageViaProxy ([srv1], SPMAlways, True) ([srv2], SPMAlways, True) C.SEd448 "hello 1" "hello 2" 1)
           msType
-        it "both via proxy" . twoServers $
+        it "both via proxy" $ twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMUnknown, True) C.SEd448 "hello 1" "hello 2" 1
-        it "first via proxy" . twoServers $
+        it "first via proxy" $ twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
-        it "without proxy" . twoServers $
+        it "without proxy" $ twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
-        it "first via proxy for unknown" . twoServers $
+        it "first via proxy for unknown" $ twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
         it "retries sending when destination or proxy relay is offline" $ \_ ->
           agentViaProxyRetryOffline
@@ -159,28 +153,34 @@ smpProxyTests = do
           agentViaProxyRetryNoSession
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
-        it "2 agents, 250 messages" . oneServer $ deliver 2 250
-        it "5 agents, 10 pairs, 50 messages, N1" . oneServer . withNumCapabilities 1 $ deliver 5 50
-        it "5 agents, 10 pairs, 50 messages. N4" . oneServer . withNumCapabilities 4 $ deliver 5 50
+        it "2 agents, 250 messages" $ oneServer $ deliver 2 250
       xdescribe "stress test 10k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
-        it "25 agents, 300 pairs, 17 messages" . oneServer . withNumCapabilities 4 $ deliver 25 17
+        it "25 agents, 300 pairs, 17 messages" $ oneServer $ withNumCapabilities 4 $ deliver 25 17
   where
-    oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) testPort $ const test
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
-    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
-    twoServersMoreConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 128}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
-    twoServersNoConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 1}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128, maxJournalMsgCount = 256}) test msType
+    twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
+    twoServersMoreConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 128}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
+    twoServersNoConc test msType = twoServers_ (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {serverClientConcurrency = 1}) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
     twoServersPrevProxy test msType = twoServers_ (proxyCfgVPrev msType) (cfgMS msType) test msType
     twoServersPrevRelay test msType = twoServers_ (proxyCfgMS msType) (prevServerVRange $ cfgMS msType) test msType
     prevServerVRange cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {smpServerVRange = prevRange $ smpServerVRange cfg_}
-    twoServers_ :: AServerConfig -> AServerConfig -> IO () -> AStoreType -> IO ()
+    twoServers_ :: HasTestEnv => AServerConfig -> AServerConfig -> IO () -> AStoreType -> IO ()
     twoServers_ cfg1 cfg2 runTest (ASType qsType _) =
       withSmpServerConfigOn (transport @TLS) cfg1 testPort $ \_ ->
         let cfg2' = case qsType of
-              SQSMemory -> journalCfg cfg2 testStoreLogFile2 testStoreMsgsDir2
-              SQSPostgres -> journalCfgDB cfg2 testStoreDBOpts2 testStoreMsgsDir2
+              SQSMemory -> memoryCfg cfg2 testStoreLogFile2 testStoreMsgsFile2
+              SQSPostgres -> databaseCfg cfg2 testStoreDBOpts2
          in withSmpServerConfigOn (transport @TLS) cfg2' testPort2 $ const runTest
+
+smpProxyCapabilityTests :: SpecWith AStoreType
+smpProxyCapabilityTests = do
+  let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [testSMPServer]) (map bshow [1 :: Int .. nMsgs])
+  it "5 agents, 10 pairs, 50 messages, N1" $ oneServer $ withNumCapabilities 1 $ deliver 5 50
+  it "5 agents, 10 pairs, 50 messages. N4" $ oneServer $ withNumCapabilities 4 $ deliver 5 50
+
+oneServer :: HasTestEnv => IO a -> AStoreType -> IO a
+oneServer test msType = withSmpServerConfigOn (transport @TLS) (updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) testPort $ const test
 
 deliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => SMPServer -> SMPServer -> C.SAlgorithm a -> ByteString -> ByteString -> IO ()
 deliverMessageViaProxy proxyServ relayServ alg msg msg' = deliverMessagesViaProxy proxyServ relayServ alg [msg] [msg']
@@ -248,7 +248,7 @@ proxyConnectDeadRelay n d proxyServ = do
       Right !_noWay -> error "got unexpected client"
       Left !_err -> threadDelay d
 
-agentDeliverMessageViaProxy :: (C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> AgentMsgId -> IO ()
+agentDeliverMessageViaProxy :: (HasTestEnv, C.AlgorithmI a, C.AuthAlgorithm a) => (NonEmpty SMPServer, SMPProxyMode, Bool) -> (NonEmpty SMPServer, SMPProxyMode, Bool) -> C.SAlgorithm a -> ByteString -> ByteString -> AgentMsgId -> IO ()
 agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, bViaProxy) alg msg1 msg2 baseId =
   withAgent 1 aCfg (servers aTestCfg) testDB $ \alice ->
     withAgent 2 aCfg (servers bTestCfg) testDB2 $ \bob -> runRight_ $ do
@@ -287,7 +287,7 @@ agentDeliverMessageViaProxy aTestCfg@(aSrvs, _, aViaProxy) bTestCfg@(bSrvs, _, b
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg alg, rcvAuthAlg = C.AuthAlg alg}
     servers (srvs, smpProxyMode, _) = (initAgentServersProxy_ smpProxyMode SPFAllow) {smp = userServers srvs}
 
-agentDeliverMessagesViaProxyConc :: [NonEmpty SMPServer] -> [MsgBody] -> IO ()
+agentDeliverMessagesViaProxyConc :: HasTestEnv => [NonEmpty SMPServer] -> [MsgBody] -> IO ()
 agentDeliverMessagesViaProxyConc agentServers msgs =
   withAgents $ \agents -> do
     let pairs = combinations 2 agents
@@ -354,7 +354,7 @@ agentDeliverMessagesViaProxyConc agentServers msgs =
     aCfg = agentCfg {sndAuthAlg = C.AuthAlg C.SEd448, rcvAuthAlg = C.AuthAlg C.SEd448}
     servers srvs = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers srvs}
 
-agentViaProxyRetryOffline :: IO ()
+agentViaProxyRetryOffline :: HasTestEnv => IO ()
 agentViaProxyRetryOffline = do
   let srv1 = SMPServer testHost testPort testKeyHash
       srv2 = SMPServer testHost testPort2 testKeyHash
@@ -410,15 +410,11 @@ agentViaProxyRetryOffline = do
             ackMessage alice bobId (baseId + 4) Nothing
   where
     withServer :: (ThreadId -> IO a) -> IO a
-    withServer = withServer_ testStoreLogFile testStoreMsgsDir testStoreNtfsFile testPort
-    -- TODO [postgres]
-    -- withServer = withServer_ testStoreDBOpts testStoreMsgsDir testStoreNtfsFile testPort
+    withServer = withServer_ testStoreLogFile testStoreMsgsFile testStoreNtfsFile testPort
     withServer2 :: (ThreadId -> IO a) -> IO a
-    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
-    -- TODO [postgres]
-    -- withServer2 = withServer_ testStoreDBOpts2 testStoreMsgsDir2 testStoreNtfsFile2 testPort2
+    withServer2 = withServer_ testStoreLogFile2 testStoreMsgsFile2 testStoreNtfsFile2 testPort2
     withServer_ storeLog storeMsgs storeNtfs =
-      let cfg' = updateCfg (journalCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
+      let cfg' = updateCfg (memoryCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
        in withSmpServerConfigOn (transport @TLS) cfg'
     a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
@@ -427,7 +423,7 @@ agentViaProxyRetryOffline = do
     msgId = subtract baseId . fst
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
-agentViaProxyRetryNoSession :: IO ()
+agentViaProxyRetryNoSession :: HasTestEnv => IO ()
 agentViaProxyRetryNoSession = do
   let srv1 = SMPServer testHost testPort testKeyHash
       srv2 = SMPServer testHost testPort2 testKeyHash
@@ -444,17 +440,17 @@ agentViaProxyRetryNoSession = do
           _ <- runRight $ makeConnection b a
           pure ()
   where
-    withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2
+    withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
-testNoProxy :: AStoreType -> IO ()
+testNoProxy :: HasTestEnv => AStoreType -> IO ()
 testNoProxy msType = do
   withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY testSMPServer Nothing)
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
 
-testProxyAuth :: AStoreType -> IO ()
+testProxyAuth :: HasTestEnv => AStoreType -> IO ()
 testProxyAuth msType = do
   withSmpServerConfigOn (transport @TLS) proxyCfgAuth testPort $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
@@ -465,12 +461,12 @@ testProxyAuth msType = do
 
 -- Connect a sender client to the proxy and request a relay session to testSMPServer2 (PRXY).
 -- On success the reply is PKEY; otherwise it is the proxy error for the relay connection.
-requestRelaySession :: IO (Either SMP.ErrorType SMP.BrokerMsg)
+requestRelaySession :: HasTestEnv => IO (Either SMP.ErrorType SMP.BrokerMsg)
 requestRelaySession =
   testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) ->
     (\(_, _, reply) -> reply) <$> sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
 
-testChangedFwdVersion :: IO ()
+testChangedFwdVersion :: HasTestEnv => IO ()
 testChangedFwdVersion =
   withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
     g <- C.newRandom
@@ -485,10 +481,10 @@ testChangedFwdVersion =
     _ <- runExceptT' $ forward v
     runExceptT (forward $ prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
 
-testFwdCorrIdSize :: IO ()
+testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-    withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ ->
       testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
         g <- C.newRandom
@@ -497,10 +493,10 @@ testFwdCorrIdSize =
           (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
           reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
 
-testForwardedAuthErrorDelay :: IO ()
+testForwardedAuthErrorDelay :: HasTestEnv => IO ()
 testForwardedAuthErrorDelay =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-    withSmpServerConfigOn (transport @TLS) (updateCfg cfgJ2 $ \cfg_ -> cfg_ {authErrorDelay = 500000}) testPort2 $ \_ -> do
+    withSmpServerConfigOn (transport @TLS) (updateCfg cfgS2 $ \cfg_ -> cfg_ {authErrorDelay = 500000}) testPort2 $ \_ -> do
       g <- C.newRandom
       ts <- getCurrentTime
       pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
@@ -513,9 +509,9 @@ testForwardedAuthErrorDelay =
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,
 -- let any stored connection error expire, then require the proxy to establish the session (PKEY).
-requireProxyReconnect :: IO ()
+requireProxyReconnect :: HasTestEnv => IO ()
 requireProxyReconnect =
-  withSmpServerConfigOn (transport @TLS) proxyCfgJ2 testPort2 $ \_ -> do
+  withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2 $ \_ -> do
     testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
       (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
       reply `shouldBe` Right SMP.PONG
@@ -528,7 +524,7 @@ requireProxyReconnect =
 -- The connect fails by timing out (storing a Left error that self-heals via persistErrorInterval),
 -- so once a healthy relay is running the proxy reconnects. This proves the stalling relay alone
 -- does not cause the permanent failure - only the mid-connection disconnect does.
-testProxyRecoversWithoutDisconnect :: IO ()
+testProxyRecoversWithoutDisconnect :: HasTestEnv => IO ()
 testProxyRecoversWithoutDisconnect =
   withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ -> do
     withStallingServerOn testPort2 $
@@ -550,7 +546,7 @@ testProxyRecoversWithoutDisconnect =
 -- The stalling relay (accepts TCP, never completes TLS) holds the connect open long enough to
 -- interleave the disconnect. Phase 2 (requireProxyReconnect) is identical to the control above;
 -- the only difference is this disconnect.
-testProxyReconnectAfterRelayRestart :: IO ()
+testProxyReconnectAfterRelayRestart :: HasTestEnv => IO ()
 testProxyReconnectAfterRelayRestart =
   withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ -> do
     -- disconnect the sender 1s into the 4s connect to the stalling relay, killing the in-flight worker
@@ -590,14 +586,14 @@ testForwardOversizedNotKept =
 -- skipped and the empty var is left in smpClients, so every later connection to that server times
 -- out on it. Phase 1 cancels a connect to a stalling relay; phase 2 requires a fresh connect to a
 -- healthy relay to succeed.
-testAgentClientReconnectAfterCancel :: IO ()
+testAgentClientReconnectAfterCancel :: HasTestEnv => IO ()
 testAgentClientReconnectAfterCancel =
   withAgent 1 agentCfg agentServersLeak testDB $ \a -> do
     withStallingServerOn testPort2 $ do
       t <- async $ runExceptT $ A.createConnection a NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
       threadDelay 1000000 -- let the connect to the stalling relay start, then kill it mid-flight
       cancel t
-    withSmpServerConfigOn (transport @TLS) cfgJ2 testPort2 $ \_ -> do
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ -> do
       testSMPClient_ "127.0.0.1" testPort2 supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
         (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PING)
         reply `shouldBe` Right SMP.PONG -- the relay is up and reachable, so a timeout can only be the poisoned var
