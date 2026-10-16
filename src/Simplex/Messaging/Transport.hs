@@ -46,7 +46,6 @@ module Simplex.Messaging.Transport
     minServerSMPRelayVersion,
     currentClientSMPRelayVersion,
     currentServerSMPRelayVersion,
-    shortLinksSMPVersion,
     serviceCertsSMPVersion,
     newNtfCredsSMPVersion,
     clientNoticesSMPVersion,
@@ -191,11 +190,8 @@ type VersionRangeSMP = VersionRange SMPVersion
 pattern VersionSMP :: Word16 -> VersionSMP
 pattern VersionSMP v = Version v
 
-_proxyServerHandshakeSMPVersion :: VersionSMP
-_proxyServerHandshakeSMPVersion = VersionSMP 14
-
-shortLinksSMPVersion :: VersionSMP
-shortLinksSMPVersion = VersionSMP 15
+_shortLinksSMPVersion :: VersionSMP
+_shortLinksSMPVersion = VersionSMP 15
 
 serviceCertsSMPVersion :: VersionSMP
 serviceCertsSMPVersion = VersionSMP 16
@@ -224,10 +220,10 @@ fwdNoncesSMPVersion :: VersionSMP
 fwdNoncesSMPVersion = VersionSMP 23
 
 minClientSMPRelayVersion :: VersionSMP
-minClientSMPRelayVersion = VersionSMP 14
+minClientSMPRelayVersion = VersionSMP 15
 
 minServerSMPRelayVersion :: VersionSMP
-minServerSMPRelayVersion = VersionSMP 14
+minServerSMPRelayVersion = VersionSMP 15
 
 currentClientSMPRelayVersion :: VersionSMP
 currentClientSMPRelayVersion = VersionSMP 23
@@ -245,7 +241,7 @@ currentServerSMPRelayVersion = VersionSMP 23
 proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 23
 
--- minimal supported protocol version is 14
+-- minimal supported protocol version is 15
 supportedClientSMPRelayVRange :: VersionRangeSMP
 supportedClientSMPRelayVRange = mkVersionRange minClientSMPRelayVersion currentClientSMPRelayVersion
 

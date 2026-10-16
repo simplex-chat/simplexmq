@@ -79,6 +79,7 @@ module Simplex.Messaging.Agent.Protocol
     SMPConfirmation (..),
     AgentMsgEnvelope (..),
     AgentMessage (..),
+    RatchetInfo (..),
     RequestSignature (..),
     AgentMessageType (..),
     APrivHeader (..),
@@ -245,7 +246,6 @@ import Simplex.Messaging.Crypto.Ratchet
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
     SndE2ERatchetParams,
-    RcvE2EPrivRatchetParams,
     pattern PQSupportOff,
     pattern PQSupportOn,
   )
@@ -611,6 +611,7 @@ data RcvSwitchStatus
   | RSSendingQADD
   | RSSendingQUSE
   | RSReceivedMessage
+  | RSReceivedQEND
   deriving (Eq, Show)
 
 instance StrEncoding RcvSwitchStatus where
@@ -619,12 +620,14 @@ instance StrEncoding RcvSwitchStatus where
     RSSendingQADD -> "sending_qadd"
     RSSendingQUSE -> "sending_quse"
     RSReceivedMessage -> "received_message"
+    RSReceivedQEND -> "received_qend"
   strP =
     A.takeTill (== ' ') >>= \case
       "switch_started" -> pure RSSwitchStarted
       "sending_qadd" -> pure RSSendingQADD
       "sending_quse" -> pure RSSendingQUSE
       "received_message" -> pure RSReceivedMessage
+      "received_qend" -> pure RSReceivedQEND
       _ -> fail "bad RcvSwitchStatus"
 
 instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode
@@ -928,7 +931,7 @@ data AgentMessage
   | -- AgentConnInfoReply is used by accepting party in duplexHandshake mode (v2), allowing to include reply queue(s) in the initial confirmation.
     -- It made removed REPLY message unnecessary.
     AgentConnInfoReply (NonEmpty SMPQueueInfo) ConnInfo
-  | AgentRatchetInfo ByteString
+  | AgentRatchetInfo RatchetInfo
   | AgentMessage APrivHeader AMessage
   | AgentServiceRequest (NonEmpty SMPQueueInfo) (Maybe RequestSignature) MsgBody
   | AgentServiceResponse MsgBody
@@ -939,7 +942,7 @@ instance Encoding AgentMessage where
   smpEncode = \case
     AgentConnInfo cInfo -> smpEncode ('I', Tail cInfo)
     AgentConnInfoReply smpQueues cInfo -> smpEncode ('D', smpQueues, Tail cInfo) -- 'D' stands for "duplex"
-    AgentRatchetInfo info -> smpEncode ('R', Tail info)
+    AgentRatchetInfo info -> smpEncode ('R', info)
     AgentMessage hdr aMsg -> smpEncode ('M', hdr, aMsg)
     AgentServiceRequest qs sig_ body -> smpEncode ('A', qs, sig_, Tail body)
     AgentServiceResponse body -> smpEncode ('P', Tail body)
@@ -948,12 +951,22 @@ instance Encoding AgentMessage where
     smpP >>= \case
       'I' -> AgentConnInfo . unTail <$> smpP
       'D' -> AgentConnInfoReply <$> smpP <*> (unTail <$> smpP)
-      'R' -> AgentRatchetInfo . unTail <$> smpP
+      'R' -> AgentRatchetInfo <$> smpP
       'M' -> AgentMessage <$> smpP <*> smpP
       'A' -> AgentServiceRequest <$> smpP <*> smpP <*> (unTail <$> smpP)
       'P' -> AgentServiceResponse . unTail <$> smpP
       'J' -> AgentRejection . unTail <$> smpP
       _ -> fail "bad AgentMessage"
+
+data RatchetInfo = RatchetInfo {answeredKeyHash :: Maybe ByteString}
+  deriving (Eq, Show)
+
+instance Encoding RatchetInfo where
+  smpEncode RatchetInfo {answeredKeyHash} = smpEncode answeredKeyHash
+  smpP = do
+    answeredKeyHash <- smpP <|> pure Nothing
+    _ <- A.takeByteString
+    pure RatchetInfo {answeredKeyHash}
 
 -- internal type for storing message type in the database
 data AgentMessageType
@@ -1613,7 +1626,7 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
 -- | Parameters for creating a connection with a prepared link.
-data PreparedLinkParams = PreparedLinkParams
+data PreparedLinkParams k = PreparedLinkParams
   { -- | Correlation ID / determines sender ID
     plpNonce :: C.CbNonce,
     -- | Queue E2EE DH key pair
@@ -1628,8 +1641,8 @@ data PreparedLinkParams = PreparedLinkParams
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
-    -- | Contact address double ratchet keys
-    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
+    -- | Contact address double ratchet keys or invitation X3DH keys
+    plpRatchetKeys :: k
   }
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode

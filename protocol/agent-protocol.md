@@ -208,7 +208,7 @@ This syntax of decrypted SMP client message body is defined by `decryptedAgentMe
 Decrypted SMP message client body can be one of 4 types:
 - `agentConnInfo` - used by the initiating party when confirming reply queue - sent in `agentConfirmation` envelope.
 - `agentConnInfoReply` - used by accepting party, includes reply queue(s) in the initial confirmation - sent in `agentConfirmation` envelope.
-- `agentRatchetInfo` - used to pass additional information when renegotiating double ratchet encryption - sent in `agentRatchetKey` envelope.
+- `agentRatchetInfo` - used to pass additional information when renegotiating double ratchet encryption - sent in `agentRatchetKey` envelope. A key sent in reply to another key includes the hash of that key; agents do not reply to such keys.
 - `agentMessage` - all other agent messages.
 
 `agentMessage` contains these parts:
@@ -233,7 +233,8 @@ connInfo = *OCTET
 agentConnInfoReply = %s"D" smpQueues connInfo
 smpQueues = length 1*newQueueInfo ; NonEmpty list of reply queues
 agentRatchetInfo = %s"R" ratchetInfo
-ratchetInfo = *OCTET
+ratchetInfo = [answeredKeyHash *OCTET] ; bytes after answeredKeyHash are ignored
+answeredKeyHash = %s"0" / (%s"1" shortString) ; "0" in a key that starts renegotiation, otherwise SHA-256 of the two raw public keys of the answered key
 
 agentMessage = %s"M" agentMsgHeader aMessage
 agentMsgHeader = agentMsgId prevMsgHash

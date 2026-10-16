@@ -20,12 +20,13 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
-import Control.Monad (replicateM_)
+import Control.Monad (forM_, replicateM_)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
 import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time
@@ -51,6 +52,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (pattern IKPQOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMode (..), pattern VersionSMPC)
 import qualified Simplex.Messaging.Protocol as SMP
@@ -135,6 +137,8 @@ storeTests = do
           testCreateRcvMsg
           testCreateSndMsg
           testCreateRcvAndSndMsgs
+      describe "deleteRatchetKeyHashesExpired" testDeleteRatchetKeyHashesExpired
+      it "should keep only the newest skipped message keys" testGetSkippedMsgKeys
       describe "Work items" $ do
         it "should getPendingQueueMsg" testGetPendingQueueMsg
         it "should getPendingServerCommand" testGetPendingServerCommand
@@ -509,7 +513,7 @@ hw = encodeUtf8 "Hello world!"
 ts :: UTCTime
 ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 
-mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> BrokerId -> MsgHash -> RcvMsgData
+mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> ByteString -> MsgHash -> RcvMsgData
 mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
   RcvMsgData
     { internalRcvId,
@@ -518,7 +522,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (brokerId, ts),
+            broker = (SMP.unsafeMsgId $ mconcat (replicate 24 brokerId), ts),
             pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
@@ -599,6 +603,42 @@ testCreateRcvAndSndMsgs =
       testCreateSndMsg_ db "snd_hash_1" connId sq $ mkSndMsgData (InternalId 5) (InternalSndId 2) "snd_hash_2"
       testCreateSndMsg_ db "snd_hash_2" connId sq $ mkSndMsgData (InternalId 6) (InternalSndId 3) "snd_hash_3"
 
+testDeleteRatchetKeyHashesExpired :: SpecWith DBStore
+testDeleteRatchetKeyHashesExpired =
+  it "should delete expired ratchet key hashes except the newest in each connection" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right connId' <- createNewConn db g cData1 {connId = ""} SCMContact
+    let hashes = ["h1", "h2", "h3", "h4", "h5", "h6"]
+    forM_ hashes $ addProcessedRatchetKeyHash db connId
+    forM_ (take 4 hashes) $ addProcessedRatchetKeyHash db connId'
+    deleteRatchetKeyHashesExpired db 86400 4
+    mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` replicate 6 True
+    deleteRatchetKeyHashesExpired db 0 4
+    mapM (checkRatchetKeyHashExists db connId) hashes `shouldReturn` [False, False, True, True, True, True]
+    mapM (checkRatchetKeyHashExists db connId') (take 4 hashes) `shouldReturn` replicate 4 True
+
+testGetSkippedMsgKeys :: DBStore -> Expectation
+testGetSkippedMsgKeys st = do
+  g <- C.newRandom
+  withTransaction st $ \db -> do
+    Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    Right connId' <- createNewConn db g cData1 {connId = ""} SCMInvitation
+    createSkippedKeys db connId'
+    createSkippedKeys db connId
+    M.map M.keys <$> getSkippedMsgKeys db connId 4
+      `shouldReturn` M.singleton (C.Key "header_key") [1, 2, 3, 4]
+    getMsgNs db connId `shouldReturn` [1 .. 4]
+    getMsgNs db connId' `shouldReturn` [1 .. 10]
+  where
+    createSkippedKeys :: DB.Connection -> ConnId -> IO ()
+    createSkippedKeys db connId = do
+      DB.execute db "INSERT INTO ratchets (conn_id) VALUES (?)" (Only connId)
+      forM_ ([10, 9 .. 1] :: [Int]) $ \msgN ->
+        DB.execute db "INSERT INTO skipped_messages (conn_id, header_key, msg_n, msg_key) VALUES (?, ?, ?, ?)" (connId, "header_key" :: ByteString, msgN, smpEncode ("key" :: ByteString, "iv" :: ByteString))
+    getMsgNs :: DB.Connection -> ConnId -> IO [Int]
+    getMsgNs db connId = map fromOnly <$> DB.query db "SELECT msg_n FROM skipped_messages WHERE conn_id = ? ORDER BY msg_n" (Only connId)
+
 testCloseReopenStore :: IO ()
 testCloseReopenStore = do
   st <- createStore'
@@ -648,7 +688,7 @@ hasMigrations :: DBStore -> Expectation
 hasMigrations st = getMigrations st `shouldReturn` True
 
 errorGettingMigrations :: DBStore -> Expectation
-errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
+errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "withTransaction: database closed" `isInfixOf` show e
 
 testGetPendingQueueMsg :: DBStore -> Expectation
 testGetPendingQueueMsg st = do
