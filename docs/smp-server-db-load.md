@@ -144,9 +144,7 @@ space, so it is workload-dependent; `fillfactor = 80` reached 100% for this frac
 larger share of queues at once would need a lower value. `fillfactor` applies to pages rewritten after
 the change, so the ratio ramps up as the heap turns over, or immediately after `pg_repack`.
 
-Dropping the index regresses the deprecated journal message store's expiration (`foldRecentQueueRecs`,
-`Journal.hs:434`) to a sequential scan; this is accepted because that store is being retired. The
-Postgres message store does not read `updated_at`.
+The Postgres message store does not read `updated_at`, so no query depends on the dropped index.
 
 Autovacuum reloptions applied by the migration:
 
