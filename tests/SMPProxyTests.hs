@@ -572,7 +572,7 @@ testProxyClosesRelayConnectionAfterDisconnect =
       race_ (atomically $ takeTMVar accepted) requestRelaySession
       timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
-testProxyForwardTimeoutStuckSession :: IO ()
+testProxyForwardTimeoutStuckSession :: HasTestEnv => IO ()
 testProxyForwardTimeoutStuckSession =
   withSmpServerConfigOn (transport @TLS) proxyCfgForwardTimeout testPort $ \_ -> do
     g <- C.newRandom
@@ -585,7 +585,7 @@ testProxyForwardTimeoutStuckSession =
     rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
     rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
 
-testForwardOversizedNotKept :: IO ()
+testForwardOversizedNotKept :: HasTestEnv => IO ()
 testForwardOversizedNotKept =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
     g <- C.newRandom
