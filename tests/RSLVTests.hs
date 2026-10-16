@@ -27,6 +27,7 @@ import NamesResolverServer (memCfg, memCfg2, memProxyCfg, withNames)
 import qualified NamesResolverServer as NRS
 import SMPClient
 import Simplex.Messaging.Client
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
 import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
@@ -55,6 +56,7 @@ import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (mapConcurrently)
 import Util (HasTestEnv, it)
 
 domain :: Text -> SimplexDomain
@@ -93,6 +95,8 @@ rslvTests = do
   describe "RSLV forwarded (PFWD)" $ do
     it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME RESOLVER))" testRslvForwarded
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
+    it "PFWD-wrapped RSLV without names config -> NAME NO_RESOLVER" testRslvForwardedDisabled
+    it "PFWD-wrapped RSLV waiting for a slot fails at the relay wait timeout" testRslvForwardedSlotWaitTimeout
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
   describe "RSLV availability (RNAME response)" $ do
@@ -150,7 +154,10 @@ testRslvVersion =
       _ -> expectationFailure $ "expected Left (PCETransportError TEVersion), got: " <> show r
 
 forwardedResolveAlice :: HasTestEnv => IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
-forwardedResolveAlice = do
+forwardedResolveAlice = proxiedRelaySession >>= uncurry resolveAliceVia
+
+proxiedRelaySession :: HasTestEnv => IO (SMPClient, ProxiedRelay)
+proxiedRelaySession = do
   g <- C.newRandom
   ts <- getCurrentTime
   let proxyServ = SMPServer testHost testPort testKeyHash
@@ -159,7 +166,33 @@ forwardedResolveAlice = do
   pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pcE
   sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
-  runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+  pure (pc, sess)
+
+resolveAliceVia :: SMPClient -> ProxiedRelay -> IO (Either SMPClientError (Either ProxyClientError SMP.NameResponse))
+resolveAliceVia pc sess = runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
+
+testRslvForwardedDisabled :: HasTestEnv => IO ()
+testRslvForwardedDisabled =
+  withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) memCfg2 testPort2 $ \_ ->
+      forwardedResolveAlice `shouldReturn` Left (PCEProtocolError (SMP.NAME SMP.NO_RESOLVER))
+
+testRslvForwardedSlotWaitTimeout :: HasTestEnv => IO ()
+testRslvForwardedSlotWaitTimeout =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port _ ->
+    withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
+      withSmpServerConfigOn (transport @TLS) (relayCfg port) testPort2 $ \_ -> do
+        (pc, sess) <- proxiedRelaySession
+        rs <- mapConcurrently (const $ resolveAliceVia pc sess) [1, 2 :: Int]
+        rs `shouldMatchList` map rslvErr ["timeout", "too many requests"]
+  where
+    rslvErr :: Text -> Either SMPClientError (Either ProxyClientError SMP.NameResponse)
+    rslvErr = Left . PCEProtocolError . SMP.NAME . SMP.RESOLVER
+    relayCfg port = updateCfg (withNames port memCfg2) $ \c ->
+      let aCfg = smpAgentCfg c
+          cCfg = smpCfg aCfg
+          nt = NetworkTimeout {backgroundTimeout = 300000, interactiveTimeout = 300000}
+       in c {serverResolverConcurrency = 1, smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
 
 testRslvForwarded :: HasTestEnv => IO ()
 testRslvForwarded =
