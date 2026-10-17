@@ -1415,7 +1415,7 @@ client
     let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
         process batchSubs t acc@(rs, msgs) =
           (maybe acc (\(!r, !msg_) -> (r : rs, maybe msgs (: msgs) msg_)))
-            <$> processCommand clntServiceId batchSubs t
+            <$> processCommand (thVersion thParams') (forkCmd serverClientConcurrency) clntServiceId batchSubs t
     forever $ do
       batch <- atomically (readTBQueue rcvQ)
       processedAt <- liftIO getSystemTime
@@ -1572,8 +1572,8 @@ client
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    processCommand :: Maybe ServiceId -> Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ())) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
-    processCommand clntServiceId batchSubs (q_, (corrId, entId, cmd)) = case cmd of
+    processCommand :: VersionSMP -> (CorrId -> EntityId -> BrokerMsg -> M s BrokerMsg -> M s (Maybe ResponseAndMessage)) -> Maybe ServiceId -> Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ())) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
+    processCommand clntVersion forkClntCmd clntServiceId batchSubs (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> case command of
         SKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k
@@ -1582,7 +1582,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity rslvTooManyRequests (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkClntCmd corrId NoEntity rslvTooManyRequests (resolveNameMsg clntVersion nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2211,22 +2211,17 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
+              forkFwdCmd corrId' entId' timeoutErr cmdAction = forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResp timeoutErr) $ cmdAction >>= sendResp
+                where
+                  sendResp msg = do
+                    rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                    atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
           -- the inner response, or Nothing if forked (RSLV).
           r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
             -- rejectOrVerify filters allowed commands, no need to repeat it here.
             Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> do
-                  let sendResolved msg = do
-                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
-                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+            -- `fst` drops the empty message only returned for SUB.
+            Right t'' -> fst <$$> lift (processCommand (thVersion clntTHParams) forkFwdCmd Nothing (Right (M.empty, M.empty, M.empty)) t'')
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           traverse encodeResp r_ >>= \case
