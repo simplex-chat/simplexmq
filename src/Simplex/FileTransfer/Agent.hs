@@ -313,8 +313,10 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       void $ liftError (FILE . FILE_IO . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
       case redirect of
         Nothing -> do
-          notify c rcvFileEntityId $ RFDONE fsSavePath
+          -- RFDONE lets the consumer delete the shared receive prefix.
+          -- Finish chunk cleanup before publishing completion.
           lift $ forM_ tmpPath (removePath <=< toFSFilePath)
+          notify c rcvFileEntityId $ RFDONE fsSavePath
           liftIO $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
         Just RcvFileRedirect {redirectFileInfo, redirectDbId} -> do
