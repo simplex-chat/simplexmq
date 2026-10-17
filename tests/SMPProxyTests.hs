@@ -46,6 +46,7 @@ import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import System.Random (randomRIO)
+import Text.Read (readMaybe)
 import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
 import Util
@@ -64,6 +65,8 @@ smpProxyTests = do
       testProxyForwardTimeoutStuckSession
     it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept
+    it "rejects forwards above the relay concurrency limit" $ \_ ->
+      testProxyRelayConcurrencyLimit
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -566,6 +569,27 @@ testProxyForwardTimeoutStuckSession =
     sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
     rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
     rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
+
+testProxyRelayConcurrencyLimit :: HasTestEnv => IO ()
+testProxyRelayConcurrencyLimit =
+  withSmpServerConfigOn (transport @TLS) cfg' testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let srv = SMPServer testHost testPort testKeyHash
+        vr = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion
+    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ())
+    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive srv (Just "correct")
+    sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
+    rs <- forConcurrently ([1 .. 20] :: [Int]) $ \_ -> runExceptT (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
+    let rejected = length $ filter (== Right (Left (ProxyProtocolError (SMP.PROXY (SMP.BROKER SMP.TIMEOUT))))) rs
+    rejected `shouldSatisfy` (> 0)
+    threadDelay 1500000
+    readRelayLimitMetric <$> readFile testPrometheusMetricsFile `shouldReturn` Just rejected
+  where
+    cfg' = updateCfg proxyCfg $ \cfg_ -> cfg_ {proxyRelayConcurrency = 1, prometheusInterval = Just 1}
+    readRelayLimitMetric m = case [v | "simplex_smp_relay_messages_concurrency_limit" : v : _ <- map words (lines m)] of
+      v : _ -> readMaybe v
+      [] -> Nothing
 
 testForwardOversizedNotKept :: HasTestEnv => IO ()
 testForwardOversizedNotKept =

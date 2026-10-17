@@ -122,6 +122,7 @@ prometheusMetrics sm rtm ts =
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
+        _pMsgFwdsRelayLimit,
         _rcvServices,
         _ntfServices,
         _rcvServicesSubMsg,
@@ -391,6 +392,10 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"connect\"} " <> mshow (_pErrorsConnect _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsConnect\n\
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"compat\"} " <> mshow (_pErrorsCompat _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsCompat\n\
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"other\"} " <> mshow (_pErrorsOther _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsOther\n\
+      \\n\
+      \# HELP simplex_smp_relay_messages_concurrency_limit Messages not sent through relay, as the limit of messages in flight to relay was reached.\n\
+      \# TYPE simplex_smp_relay_messages_concurrency_limit counter\n\
+      \simplex_smp_relay_messages_concurrency_limit " <> mshow _pMsgFwdsRelayLimit <> "\n# pMsgFwdsRelayLimit\n\
       \\n\
       \# HELP simplex_smp_relay_messages_received Relay messages statistics.\n\
       \# TYPE simplex_smp_relay_messages_received counter\n\
