@@ -141,4 +141,8 @@ httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} 
       else do
         bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
         pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right bs
-  pure (either (Left . HttpFailure) id result)
+  pure (either (Left . httpError) id result)
+  where
+    httpError = \case
+      HC.HttpExceptionRequest _ HC.ResponseTimeout -> ResolverTimeout
+      e -> HttpFailure e

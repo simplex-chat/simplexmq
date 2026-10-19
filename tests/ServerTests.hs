@@ -24,7 +24,6 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
-import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -36,6 +35,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
+import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
 import qualified Data.X509.Validation as XV
@@ -46,27 +46,26 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SMSType (..), SQSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Util (whenM)
-import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.Directory (doesFileExist, removeFile)
 import System.IO (IOMode (..), withFile)
-import System.TimeIt (timeItT)
 import System.Timeout
 import Test.HUnit
-import Test.Hspec hiding (fit, it)
+import Test.Hspec hiding (fit, it, xit)
 import Util
 
 #if defined(dbServerPostgres)
-import CoreTests.MsgStoreTests (testPostgresStoreConfig)
+import CoreTests.MsgStoreTests (testPostgresStoreConfig, testSMTStoreConfig)
+import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), newMsgStore)
+import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 #endif
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
@@ -96,7 +95,7 @@ serverTests = do
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
-  describe "Timing of AUTH error" testTiming
+  describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
     testMessageServiceNotifications
@@ -904,7 +903,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 2
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 2
 
       -- Phase 2: associate 1 more queue via SUB, reconnect with SUBS 3, check metric = 3
       (rPub3, rKey3) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -934,7 +933,7 @@ testServiceSubsTotalCount =
                 _ -> pure Nothing
             ]
         threadDelay 1500000
-        readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric m `shouldBe` Just 3
+        B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
@@ -1034,15 +1033,15 @@ testWithStoreLog =
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 6)
     removeFile testStoreLogFile
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-serverStoreLogCfg :: AStoreType -> (AServerConfig, Bool)
+serverStoreLogCfg :: HasTestEnv => AStoreType -> (AServerConfig, Bool)
 serverStoreLogCfg msType =
   let cfg' =
         withServerCfg (cfgMS msType) $ \cfg_ ->
@@ -1068,7 +1067,6 @@ testRestoreMessages =
   it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
     removeFileIfExists testStoreLogFile
     removeFileIfExists testStoreMsgsFile
-    whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFileIfExists testServerStatsBackupFile
 
     g <- C.newRandom
@@ -1138,15 +1136,14 @@ testRestoreMessages =
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
     removeFileIfExists testStoreMsgsFile
-    whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFile testServerStatsBackupFile
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 checkStats :: ServerStatsData -> [RecipientId] -> Int -> Int -> Expectation
@@ -1216,36 +1213,31 @@ testRestoreExpireMessages =
     Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
     _msgExpired `shouldBe` 2
   where
-    exportStoreMessages :: AStoreType -> IO ()
+    exportStoreMessages :: HasTestEnv => AStoreType -> IO ()
     exportStoreMessages = \case
-      ASType _ SMSJournal -> export
       ASType _ SMSPostgres -> exportDB
       ASType _ SMSMemory -> pure ()
       where
-        export = do
-          ms <- readWriteQueues
-          exportMessages False (StoreJournal ms) testStoreMsgsFile False
-          closeMsgStore ms
 #if defined(dbServerPostgres)
         exportDB = do
           readWriteQueues >>= closeMsgStore
           ms' <- newMsgStore (testPostgresStoreConfig {quota = 4} :: PostgresMsgStoreCfg)
           _n <- withFile testStoreMsgsFile WriteMode $ exportDbMessages False ms'
           closeMsgStore ms'
+        readWriteQueues = do
+          ms <- newMsgStore testSMTStoreConfig
+          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          removeFileIfExists testStoreMsgsFile
+          pure ms
 #else
         exportDB = error "compiled without server_postgres flag"
 #endif
-        readWriteQueues = do
-          ms <- newMsgStore ((testJournalStoreCfg MQStoreCfg) {quota = 4} :: JournalStoreConfig 'QSMemory)
-          readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
-          removeFileIfExists testStoreMsgsFile
-          pure ms
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
@@ -1274,21 +1266,21 @@ testTiming =
         smpTest2Cfg (cfgMS msType) supportedServerSMPRelayVRange t $ \rh sh ->
           testSameTiming rh sh tst msType
   where
-    testName :: (C.AuthAlg, C.AuthAlg, Int) -> String
-    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, _) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
-    timingTests :: [(C.AuthAlg, C.AuthAlg, Int)]
+    testName :: (C.AuthAlg, C.AuthAlg) -> String
+    testName (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) = unwords ["queue key:", show goodKeyAlg, "/ used key:", show badKeyAlg]
+    timingTests :: [(C.AuthAlg, C.AuthAlg)]
     timingTests =
-      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519, 200), -- correct key type
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448, 150),
-      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448, 150), -- correct key type
-        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519, 200),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448, 150),
-        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519, 200) -- correct key type
+      [ (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd25519), -- correct key type
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SEd448),
+      -- (C.AuthAlg C.SEd25519, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SEd448), -- correct key type
+        (C.AuthAlg C.SEd448, C.AuthAlg C.SX25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd25519),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SEd448),
+        (C.AuthAlg C.SX25519, C.AuthAlg C.SX25519) -- correct key type
       ]
-    timeRepeat n = fmap fst . timeItT . forM_ (replicate n ()) . const
+    timeRepeat = fmap fst . responseTime . replicateM_ 5
     similarTime t1 t2 msType
       | t1 <= t2 = abs (1 - t1 / t2) < diff
       | otherwise = similarTime t2 t1 msType
@@ -1297,8 +1289,8 @@ testTiming =
         diff = case msType of
           ASType SQSPostgres _ -> 0.45
           _ -> 0.3
-    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg, Int) -> AStoreType -> Expectation
-    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg, n) msType = do
+    testSameTiming :: forall c. Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> (C.AuthAlg, C.AuthAlg) -> AStoreType -> Expectation
+    testSameTiming rh sh (C.AuthAlg goodKeyAlg, C.AuthAlg badKeyAlg) msType = do
       g <- C.newRandom
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair goodKeyAlg g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
@@ -1325,16 +1317,16 @@ testTiming =
         runTimingTest :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> EntityId -> Command p -> IO ()
         runTimingTest h badKey qId cmd = do
           threadDelay 100000
-          _ <- timeRepeat n $ do
+          _ <- timeRepeat $ do
             -- "warm up" the server
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           threadDelay 100000
-          timeWrongKey <- timeRepeat n $ do
+          timeWrongKey <- timeRepeat $ do
             Resp "cdabcdabcdabcdabcdabcdab" _ (ERR AUTH) <- signSendRecv h badKey ("cdabcdabcdabcdabcdabcdab", qId, cmd)
             return ()
           threadDelay 100000
-          timeNoQueue <- timeRepeat n $ do
+          timeNoQueue <- timeRepeat $ do
             Resp "dabcdabcdabcdabcdabcdabc" _ (ERR AUTH) <- signSendRecv h badKey ("dabcdabcdabcdabcdabcdabc", EntityId "1234", cmd)
             return ()
           let ok = similarTime timeNoQueue timeWrongKey msType
@@ -1346,6 +1338,33 @@ testTiming =
               show $ timeWrongKey / timeNoQueue - 1
             ]
           ok `shouldBe` True
+
+testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
+testAuthErrorDelay =
+  it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId _) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
+      (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (wrongKeyTime, Resp "2" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("2", rId, SUB)
+      (noQueueTime, Resp "3" _ (ERR AUTH)) <- responseTime $ signSendRecv rh badKey ("3", EntityId "1234", SUB)
+      (noLinkTime, Resp "4" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "4", EntityId "1234", LGET)
+      (subTime, Resp "5" _ (SOK Nothing)) <- responseTime $ signSendRecv rh rKey ("5", rId, SUB)
+      Resp "6" _ OK <- signSendRecv rh rKey ("6", rId, OFF)
+      (suspendedTime, Resp "7" _ (ERR AUTH)) <- responseTime $ sendRecv sh ("", "7", sId, _SEND "hello")
+      wrongKeyTime `shouldSatisfy` (>= 0.5)
+      noQueueTime `shouldSatisfy` (>= 0.5)
+      suspendedTime `shouldSatisfy` (>= 0.5)
+      noLinkTime `shouldSatisfy` (>= 0.5)
+      subTime `shouldSatisfy` (< 0.5)
+
+responseTime :: IO a -> IO (NominalDiffTime, a)
+responseTime action = do
+  t <- getCurrentTime
+  r <- action
+  (,r) . (`diffUTCTime` t) <$> getCurrentTime
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =
@@ -1511,7 +1530,7 @@ testServiceNotificationsTwoRestarts =
         Resp "3.2" _ (SOK Nothing) <- signSendRecv rh rKey ("3.2", rId, SUB)
         deliverMessage rh rId rKey sh sId sKey nh "hello 3" dec
     where
-      runTest2 :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+      runTest2 :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
       runTest2 _ test' server = do
         a <- testSMPClient $ \h1 -> testSMPClient $ \h2 -> test' h1 h2
         killThread server
@@ -1549,7 +1568,7 @@ testMsgExpireOnInterval =
   it "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}, idleQueueInterval = 1}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
@@ -1602,7 +1621,7 @@ testBlockMessageQueue =
       Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent Nothing))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "same queue ID in response"
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
     runTest _ test' server = do
       a <- testSMPClient test'
       killThread server
@@ -1830,7 +1849,7 @@ serverSyntaxTests (ATransport t) = do
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", ERR $ CMD NO_AUTH)
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
-      Encoding smp =>
+      (HasTestEnv, Encoding smp) =>
       (Maybe TAuthorizations, ByteString, ByteString, smp) ->
       (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
       Expectation

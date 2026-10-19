@@ -18,6 +18,7 @@ module Simplex.Messaging.Server.QueueStore.STM
   ( STMQueueStore (..),
     STMService (..),
     foldRcvServiceQueues,
+    withLoadedQueues,
     setStoreLog,
     withLog',
     readQueueRecIO,
@@ -91,8 +92,6 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     atomically $ TM.clear senders
     atomically $ TM.clear notifiers
 
-  loadedQueues = queues
-  {-# INLINE loadedQueues #-}
   compactQueues _ = pure 0
   {-# INLINE compactQueues #-}
 
@@ -134,7 +133,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       hasNotifier = maybe (pure False) (\NtfCreds {notifierId} -> TM.member notifierId notifiers) notifier
       hasLink = maybe (pure False) (\(lnkId, _) -> TM.member lnkId links) queueData
 
-  getQueue_ :: QueueParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
+  getQueue_ :: QueueParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> QueueId -> IO (Either ErrorType q)
   getQueue_ st _ party qId =
     maybe (Left AUTH) Right <$> case party of
       SRecipient -> TM.lookupIO qId queues
@@ -144,7 +143,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       STMQueueStore {queues, senders, notifiers, links} = st
 
-  getQueues_ :: BatchParty p => STMQueueStore q -> (Bool -> RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
+  getQueues_ :: BatchParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueues_ st _ party qIds = case party of
     SRecipient -> do
       qs <- readTVarIO queues
@@ -278,9 +277,11 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       rId = recipientId sq
       qr = queueRec sq
-      delete q@QueueRec {senderId, rcvServiceId} = do
+      delete q@QueueRec {senderId, queueData, rcvServiceId} = do
         writeTVar qr Nothing
+        TM.delete rId $ queues st
         TM.delete senderId $ senders st
+        forM_ queueData $ \(lnkId, _) -> TM.delete lnkId $ links st
         mapM_ (removeServiceQueue st serviceRcvQueues rId) rcvServiceId
         mapM_ (removeNotifier st) $ notifier q
         pure q
@@ -378,6 +379,11 @@ foldRcvServiceQueues st serviceId f acc =
         >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc . fst
   where
     get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
+
+withLoadedQueues :: Monoid a => STMQueueStore q -> (q -> IO a) -> IO a
+withLoadedQueues st f = readTVarIO (queues st) >>= foldM run mempty
+  where
+    run !acc = fmap (acc <>) . f
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

@@ -27,6 +27,9 @@ Recipient only. The sender is unchanged.
   - `OK`: `True`.
   - `MSG`: `False`; the message is written to `msgQ`.
 - Apps: `received_qend` is added to `RcvSwitchStatus`.
+- Migration `20261008_rcv_switch_status`, SQLite and Postgres:
+  - up: index `idx_rcv_queues_switch_status` on `rcv_queues(switch_status)`.
+  - down: `received_qend` is set to `NULL`, the index is dropped.
 
 ## Mechanics
 
@@ -56,3 +59,4 @@ Recipient only. The sender is unchanged.
   - the old queue is deleted after the `ACK` that returns `OK`.
 - The same with a recipient restart before the `ACK`.
 - Old server stopped: the old queue is deleted by the bound.
+- Downgrade: `received_qend` is cleared, other switch statuses are kept.
