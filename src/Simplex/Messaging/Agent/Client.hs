@@ -34,7 +34,6 @@ module Simplex.Messaging.Agent.Client
     withInvLock,
     withLockMap,
     withLocksMap,
-    getMapLock,
     ipAddressProtected,
     closeAgentClient,
     closeProtocolServerClients,

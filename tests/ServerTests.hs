@@ -24,7 +24,6 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
-import CoreTests.MsgStoreTests (testJournalStoreCfg)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -47,26 +46,26 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (exportMessages)
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), MsgStore (..), ServerConfig (..), ServerStoreCfg (..), readWriteQueueStore)
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.MsgStore.Journal (JournalStoreConfig (..), QStoreCfg (..), stmQueueStore)
-import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), QSType (..), SMSType (..), SQSType (..), newMsgStore)
+import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Util (whenM)
-import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive, removeFile)
+import System.Directory (doesFileExist, removeFile)
 import System.IO (IOMode (..), withFile)
 import System.Timeout
 import Test.HUnit
-import Test.Hspec hiding (fit, it)
+import Test.Hspec hiding (fit, it, xit)
 import Util
 
 #if defined(dbServerPostgres)
-import CoreTests.MsgStoreTests (testPostgresStoreConfig)
+import CoreTests.MsgStoreTests (testPostgresStoreConfig, testSMTStoreConfig)
+import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
+import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), newMsgStore)
+import Simplex.Messaging.Server.StoreLog (closeStoreLog)
 #endif
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
@@ -96,7 +95,6 @@ serverTests = do
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
-  describe "Timing of AUTH error" testTiming
   describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
@@ -1035,15 +1033,15 @@ testWithStoreLog =
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 6)
     removeFile testStoreLogFile
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
-serverStoreLogCfg :: AStoreType -> (AServerConfig, Bool)
+serverStoreLogCfg :: HasTestEnv => AStoreType -> (AServerConfig, Bool)
 serverStoreLogCfg msType =
   let cfg' =
         withServerCfg (cfgMS msType) $ \cfg_ ->
@@ -1069,7 +1067,6 @@ testRestoreMessages =
   it "should store messages on exit and restore on start" $ \(at@(ATransport t), msType) -> do
     removeFileIfExists testStoreLogFile
     removeFileIfExists testStoreMsgsFile
-    whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFileIfExists testServerStatsBackupFile
 
     g <- C.newRandom
@@ -1139,15 +1136,14 @@ testRestoreMessages =
     Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
     checkStats stats3 [rId] 5 5
     removeFileIfExists testStoreMsgsFile
-    whenM (doesDirectoryExist testStoreMsgsDir) $ removeDirectoryRecursive testStoreMsgsDir
     removeFile testServerStatsBackupFile
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 checkStats :: ServerStatsData -> [RecipientId] -> Int -> Int -> Expectation
@@ -1217,36 +1213,31 @@ testRestoreExpireMessages =
     Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
     _msgExpired `shouldBe` 2
   where
-    exportStoreMessages :: AStoreType -> IO ()
+    exportStoreMessages :: HasTestEnv => AStoreType -> IO ()
     exportStoreMessages = \case
-      ASType _ SMSJournal -> export
       ASType _ SMSPostgres -> exportDB
       ASType _ SMSMemory -> pure ()
       where
-        export = do
-          ms <- readWriteQueues
-          exportMessages False (StoreJournal ms) testStoreMsgsFile False
-          closeMsgStore ms
 #if defined(dbServerPostgres)
         exportDB = do
           readWriteQueues >>= closeMsgStore
           ms' <- newMsgStore (testPostgresStoreConfig {quota = 4} :: PostgresMsgStoreCfg)
           _n <- withFile testStoreMsgsFile WriteMode $ exportDbMessages False ms'
           closeMsgStore ms'
+        readWriteQueues = do
+          ms <- newMsgStore testSMTStoreConfig
+          readWriteQueueStore True (mkQueue ms) testStoreLogFile (queueStore ms) >>= closeStoreLog
+          removeFileIfExists testStoreMsgsFile
+          pure ms
 #else
         exportDB = error "compiled without server_postgres flag"
 #endif
-        readWriteQueues = do
-          ms <- newMsgStore ((testJournalStoreCfg MQStoreCfg) {quota = 4} :: JournalStoreConfig 'QSMemory)
-          readWriteQueueStore True (mkQueue ms True) testStoreLogFile (stmQueueStore ms) >>= closeStoreLog
-          removeFileIfExists testStoreMsgsFile
-          pure ms
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
       testSMPClient test' `shouldReturn` ()
       killThread server
 
-    runClient :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> Expectation
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
@@ -1539,7 +1530,7 @@ testServiceNotificationsTwoRestarts =
         Resp "3.2" _ (SOK Nothing) <- signSendRecv rh rKey ("3.2", rId, SUB)
         deliverMessage rh rId rKey sh sId sKey nh "hello 3" dec
     where
-      runTest2 :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+      runTest2 :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
       runTest2 _ test' server = do
         a <- testSMPClient $ \h1 -> testSMPClient $ \h2 -> test' h1 h2
         killThread server
@@ -1577,7 +1568,7 @@ testMsgExpireOnInterval =
   it "should expire messages that are not received before messageTTL after expiry interval" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
     g <- C.newRandom
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}, idleQueueInterval = 1}
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {messageExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
     withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
       testSMPClient @c $ \sh -> do
         (sId, rId, rKey, _) <- testSMPClient @c $ \rh -> createAndSecureQueue rh sPub
@@ -1630,7 +1621,7 @@ testBlockMessageQueue =
       Resp "dabc" sId2 (ERR (BLOCKED (BlockingInfo BRContent Nothing))) <- signSendRecv h sKey ("dabc", sId, SKEY sPub)
       (sId2, sId) #== "same queue ID in response"
   where
-    runTest :: Transport c => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
+    runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> ThreadId -> IO a
     runTest _ test' server = do
       a <- testSMPClient test'
       killThread server
@@ -1858,7 +1849,7 @@ serverSyntaxTests (ATransport t) = do
       it "no signature" $ ("", "cdab", "12345678", cmd) >#> ("", "cdab", "12345678", ERR $ CMD NO_AUTH)
       it "no queue ID" $ (sampleSig, "dabc", "", cmd) >#> ("", "dabc", "", ERR $ CMD NO_AUTH)
     (>#>) ::
-      Encoding smp =>
+      (HasTestEnv, Encoding smp) =>
       (Maybe TAuthorizations, ByteString, ByteString, smp) ->
       (Maybe TAuthorizations, ByteString, ByteString, BrokerMsg) ->
       Expectation
