@@ -686,7 +686,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
               -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
-              when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
+              when (not proxyServer && (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow)) $ loop smpPingInterval
         recoverWindow = 15 * 60 -- seconds
         maxCnt = smpPingCount networkConfig
 

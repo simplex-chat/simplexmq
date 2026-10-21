@@ -75,6 +75,8 @@ smpProxyTests = do
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
+    it "proxy closes idle relay connection" $ \_ ->
+      testProxyClosesIdleRelay
   describe "deliver message via SMP proxy" $ do
     let srv1, srv2 :: HasTestEnv => SMPServer
         srv1 = SMPServer testHost testPort testKeyHash
@@ -496,6 +498,18 @@ testFwdCorrIdSize =
         forM_ (["", "2", "3333333333333333333333333"] :: [ByteString]) $ \corrId -> do
           (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
           reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
+
+testProxyClosesIdleRelay :: HasTestEnv => IO ()
+testProxyClosesIdleRelay =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortPingInterval testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ ->
+      testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
+        threadDelay 2000000
+        g <- C.newRandom
+        (cmdPubKey, _) <- atomically $ C.generateKeyPair g
+        (_, _, reply) <- sendRecv th (Nothing, "2", SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
+        reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.NO_SESSION)
 
 testForwardedAuthErrorDelay :: HasTestEnv => IO ()
 testForwardedAuthErrorDelay =
