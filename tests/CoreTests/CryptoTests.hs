@@ -10,6 +10,9 @@ import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (bracket, evaluate)
 import Control.Monad.Except
+import Crypto.Error (throwCryptoError)
+import qualified Crypto.PubKey.Curve25519 as X25519
+import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -101,7 +104,9 @@ cryptoTests = do
   describe "Ed signatures" $ do
     describe "Ed25519" $ testSignature C.SEd25519
     describe "Ed448" $ testSignature C.SEd448
-  describe "DH X25519 + cryptobox" testDHCryptoBox
+  describe "DH X25519 + cryptobox" $ do
+    testDHCryptoBox
+    it "should not decrypt with zero DH secret" testDHCryptoBoxZeroSecret
   describe "secretbox" testSecretBox
   describe "lazy secretbox" $ do
     testLazySecretBox
@@ -175,6 +180,19 @@ testDHCryptoBox = it "should encrypt / decrypt string with asymmetric DH keys" .
         cipher = C.cbEncrypt (C.dh' rk spk) nonce b paddedLen
         plain = C.cbDecrypt (C.dh' sk rpk) nonce =<< cipher
      in isRight cipher && cipher /= plain && Right b == plain
+
+testDHCryptoBoxZeroSecret :: IO ()
+testDHCryptoBoxZeroSecret = do
+  g <- C.newRandom
+  (_, pk) <- atomically $ C.generateKeyPair g
+  nonce <- atomically $ C.randomCbNonce g
+  mapM_ (decryptWithKey pk nonce) ["\0", "\1"]
+  where
+    decryptWithKey pk nonce u = do
+      let k = C.PublicKeyX25519 . throwCryptoError . X25519.publicKey $ u <> B.replicate 31 '\0'
+          secret = C.dh' k pk
+      Right cipher <- pure $ C.cbEncrypt secret nonce "hello" 64
+      C.cbDecrypt secret nonce cipher `shouldBe` Left C.CBDecryptError
 
 testSecretBox :: Spec
 testSecretBox = it "should encrypt / decrypt string with a random symmetric key" . ioProperty $ do
@@ -292,11 +310,19 @@ testValidateX509 = do
   -- messed up key rotation or other configuration problems
   checkChain [server2, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
 
+  checkChain [server2, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+  checkChain [server2, ca, ca2, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+  checkChain [server, ca, ca2] `shouldReturn` []
+
   -- self-signed, unrelated to CA
   ssCreds <- XS.readCertificates "tests/fixtures/ss.crt"
   ssCreds `shouldNotBe` []
   let ss = head ssCreds
   checkChain [ss, ca] `shouldReturn` [XV.SelfSigned]
+
+  let rsaKey = X.PubKeyRSA $ RSA.PublicKey 1024 (2 ^ (8192 :: Int) - 1) 65537
+      rsaCert = fst $ X.objectToSignedExact (\_ -> ("", X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448, ())) (X.getCertificate server) {X.certPubKey = rsaKey}
+  checkChain [rsaCert, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureUnimplemented]
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do

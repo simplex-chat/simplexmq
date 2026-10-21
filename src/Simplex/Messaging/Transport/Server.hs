@@ -288,7 +288,7 @@ validateClientCertificate :: X.CertificateChain -> IO (Maybe T.CertificateReject
 validateClientCertificate cc = case chainIdCaCerts cc of
   CCEmpty -> pure Nothing -- client certificates are only used for services
   CCSelf cert -> validate cert
-  CCValid {caCert} -> validate caCert
+  CCValid {idCert} -> validate idCert
   CCLong -> pure $ Just $ T.CertificateRejectOther "chain too long"
   where
     validate caCert = usage <$> x509validate caCert ("", B.empty) cc
