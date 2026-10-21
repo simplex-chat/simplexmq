@@ -563,13 +563,13 @@ updateNewConnSnd db connId sq =
     (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnSnd" $ connType c
   where
     updateConn :: IO (Either StoreError SndQueue)
-    updateConn = Right <$> addConnSndQueue_ db connId sq
+    updateConn = addConnSndQueue_ db connId sq
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
   ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
-    createConn_ db gVar cData $ \connId -> do
+    fmap (>>= sequence) . createConn_ db gVar cData $ \connId -> do
       serverKeyHash_ <- createServer db server
       createConnRecord db connId cData SCMInvitation
       insertSndQueue_ db connId q serverKeyHash_
@@ -638,7 +638,7 @@ deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
 upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 upgradeRcvConnToDuplex db connId sq =
   getConnForUpdate db connId $>>= \case
-    (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
+    (SomeConn _ RcvConnection {}) -> addConnSndQueue_ db connId sq
     (SomeConn c _) -> pure . Left . SEBadConnType "upgradeRcvConnToDuplex" $ connType c
 
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
@@ -663,11 +663,11 @@ addConnRcvQueue_ db connId rq@RcvQueue {server} subMode = do
 addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 addConnSndQueue db connId sq =
   getConnForUpdate db connId >>= \case
-    Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnSndQueue_ db connId sq
+    Right (SomeConn _ DuplexConnection {}) -> addConnSndQueue_ db connId sq
     Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnSndQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
 
-addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO SndQueue
+addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 addConnSndQueue_ db connId sq@SndQueue {server} = do
   serverKeyHash_ <- createServer db server
   insertSndQueue_ db connId sq serverKeyHash_
@@ -2389,13 +2389,13 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} subMode serverKeyHash_ = do
 
 -- * createSndConn helpers
 
-insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO SndQueue
+insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO (Either StoreError SndQueue)
 insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   -- to preserve ID if the queue already exists.
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
-  DB.execute
+  (rs :: [Only Int]) <- DB.query
     db
     [sql|
       INSERT INTO snd_queues
@@ -2417,10 +2417,12 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
         replace_snd_queue_id=EXCLUDED.replace_snd_queue_id,
         smp_client_version=EXCLUDED.smp_client_version,
         server_key_hash=EXCLUDED.server_key_hash
+      WHERE snd_queues.conn_id = EXCLUDED.conn_id
+      RETURNING 1
     |]
     ((host server, port server, sndId, queueMode, connId', sndPrivateKey, e2ePubKey, e2eDhSecret)
     :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-  pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
+  pure $ if null rs then Left SESndQueueExists else Right (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
 newQueueId_ :: [Only Int64] -> DBEntityId
 newQueueId_ [] = DBEntityId 1
