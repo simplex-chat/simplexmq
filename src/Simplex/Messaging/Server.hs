@@ -2213,29 +2213,36 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked (RSLV).
-          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
-            -- rejectOrVerify filters allowed commands, no need to repeat it here.
-            Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> do
-                  let sendResolved msg = do
-                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
-                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+          let forwarded =
+                lift (rejectOrVerify clntThAuth t') >>= \case
+                  -- rejectOrVerify filters allowed commands, no need to repeat it here.
+                  Left r -> pure r
+                  Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                    Cmd SResolver (RSLV d) ->
+                      lift $
+                        rslvNamesEnv >>= \case
+                          Nothing -> pure (corrId', entId', ERR (NAME NO_RESOLVER))
+                          Just nenv -> (corrId',entId',) <$> resolveNameMsg (thVersion clntTHParams) nenv d
+                    -- INTERNAL because processCommand never returns Nothing for sender commands;
+                    -- `fst` drops the empty message only returned for SUB.
+                    _ -> maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+              -- All clients of a proxy share its one connection to this relay, so their commands are
+              -- processed concurrently, otherwise one slow command would delay all of them.
+              (concurrency, onTimeout) = case t' of
+                Right (_, _, (corrId', entId', Cmd SResolver _)) -> (serverResolverConcurrency, runExceptT (encodeResp (corrId', entId', rslvTooManyRequests)) >>= sendResp . either ERR id)
+                _ -> (serverClientConcurrency, pure ())
+              sendResp rres = atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_ >>= \case
-            Just rres | any isAuthError r_ -> do
-              authDelay <- asks $ authErrorDelay . config
-              Nothing <$ liftIO (sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], []))
-            rres_ -> pure rres_
+          authDelay <- asks $ authErrorDelay . config
+          -- The proxy waits for forwarded commands with the background timeout.
+          -- If no slot is free before it, only RSLV gets a response, as the proxy has already timed out.
+          -- A delayed AUTH response is sent from another thread, so the delay does not hold the slot.
+          lift $ forkCmd_ concurrency forwardedCmdWait onTimeout $ runExceptT (forwarded >>= \r -> (r,) <$> encodeResp r) >>= \case
+            Right (r, rres)
+              | isAuthError r -> liftIO $ sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
+              | otherwise -> sendResp rres
+            Left e -> sendResp $ ERR e
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
