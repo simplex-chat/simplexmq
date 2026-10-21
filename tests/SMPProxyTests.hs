@@ -475,10 +475,15 @@ testChangedFwdVersion =
     (cmdPubKey, cmdPrivKey) <- atomically $ C.generateKeyPair g
     nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
     let v = currentClientSMPRelayVersion
-    et <- either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) (SMP.encTransmissionNonce v nonce) "" SMP.paddedProxiedTLength
-    let forward fwdVersion = forwardSMPTransmission rc (either error id $ C.corrCbNonce corrId) fwdVersion cmdPubKey et
-    _ <- runExceptT' $ forward v
-    runExceptT (forward $ prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+        t = SMP.tEncodeBatch1 False (Nothing, SMP.encodeTransmission (thParams rc) (SMP.CorrId corrId, SMP.NoEntity, SMP.Cmd SMP.SIdleClient SMP.PING))
+        encrypt n = either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) n t SMP.paddedProxiedTLength
+        forward fwdCorrId fwdVersion = forwardSMPTransmission rc (either error id $ C.corrCbNonce fwdCorrId) fwdVersion cmdPubKey
+    et <- encrypt $ SMP.encTransmissionNonce v nonce
+    _ <- runExceptT' $ forward corrId v et
+    runExceptT (forward corrId (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.BLOCK)
+    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion v) =<< encrypt nonce
+    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion v) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.BLOCK)
 
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
