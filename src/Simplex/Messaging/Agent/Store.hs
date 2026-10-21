@@ -809,7 +809,7 @@ data StoreError
     SEServerNotFound
   | -- | Connection already used.
     SEConnDuplicate
-  | -- | Confirmed snd queue already exists.
+  | -- | Snd queue already exists: confirmed, or in another connection.
     SESndQueueExists
   | -- | Wrong connection type, e.g. "send" connection when "receive" or "duplex" is expected, or vice versa.
     -- 'upgradeRcvConnToDuplex' and 'upgradeSndConnToDuplex' do not allow duplex connections - they would also return this error.
