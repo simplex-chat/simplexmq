@@ -382,9 +382,11 @@ getServerNtfSubscriptions st srvId afterSubId_ count =
 findNtfSubscription :: NtfPostgresStore -> NtfTokenId -> SMPQueueNtf -> IO (Either ErrorType (NtfTknRec, Maybe NtfSubRec))
 findNtfSubscription st tknId q =
   withFastDB "findNtfSubscription" st $ \db -> runExceptT $ do
-    tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ getNtfToken st tknId
-    unless (allowNtfSubCommands tknStatus) $ throwE AUTH
+    tkn@NtfTknRec {ntfTknId, tknStatus} <-
+      ExceptT $ firstRow rowToNtfTkn AUTH $
+        DB.query db (ntfTknQuery <> " WHERE token_id = ?") (Only tknId)
     liftIO $ updateTokenDate db tkn
+    unless (allowNtfSubCommands tknStatus) $ throwE AUTH
     sub_ <-
       liftIO $ maybeFirstRow (rowToNtfSub q) $
         DB.query
