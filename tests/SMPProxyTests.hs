@@ -142,6 +142,10 @@ smpProxyTests = do
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
         it "first via proxy for unknown" $ twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
+        it "first via proxy for unknown chosen host" $ twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([SMPServer (testHost2 <> testHost) testPort2 testKeyHash], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
+        it "first without proxy for known chosen host" $ twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([SMPServer (testHost <> testHost2) testPort2 testKeyHash], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
         it "retries sending when destination or proxy relay is offline" $ \_ ->
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
