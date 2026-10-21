@@ -91,7 +91,7 @@ module Simplex.Messaging.Protocol
     NetworkError (..),
     BlockingInfo (..),
     BlockingReason (..),
-    RawTransmission,
+    RawTransmission (RawTransmission),
     Transmission,
     TAuthorizations,
     TransmissionAuth (..),

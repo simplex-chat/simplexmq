@@ -2195,10 +2195,8 @@ client
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
-            t :| [] -> pure $ tDecodeServer clntTHParams t
+            t@(Right (RawTransmission _ _ _ _ (CorrId tCorrId) _ _)) :| [] | tCorrId == C.unCbNonce fwdCorrId -> pure $ tDecodeServer clntTHParams t
             _ -> throwE BLOCK
-          let tCorrId = either (\(corrId', _, _) -> corrId') (\(_, _, (corrId', _, _)) -> corrId') t'
-          unless (bs tCorrId == C.unCbNonce fwdCorrId) $ throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do
                 r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
