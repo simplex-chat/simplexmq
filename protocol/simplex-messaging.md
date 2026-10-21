@@ -1166,7 +1166,7 @@ fwdCommandKey = length x509encoded
 transmission = *OCTET ; note that it is not prefixed with the length
 ```
 
-The destination router having received this command decrypts both encryption layers (proxy and client), verifies client authorization as usual, processes it, and send the double encrypted `RRES` response to proxy.
+The destination router having received this command decrypts both encryption layers (proxy and client), rejects it with `ERR CRYPTO` if the correlation ID of the decrypted transmission differs from `fwdCorrId`, verifies client authorization as usual, processes it, and send the double encrypted `RRES` response to proxy.
 
 The shared secret for encrypting transmission bodies between proxy router and destination router is agreed from proxy and destination router keys exchanged in handshake headers - proxy and router use the same shared secret during the session for the encryption between them.
 
