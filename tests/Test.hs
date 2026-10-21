@@ -63,11 +63,18 @@ import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (postgressBracket)
 #endif
 
+#if MIN_VERSION_base(4,18,0)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Monad (forM_, void)
+import GHC.Conc.Sync (listThreads, threadLabel, threadStatus)
+#endif
+
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
+  dumpThreadsAfter 25
   setLogLevel testLogLevel
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
@@ -194,6 +201,20 @@ main = do
 #else
           after_ (listDirectory tmpDir >>= mapM_ (removeFileIfExists . (tmpDir </>))) $
             describe "Agent SQLite schema dump" schemaDumpTest
+#endif
+
+dumpThreadsAfter :: Int -> IO ()
+#if MIN_VERSION_base(4,18,0)
+dumpThreadsAfter minutes = void . forkIO $ do
+  threadDelay $ minutes * 60000000
+  ts <- listThreads
+  putStrLn $ "=== " <> show (length ts) <> " threads after " <> show minutes <> " minutes"
+  forM_ ts $ \t -> do
+    s <- threadStatus t
+    l <- threadLabel t
+    putStrLn $ show t <> " " <> show s <> " " <> maybe "" id l
+#else
+dumpThreadsAfter _ = pure ()
 #endif
 
 hspecInTmpDir :: Spec -> IO ()
