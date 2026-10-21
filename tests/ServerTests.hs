@@ -1091,7 +1091,7 @@ testRestoreMessages =
       -- messages below are delivered after server restart
       sId <- readTVarIO senderId
       Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
-      Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "hello 3")
+      Resp "3" _ OK <- signSendRecv h sKey ("3", sId, _SEND "")
       Resp "4" _ OK <- signSendRecv h sKey ("4", sId, _SEND "hello 4")
       Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND "hello 5")
       Resp "6" _ (ERR QUOTA) <- signSendRecv h sKey ("6", sId, _SEND "hello 6")
@@ -1108,7 +1108,7 @@ testRestoreMessages =
       (Resp "2" _ (SOK Nothing), Resp "" _ (Msg mId2 msg2)) <- signSendRecv2 h rKey ("2", rId, SUB)
       (dec mId2 msg2, Right "hello 2") #== "restored message delivered"
       Resp "3" _ (Msg mId3 msg3) <- signSendRecv h rKey ("3", rId, ACK mId2)
-      (dec mId3 msg3, Right "hello 3") #== "restored message delivered"
+      (dec mId3 msg3, Right "") #== "restored message delivered"
       Resp "4" _ (Msg mId4 msg4) <- signSendRecv h rKey ("4", rId, ACK mId3)
       (dec mId4 msg4, Right "hello 4") #== "restored message delivered"
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
