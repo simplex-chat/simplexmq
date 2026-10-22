@@ -316,5 +316,5 @@ validateCertificateChain (C.KeyHash kh) host port cc = case chainIdCaCerts cc of
   CCLong -> pure [XV.AuthorityTooDeep]
   where
     validate idCert
-      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate idCert (host, port) cc
+      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate (host, port) cc
       | otherwise = pure [XV.UnknownCA]

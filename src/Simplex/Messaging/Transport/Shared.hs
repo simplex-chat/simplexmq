@@ -12,6 +12,7 @@ module Simplex.Messaging.Transport.Shared
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
+import Control.Monad (zipWithM)
 import qualified Crypto.PubKey.RSA as RSA
 import Data.ByteString (ByteString)
 import qualified Data.X509 as X
@@ -30,17 +31,20 @@ chainIdCaCerts (X.CertificateChain chain) = case chain of
   [] -> CCEmpty
   [cert] -> CCSelf cert
   [leafCert, idCert] -> CCValid {leafCert, idCert} -- current long-term online/offline certificates chain
-  [leafCert, idCert, _] -> CCValid {leafCert, idCert} -- with additional operator certificate (preset in the client)
+  [leafCert, idCert, _] -> CCValid {leafCert, idCert} -- with additional operator certificate
   [leafCert, idCert, _, _] -> CCValid {leafCert, idCert} -- with network certificate
   _ -> CCLong
 
-x509validate :: X.SignedCertificate -> (HostName, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
-x509validate caCert serviceID cc@(X.CertificateChain certs)
-  | all (supportedKey . X.certPubKey . X.getCertificate) (caCert : certs) = XV.validate X.HashSHA256 XV.defaultHooks checks certStore noCache serviceID cc
+x509validate :: (HostName, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
+x509validate serviceID (X.CertificateChain certs)
+  | all (supportedKey . X.certPubKey . X.getCertificate) certs = case certs of
+      [] -> pure [XV.EmptyChain]
+      [cert] -> validateLink cert cert
+      _ -> concat <$> zipWithM validateLink certs (drop 1 certs)
   | otherwise = pure [XV.InvalidSignature XV.SignatureUnimplemented]
   where
+    validateLink cert issuer = XV.validate X.HashSHA256 XV.defaultHooks checks (XS.makeCertificateStore [issuer]) noCache serviceID (X.CertificateChain [cert])
     checks = XV.defaultChecks {XV.checkFQHN = False}
-    certStore = XS.makeCertificateStore [caCert]
     noCache = XV.ValidationCache (\_ _ _ -> pure XV.ValidationCacheUnknown) (\_ _ _ -> pure ())
     supportedKey = \case
       X.PubKeyEd25519 _ -> True

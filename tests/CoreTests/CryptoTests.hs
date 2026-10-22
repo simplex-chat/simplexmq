@@ -310,9 +310,10 @@ testValidateX509 = do
   -- messed up key rotation or other configuration problems
   checkChain [server2, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
 
-  checkChain [server2, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
-  checkChain [server2, ca, ca2, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
-  checkChain [server, ca, ca2] `shouldReturn` []
+  checkChain [server, ca, ca, ca] `shouldReturn` []
+  checkChain [server, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+  checkChain [server, ca, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+  checkChain [server2, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid, XV.InvalidSignature XV.SignatureInvalid]
 
   -- self-signed, unrelated to CA
   ssCreds <- XS.readCertificates "tests/fixtures/ss.crt"
