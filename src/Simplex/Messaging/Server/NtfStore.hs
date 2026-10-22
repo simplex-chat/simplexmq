@@ -15,6 +15,7 @@ module Simplex.Messaging.Server.NtfStore
 
 import Control.Concurrent.STM
 import Control.Monad (foldM)
+import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..))
@@ -50,15 +51,13 @@ deleteExpiredNtfs (NtfStore ns) old =
   where
     expireQueue nId = atomically $ TM.lookup nId ns >>= maybe (pure 0) (expire nId)
     expire nId v = readTVar v >>= \case
-      [] -> TM.delete nId ns >> pure 0
+      [] -> TM.delete nId ns $> 0
       -- check the last message first, it is the earliest
-      ntfs
-        | systemSeconds (ntfTs $ last ntfs) < old -> do
-            let !ntfs' = filter (\MsgNtf {ntfTs = ts} -> systemSeconds ts >= old) ntfs
-            if null ntfs'
-              then TM.delete nId ns >> pure (length ntfs)
-              else writeTVar v ntfs' >> pure (length ntfs - length ntfs')
-        | otherwise -> pure 0
+      ntfs | systemSeconds (ntfTs $ last $ ntfs) < old -> do
+        let !ntfs' = filter (\MsgNtf {ntfTs = ts} -> systemSeconds ts >= old) ntfs
+        if null ntfs' then TM.delete nId ns else writeTVar v ntfs'
+        pure $! length ntfs - length ntfs'
+      _ -> pure 0
 
 deleteEmptyNtfs :: NtfStore -> [(NotifierId, TVar [MsgNtf])] -> IO ()
 deleteEmptyNtfs (NtfStore ns) = mapM_ deleteEmpty
