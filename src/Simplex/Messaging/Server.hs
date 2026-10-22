@@ -739,18 +739,17 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ServerConfig {smpServerVRange, smpHandshakeTimeout, information} <- asks config
       let serverInfo = LB.toStrict . J.encode <$> information
       labelMyThread $ "smp handshake for " <> transportName tp
-      newServiceRec <- newTVarIO Nothing
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms salt idSize newServiceRec) >>= \case
-        Just (Right th) -> runClientTransport th =<< readTVarIO newServiceRec
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms salt idSize) >>= \case
+        Just (Right (th, newServiceRec)) -> runClientTransport th newServiceRec
         _ -> pure ()
 
-    getClientService :: s -> ByteString -> Int -> TVar (Maybe ServiceRec) -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
-    getClientService ms salt idSize newServiceRec role cert fp@(XV.Fingerprint fpBytes) = do
+    getClientService :: s -> ByteString -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO (ServiceId, Maybe ServiceRec)
+    getClientService ms salt idSize role cert fp@(XV.Fingerprint fpBytes) = do
       let newServiceId = EntityId $ B.take idSize $ C.sha3_256 $ salt <> fpBytes
       ts <- liftIO getSystemDate
       let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
-      withExceptT (const $ TEHandshake BAD_SERVICE) (ExceptT $ getServiceId @(StoreQueue s) (queueStore ms) sr)
-        >>= maybe (newServiceId <$ atomically (writeTVar newServiceRec $ Just sr)) pure
+      withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
+        maybe (newServiceId, Just sr) (,Nothing) <$$> getServiceId @(StoreQueue s) (queueStore ms) sr
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
@@ -1207,8 +1206,7 @@ sendAfterDelay c@Client {sndQ, authDelaySlots, clientTHParams = THandleParams {s
       atomically $ waitTSem authDelaySlots
       elapsed <- subtract (microseconds since) . microseconds <$> getSystemTime
       when (elapsed >= delay) $ incStat $ authDelayExceeded stats
-      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $
-        (threadDelay' (delay - elapsed `mod` delay) >> write) `finally` atomically (signalTSem authDelaySlots)
+      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ (threadDelay' (delay - elapsed `mod` delay) >> write) `finally` atomically (signalTSem authDelaySlots)
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
@@ -1447,12 +1445,10 @@ client
       where
         ifNotNull qs f = if null qs then pure M.empty else f qs
         setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId (Either ErrorType ()))
-        setService party sId qs = do
-          storeNewService
-          ExceptT $ setQueueServices (queueStore ms) party sId qs
+        setService party sId qs = forM_ newServiceRec storeService >> ExceptT (setQueueServices (queueStore ms) party sId qs)
 
-    storeNewService :: ExceptT ErrorType IO ()
-    storeNewService = forM_ newServiceRec $ \sr ->
+    storeService :: ServiceRec -> ExceptT ErrorType IO ServiceId
+    storeService sr =
       withExceptT (\case e@SERVICE -> e; e@STORE {} -> e; _ -> INTERNAL) $
         ExceptT $ getCreateService @(StoreQueue s) (queueStore ms) sr
 
@@ -1682,7 +1678,7 @@ client
                                   updatedAt,
                                   rcvServiceId = clntServiceId
                                 }
-                        liftIO (runExceptT storeNewService $>> addQueue ms rcvId qr) >>= \case
+                        liftIO (runExceptT (forM_ newServiceRec storeService) $>> addQueue ms rcvId qr) >>= \case
                           Left DUPLICATE_ -- TODO [short links] possibly, we somehow need to understand which IDs caused collision to retry if it's not client-supplied?
                             | clntIds -> pure $ ERR AUTH -- no retry on collision if sender ID is client-supplied
                             | otherwise -> tryCreate (n - 1)

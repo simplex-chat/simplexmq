@@ -4679,7 +4679,7 @@ testServiceIdChangeOnReconnect ps@(_, ASType qs _) = do
       ("", "", SERVICE_UP _ _) <- nGet service
       ("", "", UP _ [_]) <- nGet user
       pure ()
-    -- Phase 3: Server restart - new service ID, as no queue was associated with the service in phase 2
+    -- Phase 3: Normal reconnect - service should subscribe normally
     ("", "", SERVICE_DOWN _ _) <- nGet service
     ("", "", DOWN _ [_]) <- nGet user
     withSmpServerStoreLogOn ps testPort $ \_ -> do
