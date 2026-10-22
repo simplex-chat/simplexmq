@@ -172,16 +172,19 @@ ntfTknToRow NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhPrivKey, t
 
 getNtfToken :: NtfPostgresStore -> NtfTokenId -> IO (Either ErrorType NtfTknRec)
 getNtfToken st tknId =
-  withFastDB "getNtfToken" st $ \db ->
-    maybe (Left AUTH) Right <$> getNtfToken_ db " WHERE token_id = ?" (Only tknId)
+  (maybe (Left AUTH) Right =<<) <$>
+    getNtfToken_ st " WHERE token_id = ?" (Only tknId)
 
 findNtfTokenRegistration :: NtfPostgresStore -> NewNtfEntity 'Token -> IO (Either ErrorType (Maybe NtfTknRec))
 findNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) =
-  withFastDB' "getNtfToken" st $ \db ->
-    getNtfToken_ db " WHERE push_provider = ? AND push_provider_token = ? AND verify_key = ?" (pp, Binary ppToken, tknVerifyKey)
+  getNtfToken_ st " WHERE push_provider = ? AND push_provider_token = ? AND verify_key = ?" (pp, Binary ppToken, tknVerifyKey)
 
-getNtfToken_ :: ToRow q => DB.Connection -> Query -> q -> IO (Maybe NtfTknRec)
-getNtfToken_ db cond params = do
+getNtfToken_ :: ToRow q => NtfPostgresStore -> Query -> q -> IO (Either ErrorType (Maybe NtfTknRec))
+getNtfToken_ st cond params =
+  withFastDB' "getNtfToken" st $ \db -> getNtfToken_' db cond params
+
+getNtfToken_' :: ToRow q => DB.Connection -> Query -> q -> IO (Maybe NtfTknRec)
+getNtfToken_' db cond params = do
   tkn_ <- maybeFirstRow rowToNtfTkn $ DB.query db (ntfTknQuery <> cond) params
   mapM_ (updateTokenDate db) tkn_
   pure tkn_
@@ -382,8 +385,9 @@ getServerNtfSubscriptions st srvId afterSubId_ count =
 findNtfSubscription :: NtfPostgresStore -> NtfTokenId -> SMPQueueNtf -> IO (Either ErrorType (NtfTknRec, Maybe NtfSubRec))
 findNtfSubscription st tknId q =
   withFastDB "findNtfSubscription" st $ \db -> runExceptT $ do
-    tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ maybe (Left AUTH) Right <$> getNtfToken_ db " WHERE token_id = ?" (Only tknId)
+    tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ maybe (Left AUTH) Right <$> getNtfToken_' db " WHERE token_id = ?" (Only tknId)
     unless (allowNtfSubCommands tknStatus) $ throwE AUTH
+    liftIO $ updateTokenDate db tkn
     sub_ <-
       liftIO $ maybeFirstRow (rowToNtfSub q) $
         DB.query
