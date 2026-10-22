@@ -568,11 +568,12 @@ updateNewConnSnd db connId sq =
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
-  ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
-    fmap (>>= sequence) . createConn_ db gVar cData $ \connId -> do
+  ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) . runExceptT $ do
+    (connId, sq) <- ExceptT . createConn_ db gVar cData $ \connId -> do
       serverKeyHash_ <- createServer db server
       createConnRecord db connId cData SCMInvitation
       insertSndQueue_ db connId q serverKeyHash_
+    (connId,) <$> except sq
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
 createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport, serviceRequestExpiresAt} cMode = do
