@@ -681,12 +681,12 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               remaining = smpPingInterval - idle
           if remaining > 1_000_000 -- delay pings only for significant time
             then loop remaining
-            else do
+            else unless proxyServer $ do
               whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (protocolPing @v @err @msg)
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
               -- drop client when maxCnt of commands have timed out in sequence, but only after some time has passed after last received response
-              when (not proxyServer && (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow)) $ loop smpPingInterval
+              when (maxCnt == 0 || cnt < maxCnt || diff < recoverWindow) $ loop smpPingInterval
         recoverWindow = 15 * 60 -- seconds
         maxCnt = smpPingCount networkConfig
 
