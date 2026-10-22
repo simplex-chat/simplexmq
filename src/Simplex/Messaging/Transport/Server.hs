@@ -287,11 +287,11 @@ paramsAskClientCert clientCert params =
 validateClientCertificate :: X.CertificateChain -> IO (Maybe T.CertificateRejectReason)
 validateClientCertificate cc = case chainIdCaCerts cc of
   CCEmpty -> pure Nothing -- client certificates are only used for services
-  CCSelf _ -> validate
-  CCValid {} -> validate
+  CCSelf cert -> validate cert
+  CCValid {caCert} -> validate caCert
   CCLong -> pure $ Just $ T.CertificateRejectOther "chain too long"
   where
-    validate = usage <$> x509validate ("", B.empty) cc
+    validate caCert = usage <$> x509validate caCert ("", B.empty) cc
     usage [] = Nothing
     usage r =
       Just $

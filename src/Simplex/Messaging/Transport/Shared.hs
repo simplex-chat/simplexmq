@@ -23,27 +23,25 @@ import Network.Socket (HostName)
 data ChainCertificates
   = CCEmpty
   | CCSelf X.SignedCertificate
-  | CCValid {leafCert :: X.SignedCertificate, idCert :: X.SignedCertificate}
+  | CCValid {leafCert :: X.SignedCertificate, idCert :: X.SignedCertificate, caCert :: X.SignedCertificate}
   | CCLong
 
 chainIdCaCerts :: X.CertificateChain -> ChainCertificates
 chainIdCaCerts (X.CertificateChain chain) = case chain of
   [] -> CCEmpty
   [cert] -> CCSelf cert
-  [leafCert, idCert] -> CCValid {leafCert, idCert} -- current long-term online/offline certificates chain
-  [leafCert, idCert, _] -> CCValid {leafCert, idCert} -- with additional operator certificate
-  [leafCert, idCert, _, _] -> CCValid {leafCert, idCert} -- with network certificate
+  [leafCert, cert] -> CCValid {leafCert, idCert = cert, caCert = cert} -- current long-term online/offline certificates chain
+  [leafCert, idCert, caCert] -> CCValid {leafCert, idCert, caCert} -- with additional operator certificate (preset in the client)
+  [leafCert, idCert, _, caCert] -> CCValid {leafCert, idCert, caCert} -- with network certificate
   _ -> CCLong
 
-x509validate :: (HostName, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
-x509validate serviceID (X.CertificateChain certs)
-  | all (supportedKey . X.certPubKey . X.getCertificate) certs = case certs of
-      [] -> pure [XV.EmptyChain]
-      [cert] -> validateLink cert cert
-      _ -> concat <$> zipWithM validateLink certs (drop 1 certs)
+x509validate :: X.SignedCertificate -> (HostName, ByteString) -> X.CertificateChain -> IO [XV.FailedReason]
+x509validate _ _ (X.CertificateChain []) = pure [XV.EmptyChain]
+x509validate caCert serviceID (X.CertificateChain certs)
+  | all (supportedKey . X.certPubKey . X.getCertificate) certs = concat <$> zipWithM validateIssued certs (drop 1 certs <> [caCert])
   | otherwise = pure [XV.InvalidSignature XV.SignatureUnimplemented]
   where
-    validateLink cert issuer = XV.validate X.HashSHA256 XV.defaultHooks checks (XS.makeCertificateStore [issuer]) noCache serviceID (X.CertificateChain [cert])
+    validateIssued cert issuer = XV.validate X.HashSHA256 XV.defaultHooks checks (XS.makeCertificateStore [issuer]) noCache serviceID (X.CertificateChain [cert])
     checks = XV.defaultChecks {XV.checkFQHN = False}
     noCache = XV.ValidationCache (\_ _ _ -> pure XV.ValidationCacheUnknown) (\_ _ _ -> pure ())
     supportedKey = \case
