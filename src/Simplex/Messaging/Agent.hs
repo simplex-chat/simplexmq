@@ -2672,7 +2672,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                       -- party joining connection
                       _ -> connError msgId NOT_ACCEPTED
                     AM_A_MSG_ -> notifyDel msgId err
-                    AM_A_RCVD_ -> notifyDel msgId err
+                    AM_A_RCVD_ -> delMsg msgId
                     AM_QCONT_ -> notifyDel msgId err
                     AM_QADD_ -> qError msgId "QADD: AUTH"
                     AM_QKEY_ -> qError msgId "QKEY: AUTH"
