@@ -104,8 +104,10 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> "# Log daily server statistics to CSV file\n"
     <> ("log_stats = " <> onOff logStats <> "\n\n")
     <> "# Log interval for real-time Prometheus metrics\n\
-        \# prometheus_interval = 60\n\n\
-        \[AUTH]\n\
+        \# prometheus_interval = 60\n\n"
+    <> "# Interval to save server statistics, seconds (requires log_stats)\n"
+    <> ("# stats_save_interval = " <> tshow defStatsSaveInterval <> "\n\n")
+    <> "[AUTH]\n\
         \# Set new_queues option to off to completely prohibit creating new messaging queues.\n\
         \# This can be useful when you want to decommission the server, but not all connections are switched yet.\n\
         \new_queues = on\n\n\
