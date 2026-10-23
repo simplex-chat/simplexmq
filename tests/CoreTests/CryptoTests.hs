@@ -11,6 +11,7 @@ import Control.Concurrent.STM
 import Control.Exception (bracket, evaluate)
 import Control.Monad.Except
 import Crypto.Error (throwCryptoError)
+import Crypto.Number.Serialize.LE (i2ospOf_)
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.Aeson as J
@@ -186,10 +187,12 @@ testDHCryptoBoxZeroSecret = do
   g <- C.newRandom
   (_, pk) <- atomically $ C.generateKeyPair g
   nonce <- atomically $ C.randomCbNonce g
-  mapM_ (decryptWithKey pk nonce) ["\0", "\1"]
+  mapM_ (decryptWithKey pk nonce) [u + b | u <- us, b <- [0, 2 ^ (255 :: Int)]]
   where
+    p = 2 ^ (255 :: Int) - 19
+    us = [0, 1, 325606250916557431795983626356110631294008115727848805560023387167927233504, 39382357235489614581723060781553021112529911719440698176882885853963445705823, p - 1, p, p + 1]
     decryptWithKey pk nonce u = do
-      let k = C.PublicKeyX25519 . throwCryptoError . X25519.publicKey $ u <> B.replicate 31 '\0'
+      let k = C.PublicKeyX25519 . throwCryptoError . X25519.publicKey $ (i2ospOf_ 32 u :: B.ByteString)
           secret = C.dh' k pk
       Right cipher <- pure $ C.cbEncrypt secret nonce "hello" 64
       C.cbDecrypt secret nonce cipher `shouldBe` Left C.CBDecryptError
