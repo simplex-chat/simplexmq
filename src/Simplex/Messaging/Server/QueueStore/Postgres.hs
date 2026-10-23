@@ -339,23 +339,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       qr = queueRec sq
 
   getServiceId :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType (Maybe ServiceId))
-  getServiceId st ServiceRec {serviceRole, serviceCertHash = XV.Fingerprint fp} =
-    E.uninterruptibleMask_ $ runExceptT $ withDB "getServiceId" st $ \db ->
-      traverse checkRole <$> maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp)))
-    where
-      checkRole (serviceId, role)
-        | role == serviceRole = Right serviceId
-        | otherwise = Left SERVICE
+  getServiceId st sr = E.uninterruptibleMask_ $ runExceptT $ withDB "getServiceId" st (`getServiceId'` sr)
 
   getCreateService :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
-  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
+  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceCertHash = XV.Fingerprint fp} =
     withLockMap (serviceLocks st) fp "getCreateService" $ E.uninterruptibleMask_ $ runExceptT $ do
       (serviceId, new) <-
         withDB "getCreateService" st $ \db ->
-          maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp))) >>= \case
-            Just (serviceId, role)
-              | role == serviceRole -> pure $ Right (serviceId, False)
-              | otherwise -> pure $ Left SERVICE
+          getServiceId' db sr $>>= \case
+            Just serviceId -> pure $ Right (serviceId, False)
             Nothing ->
               E.try (DB.execute db insertServiceQuery (serviceRecToRow sr))
                 >>= bimapM handleDuplicate (\_ -> pure (newSrvId, True))
@@ -478,6 +470,14 @@ insertServiceQuery =
       (service_id, service_role, service_cert, service_cert_hash, created_at)
     VALUES (?,?,?,?,?)
   |]
+
+getServiceId' :: DB.Connection -> ServiceRec -> IO (Either ErrorType (Maybe ServiceId))
+getServiceId' db ServiceRec {serviceRole, serviceCertHash = XV.Fingerprint fp} =
+  traverse checkRole <$> maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp)))
+  where
+    checkRole (serviceId, role)
+      | role == serviceRole = Right serviceId
+      | otherwise = Left SERVICE
 
 foldServiceRecs :: Monoid a => PostgresQueueStore q -> (ServiceRec -> IO a) -> IO a
 foldServiceRecs st f =

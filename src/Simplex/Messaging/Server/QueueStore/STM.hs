@@ -288,11 +288,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   getServiceId :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType (Maybe ServiceId))
   getServiceId st ServiceRec {serviceRole, serviceCertHash = XV.Fingerprint fp} =
-    traverse checkRole <$> (TM.lookupIO fp (serviceCerts st) $>>= (`TM.lookupIO` services st))
-    where
-      checkRole STMService {serviceRec = ServiceRec {serviceId, serviceRole = role}}
-        | role == serviceRole = Right serviceId
-        | otherwise = Left SERVICE
+    traverse (checkServiceRole serviceRole) <$> (TM.lookupIO fp (serviceCerts st) $>>= (`TM.lookupIO` services st))
 
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
   getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
@@ -308,9 +304,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       STMQueueStore {services, serviceCerts} = st
       checkService sId =
         TM.lookup sId services >>= \case
-          Just STMService {serviceRec = ServiceRec {serviceId, serviceRole = role}}
-            | role == serviceRole -> pure $ Right (serviceId, False)
-            | otherwise -> pure $ Left $ SERVICE
+          Just s -> pure $ (,False) <$> checkServiceRole serviceRole s
           Nothing -> newService_
       newService = ifM (TM.member newSrvId services) (pure $ Left DUPLICATE_) newService_
       newService_ = do
@@ -400,6 +394,11 @@ setStatus qr status =
   atomically $ stateTVar qr $ \case
     Just q -> (Right (), Just q {status})
     Nothing -> (Left AUTH, Nothing)
+
+checkServiceRole :: SMPServiceRole -> STMService -> Either ErrorType ServiceId
+checkServiceRole role STMService {serviceRec = ServiceRec {serviceId, serviceRole}}
+  | serviceRole == role = Right serviceId
+  | otherwise = Left SERVICE
 
 addServiceQueue :: STMQueueStore q -> (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> ServiceId -> STM ()
 addServiceQueue = setServiceQueues_ S.insert
