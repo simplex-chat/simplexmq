@@ -45,6 +45,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (RNGFunc)
 import Simplex.Messaging.Encoding (Large (..), smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.Credentials (genCredentials)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
@@ -327,6 +328,24 @@ testValidateX509 = do
   let rsaKey = X.PubKeyRSA $ RSA.PublicKey 1024 (2 ^ (8192 :: Int) - 1) 65537
       rsaCert = fst $ X.objectToSignedExact (\_ -> ("", X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448, ())) (X.getCertificate server) {X.certPubKey = rsaKey}
   checkChain [rsaCert, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureUnimplemented]
+
+  g <- C.newRandom
+  root <- genCredentials g Nothing (1, 24) "root"
+  op <- genCredentials g (Just root) (1, 24) "operator"
+  ident <- genCredentials g (Just op) (1, 24) "identity"
+  leaf <- genCredentials g (Just ident) (1, 24) "leaf"
+  expiredOp <- genCredentials g (Just root) (48, -24) "operator"
+  expiredOpIdent <- genCredentials g (Just expiredOp) (1, 24) "identity"
+  expiredOpLeaf <- genCredentials g (Just expiredOpIdent) (1, 24) "leaf"
+  let checkPinned creds = validateCertificateChain (C.KeyHash fp) "localhost" "5223" $ X.CertificateChain $ map snd creds
+        where
+          XV.Fingerprint fp = XV.getFingerprint (snd $ creds !! 1) X.HashSHA256
+  checkPinned [leaf, ident, op] `shouldReturn` []
+  checkPinned [expiredOpLeaf, expiredOpIdent, expiredOp] `shouldReturn` [XV.Expired]
+  checkPinned [leaf, ident] `shouldReturn` [XV.UnknownCA]
+  otherCA <- genCredentials g Nothing (1, 24) "other"
+  otherLeaf <- genCredentials g (Just otherCA) (1, 24) "leaf"
+  checkPinned [otherLeaf, ident, otherCA] `shouldReturn` [XV.UnknownCA, XV.UnknownCA]
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do
