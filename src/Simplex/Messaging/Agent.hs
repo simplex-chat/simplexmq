@@ -267,7 +267,6 @@ import Simplex.Messaging.Version
 import Simplex.RemoteControl.Client
 import Simplex.RemoteControl.Invitation
 import Simplex.RemoteControl.Types
-import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak (deRefWeak)
 import UnliftIO.Async (mapConcurrently)
 import UnliftIO.Concurrent (forkFinally, forkIO, killThread, mkWeakThreadId, threadDelay)
@@ -2708,7 +2707,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
             Right proxySrv_ -> do
               case msgType of
                 AM_CONN_INFO
-                  | senderCanSecure queueMode -> conDebug "conn-info-sent" connId >> notify (CON pqEncryption) >> setStatus Active
+                  | senderCanSecure queueMode -> notify (CON pqEncryption) >> setStatus Active
                   | otherwise -> setStatus Confirmed
                 AM_CONN_INFO_REPLY -> setStatus Confirmed
                 AM_RATCHET_INFO -> pure ()
@@ -2727,7 +2726,6 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
                       -- With `status == Active` condition, CON is sent here only by the accepting party, that previously received HELLO
                       when (status == Active) $ do
                         atomically $ incSMPServerStat c userId (qServer rq) connCompleted
-                        conDebug "hello-sent" connId
                         notify $ CON pqEncryption
                     -- this branch should never be reached as receive queue is created before the confirmation,
                     _ -> logError "HELLO sent without receive queue"
@@ -3488,18 +3486,6 @@ subscriber c@AgentClient {msgQ, subQ} = run $ forever $ do
     run a = a `catchOwn` \e -> notify $ CRITICAL True $ "Agent subscriber stopped: " <> show e
     notify err = atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR err)
 
-conDebugSites :: TVar (Map ConnId String)
-conDebugSites = unsafePerformIO $ newTVarIO M.empty
-{-# NOINLINE conDebugSites #-}
-
-conDebug :: MonadIO m => String -> ConnId -> m ()
-conDebug site connId = do
-  prev <- atomically $ do
-    m <- readTVar conDebugSites
-    writeTVar conDebugSites $ M.insert connId site m
-    pure $ M.lookup connId m
-  forM_ prev $ \p -> liftIO $ putStrLn $ "DUP-CON " <> show connId <> " " <> p <> " " <> site
-
 maxRatchetKeyHashes :: Int
 maxRatchetKeyHashes = 100
 
@@ -4025,7 +4011,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                       case senderKey of
                         Just k -> enqueueCmd $ ICDuplexSecure rId k
                         Nothing -> do
-                          conDebug "info-received" connId
                           notify $ CON pqEncryption
                           withStore' c $ \db -> setRcvQueueStatus db rq' Active
                     _ -> prohibited "conf: not AgentConnInfo"
@@ -4063,7 +4048,6 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
                     -- (was executed by initiating party in v1 that is no longer supported)
                     | sndStatus == Active -> do
                         atomically $ incSMPServerStat c userId srv connCompleted
-                        conDebug "hello-received" connId
                         notify $ CON pqEncryption
                     | otherwise -> enqueueDuplexHello sq
                   _ -> pure ()
