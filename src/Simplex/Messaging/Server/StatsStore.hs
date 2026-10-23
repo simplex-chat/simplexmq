@@ -11,7 +11,6 @@ module Simplex.Messaging.Server.StatsStore
     loadStats,
     saveStats,
 #if defined(dbServerPostgres)
-    PeriodSet (..),
     getDBStats,
 #endif
   )
@@ -188,7 +187,7 @@ insertHashes db ps hs =
         "INSERT INTO server_stats_queues (period_set, queue_hash) VALUES (?, ?) ON CONFLICT DO NOTHING"
         (map (\h -> (ps, fromIntegral h :: Int64)) $ L.toList hs')
 
--- rows per INSERT statement, bounds the query size of the one-time file import
+-- rows per INSERT statement, bounds the query size
 hashInsertBatch :: Int
 hashInsertBatch = 10000
 
