@@ -93,6 +93,7 @@ cliTests = do
       it "with store log, no password" $ smpServerTest True False
       it "static files" smpServerTestStatic
       it "cloud scripts disable embedded web without certificates" smpCloudScriptsDisableWeb
+    it "should not start with invalid stats_save_interval" smpServerInvalidStatsSaveInterval
 #if defined(dbServerPostgres)
   around_ (postgressBracket ntfTestServerDBConnectInfo) $ before_ (createNtfSchema ntfTestServerDBConnectInfo ntfTestServerDBOpts) $
     describe "Ntf server CLI" $ do
@@ -284,6 +285,16 @@ testStartInvalidCredential = do
       ServerCredentials {caCertificateFile = Nothing, certificateFile = fixtureFile "web" ".crt", privateKeyFile = testPath "empty.key"}
   (prExitCode, show <$> prException) `shouldBe` (ExitFailure 1, Nothing)
   prStdout `shouldBe` "invalid credential: no private key\n"
+
+smpServerInvalidStatsSaveInterval :: HasTestEnv => IO ()
+smpServerInvalidStatsSaveInterval = do
+  let iniFile = cfgPath <> "/smp-server.ini"
+  capture_ (withArgs ["init", "-y", "--no-password"] $ smpServerCLI cfgPath logPath)
+    >>= (`shouldSatisfy` (("Server initialized, please provide additional server information in " <> iniFile) `isPrefixOf`))
+  Right ini <- readIniFile iniFile
+  writeIniFile iniFile ini {iniSections = HM.adjust (("stats_save_interval", "0") :) "STORE_LOG" (iniSections ini)}
+  capture_ (withArgs ["start"] $ 5000000 `timeout` smpServerCLI cfgPath logPath)
+    `shouldThrow` errorCall "invalid INI setting stats_save_interval: 0"
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do

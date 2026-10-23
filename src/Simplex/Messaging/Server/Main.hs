@@ -440,6 +440,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         iniStoreType = either error id $! readStoreType ini
+        iniStatsSaveInterval = case readIniDefault defStatsSaveInterval "STORE_LOG" "stats_save_interval" ini of
+          n | n < 1 -> error $ "invalid INI setting stats_save_interval: " <> show n
+          n -> n
         iniStoreCfg :: SupportedStore qs ms => SQSType qs -> SMSType ms -> ServerStoreCfg (MsgStoreType qs ms)
         iniStoreCfg SQSMemory SMSMemory = SSCMemory $ enableStoreLog' ini $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
 #if defined(dbServerPostgres)
@@ -495,7 +498,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
-              statsSaveInterval = readIniDefault defStatsSaveInterval "STORE_LOG" "stats_save_interval" ini,
+              statsSaveInterval = iniStatsSaveInterval,
               prometheusInterval = eitherToMaybe (lookupValue "STORE_LOG" "prometheus_interval" ini) >>= readMaybe . T.unpack,
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
