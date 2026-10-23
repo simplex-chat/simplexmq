@@ -1259,8 +1259,8 @@ tSend th Client {sndActiveAt} ts = do
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
-disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
-disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
+disconnectTransport :: THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport THandle {params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
@@ -1270,7 +1270,7 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
     checkExpired = do
       old <- expireBeforeEpoch expCfg
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
-      if systemSeconds ts < old then closeConnection connection else loop
+      unless (systemSeconds ts < old) loop
 
 data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFailed ErrorType
 
