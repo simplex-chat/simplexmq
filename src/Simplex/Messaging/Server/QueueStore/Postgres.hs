@@ -49,7 +49,7 @@ import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (foldl', intersperse, partition)
+import Data.List (intersperse)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
@@ -338,6 +338,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
       qr = queueRec sq
 
+  getServiceId :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType (Maybe ServiceId))
+  getServiceId st ServiceRec {serviceRole, serviceCertHash = XV.Fingerprint fp} =
+    E.uninterruptibleMask_ $ runExceptT $ withDB "getServiceId" st $ \db ->
+      traverse checkRole <$> maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp)))
+    where
+      checkRole (serviceId, role)
+        | role == serviceRole = Right serviceId
+        | otherwise = Left SERVICE
+
   getCreateService :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
   getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
     withLockMap (serviceLocks st) fp "getCreateService" $ E.uninterruptibleMask_ $ runExceptT $ do
@@ -404,23 +413,20 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
-    snIds <-
+    nsIds <-
       withDB' "getQueueNtfServices" st $ \db ->
-        DB.query db "SELECT ntf_service_id, notifier_id FROM msg_queues WHERE notifier_id IN ? AND deleted_at IS NULL" (Only (In (map fst ntfs)))
-    pure $
-      if null snIds
-        then ([], ntfs)
-        else
-          let snIds' = foldl' (\m (sId, nId) -> M.alter (Just . maybe (S.singleton nId) (S.insert nId)) sId m) M.empty snIds
-           in foldr addService ([], ntfs) (M.assocs snIds')
+        DB.query db "SELECT notifier_id, ntf_service_id FROM msg_queues WHERE notifier_id IN ? AND deleted_at IS NULL" (Only (In (map fst ntfs)))
+    let (ssNtfs, deleteNtfs) = foldr (addNtf $ M.fromList nsIds) (M.empty, []) ntfs
+    pure (M.assocs ssNtfs, deleteNtfs)
     where
-      addService ::
-        (Maybe ServiceId, S.Set NotifierId) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)])
-      addService (serviceId, snIds) (ssNtfs, ntfs') =
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-         in ((serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf ::
+        M.Map NotifierId (Maybe ServiceId) ->
+        (NotifierId, a) ->
+        (M.Map (Maybe ServiceId) [(NotifierId, a)], [(NotifierId, a)]) ->
+        (M.Map (Maybe ServiceId) [(NotifierId, a)], [(NotifierId, a)])
+      addNtf nsIds ntf@(nId, _) (ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
+        Just serviceId -> (M.insertWith (++) serviceId [ntf] ssNtfs, deleteNtfs)
+        Nothing -> (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
