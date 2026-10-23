@@ -28,6 +28,7 @@ import Simplex.Messaging.Util (ifM, tshow)
 import System.Directory (doesFileExist, removeFile, renameFile)
 import UnliftIO.Exception (tryAny)
 #if defined(dbServerPostgres)
+import Control.Concurrent.STM (readTVarIO)
 import Data.Bifunctor (bimap)
 import Data.IORef (IORef)
 import Data.Int (Int16, Int64)
@@ -43,7 +44,7 @@ import Database.PostgreSQL.Simple (Only (..), Query)
 import qualified Database.PostgreSQL.Simple as DB
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Util (toChunks, whenM)
 import UnliftIO.Exception (isSyncException)
 #endif
@@ -162,7 +163,7 @@ importStatsFile st f = do
   pure d
 
 saveDBStats :: DBStore -> ServerStats -> IO ()
-saveDBStats st ss = E.mask $ \unmask -> do
+saveDBStats st ss = ifM (readTVarIO $ dbClosed st) (logWarn "server stats are not saved: database store is closed") $ E.mask $ \unmask -> do
   taken <- fmap catMaybes $ forM [minBound .. maxBound] $ \ps ->
     forM (periodSetPending ss ps) $ \ref -> (ps,ref,) <$> takePendingHashes ref
   d <- getServerStatsData ss
