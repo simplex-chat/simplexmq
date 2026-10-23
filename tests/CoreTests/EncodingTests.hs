@@ -57,6 +57,7 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         shouldNotParse @TransportHost "smp#simplex.im" "endOfInput"
         shouldNotParse @TransportHost "smp simplex.im" "endOfInput"
         shouldNotParse @TransportHost "smp\nsimplex.im" "endOfInput"
+        shouldNotParse @TransportHost "smp\0simplex.im" "endOfInput"
     describe "onion hosts" $ do
       it "should encode / decode onion host" $ THOnionHost "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion" #==# "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion"
       it "should only allow latin letters and digits" $ do
@@ -65,6 +66,9 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         shouldNotParse @TransportHost "bèccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion" "Failed reading: empty"
     describe "IP address hosts" $ do
       it "should encode / decode IP address" $ THIPv4 (192, 168, 0, 1) #==# "192.168.0.1"
+      it "should encode / decode IPv4-mapped and IPv4-compatible IPv6 address" $ do
+        THIPv6 (0, 0, 0xffff, 0x7f000001) #==# "::ffff:127.0.0.1"
+        THIPv6 (0, 0, 0, 0x7f000001) #==# "::127.0.0.1"
       it "should be valid" $ do
         THDomainName "192.168.1" #==# "192.168.1"
         THDomainName "192.256.0.1" #==# "192.256.0.1"

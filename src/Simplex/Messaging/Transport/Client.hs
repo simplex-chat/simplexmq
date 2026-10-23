@@ -89,7 +89,7 @@ instance StrEncoding TransportHost where
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
         maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> ipv6StrP,
         THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
-        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t[]"))
+        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (\c -> c > ' ' && A.notInClass ":#,;/[]" c))
       ]
     where
       ipNum = validIP <$?> (A.decimal <* A.char '.')
@@ -97,7 +97,7 @@ instance StrEncoding TransportHost where
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
       ipv6StrP =
         A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']'
-          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':')
+          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':' || c == '.')
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
 instance ToJSON TransportHost where
