@@ -447,6 +447,106 @@ WITH (fillfactor='80', autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze
 
 
 
+CREATE TABLE smp_server.server_stats (
+    server_stats_id smallint NOT NULL,
+    saved_at bigint NOT NULL,
+    from_time bigint NOT NULL,
+    q_created bigint NOT NULL,
+    q_secured bigint NOT NULL,
+    q_deleted_all bigint NOT NULL,
+    q_deleted_new bigint NOT NULL,
+    q_deleted_secured bigint NOT NULL,
+    q_deleted_all_b bigint NOT NULL,
+    q_blocked bigint NOT NULL,
+    q_sub bigint NOT NULL,
+    q_sub_all_b bigint NOT NULL,
+    q_sub_auth bigint NOT NULL,
+    q_sub_duplicate bigint NOT NULL,
+    q_sub_prohibited bigint NOT NULL,
+    q_sub_end bigint NOT NULL,
+    q_sub_end_b bigint NOT NULL,
+    ntf_created bigint NOT NULL,
+    ntf_new_created bigint NOT NULL,
+    ntf_deleted bigint NOT NULL,
+    ntf_deleted_b bigint NOT NULL,
+    ntf_sub bigint NOT NULL,
+    ntf_sub_b bigint NOT NULL,
+    ntf_sub_auth bigint NOT NULL,
+    ntf_sub_duplicate bigint NOT NULL,
+    msg_sent bigint NOT NULL,
+    msg_sent_auth bigint NOT NULL,
+    msg_sent_quota bigint NOT NULL,
+    msg_sent_large bigint NOT NULL,
+    msg_sent_block bigint NOT NULL,
+    msg_recv bigint NOT NULL,
+    msg_recv_get bigint NOT NULL,
+    msg_get bigint NOT NULL,
+    msg_get_no_msg bigint NOT NULL,
+    msg_get_auth bigint NOT NULL,
+    msg_get_duplicate bigint NOT NULL,
+    msg_get_prohibited bigint NOT NULL,
+    msg_expired bigint NOT NULL,
+    msg_sent_ntf bigint NOT NULL,
+    msg_recv_ntf bigint NOT NULL,
+    msg_ntfs bigint NOT NULL,
+    msg_ntfs_b bigint NOT NULL,
+    msg_ntf_no_sub bigint NOT NULL,
+    msg_ntf_lost bigint NOT NULL,
+    msg_ntf_expired bigint NOT NULL,
+    p_relays_requests bigint NOT NULL,
+    p_relays_successes bigint NOT NULL,
+    p_relays_errors_connect bigint NOT NULL,
+    p_relays_errors_compat bigint NOT NULL,
+    p_relays_errors_other bigint NOT NULL,
+    p_relays_own_requests bigint NOT NULL,
+    p_relays_own_successes bigint NOT NULL,
+    p_relays_own_errors_connect bigint NOT NULL,
+    p_relays_own_errors_compat bigint NOT NULL,
+    p_relays_own_errors_other bigint NOT NULL,
+    p_msg_fwds_requests bigint NOT NULL,
+    p_msg_fwds_successes bigint NOT NULL,
+    p_msg_fwds_errors_connect bigint NOT NULL,
+    p_msg_fwds_errors_compat bigint NOT NULL,
+    p_msg_fwds_errors_other bigint NOT NULL,
+    p_msg_fwds_own_requests bigint NOT NULL,
+    p_msg_fwds_own_successes bigint NOT NULL,
+    p_msg_fwds_own_errors_connect bigint NOT NULL,
+    p_msg_fwds_own_errors_compat bigint NOT NULL,
+    p_msg_fwds_own_errors_other bigint NOT NULL,
+    p_msg_fwds_recv bigint NOT NULL,
+    rcv_services_assoc_new bigint NOT NULL,
+    rcv_services_assoc_duplicate bigint NOT NULL,
+    rcv_services_assoc_updated bigint NOT NULL,
+    rcv_services_assoc_removed bigint NOT NULL,
+    rcv_services_sub_count bigint NOT NULL,
+    rcv_services_sub_duplicate bigint NOT NULL,
+    rcv_services_sub_queues bigint NOT NULL,
+    rcv_services_sub_end bigint NOT NULL,
+    ntf_services_assoc_new bigint NOT NULL,
+    ntf_services_assoc_duplicate bigint NOT NULL,
+    ntf_services_assoc_updated bigint NOT NULL,
+    ntf_services_assoc_removed bigint NOT NULL,
+    ntf_services_sub_count bigint NOT NULL,
+    ntf_services_sub_duplicate bigint NOT NULL,
+    ntf_services_sub_queues bigint NOT NULL,
+    ntf_services_sub_end bigint NOT NULL,
+    rslv_reqs bigint NOT NULL,
+    rslv_succ bigint NOT NULL,
+    rslv_not_found bigint NOT NULL,
+    rslv_resolver_errs bigint NOT NULL,
+    rslv_disabled bigint NOT NULL,
+    CONSTRAINT server_stats_server_stats_id_check CHECK ((server_stats_id = 1))
+);
+
+
+
+CREATE TABLE smp_server.server_stats_queues (
+    period_set smallint NOT NULL,
+    queue_hash bigint NOT NULL
+);
+
+
+
 CREATE TABLE smp_server.services (
     service_id bytea NOT NULL,
     service_role text NOT NULL,
@@ -472,6 +572,16 @@ ALTER TABLE ONLY smp_server.migrations
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_pkey PRIMARY KEY (recipient_id);
+
+
+
+ALTER TABLE ONLY smp_server.server_stats
+    ADD CONSTRAINT server_stats_pkey PRIMARY KEY (server_stats_id);
+
+
+
+ALTER TABLE ONLY smp_server.server_stats_queues
+    ADD CONSTRAINT server_stats_queues_pkey PRIMARY KEY (period_set, queue_hash);
 
 
 
