@@ -27,6 +27,7 @@ import Control.Monad (void)
 import CoreTests.MsgStoreTests (testPostgresStoreConfig)
 import qualified Database.PostgreSQL.Simple as DB
 import Data.String (fromString)
+import Simplex.Messaging.Agent.Store.Postgres (closeDBStore)
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withTransaction)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..))
@@ -52,6 +53,7 @@ serverStatsTests = do
     it "should save added hashes and delete reset sets" testDBResetAndAdded
     it "should keep pending hashes when save fails" testDBSaveFailure
     it "should keep pending hashes when save is cancelled" testDBSaveCancelled
+    it "should not save when database store is closed" testDBSaveClosed
     it "should import stats file when database has no stats" testDBImportFile
     it "should ignore stats file when database has stats" testDBIgnoreFile
 #endif
@@ -250,6 +252,16 @@ testDBSaveCancelled = withStatsDB $ \st -> do
   saveStats (StatsDB st statsFile) ss
   Just d <- getDBStats st
   _day (_activeQueues d) `shouldBe` hashes [q1]
+
+testDBSaveClosed :: HasTestEnv => IO ()
+testDBSaveClosed = withStatsDB $ \st -> do
+  ss <- newServerStats True wednesday
+  let msgQueues = activeQueues ss
+  updatePeriodStats msgQueues q1
+  closeDBStore st
+  timeout 5000000 (saveStats (StatsDB st statsFile) ss) `shouldReturn` Just ()
+  Just PendingPeriods {pendingDay} <- pure $ pendingPeriods msgQueues
+  takePendingHashes pendingDay `shouldReturn` added [q1]
 
 testDBImportFile :: HasTestEnv => IO ()
 testDBImportFile = withStatsDB $ \st -> do
