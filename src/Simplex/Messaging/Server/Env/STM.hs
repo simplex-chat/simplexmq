@@ -62,6 +62,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultMsgQueueQuota,
     defMsgExpirationDays,
     defNtfExpirationHours,
+    defStatsSaveInterval,
     defaultMessageExpiration,
     defaultNtfExpiration,
     defaultInactiveClientExpiration,
@@ -172,6 +173,8 @@ data ServerConfig s = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval to save stats, seconds
+    statsSaveInterval :: Int64,
     -- | interval and file to save prometheus metrics
     prometheusInterval :: Maybe Int,
     prometheusMetricsFile :: FilePath,
@@ -232,6 +235,9 @@ defaultNtfExpiration =
     { ttl = defNtfExpirationHours * 3600, -- seconds
       checkInterval = 3600 -- seconds, 1 hour
     }
+
+defStatsSaveInterval :: Int64
+defStatsSaveInterval = 300
 
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
