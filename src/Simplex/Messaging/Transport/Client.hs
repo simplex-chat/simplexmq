@@ -221,11 +221,25 @@ defaultSMPPort :: PortNumber
 defaultSMPPort = 5223
 
 connectSocksClient :: SocksProxy -> Maybe SocksCredentials -> SocksHostAddress -> ServiceName -> IO Socket
-connectSocksClient (SocksProxy addr) socksCreds hostAddr _port = do
+connectSocksClient proxy socksCreds hostAddr _port = do
   let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
-  fst <$> case socksCreds of
-    Just creds -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) creds
-    _ -> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
+      destAddr = SocksAddress hostAddr port
+  E.bracketOnError connectProxy close $ \sock -> do
+    conf <- defaultSocksConf <$> getPeerName sock
+    sock <$ case socksCreds of
+      Just creds -> socksConnectWithSocketAuth sock conf destAddr creds
+      _ -> socksConnectWithSocket sock conf destAddr
+  where
+    -- socksConnect from Network.Socks5 always opens IPv4 socket
+    connectProxy = case proxy of
+      SocksProxy addr ->
+        E.bracketOnError (socket (sockFamily addr) Stream defaultProtocol) close $ \sock ->
+          connect sock addr $> sock
+      SocksProxyDomain host port -> connectTCPClient host (show port)
+    sockFamily = \case
+      SockAddrInet {} -> AF_INET
+      SockAddrInet6 {} -> AF_INET6
+      SockAddrUnix {} -> AF_UNIX
 
 defaultSocksHost :: (Word8, Word8, Word8, Word8)
 defaultSocksHost = (127, 0, 0, 1)
@@ -236,7 +250,9 @@ defaultSocksProxyWithAuth = SocksProxyWithAuth SocksIsolateByAuth defaultSocksPr
 defaultSocksProxy :: SocksProxy
 defaultSocksProxy = SocksProxy $ SockAddrInet 9050 $ tupleToHostAddress defaultSocksHost
 
-newtype SocksProxy = SocksProxy SockAddr
+data SocksProxy
+  = SocksProxy SockAddr
+  | SocksProxyDomain HostName PortNumber
   deriving (Eq)
 
 data SocksProxyWithAuth = SocksProxyWithAuth SocksAuth SocksProxy
@@ -248,19 +264,23 @@ data SocksAuth
   | SocksIsolateByAuth -- this is default
   deriving (Eq, Show)
 
-instance Show SocksProxy where show (SocksProxy addr) = show addr
+instance Show SocksProxy where
+  show = \case
+    SocksProxy addr -> show addr
+    SocksProxyDomain host port -> host <> ":" <> show port
 
 instance StrEncoding SocksProxy where
   strEncode = B.pack . show
   strP = do
     host <- fromMaybe (THIPv4 defaultSocksHost) <$> optional strP
     port <- fromMaybe 9050 <$> optional (A.char ':' *> (fromInteger <$> A.decimal))
-    SocksProxy <$> socksAddr port host
+    socksProxyP port host
     where
-      socksAddr port = \case
-        THIPv4 addr -> pure $ SockAddrInet port $ tupleToHostAddress addr
-        THIPv6 addr -> pure $ SockAddrInet6 port 0 addr 0
-        _ -> fail "SOCKS5 host should be IPv4 or IPv6 address"
+      socksProxyP port = \case
+        THIPv4 addr -> pure $ SocksProxy $ SockAddrInet port $ tupleToHostAddress addr
+        THIPv6 addr -> pure $ SocksProxy $ SockAddrInet6 port 0 addr 0
+        THDomainName host -> pure $ SocksProxyDomain host port
+        THOnionHost _ -> fail "SOCKS5 host cannot be onion address"
 
 instance StrEncoding SocksProxyWithAuth where
   strEncode (SocksProxyWithAuth auth proxy) = strEncode auth <> strEncode proxy
