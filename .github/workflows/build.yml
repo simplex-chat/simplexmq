@@ -415,7 +415,7 @@ jobs:
           attempts=1
           ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }} && attempts=3
           while [ "$i" -le "$attempts" ]; do
-            if ./simplexmq-test +RTS -N1 -RTS; then
+            if ./simplexmq-test; then
               break
             else
               echo "Attempt $i failed, retrying..."
