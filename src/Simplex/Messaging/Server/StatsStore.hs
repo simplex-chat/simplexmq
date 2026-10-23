@@ -45,6 +45,7 @@ import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withTransaction)
 import Simplex.Messaging.Util (toChunks, whenM)
+import UnliftIO.Exception (isSyncException)
 #endif
 
 data StatsStore
@@ -161,15 +162,17 @@ importStatsFile st f = do
   pure d
 
 saveDBStats :: DBStore -> ServerStats -> IO ()
-saveDBStats st ss = do
+saveDBStats st ss = E.mask $ \unmask -> do
   taken <- fmap catMaybes $ forM [minBound .. maxBound] $ \ps ->
     forM (periodSetPending ss ps) $ \ref -> (ps,ref,) <$> takePendingHashes ref
   d <- getServerStatsData ss
-  tryAny (withTransaction st $ \db -> mapM_ (savePending db) taken >> upsertStats db d) >>= \case
+  E.try @E.SomeException (unmask $ withTransaction st $ \db -> mapM_ (savePending db) taken >> upsertStats db d) >>= \case
     Right () -> pure ()
     Left e -> do
-      logError $ "error saving server stats to the database: " <> tshow e
       forM_ taken $ \(_, ref, p) -> restorePendingHashes ref p
+      if isSyncException e
+        then logError $ "error saving server stats to the database: " <> tshow e
+        else E.throwIO e
   where
     savePending db (ps, _, PendingHashes {pendingReset, pendingAdded}) = do
       when pendingReset $ void $ DB.execute db "DELETE FROM server_stats_queues WHERE period_set = ?" (Only ps)

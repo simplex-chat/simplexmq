@@ -20,7 +20,9 @@ import System.Directory (doesFileExist)
 import Test.Hspec hiding (fit, it)
 import Util
 #if defined(dbServerPostgres)
-import Control.Exception (bracket)
+import Control.Concurrent (threadDelay, throwTo)
+import Control.Concurrent.Async (AsyncCancelled (..), async, asyncThreadId, poll, waitCatch)
+import Control.Exception (bracket, fromException)
 import Control.Monad (void)
 import CoreTests.MsgStoreTests (testPostgresStoreConfig)
 import qualified Database.PostgreSQL.Simple as DB
@@ -29,6 +31,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withTransaction)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStore)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..))
 import Simplex.Messaging.Server.QueueStore.Postgres (PostgresQueueStore (..))
+import System.Timeout (timeout)
 #endif
 
 serverStatsTests :: Spec
@@ -48,6 +51,7 @@ serverStatsTests = do
     it "should save and load stats with period sets" testDBSaveLoad
     it "should save added hashes and delete reset sets" testDBResetAndAdded
     it "should keep pending hashes when save fails" testDBSaveFailure
+    it "should keep pending hashes when save is cancelled" testDBSaveCancelled
     it "should import stats file when database has no stats" testDBImportFile
     it "should ignore stats file when database has stats" testDBIgnoreFile
 #endif
@@ -228,6 +232,24 @@ testDBSaveFailure = withStatsDB $ \st -> do
   _day (_activeQueues d') `shouldBe` hashes [q1, q2]
   where
     renameTable st from to = withTransaction st $ \db -> void $ DB.execute_ db $ fromString $ "ALTER TABLE " <> from <> " RENAME TO " <> to
+
+testDBSaveCancelled :: HasTestEnv => IO ()
+testDBSaveCancelled = withStatsDB $ \st -> do
+  ss <- newServerStats True wednesday
+  updatePeriodStats (activeQueues ss) q1
+  Just (Left e) <- timeout 5000000 $ do
+    a <- withTransaction st $ \db -> do
+      void $ DB.execute_ db "LOCK TABLE server_stats_queues IN EXCLUSIVE MODE"
+      a <- async $ saveStats (StatsDB st statsFile) ss
+      threadDelay 200000
+      isNothing <$> poll a `shouldReturn` True
+      throwTo (asyncThreadId a) AsyncCancelled
+      pure a
+    waitCatch a
+  fromException e `shouldBe` Just AsyncCancelled
+  saveStats (StatsDB st statsFile) ss
+  Just d <- getDBStats st
+  _day (_activeQueues d) `shouldBe` hashes [q1]
 
 testDBImportFile :: HasTestEnv => IO ()
 testDBImportFile = withStatsDB $ \st -> do
