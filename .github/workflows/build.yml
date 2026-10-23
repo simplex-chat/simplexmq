@@ -395,6 +395,22 @@ jobs:
         env:
           PGHOST: localhost
         run: |
+          watchdog() {
+            sleep 1800
+            pid=$(pgrep -x simplexmq-test | head -1)
+            echo "::group::simplexmq-test is still running after 30 minutes"
+            for p in $pid $(pgrep -P "$pid") $(for c in $(pgrep -P "$pid"); do pgrep -P "$c"; done); do
+              ps -o pid,ppid,stat,etime,command -p "$p"
+              for task in /proc/"$p"/task/*; do
+                echo "--- $p thread ${task##*/} $(cat "$task"/comm) $(cat "$task"/wchan)"
+                sudo cat "$task"/stack
+              done
+            done
+            echo "::endgroup::"
+            kill "$pid"
+          }
+          watchdog &
+          watchdog=$!
           i=1
           attempts=1
           ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }} && attempts=3
@@ -407,6 +423,7 @@ jobs:
               sleep 1
             fi
           done
+          kill "$watchdog" || true
           if [ "$i" -gt "$attempts" ]; then
             echo "All "$attempts" attempts failed."
             exit 1
