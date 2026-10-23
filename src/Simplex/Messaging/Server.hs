@@ -366,7 +366,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         runDeliverNtfs ms ns' stats
       where
         runDeliverNtfs :: s -> NtfStore -> ServerStats -> IO ()
-        runDeliverNtfs ms (NtfStore ns) stats = do
+        runDeliverNtfs ms ns'@(NtfStore ns) stats = do
           ntfs <- M.assocs <$> readTVarIO ns
           unless (null ntfs) $
             getQueueNtfServices @(StoreQueue s) (queueStore ms) ntfs >>= \case
@@ -378,6 +378,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     cIds <- IS.toList <$> readTVarIO subClients
                     forM_ cIds $ \cId -> getServerClient cId srv >>= mapM_ (deliverQueueNtfs ntfs')
                 atomically $ modifyTVar' ns (`M.withoutKeys` S.fromList (map fst deleted))
+                deleteEmptyNtfs ns' ntfs
           where
             deliverQueueNtfs ntfs' c@Client {ntfSubscriptions} =
               whenM (currentClient readTVarIO c) $ do
@@ -2195,7 +2196,9 @@ client
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
-            t :| [] -> pure $ tDecodeServer clntTHParams t
+            t@(Right (RawTransmission _ _ _ _ (CorrId tCorrId) _ _)) :| []
+              | tCorrId == C.unCbNonce fwdCorrId -> pure $ tDecodeServer clntTHParams t
+              | otherwise -> throwE CRYPTO
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do

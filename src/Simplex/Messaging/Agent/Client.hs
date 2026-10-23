@@ -1194,10 +1194,10 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
       cfg <- getNetworkConfig c
       case smpProxyMode cfg of
         SPMAlways -> pure True
-        SPMUnknown -> unknownServer
+        SPMUnknown -> unknownServer cfg
         SPMUnprotected
           | ipAddressProtected cfg destSrv -> pure False
-          | otherwise -> unknownServer
+          | otherwise -> unknownServer cfg
         SPMNever -> pure False
     directAllowed = do
       cfg <- getNetworkConfig c
@@ -1205,7 +1205,7 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
         SPFAllow -> True
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
-    unknownServer = liftIO $ maybe True (\srvs -> all (`S.notMember` knownHosts srvs) destHosts) <$> TM.lookupIO userId (smpServers c)
+    unknownServer cfg = liftIO $ maybe True (\srvs -> either (const True) (`S.notMember` knownHosts srvs) $ chooseTransportHost cfg destHosts) <$> TM.lookupIO userId (smpServers c)
     sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer, a)
     sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
       r <- tryAllErrors . withProxySession c nm proxySrv_ destSess entId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do

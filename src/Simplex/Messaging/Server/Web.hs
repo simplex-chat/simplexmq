@@ -109,7 +109,7 @@ attachStaticFiles path action = do
     terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
 
 warpSettings :: W.Settings
-warpSettings = W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
+warpSettings = W.setFdCacheDuration 30 $ W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
 
 staticFiles :: FilePath -> IO Application
 staticFiles root = do

@@ -91,7 +91,7 @@ module Simplex.Messaging.Protocol
     NetworkError (..),
     BlockingInfo (..),
     BlockingReason (..),
-    RawTransmission,
+    RawTransmission (RawTransmission),
     Transmission,
     TAuthorizations,
     TransmissionAuth (..),
@@ -884,7 +884,7 @@ instance StrEncoding Message where
       msgQuotaP msgId msgTs = "quota" $> MessageQuota {msgId, msgTs}
       msgP msgId msgTs = do
         msgFlags <- ("flags=" *> strP_) <|> pure noMsgFlags
-        msgBody <- strP
+        msgBody <- strP <|> (C.unsafeMaxLenBS "" <$ A.endOfInput)
         pure Message {msgId, msgTs, msgFlags, msgBody}
 
 type EncNMsgMeta = ByteString
