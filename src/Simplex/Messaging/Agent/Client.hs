@@ -225,7 +225,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16, Word32)
 import qualified Data.X509.Validation as XV
@@ -1393,9 +1393,9 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     chSize = kb 64
     getTempFilePath :: FilePath -> AM' FilePath
     getTempFilePath workPath = do
-      ts <- liftIO getCurrentTime
-      let isoTime = formatTime defaultTimeLocale "%Y-%m-%dT%H%M%S.%6q" ts
-      uniqueCombine workPath isoTime
+      g <- asks random
+      name <- atomically $ B.unpack . strEncode <$> C.randomBytes 12 g
+      uniqueCombine workPath name
     withTestChunk :: FilePath -> IO a -> IO a
     withTestChunk fp =
       E.bracket_
