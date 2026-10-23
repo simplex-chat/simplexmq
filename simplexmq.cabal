@@ -553,6 +553,7 @@ test-suite simplexmq-test
       CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
+      CoreTests.ServerStatsTests
       CoreTests.StoreLogTests
       CoreTests.TSessionSubs
       CoreTests.UtilTests

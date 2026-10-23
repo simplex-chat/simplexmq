@@ -551,7 +551,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes, serverStatsBackupFile} = do
   when (msgIdBytes < 24) $ do
     logError "Error: msgIdBytes must be at least 24"
     exitFailure
@@ -577,7 +577,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   mapM_ checkHTTPSCredentials httpServerCreds
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
-  serverStats <- newServerStats =<< getCurrentTime
+  serverStats <- newServerStats (isJust serverStatsBackupFile && isJust (dbStoreCfg serverStoreCfg)) =<< getCurrentTime
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
