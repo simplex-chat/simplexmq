@@ -177,10 +177,10 @@ smpServerTestStatic = do
         [] -> error "Empty chain"
 
       let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 1024 * 1024}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg "localhost" "5223" mempty 65536 tls
-      let req = H2.requestNoBody "GET" "/" []
-      HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead = shsBody}} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 1000000)
-      BL.fromStrict shsBody `shouldBe` html
+      bracket (either (error . show) pure =<< HC.attachHTTP2Client h2cfg "localhost" "5223" mempty 65536 tls) HC.closeHTTP2Client $ \h2 -> do
+        let req = H2.requestNoBody "GET" "/" []
+        HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead = shsBody}} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 1000000)
+        BL.fromStrict shsBody `shouldBe` html
     logDebug "Combined HTTPS works"
 
     -- "local" CA signing SMP credentials
