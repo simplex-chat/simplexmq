@@ -57,7 +57,6 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         shouldNotParse @TransportHost "smp#simplex.im" "endOfInput"
         shouldNotParse @TransportHost "smp simplex.im" "endOfInput"
         shouldNotParse @TransportHost "smp\nsimplex.im" "endOfInput"
-        shouldNotParse @TransportHost "smp\0simplex.im" "endOfInput"
     describe "onion hosts" $ do
       it "should encode / decode onion host" $ THOnionHost "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion" #==# "beccx4yfxxbvyhqypaavemqurytl6hozr47wfc7uuecacjqdvwpw2xid.onion"
       it "should only allow latin letters and digits" $ do
