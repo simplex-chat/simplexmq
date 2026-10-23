@@ -1183,21 +1183,28 @@ testSaveStatsPeriodically =
     (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {serverStatsBackupFile = Just testServerStatsBackupFile, statsSaveInterval = 1}
     (rId, stats1, snapshot) <- withSmpServerConfigOn at cfg' testPort $ \_ -> do
-      rId <- runClient t $ \h -> runClient t $ \rh -> do
+      (sId, rId) <- runClient t $ \h -> runClient t $ \rh -> do
         (sId, rId, _, _) <- createAndSecureQueue rh sPub
         Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
-        pure rId
-      threadDelay 1500000
+        pure (sId, rId)
+      threadDelay 2500000
       stats1 <- readSavedStats msType
       snapshot <- case msType of
         ASType _ SMSMemory -> Just <$> B.readFile testServerStatsBackupFile
         _ -> pure Nothing
+      runClient t $ \h -> do
+        Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+        pure ()
       pure (rId, stats1, snapshot)
     checkStats stats1 [rId] 1 0
     -- a crash leaves the last periodic save, not the save on shutdown
     mapM_ (B.writeFile testServerStatsBackupFile) snapshot
-    stats2 <- withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1500000 >> readSavedStats msType
-    checkStats stats2 [rId] 1 0
+    stats2 <- withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 2500000 >> readSavedStats msType
+    let restoredSent = case msType of
+          ASType _ SMSMemory -> 1
+          _ -> 2
+    checkStats stats2 [rId] restoredSent 0
+    doesFileExist (testServerStatsBackupFile <> ".bak") `shouldReturn` False
     removeFileIfExists testServerStatsBackupFile
   where
     runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
@@ -1215,6 +1222,7 @@ testStartupStoreCounts =
       Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
       pure ()
     let cfg2 = updateCfg cfg' $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+    removeFileIfExists testPrometheusMetricsFile
     metrics <- withSmpServerConfigOn at cfg2 testPort $ \_ -> threadDelay 1500000 >> B.readFile testPrometheusMetricsFile
     let expected :: [ByteString]
         expected = case msType of
