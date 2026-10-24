@@ -312,9 +312,9 @@ validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.Certificate
 validateCertificateChain (C.KeyHash kh) host port cc = case chainIdCaCerts cc of
   CCEmpty -> pure [XV.EmptyChain]
   CCSelf _ -> pure [XV.EmptyChain]
-  CCValid {idCert, caCert} -> validate idCert caCert
+  CCValid {idCert} -> validate idCert
   CCLong -> pure [XV.AuthorityTooDeep]
   where
-    validate idCert caCert
-      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate caCert (host, port) cc
+    validate idCert
+      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate (host, port) cc
       | otherwise = pure [XV.UnknownCA]
