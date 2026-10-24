@@ -25,6 +25,8 @@ fileDescriptionTests = do
     it "parse YAML file description" testParseYAMLFileDescription
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
+    it "reject file description with YAML aliases" testRejectYAMLAliases
+    it "reject file description with too many replicas" testRejectTooManyReplicas
     it "serialize file description" testSerializeFileDescription
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
@@ -157,6 +159,19 @@ testParseFileDescription = do
   case r of
     Left e -> expectationFailure $ show e
     Right fd -> fd `shouldBe` fileDesc
+
+testRejectYAMLAliases :: IO ()
+testRejectYAMLAliases = do
+  (yaml, sizeLine) <- B.breakSubstring "size: " <$> B.readFile fileDescPath
+  let (header, groups) = B.breakSubstring "- chunks:" yaml
+      aliased = header <> "- &g\n  " <> B.drop 2 groups <> "- *g\n" <> sizeLine
+  (strDecode aliased :: Either String (FileDescription 'FRecipient)) `shouldBe` Left "YAML aliases are not allowed"
+
+testRejectTooManyReplicas :: IO ()
+testRejectTooManyReplicas = do
+  let FileDescription {chunks} = fileDesc
+      repeatReplicas c@FileChunk {replicas} = (c :: FileChunk) {replicas = concat $ replicate 9 replicas}
+  validateFileDescription ((fileDesc :: FileDescription 'FRecipient) {chunks = map repeatReplicas chunks}) `shouldBe` Left "too many chunk replicas"
 
 testSerializeFileDescription :: HasTestEnv => IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
