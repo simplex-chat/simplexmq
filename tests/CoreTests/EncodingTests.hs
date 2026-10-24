@@ -68,6 +68,8 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
       it "should encode / decode IPv4-mapped and IPv4-compatible IPv6 address" $ do
         THIPv6 (0, 0, 0xffff, 0x7f000001) #==# "::ffff:127.0.0.1"
         THIPv6 (0, 0, 0, 0x7f000001) #==# "::127.0.0.1"
+      it "should encode / decode any IPv6 address" . property $ \(a, b, c, d) ->
+        all (\w -> strDecode (strEncode $ THIPv6 w) == Right (THIPv6 w)) [(a, b, c, d), (0, 0, 0xffff, d), (0, 0, 0, d)]
       it "should be valid" $ do
         THDomainName "192.168.1" #==# "192.168.1"
         THDomainName "192.256.0.1" #==# "192.256.0.1"

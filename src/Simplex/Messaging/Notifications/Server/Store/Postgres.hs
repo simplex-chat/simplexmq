@@ -67,7 +67,7 @@ import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
@@ -270,7 +270,7 @@ updateTknCronInterval st tknId cronInt =
 getUsedSMPServers :: NtfPostgresStore -> IO [(SMPServer, Int64, Maybe ServiceSub)]
 getUsedSMPServers st =
   withTransaction (dbStore st) $ \db ->
-    fmap catMaybes . mapM rowToSrvSubs =<<
+    map rowToSrvSubs <$>
       DB.query
         db
         [sql|
@@ -282,12 +282,10 @@ getUsedSMPServers st =
         |]
         (Only (In subscribeNtfStatuses))
   where
-    rowToSrvSubs :: (Text, ServiceName, ByteString) :. (Int64, Maybe ServiceId, Int64, IdsHash) -> IO (Maybe (SMPServer, Int64, Maybe ServiceSub))
+    rowToSrvSubs :: SMPServerRow :. (Int64, Maybe ServiceId, Int64, IdsHash) -> (SMPServer, Int64, Maybe ServiceSub)
     rowToSrvSubs ((host, port, kh) :. (srvId, serviceId_, n, idsHash)) =
       let service_ = (\serviceId -> ServiceSub serviceId n idsHash) <$> serviceId_
-       in case SMPServer <$> strDecode (encodeUtf8 host) <*> pure port <*> strDecode kh of
-            Right srv -> pure $ Just (srv, srvId, service_)
-            Left e -> Nothing <$ logError ("STORE: getUsedSMPServers, invalid SMP server " <> tshow srvId <> ": " <> T.pack e)
+       in (SMPServer host port kh, srvId, service_)
 
 getNtfServiceCredentials :: DB.Connection -> SMPServer -> IO (Maybe (Int64, Maybe (C.KeyHash, TLS.Credential)))
 getNtfServiceCredentials db srv =
