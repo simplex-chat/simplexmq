@@ -1139,9 +1139,9 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
     hostName = B.unpack $ strEncode $ transportHost' c
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> ExceptT String IO C.PublicKeyX25519
     validateRelay chain exact = case chainIdCaCerts chain of
-      CCValid {leafCert, idCert, caCert}
+      CCValid {leafCert, idCert}
         | XV.Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 -> do
-            errs <- liftIO $ x509validate caCert (hostName, B.pack relayPort) chain
+            errs <- liftIO $ x509validate (hostName, B.pack relayPort) chain
             unless (null errs) $ throwError "bad certificate"
             serverKey <- liftEither $ C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leafCert
             liftEither $ C.x509ToPublic' =<< C.verifyX509 serverKey exact
