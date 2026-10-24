@@ -164,6 +164,7 @@ data AgentConfig = AgentConfig
     quotaExceededTimeout :: NominalDiffTime,
     commandQuotaRetryInterval :: RetryInterval,
     persistErrorInterval :: NominalDiffTime,
+    proxyFailureInterval :: NominalDiffTime,
     initialCleanupDelay :: Int64,
     cleanupInterval :: Int64,
     cleanupBatchSize :: Int,
@@ -244,6 +245,7 @@ defaultAgentConfig =
       quotaExceededTimeout = 7 * nominalDay,
       commandQuotaRetryInterval = RetryInterval {initialInterval = 30_000000, increaseAfter = 0, maxInterval = 3600_000000},
       persistErrorInterval = 3, -- seconds
+      proxyFailureInterval = 30, -- seconds
       initialCleanupDelay = 30 * 1000000, -- 30 seconds
       cleanupInterval = 5 * 60 * 1000000, -- 5 minutes
       cleanupBatchSize = 10000,

@@ -78,6 +78,9 @@ testPort = testServerPort 1
 testPort2 :: HasTestEnv => ServiceName
 testPort2 = testServerPort 2
 
+testPort3 :: HasTestEnv => ServiceName
+testPort3 = testServerPort 8
+
 ntfTestPort :: HasTestEnv => ServiceName
 ntfTestPort = testServerPort 3
 
@@ -357,6 +360,14 @@ proxyCfgShortTimeout =
         cCfg = smpCfg aCfg
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
+
+-- proxy that connects to relays, but times out on every forwarded command
+proxyCfgRelayTimeout :: HasTestEnv => AServerConfig
+proxyCfgRelayTimeout =
+  updateCfg (memoryCfg proxyCfg (testPath "smp-server-store.log.3") (testPath "smp-server-messages.log.3")) $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = NetworkTimeout 1 1}}}}
 
 proxyCfgVPrev :: HasTestEnv => AStoreType -> AServerConfig
 proxyCfgVPrev msType =
