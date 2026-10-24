@@ -738,7 +738,7 @@ tGetBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlo
 --
 -- See https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#appendix-a
 smpServerHandshake ::
-  forall c. Transport c =>
+  forall c a. Transport c =>
   X.CertificateChain ->
   C.APrivateSignKey ->
   c 'TServer ->
@@ -746,8 +746,8 @@ smpServerHandshake ::
   C.KeyHash ->
   VersionRangeSMP ->
   Maybe ByteString ->
-  (SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId) ->
-  ExceptT TransportError IO (THandleSMP c 'TServer)
+  (SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO (ServiceId, Maybe a)) ->
+  ExceptT TransportError IO (THandleSMP c 'TServer, Maybe a)
 smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfoBytes getService = do
   let sk = C.signX509 srvSignKey $ C.publicToX509 k
   sendHandshake th $ SMPServerHandshake {sessionId, smpVersionRange, authPubKey = CertChainPubKey srvCert sk, serverInfoBytes}
@@ -756,11 +756,11 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfoByt
   case compatibleVRange' smpVersionRange v of
     Just (Compatible vr) -> do
       service <- mapM getClientService clientService
-      liftIO $ smpTHandleServer th v vr pk k' proxyServer service
+      (,snd =<< service) <$> liftIO (smpTHandleServer th v vr pk k' proxyServer $ fst <$> service)
     Nothing -> throwE TEVersion
   where
     th@THandle {params = THandleParams {sessionId}} = smpTHandle c
-    getClientService :: SMPClientHandshakeService -> ExceptT TransportError IO THPeerClientService
+    getClientService :: SMPClientHandshakeService -> ExceptT TransportError IO (THPeerClientService, Maybe a)
     getClientService SMPClientHandshakeService {serviceRole, serviceCertKey = CertChainPubKey cc exact} = handleError sendErr $ do
       unless (getPeerCertChain c == cc) $ throwE $ TEHandshake BAD_AUTH
       (idCert, serviceKey) <- liftEitherWith (const $ TEHandshake BAD_AUTH) $ do
@@ -771,9 +771,9 @@ smpServerHandshake srvCert srvSignKey c (k, pk) kh smpVersionRange serverInfoByt
         serviceCertKey <- getCertVerifyKey leafCert
         (idCert,) <$> (C.x509ToPublic' =<< C.verifyX509 serviceCertKey exact)
       let fp = XV.getFingerprint idCert X.HashSHA256
-      serviceId <- getService serviceRole cc fp
+      (serviceId, extra) <- getService serviceRole cc fp
       sendHandshake th $ SMPServerHandshakeResponse {serviceId}
-      pure THClientService {serviceId, serviceRole, serviceCertHash = fp, serviceKey}
+      pure (THClientService {serviceId, serviceRole, serviceCertHash = fp, serviceKey}, extra)
     sendErr err = do
       sendHandshake th $ SMPServerHandshakeError {handshakeError = err}
       throwError err

@@ -91,6 +91,7 @@ serverTests = do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
     testServiceSubsTotalCount
+    testServiceStoredWithQueue
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -935,9 +936,33 @@ testServiceSubsTotalCount =
         threadDelay 1500000
         B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
 
+testServiceStoredWithQueue :: SpecWith (ASrvTransport, AStoreType)
+testServiceStoredWithQueue =
+  it "should store service only when queue is associated with it" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        servicesCount = do
+          threadDelay 1500000
+          readMetric "simplex_smp_rcv_services_count " . B.unpack <$> B.readFile testPrometheusMetricsFile
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \_ -> pure ()
+      servicesCount `shouldReturn` Just 0
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ _ _ _ _) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure ()
+      servicesCount `shouldReturn` Just 1
+
 readServiceSubsMetric :: String -> Maybe Int
-readServiceSubsMetric content =
-  case filter ("simplex_smp_subscribtion_service_subs_total " `isPrefixOf`) (lines content) of
+readServiceSubsMetric = readMetric "simplex_smp_subscribtion_service_subs_total "
+
+readMetric :: String -> String -> Maybe Int
+readMetric name content =
+  case filter (name `isPrefixOf`) (lines content) of
     (line : _) -> case words line of
       [_, val, _] -> readMaybe val
       [_, val] -> readMaybe val
@@ -1340,7 +1365,7 @@ testTiming =
           ok `shouldBe` True
 
 testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
-testAuthErrorDelay =
+testAuthErrorDelay = do
   it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
     smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
       g <- C.newRandom
@@ -1359,6 +1384,14 @@ testAuthErrorDelay =
       suspendedTime `shouldSatisfy` (>= 0.5)
       noLinkTime `shouldSatisfy` (>= 0.5)
       subTime `shouldSatisfy` (< 0.5)
+  it "should limit pending delayed AUTH errors to the client queue size" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000, tbqSize = 1}) supportedClientSMPRelayVRange t $ \h _ -> do
+      g <- C.newRandom
+      (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (time, [Resp "1" _ (ERR AUTH), Resp "2" _ (ERR AUTH), Resp "3" _ (ERR AUTH)]) <- responseTime $ do
+        forM_ (["1", "2", "3"] :: [ByteString]) $ \corrId -> signSend_ h badKey Nothing (corrId, EntityId "1234", SUB)
+        replicateM 3 $ tGet1 h
+      time `shouldSatisfy` (>= 1)
 
 responseTime :: IO a -> IO (NominalDiffTime, a)
 responseTime action = do

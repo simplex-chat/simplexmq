@@ -31,9 +31,9 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
+import Data.Foldable (foldrM)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
@@ -286,6 +286,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         mapM_ (removeNotifier st) $ notifier q
         pure q
 
+  getServiceId :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType (Maybe ServiceId))
+  getServiceId st ServiceRec {serviceRole, serviceCertHash = XV.Fingerprint fp} =
+    traverse (checkServiceRole serviceRole) <$> (TM.lookupIO fp (serviceCerts st) $>>= (`TM.lookupIO` services st))
+
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
   getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
     TM.lookupIO fp serviceCerts
@@ -300,9 +304,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       STMQueueStore {services, serviceCerts} = st
       checkService sId =
         TM.lookup sId services >>= \case
-          Just STMService {serviceRec = ServiceRec {serviceId, serviceRole = role}}
-            | role == serviceRole -> pure $ Right (serviceId, False)
-            | otherwise -> pure $ Left $ SERVICE
+          Just s -> pure $ (,False) <$> checkServiceRole serviceRole s
           Nothing -> newService_
       newService = ifM (TM.member newSrvId services) (pure $ Left DUPLICATE_) newService_
       newService_ = do
@@ -348,22 +350,21 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do
-    ss <- readTVarIO (services st)
-    (ssNtfs, noServiceNtfs) <- if M.null ss then pure ([], ntfs) else foldM addService ([], ntfs) (M.assocs ss)
     ns <- readTVarIO (notifiers st)
-    let (ntfs', deleteNtfs) = partition (\(nId, _) -> M.member nId ns) noServiceNtfs
-        ssNtfs' = (Nothing, ntfs') : ssNtfs
-    pure $ Right (ssNtfs', deleteNtfs)
+    qs <- readTVarIO (queues st)
+    Right . first M.assocs <$> foldrM (addNtf ns qs) (M.empty, []) ntfs
     where
-      addService (ssNtfs, ntfs') (serviceId, s) = do
-        (snIds, _) <- readTVarIO $ serviceNtfQueues s
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-        pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf ns qs ntf@(nId, _) (ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
+        Just q -> do
+          qr <- readTVarIO (queueRec q)
+          let serviceId = qr >>= notifier >>= ntfServiceId
+          pure (M.insertWith (++) serviceId [ntf] ssNtfs, deleteNtfs)
+        Nothing -> pure (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
     TM.lookupIO serviceId (services st) >>=
-      maybe (pure $ Left AUTH) (fmap (Right . first (fromIntegral . S.size)) . readTVarIO . serviceSel)
+      maybe (pure $ Right (0, mempty)) (fmap (Right . first (fromIntegral . S.size)) . readTVarIO . serviceSel)
     where
       serviceSel :: STMService -> TVar (Set QueueId, IdsHash)
       serviceSel = case party of
@@ -393,6 +394,11 @@ setStatus qr status =
   atomically $ stateTVar qr $ \case
     Just q -> (Right (), Just q {status})
     Nothing -> (Left AUTH, Nothing)
+
+checkServiceRole :: SMPServiceRole -> STMService -> Either ErrorType ServiceId
+checkServiceRole role STMService {serviceRec = ServiceRec {serviceId, serviceRole}}
+  | serviceRole == role = Right serviceId
+  | otherwise = Left SERVICE
 
 addServiceQueue :: STMQueueStore q -> (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> ServiceId -> STM ()
 addServiceQueue = setServiceQueues_ S.insert
