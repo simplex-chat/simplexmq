@@ -28,6 +28,7 @@ import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
+import SMPClient (withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -50,7 +51,9 @@ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCert
 import System.Directory (removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (async, cancel)
 import UnliftIO.STM
+import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
 
@@ -65,6 +68,7 @@ xftpServerTests = do
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
+      it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
@@ -232,6 +236,15 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
     atomically (tryTakeTMVar disconnected) `shouldReturn` Just ()
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testCancelledClientConnect :: HasTestEnv => Expectation
+testCancelledClientConnect =
+  withStallingServerOn' xftpTestPort $ \accepted closed -> do
+    ts <- getCurrentTime
+    a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+    timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+    cancel a
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $

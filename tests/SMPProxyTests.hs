@@ -21,11 +21,9 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
-import Network.Socket.ByteString (recv)
 import SMPAgentClient
 import SMPClient
 import ServerTests (decryptMsgV3, responseTime, sendRecv)
@@ -43,8 +41,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Server (runLocalTCPServer)
-import Simplex.Messaging.Util (bshow, tshow, unlessM)
+import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import System.Random (randomRIO)
@@ -565,12 +562,9 @@ testProxyReconnectAfterRelayRestart =
 
 testProxyClosesRelayConnectionAfterDisconnect :: HasTestEnv => IO ()
 testProxyClosesRelayConnectionAfterDisconnect =
-  withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ -> do
-    closed <- newEmptyTMVarIO
-    let waitClosed sock = unlessM (B.null <$> recv sock 4096) $ waitClosed sock
-        stallingRelay started = runLocalTCPServer started testPort2 $ \sock -> waitClosed sock >> atomically (putTMVar closed ())
-    serverBracket stallingRelay (pure ()) $ \_ -> do
-      race_ (threadDelay 1000000) requestRelaySession
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ ->
+    withStallingServerOn' testPort2 $ \accepted closed -> do
+      race_ (atomically $ takeTMVar accepted) requestRelaySession
       timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
