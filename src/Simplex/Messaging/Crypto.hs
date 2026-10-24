@@ -1343,7 +1343,9 @@ cryptoBox secret nonce s = BA.convert tag <> c
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce.
 cbDecrypt :: CbNonceI n => DhSecret X25519 -> n -> ByteString -> Either CryptoError ByteString
-cbDecrypt (DhSecretX25519 secret) = sbDecrypt_ secret . toCbNonce
+cbDecrypt (DhSecretX25519 secret) nonce msg
+  | BA.constEq secret (B.replicate x25519_size '\0') = Left CBDecryptError
+  | otherwise = sbDecrypt_ secret (toCbNonce nonce) msg
 {-# INLINE cbDecrypt #-}
 
 -- | NaCl @crypto_box@ decrypt with a shared DH secret and 192-bit nonce (without unpadding).

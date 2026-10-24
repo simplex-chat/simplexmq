@@ -36,6 +36,7 @@ import ServerTests
     pattern Resp,
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
@@ -45,6 +46,7 @@ import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
@@ -55,6 +57,8 @@ ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Push provider policy" $ do
     it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
+  describe "Database pool" $ do
+    it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
@@ -86,6 +90,19 @@ testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
     testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
       RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
         signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+      pure ()
+
+testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
+testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
+  g <- C.newRandom
+  (_, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (_, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let dbCfg = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts {poolSize = 1}}
+      q = SMPQueueNtf (SMPServer SMP.testHost SMP.testPort SMP.testKeyHash) (EntityId "abcd")
+  withNtfServerOn (ATransport t) ntfTestPort dbCfg $
+    testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
+      RespNtf "1" NoEntity (NRErr AUTH) <-
+        signSendRecvNtf nh tknKey ("1", NoEntity, SNEW $ NewNtfSub (EntityId "1234") q nKey)
       pure ()
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> Transmission (Either ErrorType NtfResponse)
