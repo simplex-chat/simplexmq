@@ -75,6 +75,10 @@ smpProxyTests = do
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
+    it "proxy closes idle relay connection" $ \_ ->
+      testProxyClosesIdleRelay
+    it "proxy keeps relay connection with traffic" $ \_ ->
+      testProxyKeepsActiveRelay
   describe "deliver message via SMP proxy" $ do
     let srv1, srv2 :: HasTestEnv => SMPServer
         srv1 = SMPServer testHost testPort testKeyHash
@@ -150,6 +154,8 @@ smpProxyTests = do
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
+        it "sends via proxy after idle relay connection is closed" $ \_ ->
+          agentViaProxyAfterIdleClose
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
@@ -442,6 +448,27 @@ agentViaProxyRetryNoSession = do
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
+agentViaProxyAfterIdleClose :: HasTestEnv => IO ()
+agentViaProxyAfterIdleClose =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortPingInterval testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2 $ \_ ->
+      withAgent 1 agentCfg (servers srv1) testDB $ \alice ->
+        withAgent 2 agentCfg (servers srv2) testDB2 $ \bob -> runRight_ $ do
+          (aliceId, bobId) <- makeConnection alice bob
+          sendMsgViaProxy alice bobId bob aliceId "hello 1"
+          liftIO $ threadDelay 3000000
+          sendMsgViaProxy alice bobId bob aliceId "hello 2"
+  where
+    srv1 = SMPServer testHost testPort testKeyHash
+    srv2 = SMPServer testHost testPort2 testKeyHash
+    servers srv = initAgentServersProxy {smp = userServers [srv]}
+    sendMsgViaProxy alice bobId bob aliceId msg = do
+      _ <- A.sendMessage alice bobId CR.PQEncOn noMsgFlags msg
+      get alice =##> \case ("", c, A.SENT _ (Just p)) -> c == bobId && p == srv1; _ -> False
+      ("", c, Msg' mId _ msg') <- get bob
+      liftIO $ (c, msg') `shouldBe` (aliceId, msg)
+      ackMessage bob aliceId mId Nothing
+
 testNoProxy :: HasTestEnv => AStoreType -> IO ()
 testNoProxy msType = do
   withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ -> do
@@ -509,6 +536,31 @@ testForwardedAuthErrorDelay =
       (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
       sendTime `shouldSatisfy` (>= 0.5)
       getLinkTime `shouldSatisfy` (>= 0.5)
+
+testProxyClosesIdleRelay :: HasTestEnv => IO ()
+testProxyClosesIdleRelay =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortPingInterval testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ ->
+      testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
+        threadDelay 3000000
+        g <- C.newRandom
+        (cmdPubKey, _) <- atomically $ C.generateKeyPair g
+        (_, _, reply) <- sendRecv th (Nothing, "2", SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
+        reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.NO_SESSION)
+
+testProxyKeepsActiveRelay :: HasTestEnv => IO ()
+testProxyKeepsActiveRelay =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortPingInterval testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ -> do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      replicateM_ 10 $ do
+        threadDelay 500000
+        runExceptT (proxySMPMessage pc NRMInteractive sess Nothing (SMP.EntityId "1234") noMsgFlags "hello")
+          `shouldReturn` Left (PCEProtocolError SMP.AUTH)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,

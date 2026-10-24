@@ -368,6 +368,13 @@ proxyCfgVPrev msType =
             smpAgentCfg = aCfg {smpCfg = cCfg {serverVRange = prevRange $ serverVRange cCfg}}
           }
 
+proxyCfgShortPingInterval :: HasTestEnv => AServerConfig
+proxyCfgShortPingInterval =
+  updateCfg proxyCfg $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {smpPingInterval = 2_000000}}}}
+
 withSmpServerStoreMsgLogOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =
   withSmpServerConfigOn t $ updateCfg (cfgMS msType) $ \cfg' -> cfg' {storeNtfsFile = Just testStoreNtfsFile, serverStatsBackupFile = Just testServerStatsBackupFile}

@@ -651,7 +651,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           atomically $ do
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
-          raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
+          raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' th | smpPingInterval > 0])
             `E.finally` disconnected c'
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
@@ -670,8 +670,8 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       getCurrentTime >>= atomically . writeTVar lastReceived
       atomically $ writeTVar timeoutErrorCount 0
 
-    monitor :: ProtocolClient v err msg -> IO ()
-    monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount}} = loop smpPingInterval
+    monitor :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
+    monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount}} THandle {connection} = loop smpPingInterval
       where
         loop :: Int64 -> IO ()
         loop delay = do
@@ -681,7 +681,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
               remaining = smpPingInterval - idle
           if remaining > 1_000_000 -- delay pings only for significant time
             then loop remaining
-            else do
+            else if proxyServer then closeConnection connection else do
               whenM (readTVarIO sendPings) $ void . runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (protocolPing @v @err @msg)
               -- sendProtocolCommand/getResponse updates counter for each command
               cnt <- readTVarIO timeoutErrorCount
