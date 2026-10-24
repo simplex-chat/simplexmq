@@ -431,9 +431,10 @@ testUpgradeRcvConnToDuplex =
 
 testSndQueueOfAnotherConn :: SpecWith DBStore
 testSndQueueOfAnotherConn =
-  it "should not add SndQueue of another connection" . withStoreTransaction $ \db -> do
+  it "should not add confirmed SndQueue of another connection" . withStoreTransaction $ \db -> do
     g <- C.newRandom
     Right (_, sq) <- createSndConn db g cData1 sndQueue1
+    setSndQueueStatus db sq Confirmed
     Right _ <- createNewConn db g cData1 {connId = "conn2"} SCMInvitation
     updateNewConnSnd db "conn2" sndQueue1
       `shouldReturn` Left SESndQueueExists
@@ -444,7 +445,7 @@ testSndQueueOfAnotherConn =
     addConnSndQueue db "conn2" sndQueue1
       `shouldReturn` Left SESndQueueExists
     getConn db "conn1"
-      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 sq))
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 (sq {status = Confirmed} :: SndQueue)))
 
 testUpgradeSndConnToDuplex :: SpecWith DBStore
 testUpgradeSndConnToDuplex =
