@@ -611,16 +611,16 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           }
 
     runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-    runClient (port', ATransport t) useHost c = do
+    runClient (port', ATransport t) useHost c = E.mask $ \restore -> do
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig nm useHost useSNI useALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
-        runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
+        restore (runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar))
           `forkFinally` \r ->
             let err = either toNetworkError (const NEFailedError) r
              in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
-      c_ <- netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)
+      c_ <- restore (netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)) `E.onException` killThread tId
       case c_ of
         Just (Right c') -> mkWeakThreadId tId >>= \tId' -> pure $ Right c' {action = Just tId'}
         Just (Left e) -> pure $ Left e
