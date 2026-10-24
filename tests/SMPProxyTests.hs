@@ -75,6 +75,8 @@ smpProxyTests = do
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
+    it "proxy closes idle relay connection" $ \_ ->
+      testProxyClosesIdleRelay
   describe "deliver message via SMP proxy" $ do
     let srv1, srv2 :: HasTestEnv => SMPServer
         srv1 = SMPServer testHost testPort testKeyHash
@@ -509,6 +511,18 @@ testForwardedAuthErrorDelay =
       (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
       sendTime `shouldSatisfy` (>= 0.5)
       getLinkTime `shouldSatisfy` (>= 0.5)
+
+testProxyClosesIdleRelay :: HasTestEnv => IO ()
+testProxyClosesIdleRelay =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortPingInterval testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ ->
+      testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
+        threadDelay 2000000
+        g <- C.newRandom
+        (cmdPubKey, _) <- atomically $ C.generateKeyPair g
+        (_, _, reply) <- sendRecv th (Nothing, "2", SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
+        reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.NO_SESSION)
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,
