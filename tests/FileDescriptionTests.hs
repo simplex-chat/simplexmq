@@ -8,7 +8,10 @@ module FileDescriptionTests where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (isRight)
 import qualified Data.Yaml as Y
+import Simplex.FileTransfer.Chunks (chunkSize3)
+import Simplex.FileTransfer.Client (prepareChunkSizes)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -26,7 +29,7 @@ fileDescriptionTests = do
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
     it "reject file description with YAML aliases" testRejectYAMLAliases
-    it "reject file description with too many replicas" testRejectTooManyReplicas
+    it "limit chunks and replicas per chunk" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
@@ -167,11 +170,30 @@ testRejectYAMLAliases = do
       aliased = header <> "- &g\n  " <> B.drop 2 groups <> "- *g\n" <> sizeLine
   (strDecode aliased :: Either String (FileDescription 'FRecipient)) `shouldBe` Left "YAML aliases are not allowed"
 
-testRejectTooManyReplicas :: IO ()
-testRejectTooManyReplicas = do
-  let FileDescription {chunks} = fileDesc
-      repeatReplicas c@FileChunk {replicas} = (c :: FileChunk) {replicas = concat $ replicate 9 replicas}
-  validateFileDescription ((fileDesc :: FileDescription 'FRecipient) {chunks = map repeatReplicas chunks}) `shouldBe` Left "too many chunk replicas"
+testFileDescriptionLimits :: IO ()
+testFileDescriptionLimits = do
+  let largestSplit = prepareChunkSizes (maxFileSizeHard - mb 1)
+  length largestSplit `shouldBe` 1282
+  validateFileDescription (descriptionOf largestSplit 16) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf largestSplit 17) `shouldBe` Left "too many chunk replicas"
+  validateFileDescription (descriptionOf (replicate 1283 chunkSize3) 1) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf (replicate 1284 chunkSize3) 1) `shouldBe` Left "too many chunks"
+  where
+    FileDescription {chunks = fixtureChunks} = fileDesc
+    fixtureReplicas = concatMap (\FileChunk {replicas} -> replicas) fixtureChunks
+    descriptionOf sizes n =
+      FileDescription
+        { party = SFRecipient,
+          size = FileSize $ sum $ map fromIntegral sizes,
+          digest = FileDigest "abc",
+          key = testSbKey,
+          nonce = testCbNonce,
+          chunkSize = FileSize chunkSize3,
+          chunks = zipWith chunk [1 ..] sizes,
+          redirect = Nothing
+        }
+      where
+        chunk chunkNo sz = FileChunk {chunkNo, chunkSize = FileSize sz, digest = FileDigest "ghi", replicas = take n $ cycle fixtureReplicas}
 
 testSerializeFileDescription :: HasTestEnv => IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
