@@ -358,13 +358,6 @@ proxyCfgShortTimeout =
         nt = NetworkTimeout {backgroundTimeout = 4_000000, interactiveTimeout = 4_000000}
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpConnectTimeout = nt}}}}
 
-proxyCfgShortPingInterval :: HasTestEnv => AServerConfig
-proxyCfgShortPingInterval =
-  updateCfg proxyCfg $ \cfg' ->
-    let aCfg = smpAgentCfg cfg'
-        cCfg = smpCfg aCfg
-     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {smpPingInterval = 1_000000}}}}
-
 proxyCfgVPrev :: HasTestEnv => AStoreType -> AServerConfig
 proxyCfgVPrev msType =
   updateCfg (proxyCfgMS msType) $ \cfg' ->
@@ -374,6 +367,13 @@ proxyCfgVPrev msType =
           { smpServerVRange = prevRange $ smpServerVRange cfg',
             smpAgentCfg = aCfg {smpCfg = cCfg {serverVRange = prevRange $ serverVRange cCfg}}
           }
+
+proxyCfgShortPingInterval :: HasTestEnv => AServerConfig
+proxyCfgShortPingInterval =
+  updateCfg proxyCfg $ \cfg' ->
+    let aCfg = smpAgentCfg cfg'
+        cCfg = smpCfg aCfg
+     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {smpPingInterval = 2_000000}}}}
 
 withSmpServerStoreMsgLogOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerStoreMsgLogOn (t, msType) =
