@@ -32,7 +32,7 @@ import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
 import qualified SMPWeb
 import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, listDirectory)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
@@ -181,6 +181,9 @@ smpServerTestStatic = do
       let req = H2.requestNoBody "GET" "/" []
       HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead = shsBody}} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 1000000)
       BL.fromStrict shsBody `shouldBe` html
+      fds <- length <$> listDirectory "/dev/fd"
+      replicateM_ 100 $ HC.sendRequest h2 req (Just 1000000)
+      length <$> listDirectory "/dev/fd" >>= (`shouldSatisfy` (< fds + 10))
     logDebug "Combined HTTPS works"
 
     -- "local" CA signing SMP credentials
