@@ -339,6 +339,8 @@ functionalAPITests ps = do
       withSmpServer ps testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer ps testEnablePQEncryption
+    it "should refuse joining already used invitation and keep connection" $
+      withSmpServer ps testJoinUsedInvitation
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
     xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
@@ -917,6 +919,22 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
                 unless (o > 0) $ error "unexpected OK"
                 loop (s, m, r, o - 1)
               _ -> liftIO $ expectationFailure $ "unexpected: " <> show r
+
+testJoinUsedInvitation :: (HasCallStack, HasTestEnv) => IO ()
+testJoinUsedInvitation =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing (IKLinkPQ PQSupportOn) False SMSubscribe
+    (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    _ <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.CONF confId _ _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, A.CON PQEncOn)
+    get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+    get bob ##> ("", aliceId, A.CON PQEncOn)
+    (aliceId', _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    r <- liftIO . runExceptT $ A.joinConnection bob NRMInteractive 1 aliceId' True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ r `shouldBe` Left (CONN DUPLICATE "")
+    exchangeGreetings alice bobId bob aliceId
 
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
 testEnablePQEncryption =
