@@ -332,8 +332,10 @@ testNtfTokenServerRestartReverify t apns = do
     runRight_ $ do
       verification <- ntfData .-> "verification"
       nonce <- C.unsafeCbNonce <$> ntfData .-> "nonce"
-      Left (BROKER _ (NETWORK _)) <- tryE $ verifyNtfToken a tkn nonce verification
-      pure ()
+      tryE (verifyNtfToken a tkn nonce verification) >>= \case
+        Left (BROKER _ (NETWORK _)) -> pure ()
+        Left (BROKER _ TIMEOUT) -> pure ()
+        r -> liftIO $ expectationFailure $ "unexpected verification result: " <> show r
   threadDelay 1500000
   withAgent 2 agentCfg initAgentServers testDB $ \a' ->
     -- server stopped before token is verified, so now the attempt to verify it will return AUTH error but re-register token,
