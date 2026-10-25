@@ -745,12 +745,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         _ -> pure ()
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
-    getClientService ms g idSize role cert fp = do
+    getClientService ms g idSize role _ (XV.Fingerprint fp) = do
       newServiceId <- EntityId <$> atomically (C.randomBytes idSize g)
-      ts <- liftIO getSystemDate
-      let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
-        getCreateService @(StoreQueue s) (queueStore ms) sr
+        fromMaybe newServiceId <$$> getServiceId @(StoreQueue s) (queueStore ms) role fp
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
@@ -1076,7 +1074,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
         expCfg <- asks $ inactiveClientExpiration . config
         th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
         labelMyThread . B.unpack $ "client $" <> encode sessionId
-        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client s ms c, receive h ms c] <> disconnectThread_ c s expCfg
+        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client s ms (getPeerCertChain $ connection h) c, receive h ms c] <> disconnectThread_ c s expCfg
     disconnectThread_ :: Client s -> Server s -> Maybe ExpirationConfig -> [M s ()]
     disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
     disconnectThread_ _ _ _ = []
@@ -1405,15 +1403,16 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
-client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
+client :: forall s. MsgStoreClass s => Server s -> s -> X.CertificateChain -> Client s -> M s ()
 client
   Server {subscribers, ntfSubscribers}
   ms
+  serviceCert
   clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
-    let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> (peerClientService =<< thAuth thParams')
+    let clntServiceId = (\THClientService {serviceId} -> serviceId) <$> clntService
         process batchSubs t acc@(rs, msgs) =
           (maybe acc (\(!r, !msg_) -> (r : rs, maybe msgs (: msgs) msg_)))
             <$> processCommand clntServiceId batchSubs t
@@ -1424,6 +1423,7 @@ client
       foldrM (process batchSubs) ([], []) batch
         >>= \(rs_, msgs) -> mapM_ (liftIO . sendResponses clnt stats authDelay processedAt . (,msgs)) (L.nonEmpty rs_)
   where
+    clntService = peerClientService =<< thAuth thParams'
     prepareBatchSubs ::
       Maybe ServiceId ->
       NonEmpty (VerifiedTransmission s) ->
@@ -1445,7 +1445,13 @@ client
       where
         ifNotNull qs f = if null qs then pure M.empty else f qs
         setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId (Either ErrorType ()))
-        setService party sId = ExceptT . setQueueServices (queueStore ms) party sId
+        setService party sId qs = forM_ clntService storeService >> ExceptT (setQueueServices (queueStore ms) party sId qs)
+
+    storeService :: THPeerClientService -> ExceptT ErrorType IO ()
+    storeService THClientService {serviceId, serviceRole, serviceCertHash} = do
+      serviceCreatedAt <- liftIO getSystemDate
+      serviceId' <- ExceptT $ getCreateService @(StoreQueue s) (queueStore ms) ServiceRec {serviceId, serviceRole, serviceCert, serviceCertHash, serviceCreatedAt}
+      unless (serviceId' == serviceId) $ throwE SERVICE
 
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M s (Maybe ResponseAndMessage)
     processProxiedCmd (corrId, EntityId sessId, command) = (\t -> ((corrId, EntityId sessId, t), Nothing)) <$$> case command of
@@ -1673,7 +1679,7 @@ client
                                   updatedAt,
                                   rcvServiceId = clntServiceId
                                 }
-                        liftIO (addQueue ms rcvId qr) >>= \case
+                        liftIO (runExceptT (forM_ clntService storeService) $>> addQueue ms rcvId qr) >>= \case
                           Left DUPLICATE_ -- TODO [short links] possibly, we somehow need to understand which IDs caused collision to retry if it's not client-supplied?
                             | clntIds -> pure $ ERR AUTH -- no retry on collision if sender ID is client-supplied
                             | otherwise -> tryCreate (n - 1)

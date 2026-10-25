@@ -339,6 +339,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       rId = recipientId sq
       qr = queueRec sq
 
+  getServiceId :: PostgresQueueStore q -> SMPServiceRole -> CertFingerprint -> IO (Either ErrorType (Maybe ServiceId))
+  getServiceId st serviceRole fp =
+    E.uninterruptibleMask_ $ runExceptT $ withDB "getServiceId" st $ \db ->
+      traverse checkRole <$> maybeFirstRow id (DB.query db "SELECT service_id, service_role FROM services WHERE service_cert_hash = ?" (Only (Binary fp)))
+    where
+      checkRole (serviceId, role)
+        | role == serviceRole = Right serviceId
+        | otherwise = Left SERVICE
+
   getCreateService :: PostgresQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
   getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
     withLockMap (serviceLocks st) fp "getCreateService" $ E.uninterruptibleMask_ $ runExceptT $ do
