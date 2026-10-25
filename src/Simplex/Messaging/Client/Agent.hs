@@ -328,7 +328,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
     runSubWorker v =
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
         subs_ <- atomically $ do                                                                                                                            
-          s <- getPending TM.lookup readTVar
+          s <- getPending TM.lookup readTVar                                                                                                                
           if noPending s                                                                                                                                    
             then cleanup v $> Nothing                                                                                                                       
             else pure $ Just s                                                                                                                              
