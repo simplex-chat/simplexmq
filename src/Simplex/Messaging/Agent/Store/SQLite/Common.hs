@@ -100,7 +100,8 @@ withTransaction st = withTransactionPriority st False
 {-# INLINE withTransaction #-}
 
 withTransactionPriority :: DBStore -> Bool -> (DB.Connection -> IO a) -> IO a
-withTransactionPriority st priority action = withConnectionPriority st priority $ dbBusyLoop . transaction
+withTransactionPriority st@DBStore {dbClosed} priority action = withConnectionPriority st priority $ \db ->
+  ifM (readTVarIO dbClosed) (fail "withTransaction: database closed") (dbBusyLoop $ transaction db)
   where
     transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
 

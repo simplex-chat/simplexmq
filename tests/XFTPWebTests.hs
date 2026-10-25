@@ -51,7 +51,6 @@ import AgentTests.FunctionalAPITests (rfGet, runRight, runRight_, sfGet, withAge
 import Simplex.Messaging.Agent (AgentClient, xftpReceiveFile, xftpStartWorkers)
 import Simplex.Messaging.Agent.Protocol (AEvent (..))
 import SMPAgentClient (agentCfg, initAgentServers, testDB)
-import XFTPCLI (recipientFiles, senderFiles, testBracket)
 import qualified Simplex.Messaging.Crypto.File as CF
 
 xftpWebDir :: FilePath
@@ -168,8 +167,8 @@ impAddr = "import * as Addr from './dist/protocol/address.js';"
 jsOut :: String -> String
 jsOut expr = "process.stdout.write(Buffer.from(" <> expr <> "));"
 
-xftpWebTests :: IO () -> Spec
-xftpWebTests dbCleanup = do
+xftpWebTests :: Spec
+xftpWebTests = do
   xftpWebSourceHygieneTests
   distExists <- runIO $ doesDirectoryExist (xftpWebDir <> "/dist")
   if distExists
@@ -189,7 +188,7 @@ xftpWebTests dbCleanup = do
       tsClientTests
       tsDownloadTests
       tsAddressTests
-      tsIntegrationTests dbCleanup
+      tsIntegrationTests
     else
       it "skipped (run 'cd xftp-web && npm install && npm run build' first)" $
         pendingWith "TS project not compiled"
@@ -768,7 +767,7 @@ tsSecretboxTests :: Spec
 tsSecretboxTests = describe "crypto/secretbox" $ do
   let key32 = B.pack [1 .. 32]
       nonce24 = B.pack [1 .. 24]
-      cbNonceVal = C.cbNonce nonce24
+      cbNonceVal = C.unsafeCbNonce nonce24
       sbKeyVal = C.unsafeSbKey key32
 
   describe "NaCl secretbox (tag prepended)" $ do
@@ -979,7 +978,7 @@ tsFileCryptoTests :: Spec
 tsFileCryptoTests = describe "crypto/file" $ do
   let key32 = B.pack [1 .. 32]
       nonce24 = B.pack [1 .. 24]
-      cbNonceVal = C.cbNonce nonce24
+      cbNonceVal = C.unsafeCbNonce nonce24
       sbKeyVal = C.unsafeSbKey key32
 
   describe "FileHeader encoding" $ do
@@ -2329,7 +2328,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       tsResult <-
         callNode $
@@ -2352,7 +2351,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       B.length expected `shouldBe` 80
 
@@ -2363,7 +2362,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       tsResult <-
         callNode $
@@ -2389,7 +2388,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbAuthenticate
               (C.PublicKeyX25519 pubA)
               (C.PrivateKeyX25519 privB)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               msg
       tsResult <-
         callNode $
@@ -2427,7 +2426,7 @@ tsClientTests = describe "protocol/client" $ do
             C.cbVerify
               (C.PublicKeyX25519 pubB)
               (C.PrivateKeyX25519 privA)
-              (C.cbNonce nonce24)
+              (C.unsafeCbNonce nonce24)
               (C.CbAuthenticator tsAuth)
               msg
       hsValid `shouldBe` True
@@ -2438,7 +2437,7 @@ tsClientTests = describe "protocol/client" $ do
 
     it "encryptTransportChunk matches Haskell" $ do
       let plaintext = B.pack [100 .. 199]
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 plaintext
           tag = BA.convert $ LC.sbAuth state1 :: B.ByteString
           expected = cipher <> tag
@@ -2457,7 +2456,7 @@ tsClientTests = describe "protocol/client" $ do
 
     it "decryptTransportChunk decrypts Haskell-encrypted data" $ do
       let plaintext = B.pack ([200 .. 255] <> [0 .. 99])
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 plaintext
           tag = BA.convert $ LC.sbAuth state1 :: B.ByteString
           encData = cipher <> tag
@@ -2542,7 +2541,7 @@ tsDownloadTests = describe "download" $ do
       -- File-level key/nonce (different from transport)
       fileKey32 = B.pack [1 .. 32]
       fileNonce24 = B.pack [1 .. 24]
-      fileCbNonce = C.cbNonce fileNonce24
+      fileCbNonce = C.unsafeCbNonce fileNonce24
       fileSbKey = C.unsafeSbKey fileKey32
 
   describe "processFileResponse" $ do
@@ -2568,7 +2567,7 @@ tsDownloadTests = describe "download" $ do
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           chunkData = B.pack [50 .. 149]
           chunkDigest = C.sha256Hash chunkData
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2592,7 +2591,7 @@ tsDownloadTests = describe "download" $ do
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           chunkData = B.pack [50 .. 149]
           wrongDigest = B.replicate 32 0xff
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2615,7 +2614,7 @@ tsDownloadTests = describe "download" $ do
       let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           chunkData = B.pack [10 .. 50]
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2652,7 +2651,7 @@ tsDownloadTests = describe "download" $ do
       -- Step 2: transport-level encryption (simulates server sending chunk)
       let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           dhSecretBytes = case dhSecret of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
-          ts0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          ts0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (transportCipher, ts1) = LC.sbEncryptChunk ts0 fileEncrypted
           transportTag = BA.convert (LC.sbAuth ts1) :: B.ByteString
           transportEncData = transportCipher <> transportTag
@@ -2702,7 +2701,7 @@ tsDownloadTests = describe "download" $ do
           dhSecret1 = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           dhSecret1Bytes = case dhSecret1 of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
           nonce1 = nonce24
-          t1s0 = either (error . show) id $ LC.cbInit dhSecret1 (C.cbNonce nonce1)
+          t1s0 = either (error . show) id $ LC.cbInit dhSecret1 (C.unsafeCbNonce nonce1)
           (t1cipher, t1s1) = LC.sbEncryptChunk t1s0 fileChunk1
           t1tag = BA.convert (LC.sbAuth t1s1) :: B.ByteString
           transportEnc1 = t1cipher <> t1tag
@@ -2710,7 +2709,7 @@ tsDownloadTests = describe "download" $ do
           nonce2 = B.pack [24 .. 47]
           dhSecret2 = C.dh' (C.PublicKeyX25519 pubB) (C.PrivateKeyX25519 privA)
           dhSecret2Bytes = case dhSecret2 of C.DhSecretX25519 k -> BA.convert k :: B.ByteString
-          t2s0 = either (error . show) id $ LC.cbInit dhSecret2 (C.cbNonce nonce2)
+          t2s0 = either (error . show) id $ LC.cbInit dhSecret2 (C.unsafeCbNonce nonce2)
           (t2cipher, t2s1) = LC.sbEncryptChunk t2s0 fileChunk2
           t2tag = BA.convert (LC.sbAuth t2s1) :: B.ByteString
           transportEnc2 = t2cipher <> t2tag
@@ -2748,7 +2747,7 @@ tsDownloadTests = describe "download" $ do
       -- Client side: generate FGET command
       let dhSecret = C.dh' (C.PublicKeyX25519 pubA) (C.PrivateKeyX25519 privB)
           chunkData = "FGET round-trip test data" :: B.ByteString
-          state0 = either (error . show) id $ LC.cbInit dhSecret (C.cbNonce nonce24)
+          state0 = either (error . show) id $ LC.cbInit dhSecret (C.unsafeCbNonce nonce24)
           (cipher, state1) = LC.sbEncryptChunk state0 chunkData
           tag = BA.convert (LC.sbAuth state1) :: B.ByteString
           encData = cipher <> tag
@@ -2847,9 +2846,8 @@ tsAddressTests = describe "protocol/address" $ do
 
 -- ── integration ───────────────────────────────────────────────────
 
-tsIntegrationTests :: IO () -> Spec
-tsIntegrationTests dbCleanup = describe "integration" $
-  around_ testBracket . after_ dbCleanup $ do
+tsIntegrationTests :: Spec
+tsIntegrationTests = describe "integration" $ do
   it "web handshake with Ed25519 identity verification" $
     webHandshakeTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "web handshake with Ed448 identity verification" $
@@ -2872,7 +2870,7 @@ tsIntegrationTests dbCleanup = describe "integration" $
   it "cross-language: Haskell upload, TS download" $
     haskellUploadTsDownloadTest testXFTPServerConfigSNI
 
-webHandshakeTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+webHandshakeTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 webHandshakeTest cfg caFile = do
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
@@ -2914,7 +2912,7 @@ webHandshakeTest cfg caFile = do
           <> jsOut "new Uint8Array([idOk ? 1 : 0, ack.length === 0 ? 1 : 0])"
     result `shouldBe` B.pack [1, 1]
 
-pingTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+pingTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 pingTest cfg caFile = do
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
@@ -2936,9 +2934,8 @@ pingTest cfg caFile = do
           <> jsOut "new Uint8Array([1])"
     result `shouldBe` B.pack [1]
 
-fullRoundTripTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+fullRoundTripTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 fullRoundTripTest cfg caFile = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
     let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
@@ -3017,9 +3014,8 @@ agentURIRoundTripTest = do
         <> jsOut "new Uint8Array([match])"
   result `shouldBe` B.pack [1]
 
-agentUploadDownloadTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+agentUploadDownloadTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 agentUploadDownloadTest cfg caFile = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
     let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
@@ -3050,9 +3046,8 @@ agentUploadDownloadTest cfg caFile = do
           <> jsOut "new Uint8Array([nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1]
 
-agentDeleteTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+agentDeleteTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 agentDeleteTest cfg caFile = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
     let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
@@ -3082,9 +3077,8 @@ agentDeleteTest cfg caFile = do
           <> jsOut "new Uint8Array([deleted])"
     result `shouldBe` B.pack [1]
 
-agentRedirectTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+agentRedirectTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 agentRedirectTest cfg caFile = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
     let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
@@ -3116,9 +3110,8 @@ agentRedirectTest cfg caFile = do
           <> jsOut "new Uint8Array([hasRedirect, nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1, 1]
 
-tsUploadHaskellDownloadTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+tsUploadHaskellDownloadTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 tsUploadHaskellDownloadTest cfg caFile = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   createDirectoryIfMissing False recipientFiles
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
@@ -3151,9 +3144,8 @@ tsUploadHaskellDownloadTest cfg caFile = do
       downloadedData <- B.readFile outPath
       downloadedData `shouldBe` originalData
 
-tsUploadRedirectHaskellDownloadTest :: XFTPServerConfig STMFileStore -> FilePath -> Expectation
+tsUploadRedirectHaskellDownloadTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 tsUploadRedirectHaskellDownloadTest cfg caFile = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   createDirectoryIfMissing False recipientFiles
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
@@ -3186,9 +3178,8 @@ tsUploadRedirectHaskellDownloadTest cfg caFile = do
       downloadedData <- B.readFile outPath
       downloadedData `shouldBe` originalData
 
-haskellUploadTsDownloadTest :: XFTPServerConfig STMFileStore -> Expectation
+haskellUploadTsDownloadTest :: HasTestEnv => XFTPServerConfig STMFileStore -> Expectation
 haskellUploadTsDownloadTest cfg = do
-  createDirectoryIfMissing False "tests/tmp/xftp-server-files"
   createDirectoryIfMissing False senderFiles
   let filePath = senderFiles <> "/hs-to-ts.bin"
   originalData <- B.pack <$> replicateM 50000 (randomIO :: IO Word8)
@@ -3201,8 +3192,8 @@ haskellUploadTsDownloadTest cfg = do
       (_, _, SFDONE _ [rfd] _) <- sfGet sndr
       pure rfd
     let yamlDesc = strEncode vfd
-        tmpYaml = "tests/tmp/hs-to-ts-desc.yaml"
-        tmpData = "tests/tmp/hs-to-ts-data.bin"
+        tmpYaml = testPath "hs-to-ts-desc.yaml"
+        tmpData = testPath "hs-to-ts-data.bin"
     B.writeFile tmpYaml yamlDesc
     B.writeFile tmpData originalData
     result <-
@@ -3212,8 +3203,12 @@ haskellUploadTsDownloadTest cfg = do
         \import * as Agent from './dist/agent.js';\
         \import {decodeFileDescription, validateFileDescription} from './dist/protocol/description.js';\
         \await sodium.ready;\
-        \const yaml = fs.readFileSync('../tests/tmp/hs-to-ts-desc.yaml', 'utf-8');\
-        \const expected = new Uint8Array(fs.readFileSync('../tests/tmp/hs-to-ts-data.bin'));\
+        \const yaml = fs.readFileSync('../"
+          <> tmpYaml
+          <> "', 'utf-8');\
+        \const expected = new Uint8Array(fs.readFileSync('../"
+          <> tmpData
+          <> "'));\
         \const fd = decodeFileDescription(yaml);\
         \const err = validateFileDescription(fd);\
         \if (err) throw new Error(err);\

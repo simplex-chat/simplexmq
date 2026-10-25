@@ -42,7 +42,6 @@ module Simplex.Messaging.Server.Env.STM
     VerifiedTransmission,
     ResponseAndMessage,
     newEnv,
-    mkJournalStoreConfig,
     msgStore,
     fromMsgStore,
     newClient,
@@ -68,10 +67,8 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
-    defaultMaxJournalMsgCount,
-    defaultMaxJournalStateLines,
-    defaultIdleQueueInterval,
-    journalMsgStoreDepth,
+    defaultMaxClientCmdWait,
+    defaultAuthErrorDelayMs,
     readWriteQueueStore,
     noPostgresExitStr,
     noPostgresExit,
@@ -96,7 +93,7 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
-import Data.Time.Clock (getCurrentTime, nominalDay)
+import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
@@ -113,7 +110,6 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information
-import Simplex.Messaging.Server.MsgStore.Journal
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.Names (NamesConfig (..), NamesEnv, newNamesEnv, pingEndpoint)
@@ -146,8 +142,6 @@ data ServerConfig s = ServerConfig
     smpHandshakeTimeout :: Int,
     tbqSize :: Natural,
     msgQueueQuota :: Int,
-    maxJournalMsgCount :: Int,
-    maxJournalStateLines :: Int,
     queueIdBytes :: Int,
     msgIdBytes :: Int,
     serverStoreCfg :: ServerStoreCfg s,
@@ -164,8 +158,6 @@ data ServerConfig s = ServerConfig
     messageExpiration :: Maybe ExpirationConfig,
     expireMessagesOnStart :: Bool,
     expireMessagesOnSend :: Bool,
-    -- | interval of inactivity after which journal queue is closed
-    idleQueueInterval :: Int64,
     -- | notification expiration interval (seconds)
     notificationExpiration :: ExpirationConfig,
     -- | time after which the socket with inactive client can be disconnected (without any messages or commands, incl. PING),
@@ -187,6 +179,7 @@ data ServerConfig s = ServerConfig
     ntfDeliveryInterval :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
+    authErrorDelay :: Int64,
     smpCredentials :: ServerCredentials,
     httpCredentials :: Maybe ServerCredentials,
     -- | SMP client-server protocol version range
@@ -199,11 +192,12 @@ data ServerConfig s = ServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
-    -- | max concurrent name resolutions per connection, enforced in forkCmd.
+    -- | max concurrent forwarded name resolutions per proxy connection, enforced in forkCmd.
     -- Much higher than serverClientConcurrency: forwarded RSLVs from many clients
     -- aggregate over a single proxy->relay connection (only servers send proxied
     -- requests), so bounding them by the per-client limit would throttle unduly.
     serverResolverConcurrency :: Int,
+    maxClientCmdWait :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
     -- | server public information
@@ -229,9 +223,6 @@ defaultMessageExpiration =
       checkInterval = 7200 -- seconds, 2 hours
     }
 
-defaultIdleQueueInterval :: Int64
-defaultIdleQueueInterval = 14400 -- seconds, 4 hours
-
 defNtfExpirationHours :: Int64
 defNtfExpirationHours = 24
 
@@ -250,25 +241,19 @@ defaultInactiveClientExpiration =
     }
 
 defaultProxyClientConcurrency :: Int
-defaultProxyClientConcurrency = 32
+defaultProxyClientConcurrency = 500
 
 defaultNameResolverConcurrency :: Int
-defaultNameResolverConcurrency = 1000
+defaultNameResolverConcurrency = 5000
 
-journalMsgStoreDepth :: Int
-journalMsgStoreDepth = 5
+defaultMaxClientCmdWait :: Int
+defaultMaxClientCmdWait = 60000000 -- microseconds
 
-defaultMaxJournalStateLines :: Int
-defaultMaxJournalStateLines = 16
-
-defaultMaxJournalMsgCount :: Int
-defaultMaxJournalMsgCount = 256
+defaultAuthErrorDelayMs :: Int64
+defaultAuthErrorDelayMs = 50
 
 defaultMsgQueueQuota :: Int
 defaultMsgQueueQuota = 128
-
-defaultStateTailSize :: Int
-defaultStateTailSize = 512
 
 data Env s = Env
   { config :: ServerConfig s,
@@ -295,7 +280,6 @@ msgStore = fromMsgStore . msgStore_
 fromMsgStore :: MsgStore s -> s
 fromMsgStore = \case
   StoreMemory s -> s
-  StoreJournal s -> s
 #if defined(dbServerPostgres)
   StoreDatabase s -> s
 #endif
@@ -303,12 +287,10 @@ fromMsgStore = \case
 
 type family SupportedStore (qs :: QSType) (ms :: MSType) :: Constraint where
   SupportedStore 'QSMemory 'MSMemory = ()
-  SupportedStore 'QSMemory 'MSJournal = ()
   SupportedStore 'QSMemory 'MSPostgres =
     (Int ~ Bool, TypeError ('TE.Text "Storing messages in Postgres DB with queues in memory is not supported"))
   SupportedStore 'QSPostgres 'MSMemory =
     (Int ~ Bool, TypeError ('TE.Text "Storing messages in memory with queues in Postgres DB is not supported"))
-  SupportedStore 'QSPostgres 'MSJournal = ()
 #if defined(dbServerPostgres)
   SupportedStore 'QSPostgres 'MSPostgres = ()
 #else
@@ -322,8 +304,6 @@ data AStoreType =
 
 data ServerStoreCfg s where
   SSCMemory :: Maybe StorePaths -> ServerStoreCfg STMMsgStore
-  SSCMemoryJournal :: {storeLogFile :: FilePath, storeMsgsPath :: FilePath} -> ServerStoreCfg (JournalMsgStore 'QSMemory)
-  SSCDatabaseJournal :: {storeCfg :: PostgresStoreCfg, storeMsgsPath' :: FilePath} -> ServerStoreCfg (JournalMsgStore 'QSPostgres)
 #if defined(dbServerPostgres)
   SSCDatabase :: PostgresStoreCfg -> ServerStoreCfg PostgresMsgStore
 #endif
@@ -331,8 +311,6 @@ data ServerStoreCfg s where
 dbStoreCfg :: ServerStoreCfg s -> Maybe PostgresStoreCfg
 dbStoreCfg = \case
   SSCMemory _ -> Nothing
-  SSCMemoryJournal {} -> Nothing
-  SSCDatabaseJournal {storeCfg} -> Just storeCfg
 #if defined(dbServerPostgres)
   SSCDatabase cfg -> Just cfg
 #endif
@@ -340,8 +318,6 @@ dbStoreCfg = \case
 storeLogFile' :: ServerStoreCfg s -> Maybe FilePath
 storeLogFile' = \case
   SSCMemory sp_ -> (\StorePaths {storeLogFile} -> storeLogFile) <$> sp_
-  SSCMemoryJournal {storeLogFile} -> Just storeLogFile
-  SSCDatabaseJournal {storeCfg = PostgresStoreCfg {dbStoreLogPath}} -> dbStoreLogPath
 #if defined(dbServerPostgres)
   SSCDatabase (PostgresStoreCfg {dbStoreLogPath}) -> dbStoreLogPath
 #endif
@@ -350,14 +326,12 @@ data StorePaths = StorePaths {storeLogFile :: FilePath, storeMsgsFile :: Maybe F
 
 type family MsgStoreType (qs :: QSType) (ms :: MSType) where
   MsgStoreType 'QSMemory 'MSMemory = STMMsgStore
-  MsgStoreType qs 'MSJournal = JournalMsgStore qs
 #if defined(dbServerPostgres)
   MsgStoreType 'QSPostgres 'MSPostgres = PostgresMsgStore
 #endif
 
 data MsgStore s where
   StoreMemory :: STMMsgStore -> MsgStore STMMsgStore
-  StoreJournal :: JournalMsgStore qs -> MsgStore (JournalMsgStore qs)
 #if defined(dbServerPostgres)
   StoreDatabase :: PostgresMsgStore -> MsgStore PostgresMsgStore
 #endif
@@ -571,39 +545,24 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, idleQueueInterval, msgQueueQuota, maxJournalMsgCount, maxJournalStateLines, namesConfig} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes} = do
+  when (msgIdBytes < 24) $ do
+    logError "Error: msgIdBytes must be at least 24"
+    exitFailure
   serverActive <- newTVarIO True
   server <- newServer
   msgStore_ <- case serverStoreCfg of
     SSCMemory storePaths_ -> do
       let storePath = storeMsgsFile =<< storePaths_
       ms <- newMsgStore STMStoreConfig {storePath, quota = msgQueueQuota}
-      forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms True) f $ queueStore ms
+      forM_ storePaths_ $ \StorePaths {storeLogFile = f} -> loadStoreLog (mkQueue ms) f $ queueStore ms
       pure $ StoreMemory ms
-    SSCMemoryJournal {storeLogFile, storeMsgsPath} -> do
-      logWarn $
-        "Journal message store is deprecated and will be removed soon.\n"
-          <> "Please migrate to in-memory storage using `journal export` command.\n"
-          <> "After that you can migrate to PostgreSQL using `database import` command."
-      let qsCfg = MQStoreCfg
-          cfg = mkJournalStoreConfig qsCfg storeMsgsPath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
-      ms <- newMsgStore cfg
-      loadStoreLog (mkQueue ms True) storeLogFile $ stmQueueStore ms
-      pure $ StoreJournal ms
 #if defined(dbServerPostgres)
-    SSCDatabaseJournal {storeCfg, storeMsgsPath'} -> do
-      let StartOptions {compactLog, confirmMigrations} = startOptions config
-          qsCfg = PQStoreCfg (storeCfg {confirmMigrations} :: PostgresStoreCfg)
-          cfg = mkJournalStoreConfig qsCfg storeMsgsPath' msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval
-      when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
-      StoreJournal <$> newMsgStore cfg
     SSCDatabase storeCfg -> do
       let StartOptions {compactLog, confirmMigrations} = startOptions config
           cfg = PostgresMsgStoreCfg storeCfg {confirmMigrations} msgQueueQuota
       when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
       StoreDatabase <$> newMsgStore cfg
-#else
-    SSCDatabaseJournal {} -> noPostgresExit
 #endif
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
@@ -655,8 +614,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       Just f -> do
         logNote $ "compacting queues in file " <> T.pack f
         st <- newMsgStore STMStoreConfig {storePath = Nothing, quota = msgQueueQuota}
-        -- we don't need to have locks in the map
-        sl <- readWriteQueueStore False (mkQueue st False) f (queueStore st)
+        sl <- readWriteQueueStore False (mkQueue st) f (queueStore st)
         setStoreLog (queueStore st) sl
         closeMsgStore st
       Nothing -> do
@@ -703,7 +661,9 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
             Nothing -> SPMMemoryOnly
             Just StorePaths {storeMsgsFile = Just _} -> SPMMessages
             _ -> SPMQueues
+#if defined(dbServerPostgres)
           _ -> SPMMessages
+#endif
 
 noPostgresExit :: IO a
 noPostgresExit = putStrLn noPostgresExitStr >> exitFailure
@@ -712,21 +672,6 @@ noPostgresExitStr :: String
 noPostgresExitStr =
   "Error: server binary is compiled without support for PostgreSQL database.\n"
     <> "Please download `smp-server-postgres` or re-compile with `cabal build -fserver_postgres`."
-
-mkJournalStoreConfig :: QStoreCfg s -> FilePath -> Int -> Int -> Int -> Int64 -> JournalStoreConfig s
-mkJournalStoreConfig queueStoreCfg storePath msgQueueQuota maxJournalMsgCount maxJournalStateLines idleQueueInterval =
-  JournalStoreConfig
-    { storePath,
-      quota = msgQueueQuota,
-      pathParts = journalMsgStoreDepth,
-      queueStoreCfg,
-      maxMsgCount = maxJournalMsgCount,
-      maxStateLines = maxJournalStateLines,
-      stateTailSize = defaultStateTailSize,
-      idleInterval = idleQueueInterval,
-      expireBackupsAfter = 14 * nominalDay,
-      keepMinBackups = 2
-    }
 
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do

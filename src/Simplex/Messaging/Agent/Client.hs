@@ -35,7 +35,6 @@ module Simplex.Messaging.Agent.Client
     withInvLock,
     withLockMap,
     withLocksMap,
-    getMapLock,
     ipAddressProtected,
     closeAgentClient,
     closeProtocolServerClients,
@@ -228,7 +227,7 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Text.Encoding
-import Data.Time (UTCTime, addUTCTime, defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
 import Data.Word (Word16, Word32)
 import qualified Data.X509.Validation as XV
@@ -434,7 +433,7 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
           -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
           restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
           when restart runWork
-        shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
+        shouldRestart e_ Worker {workerId = wId, doWork, restarts} t maxRestarts w'
           | wId == workerId (toW w') = do
               rc <- readTVar restarts
               isActive <- readTVar $ active c
@@ -446,7 +445,6 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
               | isActive && restartCount rc < maxRestarts = do
                   writeTVar restarts rc
                   hasWorkToDo' doWork
-                  void $ tryPutTMVar action Nothing
                   notifyErr INTERNAL
                   pure True
               | otherwise = do
@@ -469,10 +467,10 @@ newWorker c = do
 
 runWorkerAsync :: MonadUnliftIO m => Worker -> m () -> m ()
 runWorkerAsync Worker {action} work =
-  E.bracket
+  E.bracketOnError
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
-    (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
-    (\a -> when (isNothing a) start) -- start worker if it's not running
+    (atomically . tryPutTMVar action)
+    (\a -> if isNothing a then start else void $ atomically $ tryPutTMVar action a) -- start worker if it's not running
   where
     start = atomically . putTMVar action . Just =<< mkWeakThreadId =<< forkIO work
 
@@ -1241,10 +1239,10 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
       cfg <- getNetworkConfig c
       case smpProxyMode cfg of
         SPMAlways -> pure True
-        SPMUnknown -> unknownServer
+        SPMUnknown -> unknownServer cfg
         SPMUnprotected
           | ipAddressProtected cfg destSrv -> pure False
-          | otherwise -> unknownServer
+          | otherwise -> unknownServer cfg
         SPMNever -> pure False
     directAllowed = do
       cfg <- getNetworkConfig c
@@ -1252,7 +1250,7 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
         SPFAllow -> True
         SPFAllowProtected -> ipAddressProtected cfg destSrv
         SPFProhibit -> False
-    unknownServer = liftIO $ maybe True (\srvs -> all (`S.notMember` knownHosts srvs) destHosts) <$> TM.lookupIO userId (smpServers c)
+    unknownServer cfg = liftIO $ maybe True (\srvs -> either (const True) (`S.notMember` knownHosts srvs) $ chooseTransportHost cfg destHosts) <$> TM.lookupIO userId (smpServers c)
     sendViaProxy :: Maybe SMPServerWithAuth -> SMPTransportSession -> AM (Maybe SMPServer, a)
     sendViaProxy proxySrv_ destSess@(_, _, connId_) = do
       r <- tryAllErrors . withProxySession c nm proxySrv_ destSess entId ("PFWD " <> cmdStr) $ \(SMPConnectedClient smp _, proxySess@ProxiedRelay {prBasicAuth}) -> do
@@ -1440,9 +1438,9 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     chSize = kb 64
     getTempFilePath :: FilePath -> AM' FilePath
     getTempFilePath workPath = do
-      ts <- liftIO getCurrentTime
-      let isoTime = formatTime defaultTimeLocale "%Y-%m-%dT%H%M%S.%6q" ts
-      uniqueCombine workPath isoTime
+      g <- asks random
+      name <- atomically $ B.unpack . strEncode <$> C.randomBytes 12 g
+      uniqueCombine workPath name
     withTestChunk :: FilePath -> IO a -> IO a
     withTestChunk fp =
       E.bracket_
@@ -2028,7 +2026,7 @@ decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
 decryptSMPMessage rq SMP.RcvMessage {msgId, msgBody = SMP.EncRcvMsgBody body} =
   liftEither $ parse SMP.clientRcvMsgBodyP (AGENT $ A_MESSAGE "decrypt message") =<< decrypt body
   where
-    decrypt = agentCbDecrypt (rcvDhSecret rq) (C.cbNonce msgId)
+    decrypt = agentCbDecrypt (rcvDhSecret rq) msgId
 
 secureQueue :: AgentClient -> NetworkRequestMode -> RcvQueue -> SndPublicAuthKey -> AM ()
 secureQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
@@ -2126,9 +2124,9 @@ disableQueuesNtfs c = sendTSessionBatches "NDEL" (mkSMPTSession . snd) disableQu
     queueCreds :: DisableQueueNtfReq -> (SMP.RecipientId, SMP.RcvPrivateAuthKey)
     queueCreds (_, RcvQueue {rcvPrivateKey, rcvId}) = (rcvId, rcvPrivateKey)
 
-sendAck :: AgentClient -> RcvQueue -> MsgId -> AM ()
+sendAck :: AgentClient -> RcvQueue -> MsgId -> AM QueueDrained
 sendAck c rq@RcvQueue {rcvId, rcvPrivateKey} msgId =
-  withSMPClient c NRMBackground rq ("ACK:" <> logSecret' msgId) $ \smp ->
+  withSMPClient c NRMBackground rq ("ACK:" <> logSecret' (SMP.unMsgId msgId)) $ \smp ->
     ackSMPMessage smp rcvPrivateKey rcvId msgId
 
 hasGetLock :: SomeRcvQueue q => AgentClient -> q -> IO Bool
@@ -2323,7 +2321,7 @@ agentCbEncryptOnce clientVersion dhRcvPubKey msg = do
 
 -- | NaCl crypto-box decrypt - both for messages received from the server
 -- and per-queue E2E encrypted messages from the sender that were inside.
-agentCbDecrypt :: C.DhSecretX25519 -> C.CbNonce -> ByteString -> Either AgentErrorType ByteString
+agentCbDecrypt :: C.CbNonceI n => C.DhSecretX25519 -> n -> ByteString -> Either AgentErrorType ByteString
 agentCbDecrypt dhSecret nonce msg =
   first cryptoError $
     C.cbDecrypt dhSecret nonce msg
@@ -2526,6 +2524,7 @@ storeError = \case
   SEUserNotFound -> NO_USER
   SERatchetNotFound -> CONN NOT_FOUND ""
   SEConnDuplicate -> CONN DUPLICATE ""
+  SESndQueueExists -> CONN DUPLICATE ""
   SEBadConnType cxt CRcv -> CONN SIMPLEX cxt
   SEBadConnType cxt CSnd -> CONN SIMPLEX cxt
   SEInvitationNotFound cxt invId -> CMD PROHIBITED $ "SEInvitationNotFound " <> cxt <> ", invitationId = " <> show invId
