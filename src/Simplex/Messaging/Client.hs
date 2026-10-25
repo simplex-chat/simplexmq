@@ -67,6 +67,7 @@ module Simplex.Messaging.Client
     enableSMPQueuesNtfs,
     disableSMPQueuesNtfs,
     sendSMPMessage,
+    QueueDrained,
     ackSMPMessage,
     suspendSMPQueue,
     deleteSMPQueue,
@@ -195,6 +196,7 @@ data PClient v err msg = PClient
     transportHost :: TransportHost,
     tcpConnectTimeout :: NetworkTimeout,
     tcpTimeout :: NetworkTimeout,
+    proxiedRelayVRange :: VersionRange v,
     sendPings :: TVar Bool,
     lastReceived :: TVar UTCTime,
     timeoutErrorCount :: TVar Int,
@@ -240,6 +242,7 @@ smpClientStub g sessionId thVersion thAuth = do
               transportHost = "localhost",
               tcpConnectTimeout,
               tcpTimeout,
+              proxiedRelayVRange = supportedClientSMPRelayVRange,
               sendPings,
               lastReceived,
               timeoutErrorCount,
@@ -477,6 +480,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     serviceCredentials :: Maybe ServiceCredentials,
     -- | client-server protocol version range
     serverVRange :: VersionRange v,
+    proxiedRelayVRange :: VersionRange v,
     -- | agree shared session secret (used in SMP proxy for additional encryption layer)
     agreeSecret :: Bool,
     -- | Whether connecting client is a proxy server. See comment in ClientHandshake
@@ -495,6 +499,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
       clientALPN,
       serviceCredentials = Nothing,
       serverVRange,
+      proxiedRelayVRange = serverVRange,
       agreeSecret = False,
       proxyServer = False,
       useSNI
@@ -505,6 +510,7 @@ defaultSMPClientConfig :: ProtocolClientConfig SMPVersion
 defaultSMPClientConfig =
   (defaultClientConfig (Just alpnSupportedSMPHandshakes) False supportedClientSMPRelayVRange)
     { defaultTransport = (show defaultSMPPort, transport @TLS),
+      proxiedRelayVRange = supportedClientSMPRelayVRange,
       agreeSecret = True
     }
 {-# INLINE defaultSMPClientConfig #-}
@@ -568,7 +574,7 @@ type SMPTransportSession = TransportSession BrokerMsg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, proxiedRelayVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -593,6 +599,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             transportHost,
             tcpConnectTimeout,
             tcpTimeout,
+            proxiedRelayVRange,
             sendPings,
             lastReceived,
             timeoutErrorCount,
@@ -604,16 +611,16 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           }
 
     runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-    runClient (port', ATransport t) useHost c = do
+    runClient (port', ATransport t) useHost c = E.mask $ \restore -> do
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig nm useHost useSNI useALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
-        runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
+        restore (runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar))
           `forkFinally` \r ->
             let err = either toNetworkError (const NEFailedError) r
              in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
-      c_ <- netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)
+      c_ <- restore (netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)) `E.onException` killThread tId
       case c_ of
         Just (Right c') -> mkWeakThreadId tId >>= \tId' -> pure $ Right c' {action = Just tId'}
         Just (Left e) -> pure $ Left e
@@ -645,7 +652,13 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
           raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
-            `E.finally` disconnected c'
+            `E.finally` (failPendingRequests c >> disconnected c')
+
+    failPendingRequests :: PClient v err msg -> IO ()
+    failPendingRequests PClient {sentCommands} = atomically $ swapTVar sentCommands mempty >>= mapM_ failRequest
+      where
+        failRequest Request {pending, responseVar} =
+          whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -1081,15 +1094,17 @@ resolvedNameOrNotFound d NameResponse {registration} = case registration of
   NRRegistered {nameRecord} -> T.toLower (nrName nameRecord) == fullDomainName d
   _ -> True
 
+type QueueDrained = Bool
+
 -- | Acknowledge message delivery (server deletes the message).
 --
 -- https://github.com/simplex-chat/simplexmq/blob/master/protocol/simplex-messaging.md#acknowledge-message-delivery
 -- This command is always sent in background request mode
-ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO ()
+ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT SMPClientError IO QueueDrained
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c NRMBackground (Just rpKey) rId (ACK msgId) >>= \case
-    OK -> return ()
-    cmd@MSG {} -> liftIO $ writeSMPMessage c rId cmd
+    OK -> pure True
+    cmd@MSG {} -> liftIO (writeSMPMessage c rId cmd) $> False
     r -> throwE $ unexpectedResponse r
 
 -- | Irreversibly suspend SMP queue.
@@ -1115,10 +1130,10 @@ deleteSMPQueues = okSMPCommands DEL
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
 connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
+connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout, proxiedRelayVRange}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
   sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
     PKEY sId vr (CertChainPubKey chain key) ->
-      case supportedClientSMPRelayVRange `compatibleVersion` vr of
+      case proxiedRelayVRange `compatibleVersion` vr of
         Nothing -> throwE $ transportErr TEVersion
         Just (Compatible v) -> do
           relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
@@ -1130,9 +1145,9 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
     hostName = B.unpack $ strEncode $ transportHost' c
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> ExceptT String IO C.PublicKeyX25519
     validateRelay chain exact = case chainIdCaCerts chain of
-      CCValid {leafCert, idCert, caCert}
+      CCValid {leafCert, idCert}
         | XV.Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 -> do
-            errs <- liftIO $ x509validate caCert (hostName, B.pack relayPort) chain
+            errs <- liftIO $ x509validate (hostName, B.pack relayPort) chain
             unless (null errs) $ throwError "bad certificate"
             serverKey <- liftEither $ C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leafCert
             liftEither $ C.x509ToPublic' =<< C.verifyX509 serverKey exact
@@ -1169,7 +1184,7 @@ instance StrEncoding ProxyClientError where
 -- consider how to process slow responses - is it handled somehow locally or delegated to the caller
 -- this method is used in the client
 -- sends PFWD :: C.PublicKeyX25519 -> EncTransmission -> Command Sender
--- receives PRES :: EncResponse -> BrokerMsg -- proxy to client
+-- receives PRES :: Maybe C.CbNonce -> EncResponse -> BrokerMsg -- proxy to client
 
 -- When client sends message via proxy, there may be one successful scenario and 9 error scenarios
 -- as shown below (WTF stands for unexpected response, ??? for response that failed to parse).
@@ -1222,20 +1237,20 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
   -- encode
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth serverThParams (CorrId corrId, sId, Cmd (sParty @p) command)
   -- serviceAuth is False here – proxied commands are not used with service certificates
-  auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey nonce tForAuth
+  auth <- liftEitherWith PCETransportError $ authTransmission serverThAuth False spKey (Just nonce) tForAuth
   b <- case batchTransmissions serverThParams [Right (auth, tToSend)] of
     [] -> throwE $ PCETransportError TELargeMsg
     TBError e _ : _ -> throwE $ PCETransportError e
     TBTransmission s _ : _ -> pure s
     TBTransmissions s _ _ : _ -> pure s
-  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret nonce b paddedProxiedTLength
+  et <- liftEitherWith PCECryptoError $ EncTransmission <$> C.cbEncrypt cmdSecret (encTransmissionNonce v nonce) b paddedProxiedTLength
   -- proxy interaction errors are wrapped
   let tOut = Just $ 2 * netTimeoutInt tcpTimeout nm
   tryE (sendProtocolCommand_ c nm (Just nonce) tOut Nothing (EntityId sessionId) (Cmd SProxiedClient (PFWD v cmdPubKey et))) >>= \case
     Right r -> case r of
-      PRES (EncResponse er) -> do
+      PRES nonce_ (EncResponse er) -> do
         -- server interaction errors are thrown directly
-        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (C.reverseNonce nonce) er
+        t' <- liftEitherWith PCECryptoError $ C.cbDecrypt cmdSecret (fromMaybe (C.reverseNonce nonce) nonce_) er
         case tParse serverThParams t' of
           t'' :| [] -> case tDecodeClient serverThParams t'' of
             (_, _, cmd) -> case cmd of
@@ -1253,10 +1268,10 @@ proxySMPCommand c@ProtocolClient {thParams = proxyThParams, client_ = PClient {c
 
 -- this method is used in the proxy
 -- sends RFWD :: EncFwdTransmission -> Command Sender
--- receives RRES :: EncFwdResponse -> BrokerMsg
+-- receives RRES :: Maybe C.CbNonce -> EncFwdResponse -> BrokerMsg
 -- proxy should send PRES to the client with EncResponse
 -- Always uses background timeout mode
-forwardSMPTransmission :: SMPClient -> CorrId -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO EncResponse
+forwardSMPTransmission :: SMPClient -> C.CorrCbNonce -> VersionSMP -> C.PublicKeyX25519 -> EncTransmission -> ExceptT SMPClientError IO (Maybe C.CbNonce, EncResponse)
 forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorrId = g}} fwdCorrId fwdVersion fwdKey fwdTransmission = do
   -- prepare params
   sessSecret <- case thAuth thParams of
@@ -1268,11 +1283,11 @@ forwardSMPTransmission c@ProtocolClient {thParams, client_ = PClient {clientCorr
       eft = EncFwdTransmission $ C.cbEncryptNoPad sessSecret nonce (smpEncode fwdT)
   -- send
   sendProtocolCommand_ c NRMBackground (Just nonce) Nothing Nothing NoEntity (Cmd SProxyService (RFWD eft)) >>= \case
-    RRES (EncFwdResponse efr) -> do
+    RRES nonce_ (EncFwdResponse efr) -> do
       -- unwrap
       r' <- liftEitherWith PCECryptoError $ C.cbDecryptNoPad sessSecret (C.reverseNonce nonce) efr
       FwdResponse {fwdCorrId = _, fwdResponse} <- liftEitherWith (const $ PCEResponseError BLOCK) $ smpDecode r'
-      pure fwdResponse
+      pure (nonce_, fwdResponse)
     r -> throwE $ unexpectedResponse r
 
 -- get queue information - always sent interactively
@@ -1394,7 +1409,7 @@ mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err 
 mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
-      auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ nonce tForAuth
+      auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ (Just nonce) tForAuth
   r <- mkRequest (CorrId corrId)
   pure ((,tToSend) <$> auth, r)
   where
@@ -1413,14 +1428,14 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
       atomically $ TM.insert corrId r sentCommands
       pure r
 
-authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
-authTransmission thAuth serviceAuth pKey_ nonce t = traverse authenticate pKey_
+authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> Maybe C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
+authTransmission thAuth serviceAuth pKey_ nonce_ t = traverse authenticate pKey_
   where
     authenticate :: C.APrivateAuthKey -> Either TransportError TAuthorizations
     authenticate (C.APrivateAuthKey a pk) = (,serviceSig) <$> case a of
-      C.SX25519 -> case thAuth of
-        Just THAuthClient {peerServerPubKey = k} -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t'
-        Nothing -> Left TENoServerAuth
+      C.SX25519 -> case (thAuth, nonce_) of
+        (Just THAuthClient {peerServerPubKey = k}, Just nonce) -> Right $ TAAuthenticator $ C.cbAuthenticate k pk nonce t'
+        _ -> Left TENoServerAuth
       C.SEd25519 -> sign pk
       C.SEd448 -> sign pk
     -- When command is signed by both entity key and service key,

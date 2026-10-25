@@ -149,7 +149,8 @@ getXFTPClient transportSession@(_, srv, _) config@XFTPClientConfig {clientALPN, 
   thParams@THandleParams {thVersion} <- case sessionALPN of
     Just alpn
       | alpn == xftpALPNv1 || alpn == httpALPN11 ->
-          xftpClientHandshakeV1 serverVRange keyHash http2Client mkEntitlementProof thParams0
+          ExceptT (runExceptT (xftpClientHandshakeV1 serverVRange keyHash http2Client mkEntitlementProof thParams0) `E.onException` closeHTTP2Client http2Client)
+            `catchError` \e -> liftIO (closeHTTP2Client http2Client) >> throwE e
     _ -> pure thParams0
   logDebug $ "Client negotiated protocol: " <> tshow thVersion
   let c = XFTPClient {http2Client, thParams, transportSession, config}

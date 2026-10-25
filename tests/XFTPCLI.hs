@@ -1,6 +1,6 @@
-module XFTPCLI (xftpCLIFileTests, xftpCLI, senderFiles, recipientFiles, testBracket) where
+module XFTPCLI (xftpCLIFileTests, xftpCLI) where
 
-import Control.Exception (bracket_, try)
+import Control.Exception (try)
 import qualified Data.ByteString as LB
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Simplex.FileTransfer.Client.Main
@@ -10,7 +10,7 @@ import Simplex.FileTransfer.Client.Main
   )
 import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Util (safeFileNameStr, uniqueCombine)
-import System.Directory (createDirectoryIfMissing, getFileSize, listDirectory, removeDirectoryRecursive)
+import System.Directory (getFileSize, listDirectory)
 import System.Environment (withArgs)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeFileName, (</>))
@@ -21,7 +21,7 @@ import Simplex.FileTransfer.Server.Env (AFStoreType)
 import XFTPClient (cfgFS, cfgFS2, withXFTPServer, withXFTPServerConfigOn, testXFTPServerStr, testXFTPServerStr2, xftpServerFiles, xftpServerFiles2)
 
 xftpCLIFileTests :: SpecWith AFStoreType
-xftpCLIFileTests = around_ testBracket $ do
+xftpCLIFileTests = do
   it "shows experimental deprecation notice in help" $ \_ ->
     testXFTPCLIHelpDeprecationNotice
   it "should send and receive file" $ withXFTPServer testXFTPCLISendReceive_
@@ -43,20 +43,6 @@ xftpCLIFileTests = around_ testBracket $ do
     sanitized n = let n' = safeFileNameStr n in n' /= "" && n' /= "." && n' /= ".."
     bareName n = let n' = safeFileNameStr n in n' == takeFileName n'
 
-testBracket :: IO () -> IO ()
-testBracket =
-  bracket_
-    (mapM_ (createDirectoryIfMissing False) testDirs)
-    (mapM_ removeDirectoryRecursive testDirs)
-  where
-    testDirs = [xftpServerFiles, xftpServerFiles2, senderFiles, recipientFiles]
-
-senderFiles :: FilePath
-senderFiles = "tests/tmp/xftp-sender-files"
-
-recipientFiles :: FilePath
-recipientFiles = "tests/tmp/xftp-recipient-files"
-
 xftpCLI :: [String] -> IO [String]
 xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
 
@@ -66,7 +52,7 @@ testXFTPCLIHelpDeprecationNotice = do
   result `shouldBe` (Left ExitSuccess :: Either ExitCode ())
   unwords (words output) `shouldSatisfy` (xftpClientDeprecationNotice `isInfixOf`)
 
-testXFTPCLISendReceive_ :: IO ()
+testXFTPCLISendReceive_ :: HasTestEnv => IO ()
 testXFTPCLISendReceive_ = do
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
@@ -75,7 +61,7 @@ testXFTPCLISendReceive_ = do
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=tests/tmp"]
+  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr, "--tmp=" <> testDir]
   progress `shouldSatisfy` uploadProgress
   let (sendInfo, sendRest) = splitAt 4 sendResult
   sendInfo
@@ -90,19 +76,19 @@ testXFTPCLISendReceive_ = do
   testInfoFile fdRcv2 "Recipient"
   testReceiveFile fdRcv2 "testfile_1" file
   testInfoFile fdSnd "Sender"
-  xftpCLI ["recv", fdSnd, recipientFiles, "--tmp=tests/tmp"]
+  xftpCLI ["recv", fdSnd, recipientFiles, "--tmp=" <> testDir]
     `shouldThrow` anyException
   where
     testInfoFile fd party = do
       xftpCLI ["info", fd]
         `shouldReturn` [party <> " file description", "File download size: 18mb", "File server(s):", testXFTPServerStr <> ": 18mb"]
     testReceiveFile fd fileName file = do
-      progress : recvResult <- xftpCLI ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
+      progress : recvResult <- xftpCLI ["recv", fd, recipientFiles, "--tmp=" <> testDir, "-y"]
       progress `shouldSatisfy` downloadProgress fileName
       recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
-testXFTPCLISendReceive2servers_ :: IO ()
+testXFTPCLISendReceive2servers_ :: HasTestEnv => IO ()
 testXFTPCLISendReceive2servers_ = do
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
@@ -111,7 +97,7 @@ testXFTPCLISendReceive2servers_ = do
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
+  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=" <> testDir]
   progress `shouldSatisfy` uploadProgress
   let (sendInfo, sendRest) = splitAt 4 sendResult
   sendInfo
@@ -135,12 +121,12 @@ testXFTPCLISendReceive2servers_ = do
           srv1 `shouldContain` testXFTPServerStr
           srv2 `shouldContain` testXFTPServerStr2
         _ -> print srvs >> error "more than 2 servers returned"
-      progress : recvResult <- xftpCLI ["recv", fd, recipientFiles, "--tmp=tests/tmp", "-y"]
+      progress : recvResult <- xftpCLI ["recv", fd, recipientFiles, "--tmp=" <> testDir, "-y"]
       progress `shouldSatisfy` downloadProgress fileName
       recvResult `shouldBe` ["File description " <> fd <> " is deleted."]
       LB.readFile (recipientFiles </> fileName) `shouldReturn` file
 
-testXFTPCLIDelete_ :: IO ()
+testXFTPCLIDelete_ :: HasTestEnv => IO ()
 testXFTPCLIDelete_ = do
   let filePath = senderFiles </> "testfile"
   xftpCLI ["rand", filePath, "17mb"] `shouldReturn` ["File created: " <> filePath]
@@ -149,7 +135,7 @@ testXFTPCLIDelete_ = do
   let fdRcv1 = filePath <> ".xftp" </> "rcv1.xftp"
       fdRcv2 = filePath <> ".xftp" </> "rcv2.xftp"
       fdSnd = filePath <> ".xftp" </> "snd.xftp.private"
-  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=tests/tmp"]
+  progress : sendResult <- xftpCLI ["send", filePath, senderFiles, "-n", "2", "-s", testXFTPServerStr <> ";" <> testXFTPServerStr2, "--tmp=" <> testDir]
   progress `shouldSatisfy` uploadProgress
   let (sendInfo, sendRest) = splitAt 4 sendResult
   sendInfo
@@ -161,7 +147,7 @@ testXFTPCLIDelete_ = do
   sendRest `shouldSatisfy` any ("https://" `isPrefixOf`)
   xftpCLI ["del", fdRcv1]
     `shouldThrow` anyException
-  progress1 : recvResult <- xftpCLI ["recv", fdRcv1, recipientFiles, "--tmp=tests/tmp", "-y"]
+  progress1 : recvResult <- xftpCLI ["recv", fdRcv1, recipientFiles, "--tmp=" <> testDir, "-y"]
   progress1 `shouldSatisfy` downloadProgress "testfile"
   recvResult `shouldBe` ["File description " <> fdRcv1 <> " is deleted."]
   LB.readFile (recipientFiles </> "testfile") `shouldReturn` file
@@ -172,10 +158,10 @@ testXFTPCLIDelete_ = do
     `shouldReturn` ["File deleted!            \r", "File description " <> fdSnd <> " is deleted."]
   listDirectory xftpServerFiles >>= (`shouldBe` [])
   listDirectory xftpServerFiles2 >>= (`shouldBe` [])
-  xftpCLI ["recv", fdRcv2, recipientFiles, "--tmp=tests/tmp"]
+  xftpCLI ["recv", fdRcv2, recipientFiles, "--tmp=" <> testDir]
     `shouldThrow` anyException
 
-testReceivedFileNameCombine :: IO ()
+testReceivedFileNameCombine :: HasTestEnv => IO ()
 testReceivedFileNameCombine =
   uniqueCombine recipientFiles "../../escaped.txt" `shouldReturn` (recipientFiles </> "escaped.txt")
 
@@ -202,7 +188,7 @@ uploadProgress s =
     && "Uploading file..." `isInfixOf` s
     && "File uploaded!" `isInfixOf` s
 
-downloadProgress :: FilePath -> String -> Bool
+downloadProgress :: HasTestEnv => FilePath -> String -> Bool
 downloadProgress fileName s =
   "Downloading file..." `isPrefixOf` s
     && "Decrypting file..." `isInfixOf` s

@@ -14,13 +14,16 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
+import Control.Monad (forM, unless)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
+import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPClient as SMP
 import ServerTests
@@ -36,16 +39,22 @@ import ServerTests
     pattern Resp,
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
+import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client (TransportHost (..))
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
@@ -55,9 +64,14 @@ ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Push provider policy" $ do
     it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
+  describe "Database pool" $ do
+    it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
+  describe "Notification server restart" $ testResubscribeAfterRestart ps
+  describe "Notification service" $ do
+    it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -69,13 +83,13 @@ ntfSyntaxTests (ATransport t) = do
     it "token ID" $ (sampleSig, "abcd", "12345678", (TNEW_, ' ', ('T', 'A', 'T', "abcd" :: ByteString), samplePubKey, sampleDhPubKey)) >#> ("", "abcd", "12345678", NRErr $ CMD HAS_AUTH)
   where
     (>#>) ::
-      Encoding smp =>
+      (HasTestEnv, Encoding smp) =>
       (Maybe TAuthorizations, ByteString, ByteString, smp) ->
       (Maybe TAuthorizations, ByteString, ByteString, NtfResponse) ->
       Expectation
     command >#> response = withAPNSMockServer $ \_ -> ntfServerTest t command `shouldReturn` response
 
-testApnsTestProviderRejected :: ASrvTransport -> Expectation
+testApnsTestProviderRejected :: HasTestEnv => ASrvTransport -> Expectation
 testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
   g <- C.newRandom
   (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -86,6 +100,19 @@ testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
     testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
       RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
         signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
+      pure ()
+
+testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
+testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
+  g <- C.newRandom
+  (_, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (_, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let dbCfg = ntfTestDBCfg {dbOpts = ntfTestStoreDBOpts {poolSize = 1}}
+      q = SMPQueueNtf (SMPServer SMP.testHost SMP.testPort SMP.testKeyHash) (EntityId "abcd")
+  withNtfServerOn (ATransport t) ntfTestPort dbCfg $
+    testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
+      RespNtf "1" NoEntity (NRErr AUTH) <-
+        signSendRecvNtf nh tknKey ("1", NoEntity, SNEW $ NewNtfSub (EntityId "1234") q nKey)
       pure ()
 
 pattern RespNtf :: CorrId -> QueueId -> NtfResponse -> Transmission (Either ErrorType NtfResponse)
@@ -136,7 +163,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           let dhSecret = C.dh' ntfDh dhPriv
               decryptCode nd =
                 let Right verification = nd .-> "verification"
-                    Right nonce = C.cbNonce <$> nd .-> "nonce"
+                    Right nonce = C.cbNonce =<< nd .-> "nonce"
                     Right pt = C.cbDecrypt dhSecret nonce verification
                  in NtfRegCode pt
           let code = decryptCode ntfData
@@ -160,7 +187,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           -- receive notification
           APNSMockRequest {notification} <- getMockNotification apns tkn
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData'} = notification
-              Right nonce' = C.cbNonce <$> ntfData' .-> "nonce"
+              Right nonce' = C.cbNonce =<< ntfData' .-> "nonce"
               Right message = ntfData' .-> "message"
               Right ntfDataDecrypted = C.cbDecrypt dhSecret nonce' message
               Right pnMsgs1 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted
@@ -171,7 +198,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           notifierId `shouldBe` nId
           -- receive message
           Resp "" _ (MSG RcvMessage {msgId = mId1, msgBody = EncRcvMsgBody body}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId1) body)
+          Right ClientRcvMsgBody {msgTs = mTs, msgBody} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret mId1 body)
           mId1 `shouldBe` msgId
           mTs `shouldBe` msgTs
           (msgBody, "hello") #== "delivered from queue"
@@ -183,7 +210,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           APNSMockRequest {notification = APNSNotification {aps = APNSBackground _, notificationData = Just ntfData2}} <-
             getMockNotification apns tkn'
           let Right verification2 = ntfData2 .-> "verification"
-              Right nonce2 = C.cbNonce <$> ntfData2 .-> "nonce"
+              Right nonce2 = C.cbNonce =<< ntfData2 .-> "nonce"
               Right code2 = NtfRegCode <$> C.cbDecrypt dhSecret nonce2 verification2
           RespNtf "8" _ NROk <- signSendRecvNtf nh tknKey ("8", tId, TVFY code2)
           RespNtf "8a" _ (NRTkn NTActive) <- signSendRecvNtf nh tknKey ("8a", tId, TCHK)
@@ -191,7 +218,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           Resp "9" _ OK <- signSendRecv sh sKey ("9", sId, _SEND' "hello 2")
           APNSMockRequest {notification = notification3} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData3} = notification3
-              Right nonce3 = C.cbNonce <$> ntfData3 .-> "nonce"
+              Right nonce3 = C.cbNonce =<< ntfData3 .-> "nonce"
               Right message3 = ntfData3 .-> "message"
               Right ntfDataDecrypted3 = C.cbDecrypt dhSecret nonce3 message3
               Right pnMsgs2 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted3
@@ -199,7 +226,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           smpServer3 `shouldBe` srv
           notifierId3 `shouldBe` nId
           Resp "" _ (MSG RcvMessage {msgId = mId2, msgBody = EncRcvMsgBody body2}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgBody = "hello 2"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId2) body2)
+          Right ClientRcvMsgBody {msgBody = "hello 2"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret mId2 body2)
           Resp "10" _ OK <- signSendRecv rh rKey ("10", rId, ACK mId2)
 
           q2 <- createQueue rh sPub nPub
@@ -218,7 +245,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           Resp "14" _ OK <- signSendRecv sh sKey ("14", sId, _SEND' "hello 3")
           APNSMockRequest {notification = notification4} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData4} = notification4
-              Right nonce4 = C.cbNonce <$> ntfData4 .-> "nonce"
+              Right nonce4 = C.cbNonce =<< ntfData4 .-> "nonce"
               Right message4 = ntfData4 .-> "message"
               Right ntfDataDecrypted4 = C.cbDecrypt dhSecret nonce4 message4
               Right pnMsgs4 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted4
@@ -226,14 +253,14 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           smpServer4 `shouldBe` srv
           notifierId4 `shouldBe` nId
           Resp "" _ (MSG RcvMessage {msgId = mId3, msgBody = EncRcvMsgBody body3}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgBody = "hello 3"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret (C.cbNonce mId3) body3)
+          Right ClientRcvMsgBody {msgBody = "hello 3"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret mId3 body3)
           Resp "15" _ OK <- signSendRecv rh rKey ("15", rId, ACK mId3)
 
           -- deliver to queue with ntf sub created while SMP was offline
           Resp "16" _ OK <- signSendRecv sh sKey ("16", sId', _SEND' "hello 4")
           APNSMockRequest {notification = notification5} <- getMockNotification apns tkn'
           let APNSNotification {aps = APNSMutableContent {}, notificationData = Just ntfData5} = notification5
-              Right nonce5 = C.cbNonce <$> ntfData5 .-> "nonce"
+              Right nonce5 = C.cbNonce =<< ntfData5 .-> "nonce"
               Right message5 = ntfData5 .-> "message"
               Right ntfDataDecrypted5 = C.cbDecrypt dhSecret nonce5 message5
               Right pnMsgs5 = parse pnMessagesP (AP.INTERNAL "error parsing PNMessageData") ntfDataDecrypted5
@@ -241,7 +268,7 @@ testNotificationSubscription (ATransport t, msType) createQueue =
           smpServer5 `shouldBe` srv
           notifierId5 `shouldBe` nId'
           Resp "" _ (MSG RcvMessage {msgId = mId4, msgBody = EncRcvMsgBody body4}) <- tGet1 rh
-          Right ClientRcvMsgBody {msgBody = "hello 4"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret' (C.cbNonce mId4) body4)
+          Right ClientRcvMsgBody {msgBody = "hello 4"} <- pure $ parseAll clientRcvMsgBodyP =<< first show (C.cbDecrypt rcvDhSecret' mId4 body4)
           Resp "17" _ OK <- signSendRecv rh rKey' ("17", rId', ACK mId4)
           pure ()
 
@@ -277,6 +304,62 @@ testRetriedNtfSubscription (ATransport t, msType) =
           RespNtf "7" NoEntity (NRErr AUTH) <- signSendRecvNtf nh tknKey' ("7", NoEntity, SNEW $ NewNtfSub tId' q nKey)
           pure ()
 
+testResubscribeAfterRestart :: (ASrvTransport, AStoreType) -> Spec
+testResubscribeAfterRestart (ATransport t, msType) =
+  it "should resubscribe after restart with IPv4-mapped IPv6 server host" $ do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      smpTest2 t msType $ \rh sh -> do
+        ((sId, _rId, _rKey, _rcvDhSecret), nId, _rcvNtfDhSecret) <- createNtfQueueNKEY rh sPub nPub
+        ntfTest t $ \nh -> do
+          (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+          RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+          let ipv6Srv = SMPServer (THDomainName "0:0:0:0:0:ffff:7f00:1" :| []) "1" SMP.testKeyHash
+              srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+          RespNtf "3" NoEntity (NRSubId _) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf ipv6Srv (EntityId "abcd")) nKey)
+          RespNtf "4" NoEntity (NRSubId _) <- signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
+          pure ()
+        ntfTest t $ \_ -> do
+          threadDelay 500000
+          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
+          Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <-
+            5000000 `timeout` getMockNotification apns (DeviceToken PPApnsTest "abcd")
+          pure ()
+
+testResubscribeOnServiceIdChange :: HasTestEnv => (ASrvTransport, AStoreType) -> Expectation
+testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = do
+  g <- C.newRandom
+  (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let ntfCfg = ntfServerCfg {transports = [(ntfTestPort, ATransport t, False)], subsBatchSize = 1, smpAgentCfg = (smpAgentCfg ntfServerCfg) {agentQSize = 1}}
+      srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+  withAPNSMockServer $ \apns ->
+    withNtfServerCfg ntfCfg $ \_ ->
+      testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
+        (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+        let checkActive subId = do
+              RespNtf "4" _ (NRSub status) <- signSendRecvNtf nh tknKey ("4", subId, SCHK)
+              unless (status == NSActive) $ threadDelay 100000 >> checkActive subId
+            waitActive subIds = timeout 5000000 (mapM_ checkActive subIds) `shouldReturn` Just ()
+        (sId, subIds) <- withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+          ((sId, _, _, _), nId1, _) <- createNtfQueueNKEY h sPub nPub
+          (_, nId2, _) <- createNtfQueueNKEY h sPub nPub
+          subIds <- forM [nId1, nId2] $ \nId -> do
+            RespNtf "3" NoEntity (NRSubId subId) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
+            pure subId
+          waitActive subIds
+          pure (sId, subIds)
+        st <- newNtfDbStore ntfTestDBCfg
+        Right 1 <- withDB' "test" st $ \db -> PSQL.execute_ db "UPDATE smp_servers SET ntf_service_cert = NULL, ntf_service_cert_hash = NULL, ntf_service_priv_key = NULL"
+        closeNtfDbStore st
+        withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+          Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND' "hello")
+          APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <- getMockNotification apns $ DeviceToken PPApnsTest "abcd"
+          waitActive subIds
+
 type CreateQueueFunc =
   forall c.
   Transport c =>
@@ -307,7 +390,7 @@ registerToken nh apns token = do
   let dhSecret = C.dh' ntfDh dhPriv
       decryptCode nd =
         let Right verification = nd .-> "verification"
-            Right nonce = C.cbNonce <$> nd .-> "nonce"
+            Right nonce = C.cbNonce =<< nd .-> "nonce"
             Right pt = C.cbDecrypt dhSecret nonce verification
          in NtfRegCode pt
   let code = decryptCode ntfData

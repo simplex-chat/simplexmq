@@ -5,12 +5,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module XFTPServerTests (xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException)
+import Control.Exception (SomeException, bracket)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -28,6 +29,8 @@ import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
+import qualified Network.TLS as T
+import SMPClient (withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -35,7 +38,7 @@ import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
-import Simplex.Messaging.Client (ProtocolClientError (..))
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
@@ -47,16 +50,17 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import System.Directory (createDirectoryIfMissing, removeDirectoryRecursive, removeFile)
+import System.Directory (removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (async, cancel)
 import UnliftIO.STM
+import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
 
 xftpServerTests :: SpecWith AFStoreType
-xftpServerTests =
-  before_ (createDirectoryIfMissing False xftpServerFiles) . after_ (removeDirectoryRecursive xftpServerFiles) $ do
+xftpServerTests = do
     describe "XFTP file chunk delivery" $ do
       it "should create, upload and receive file chunk (1 client)" testFileChunkDelivery
       it "should create, upload and receive file chunk (2 clients)" testFileChunkDelivery2
@@ -66,6 +70,7 @@ xftpServerTests =
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
+      it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
@@ -76,6 +81,8 @@ xftpServerTests =
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
+      it "should close connection when handshake times out" testHandshakeTimeout
+      it "should close connection when cancelled during handshake" testCancelledHandshake
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -90,8 +97,8 @@ xftpServerTests =
 chSize :: Integral a => a
 chSize = kb 128
 
-testChunkPath :: FilePath
-testChunkPath = "tests/tmp/chunk1"
+testChunkPath :: HasTestEnv => FilePath
+testChunkPath = testPath "chunk1"
 
 createTestChunk :: FilePath -> IO ByteString
 createTestChunk fp = do
@@ -103,16 +110,16 @@ createTestChunk fp = do
 createXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> FileInfo -> NonEmpty C.APublicAuthKey -> Maybe BasicAuth -> ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId)
 createXFTPChunk c spKey file rcps auth = (\(sId, rIds, _) -> (sId, rIds)) <$> A.createXFTPChunk c spKey file rcps auth Nothing
 
-readChunk :: XFTPFileId -> IO ByteString
+readChunk :: HasTestEnv => XFTPFileId -> IO ByteString
 readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
 
-testFileChunkDelivery :: AFStoreType -> Expectation
+testFileChunkDelivery :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c
 
-testFileChunkDelivery2 :: AFStoreType -> Expectation
+testFileChunkDelivery2 :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkDelivery2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkDelivery s r
 
-runTestFileChunkDelivery :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
+runTestFileChunkDelivery :: HasTestEnv => XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
 runTestFileChunkDelivery s r = do
   g <- liftIO C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -127,12 +134,12 @@ runTestFileChunkDelivery s r = do
   uploadXFTPChunk s spKey sId' chunkSpec
     `catchError` (liftIO . (`shouldBe` PCEProtocolError DIGEST))
   liftIO $ readChunk sId `shouldReturn` bytes
-  downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize (digest <> "_wrong"))
+  downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec (testPath "received_chunk1") chSize (digest <> "_wrong"))
     `catchError` (liftIO . (`shouldBe` PCEResponseError DIGEST))
-  downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-  liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+  downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+  liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
-testFileChunkDeliveryAddRecipients :: AFStoreType -> Expectation
+testFileChunkDeliveryAddRecipients :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
   g <- liftIO C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -149,17 +156,17 @@ testFileChunkDeliveryAddRecipients = xftpTest4 $ \s r1 r2 r3 -> runRight_ $ do
   let testReceiveChunk r rpKey rId fPath = do
         downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec fPath chSize digest
         liftIO $ B.readFile fPath `shouldReturn` bytes
-  testReceiveChunk r1 rpKey1 rId1 "tests/tmp/received_chunk1"
-  testReceiveChunk r2 rpKey2 rId2 "tests/tmp/received_chunk2"
-  testReceiveChunk r3 rpKey3 rId3 "tests/tmp/received_chunk3"
+  testReceiveChunk r1 rpKey1 rId1 (testPath "received_chunk1")
+  testReceiveChunk r2 rpKey2 rId2 (testPath "received_chunk2")
+  testReceiveChunk r3 rpKey3 rId3 (testPath "received_chunk3")
 
-testFileChunkDelete :: AFStoreType -> Expectation
+testFileChunkDelete :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkDelete = xftpTest $ \c -> runRight_ $ runTestFileChunkDelete c c
 
-testFileChunkDelete2 :: AFStoreType -> Expectation
+testFileChunkDelete2 :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkDelete2 = xftpTest2 $ \s r -> runRight_ $ runTestFileChunkDelete s r
 
-runTestFileChunkDelete :: XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
+runTestFileChunkDelete :: HasTestEnv => XFTPClient -> XFTPClient -> ExceptT XFTPClientError IO ()
 runTestFileChunkDelete s r = do
   g <- liftIO C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -171,18 +178,18 @@ runTestFileChunkDelete s r = do
   (sId, [rId]) <- createXFTPChunk s spKey file [rcvKey] Nothing
   uploadXFTPChunk s spKey sId chunkSpec
 
-  downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-  liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+  downloadXFTPChunk g r rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+  liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
   deleteXFTPChunk s spKey sId
   liftIO $
     readChunk sId
       `shouldThrow` \(e :: SomeException) -> "does not exist" `isInfixOf` show e
-  downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
+  downloadXFTPChunk g r rpKey rId (XFTPRcvChunkSpec (testPath "received_chunk2") chSize digest)
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   deleteXFTPChunk s spKey sId
     `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testWrongChunkSize :: AFStoreType -> Expectation
+testWrongChunkSize :: HasTestEnv => AFStoreType -> Expectation
 testWrongChunkSize = xftpTest $ \c -> do
   g <- C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -194,7 +201,7 @@ testWrongChunkSize = xftpTest $ \c -> do
     void (createXFTPChunk c spKey file [rcvKey] Nothing)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError SIZE))
 
-testFileChunkExpiration :: AFStoreType -> Expectation
+testFileChunkExpiration :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileExpiration}) $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     g <- liftIO C.newRandom
@@ -207,18 +214,18 @@ testFileChunkExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fs
     (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
     uploadXFTPChunk c spKey sId chunkSpec
 
-    downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-    liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+    downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+    liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
     liftIO $ threadDelay 1000000
-    downloadXFTPChunk g c rpKey rId (XFTPRcvChunkSpec "tests/tmp/received_chunk2" chSize digest)
+    downloadXFTPChunk g c rpKey rId (XFTPRcvChunkSpec (testPath "received_chunk2") chSize digest)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
     deleteXFTPChunk c spKey sId
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   where
     fileExpiration = ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testInactiveClientExpiration :: AFStoreType -> Expectation
+testInactiveClientExpiration :: HasTestEnv => AFStoreType -> Expectation
 testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> runRight_ $ do
   disconnected <- newEmptyTMVarIO
   ts <- liftIO getCurrentTime
@@ -234,7 +241,16 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testFileStorageQuota :: AFStoreType -> Expectation
+testCancelledClientConnect :: HasTestEnv => Expectation
+testCancelledClientConnect =
+  withStallingServerOn' xftpTestPort $ \accepted closed -> do
+    ts <- getCurrentTime
+    a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+    timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+    cancel a
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
+testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
     g <- liftIO C.newRandom
@@ -245,8 +261,8 @@ testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsTyp
     let file = FileInfo {sndKey, size = chSize, digest}
         chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
         download rId = do
-          downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-          liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+          downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+          liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
     (sId1, [rId1]) <- createXFTPChunk c spKey file [rcvKey] Nothing
     uploadXFTPChunk c spKey sId1 chunkSpec
     download rId1
@@ -262,7 +278,7 @@ testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsTyp
     uploadXFTPChunk c spKey sId3 chunkSpec
     download rId3
 
-testFileLog :: AFStoreType -> Expectation
+testFileLog :: HasTestEnv => AFStoreType -> Expectation
 testFileLog _ = do
   g <- C.newRandom
   bytes <- liftIO $ createTestChunk testChunkPath
@@ -298,9 +314,9 @@ testFileLog _ = do
     rId1 <- liftIO $ readTVarIO rIdVar1
     rId2 <- liftIO $ readTVarIO rIdVar2
     -- recipients and sender get AUTH error because server restarted without log
-    downloadXFTPChunk g c rpKey1 rId1 (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest)
+    downloadXFTPChunk g c rpKey1 rId1 (XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
-    downloadXFTPChunk g c rpKey2 rId2 (XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest)
+    downloadXFTPChunk g c rpKey2 rId2 (XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest)
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
     deleteXFTPChunk c spKey sId
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
@@ -331,10 +347,10 @@ testFileLog _ = do
   removeFile testXFTPStatsBackupFile
   where
     download g c rpKey rId digest bytes = do
-      downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk1" chSize digest
-      liftIO $ B.readFile "tests/tmp/received_chunk1" `shouldReturn` bytes
+      downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+      liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
-testFileBasicAuth :: Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
+testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {allowNewFiles, newFileBasicAuth}) $
     \_ -> testXFTPClient $ \c -> do
@@ -350,13 +366,13 @@ testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =
           then do
             (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] clntAuth
             uploadXFTPChunk c spKey sId chunkSpec
-            downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk" chSize digest
-            liftIO $ B.readFile "tests/tmp/received_chunk" `shouldReturn` bytes
+            downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
+            liftIO $ B.readFile (testPath "received_chunk") `shouldReturn` bytes
           else do
             void (createXFTPChunk c spKey file [rcvKey] clntAuth)
               `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
 
-testFileSkipCommitted :: AFStoreType -> IO ()
+testFileSkipCommitted :: HasTestEnv => AFStoreType -> IO ()
 testFileSkipCommitted fsType =
   withXFTPServerConfigOn (cfgFS fsType) $
     \_ -> testXFTPClient $ \c -> do
@@ -372,8 +388,26 @@ testFileSkipCommitted fsType =
         uploadXFTPChunk c spKey sId chunkSpec
         void . liftIO $ createTestChunk testChunkPath -- trash chunk contents
         uploadXFTPChunk c spKey sId chunkSpec -- upload again to get FROk without getting stuck
-        downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec "tests/tmp/received_chunk" chSize digest
-        liftIO $ B.readFile "tests/tmp/received_chunk" `shouldReturn` bytes -- new chunk content got ignored
+        downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
+        liftIO $ B.readFile (testPath "received_chunk") `shouldReturn` bytes -- new chunk content got ignored
+
+testHandshakeTimeout :: HasTestEnv => AFStoreType -> Expectation
+testHandshakeTimeout _ =
+  withStallingXFTPServer $ \_ closed -> do
+    ts <- getCurrentTime
+    (void <$> getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure Nothing) (\_ -> pure ())) `shouldReturn` Left PCEResponseTimeout
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+  where
+    cfg = testXFTPClientConfig {xftpNetworkConfig = defaultNetworkConfig {tcpConnectTimeout = NetworkTimeout 2000000 2000000}}
+
+testCancelledHandshake :: HasTestEnv => AFStoreType -> Expectation
+testCancelledHandshake _ =
+  withStallingXFTPServer $ \requested closed -> do
+    ts <- getCurrentTime
+    a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+    timeout 5000000 (atomically $ takeTMVar requested) `shouldReturn` Just ()
+    cancel a
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 -- SNI and CORS tests
 
@@ -386,7 +420,14 @@ getCerts tls =
   let X.CertificateChain cc = tlsPeerCert tls
    in map (X.signedObject . X.getSigned) cc
 
-testSNICertSelection :: Expectation
+withH2Client :: HasTestEnv => T.Supported -> TransportClientConfig -> C.KeyHash -> (HC.HTTP2Client -> IO a) -> IO a
+withH2Client tlsParams cfg caHash action =
+  runTLSTransportClient tlsParams Nothing cfg Nothing "localhost" xftpTestPort (Just caHash) $ \(tls :: TLS 'TClient) ->
+    bracket (either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls) HC.closeHTTP2Client action
+  where
+    h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
+
+testSNICertSelection :: HasTestEnv => Expectation
 testSNICertSelection =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
@@ -399,7 +440,7 @@ testSNICertSelection =
         leaf : _ -> expectationFailure $ "Expected RSA cert, got: " <> show (X.certPubKey leaf)
         [] -> expectationFailure "Empty certificate chain"
 
-testNoSNICertSelection :: Expectation
+testNoSNICertSelection :: HasTestEnv => Expectation
 testNoSNICertSelection =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
@@ -412,29 +453,25 @@ testNoSNICertSelection =
         leaf : _ -> expectationFailure $ "Expected Ed448 cert, got: " <> show (X.certPubKey leaf)
         [] -> expectationFailure "Empty certificate chain"
 
-testCORSHeaders :: Expectation
+testCORSHeaders :: HasTestEnv => Expectation
 testCORSHeaders =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
       HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
       lookupResponseHeader "access-control-expose-headers" response `shouldBe` Just "*"
 
-testCORSPreflight :: Expectation
+testCORSPreflight :: HasTestEnv => Expectation
 testCORSPreflight =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "OPTIONS" "/" []
       HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
@@ -442,24 +479,22 @@ testCORSPreflight =
       lookupResponseHeader "access-control-allow-headers" response `shouldBe` Just "*"
       lookupResponseHeader "access-control-max-age" response `shouldBe` Just "86400"
 
-testNoCORSWithoutSNI :: Expectation
+testNoCORSWithoutSNI :: HasTestEnv => Expectation
 testNoCORSWithoutSNI =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
     let caXFTP = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["xftp/1"], useSNI = False}
-    runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just caXFTP) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParams cfg caXFTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
       HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Nothing
 
-testFileChunkDeliverySNI :: Expectation
+testFileChunkDeliverySNI :: HasTestEnv => Expectation
 testFileChunkDeliverySNI =
   withXFTPServerSNI $ \_ -> testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
 
-testWebHandshake :: Expectation
+testWebHandshake :: HasTestEnv => Expectation
 testWebHandshake =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
@@ -467,9 +502,7 @@ testWebHandshake =
     let webCaHash = C.KeyHash fpWeb
         keyHash = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg webCaHash $ \h2 -> do
       -- Send web challenge as XFTPClientHello
       g <- C.newRandom
       challenge <- atomically $ C.randomBytes 32 g
@@ -501,7 +534,7 @@ testWebHandshake =
       let ackBody = bodyHead (HC.respBody resp2)
       B.length ackBody `shouldBe` 0
 
-testWebReHandshake :: Expectation
+testWebReHandshake :: HasTestEnv => Expectation
 testWebReHandshake =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
@@ -509,9 +542,7 @@ testWebReHandshake =
     let webCaHash = C.KeyHash fpWeb
         keyHash = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg webCaHash $ \h2 -> do
       g <- C.newRandom
       -- First handshake
       challenge1 <- atomically $ C.randomBytes 32 g
@@ -535,15 +566,13 @@ testWebReHandshake =
       resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
       B.length (bodyHead (HC.respBody resp2b)) `shouldBe` 0
 
-testStaleWebSession :: Expectation
+testStaleWebSession :: HasTestEnv => Expectation
 testStaleWebSession =
   withXFTPServerSNI $ \_ -> do
     Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let webCaHash = C.KeyHash fpWeb
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg webCaHash $ \h2 -> do
       -- Send a command on web connection without doing hello (no xftp-web-hello header)
       dummyBody <- either (error . show) pure $ C.pad "PING" xftpBlockSize
       let req = H2.requestBuilder "POST" "/" [] $ byteString dummyBody
