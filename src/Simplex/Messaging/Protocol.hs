@@ -258,7 +258,6 @@ import qualified Data.ByteString.Lazy as LB
 import Data.Char (isPrint, isSpace)
 import Data.Constraint (Dict (..))
 import Data.Functor (($>))
-import Data.Hashable (Hashable (..))
 import Data.Int (Int64)
 import Data.Kind
 import Data.List (foldl')
@@ -1310,9 +1309,6 @@ data ProtocolServer p = ProtocolServer
   }
   deriving (Eq, Ord, Show)
 
-instance Hashable (ProtocolServer p) where
-  hashWithSalt s ProtocolServer {host, port, keyHash} = s `hashWithSalt` host `hashWithSalt` port `hashWithSalt` keyHash
-
 data AProtocolServer = forall p. ProtocolTypeI p => AProtocolServer (SProtocolType p) (ProtocolServer p)
 
 instance ProtocolTypeI p => IsString (ProtocolServer p) where
@@ -1435,7 +1431,7 @@ serverStrP = do
 -- | Transmission correlation ID.
 newtype CorrId = CorrId {bs :: ByteString}
   deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, Hashable)
+  deriving newtype (Encoding)
 
 pattern NoCorrId :: CorrId
 pattern NoCorrId = CorrId ""

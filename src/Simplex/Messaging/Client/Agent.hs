@@ -298,8 +298,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
         updateQueueSubs qVar = do
           -- removing subscriptions that have matching sessionId to disconnected client
           -- and keep the other ones (they can be made by the new client)
-          subs <- M.map snd . M.filter ((sessId ==) . fst) <$> TM.toMap qVar
-          mapM_ (`TM.delete` qVar) $ M.keys subs
+          subs <- M.map snd <$> stateTVar qVar (M.partition ((sessId ==) . fst))
           if M.null subs
             then pure Nothing
             else Just subs <$ addSubs_ (pendingQueueSubs ca) srv subs
@@ -319,7 +318,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
   where
     getWorkerVar ts =
       ifM
-        (noPending <$> getPending)
+        (noPending <$> getPending TM.lookup readTVar)
         (pure Nothing) -- prevent race with cleanup and adding pending queues in another call
         (Just <$> getSessVar workerSeq srv smpSubWorkers ts)
     newSubWorker :: SessionVar (Async ()) -> IO ()
@@ -329,7 +328,7 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
     runSubWorker v =
       withRetryInterval (reconnectInterval agentCfg) $ \_ loop -> do
         subs_ <- atomically $ do                                                                                                                            
-          s <- getPending
+          s <- getPending TM.lookup readTVar
           if noPending s                                                                                                                                    
             then cleanup v $> Nothing                                                                                                                       
             else pure $ Just s                                                                                                                              
@@ -338,10 +337,10 @@ reconnectClient ca@SMPClientAgent {active, agentCfg, smpSubWorkers, workerSeq} s
           loop
     ProtocolClientConfig {networkConfig = NetworkConfig {tcpConnectTimeout}} = smpCfg agentCfg
     noPending (sSub, qSubs) = isNothing sSub && maybe True M.null qSubs
-    getPending :: STM (Maybe ServiceSub, Maybe (Map QueueId C.APrivateAuthKey))
-    getPending = do
-      sSub <- TM.lookup srv (pendingServiceSubs ca) $>>= readTVar
-      qSubs <- TM.lookup srv (pendingQueueSubs ca) >>= mapM TM.toMap
+    getPending :: Monad m => (forall a. SMPServer -> TMap SMPServer a -> m (Maybe a)) -> (forall a. TVar a -> m a) -> m (Maybe ServiceSub, Maybe (Map QueueId C.APrivateAuthKey))
+    getPending lkup rd = do
+      sSub <- lkup srv (pendingServiceSubs ca) $>>= rd
+      qSubs <- lkup srv (pendingQueueSubs ca) >>= mapM rd
       pure (sSub, qSubs)
     cleanup :: SessionVar (Async ()) -> STM ()
     cleanup v = do
@@ -360,9 +359,9 @@ reconnectSMPClient ca@SMPClientAgent {agentCfg, agentParty} srv (sSub_, qSubs_) 
     resubscribe smp = do
       mapM_ (smpSubscribeService ca smp srv) sSub_
       forM_ qSubs_ $ \qSubs -> do
-        currSubs_ <- TM.lookupIO srv (activeQueueSubs ca)
-        qSubs' :: [(QueueId, C.APrivateAuthKey)] <-
-          maybe pure (\currSubs -> filterM (fmap not . (`TM.memberIO` currSubs) . fst)) currSubs_ $ M.assocs qSubs
+        currSubs_ <- mapM readTVarIO =<< TM.lookupIO srv (activeQueueSubs ca)
+        let qSubs' :: [(QueueId, C.APrivateAuthKey)] =
+              maybe id (\currSubs -> filter ((`M.notMember` currSubs) . fst)) currSubs_ $ M.assocs qSubs
         mapM_ (smpSubscribeQueues @p ca smp srv) $ toChunks (agentSubsBatchSize agentCfg) qSubs'
 
 notify :: MonadIO m => SMPClientAgent p -> SMPClientAgentEvent -> m ()
@@ -391,13 +390,13 @@ closeSMPClientAgent :: SMPClientAgent p -> IO ()
 closeSMPClientAgent c = do
   atomically $ writeTVar (active c) False
   closeSMPServerClients c
-  atomically (TM.flush $ smpSubWorkers c) >>= mapM_ cancelReconnect
+  atomically (swapTVar (smpSubWorkers c) M.empty) >>= mapM_ cancelReconnect
   where
     cancelReconnect :: SessionVar (Async ()) -> IO ()
     cancelReconnect v = void . forkIO $ atomically (readTMVar $ sessionVar v) >>= uninterruptibleCancel
 
 closeSMPServerClients :: SMPClientAgent p -> IO ()
-closeSMPServerClients c = atomically (TM.flush $ smpClients c) >>= mapM_ (forkIO . closeClient)
+closeSMPServerClients c = atomically (smpClients c `swapTVar` M.empty) >>= mapM_ (forkIO . closeClient)
   where
     closeClient v =
       atomically (readTMVar $ sessionVar v) >>= \case
@@ -447,7 +446,7 @@ smpSubscribeQueues ca smp srv subs = do
   where
     processSubscriptions :: NonEmpty (Either SMPClientError (Maybe ServiceId)) -> STM (Bool, [(QueueId, SMPClientError)], ([(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId]), [QueueId])
     processSubscriptions rs = do
-      pending <- maybe (pure S.empty) (\m -> S.fromList <$> filterM (`TM.member` m) (map fst $ L.toList subs)) =<< TM.lookup srv (pendingQueueSubs ca)
+      pending <- maybe (pure M.empty) readTVar =<< TM.lookup srv (pendingQueueSubs ca)
       let acc@(_, _, (qOks, sQs), notPending) = foldr (groupSub pending) (False, [], ([], []), []) (L.zip subs rs)
       unless (null qOks) $ addActiveSubs ca srv qOks
       unless (null sQs) $ forM_ smpServiceId $ \serviceId ->
@@ -457,13 +456,13 @@ smpSubscribeQueues ca smp srv subs = do
     sessId = sessionId $ thParams smp
     smpServiceId = smpClientServiceId smp
     groupSub ::
-      S.Set QueueId ->
+      Map QueueId C.APrivateAuthKey ->
       ((QueueId, C.APrivateAuthKey), Either SMPClientError (Maybe ServiceId)) ->
       (Bool, [(QueueId, SMPClientError)], ([(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId]), [QueueId]) ->
       (Bool, [(QueueId, SMPClientError)], ([(QueueId, (SessionId, C.APrivateAuthKey))], [QueueId]), [QueueId])
     groupSub pending ((qId, pk), r) acc@(!tempErrs, finalErrs, oks@(qOks, sQs), notPending) = case r of
       Right serviceId_
-        | S.member qId pending ->
+        | M.member qId pending ->
             let oks' = case (smpServiceId, serviceId_) of
                   (Just sId, Just sId') | sId == sId' -> (qOks, qId : sQs)
                   _ -> ((qId, (sessId, pk)) : qOks, sQs)
@@ -548,10 +547,7 @@ addSubs_ :: TMap SMPServer (TMap QueueId s) -> SMPServer -> Map QueueId s -> STM
 addSubs_ subs srv ss =
   TM.lookup srv subs >>= \case
     Just m -> TM.union ss m
-    _ -> do
-      m <- TM.empty
-      TM.union ss m
-      TM.insert srv m subs
+    _ -> TM.insertM srv (newTVar ss) subs
 
 setActiveServiceSub :: SMPClientAgent p -> SMPServer -> Maybe (ServiceSub, SessionId) -> STM ()
 setActiveServiceSub = setServiceSub_ activeServiceSubs
@@ -601,4 +597,4 @@ removePendingSubs = removeSubs_ . pendingQueueSubs
 {-# INLINE removePendingSubs #-}
 
 removeSubs_ :: TMap SMPServer (TMap QueueId s) -> SMPServer -> [QueueId] -> STM ()
-removeSubs_ subs srv qs = TM.lookup srv subs >>= mapM_ (\m -> mapM_ (`TM.delete` m) qs)
+removeSubs_ subs srv qs = TM.lookup srv subs >>= mapM_ (`modifyTVar'` (`M.withoutKeys` S.fromList qs))

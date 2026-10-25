@@ -50,7 +50,6 @@ module Simplex.Messaging.Server.Env.STM
     insertServerClient,
     deleteServerClient,
     getSubscribedClients,
-    getSubscribedClientsCount,
     getSubscribedClient,
     upsertSubscribedClient,
     lookupSubscribedClient,
@@ -86,6 +85,8 @@ import Crypto.Random
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IS
 import Data.Kind (Constraint)
 import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
@@ -123,11 +124,10 @@ import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.TSet (TSet)
-import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=))
+import qualified StmContainers.Map as SM
 import System.Directory (doesFileExist)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..))
@@ -345,15 +345,15 @@ data Server s = Server
   }
 
 -- not exported, to prevent concurrent IntMap lookups inside STM transactions.
-newtype ServerClients s = ServerClients {serverClients :: TMap ClientId (Client s)}
+newtype ServerClients s = ServerClients {serverClients :: TVar (IntMap (Client s))}
 
 data ServerSubscribers s = ServerSubscribers
   { subQ :: TQueue (ClientSub, ClientId),
     queueSubscribers :: SubscribedClients s,
     serviceSubscribers :: SubscribedClients s, -- service clients with long-term certificates that have subscriptions
     totalServiceSubs :: TVar (Int64, IdsHash),
-    subClients :: TSet ClientId, -- clients with individual or service subscriptions
-    pendingEvents :: TMap ClientId (NonEmpty (EntityId, BrokerMsg))
+    subClients :: TVar IntSet, -- clients with individual or service subscriptions
+    pendingEvents :: TVar (IntMap (NonEmpty (EntityId, BrokerMsg)))
   }
 
 -- not exported, to prevent accidental concurrent Map lookups inside STM transactions.
@@ -366,10 +366,7 @@ data ServerSubscribers s = ServerSubscribers
 data SubscribedClients s = SubscribedClients (TMap EntityId (TVar (Maybe (Client s))))
 
 getSubscribedClients :: SubscribedClients s -> IO (Map EntityId (TVar (Maybe (Client s))))
-getSubscribedClients (SubscribedClients cs) = TM.toMapIO cs
-
-getSubscribedClientsCount :: SubscribedClients s -> IO Int
-getSubscribedClientsCount (SubscribedClients cs) = TM.sizeIO cs
+getSubscribedClients (SubscribedClients cs) = readTVarIO cs
 
 getSubscribedClient :: EntityId -> SubscribedClients s -> IO (Maybe (TVar (Maybe (Client s))))
 getSubscribedClient entId (SubscribedClients cs) = TM.lookupIO entId cs
@@ -437,7 +434,7 @@ data Client s = Client
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
-    endThreads :: TMap Int (Weak ThreadId),
+    endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     clientTHParams :: THandleParams SMPVersion 'TServer,
     connected :: TVar Bool,
@@ -461,18 +458,18 @@ data Sub = Sub
 
 newServer :: IO (Server s)
 newServer = do
-  clients <- ServerClients <$> TM.emptyIO
+  clients <- ServerClients <$> newTVarIO mempty
   subscribers <- newServerSubscribers
   ntfSubscribers <- newServerSubscribers
   savingLock <- createLockIO
   return Server {clients, subscribers, ntfSubscribers, savingLock}
 
 getServerClients :: Server s -> IO (IntMap (Client s))
-getServerClients = TM.foldIO (\cs (cId, c) -> pure $! IM.insert cId c cs) IM.empty . serverClients . clients
+getServerClients = readTVarIO . serverClients . clients
 {-# INLINE getServerClients #-}
 
 getServerClient :: ClientId -> Server s -> IO (Maybe (Client s))
-getServerClient cId = TM.lookupIO cId . serverClients . clients
+getServerClient cId s = IM.lookup cId <$> getServerClients s
 {-# INLINE getServerClient #-}
 
 insertServerClient :: Client s -> Server s -> IO Bool
@@ -480,12 +477,12 @@ insertServerClient c@Client {clientId, connected} Server {clients} =
   atomically $
     ifM
       (readTVar connected)
-      (True <$ TM.insert clientId c (serverClients clients))
+      (True <$ modifyTVar' (serverClients clients) (IM.insert clientId c))
       (pure False)
 {-# INLINE insertServerClient #-}
 
 deleteServerClient :: ClientId -> Server s -> IO ()
-deleteServerClient cId Server {clients} = atomically $ TM.delete cId $ serverClients clients
+deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClients clients) $ IM.delete cId
 {-# INLINE deleteServerClient #-}
 
 newServerSubscribers :: IO (ServerSubscribers s)
@@ -494,8 +491,8 @@ newServerSubscribers = do
   queueSubscribers <- SubscribedClients <$> TM.emptyIO
   serviceSubscribers <- SubscribedClients <$> TM.emptyIO
   totalServiceSubs <- newTVarIO (0, mempty)
-  subClients <- TS.emptyIO
-  pendingEvents <- TM.emptyIO
+  subClients <- newTVarIO IS.empty
+  pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
 newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client s)
@@ -510,7 +507,7 @@ newClient clientId qSize clientTHParams createdAt = do
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
-  endThreads <- TM.emptyIO
+  endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
@@ -568,7 +565,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       when compactLog $ compactDbStoreLog $ dbStoreLogPath storeCfg
       StoreDatabase <$> newMsgStore cfg
 #endif
-  ntfStore <- NtfStore <$> TM.emptyIO
+  ntfStore <- NtfStore <$> SM.newIO
   random <- C.newRandom
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials

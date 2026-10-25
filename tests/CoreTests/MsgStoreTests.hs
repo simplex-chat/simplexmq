@@ -36,7 +36,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
+import qualified StmContainers.Map as SM
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -246,7 +246,7 @@ queueMapSizes ms = (,,,) <$> size queues <*> size senders <*> size links <*> siz
   where
     STMQueueStore {queues, senders, links, notifiers} = queueStore ms
     size :: TMap k v -> IO Int
-    size = TM.sizeIO
+    size = fmap M.size . readTVarIO
 
 testDeleteQueueMaps :: STMMsgStore -> IO ()
 testDeleteQueueMaps ms = do
@@ -292,12 +292,12 @@ mkMsgNtf g ts = do
   pure MsgNtf {ntfMsgId, ntfTs = MkSystemTime ts 0, ntfNonce, ntfEncMeta = "meta"}
 
 ntfCounts :: NtfStore -> IO [(NotifierId, Int)]
-ntfCounts (NtfStore ns) = M.assocs <$> (mapM (fmap length . readTVarIO) =<< TM.toMapIO ns)
+ntfCounts st = M.assocs <$> (mapM (fmap length . readTVarIO) . M.fromList =<< getNtfs st)
 
 testExpireNtfs :: IO ()
 testExpireNtfs = do
   g <- C.newRandom
-  st@(NtfStore ns) <- NtfStore <$> TM.emptyIO
+  st@(NtfStore ns) <- NtfStore <$> SM.newIO
   now <- systemSeconds <$> getSystemTime
   let old = now - 100
       nId1 = EntityId "notifier 1"
@@ -306,7 +306,7 @@ testExpireNtfs = do
   storeNtf st nId1 =<< mkMsgNtf g old
   storeNtf st nId2 =<< mkMsgNtf g old
   storeNtf st nId2 =<< mkMsgNtf g now
-  atomically $ TM.insertM nId3 (newTVar []) ns
+  atomically $ newTVar [] >>= \v -> SM.insert v nId3 ns
   ntfCounts st `shouldReturn` [(nId1, 1), (nId2, 2), (nId3, 0)]
   deleteExpiredNtfs st (now - 50) `shouldReturn` 2
   ntfCounts st `shouldReturn` [(nId2, 1)]
@@ -317,14 +317,14 @@ testExpireNtfs = do
 testDeleteEmptyNtfs :: IO ()
 testDeleteEmptyNtfs = do
   g <- C.newRandom
-  st@(NtfStore ns) <- NtfStore <$> TM.emptyIO
+  st <- NtfStore <$> SM.newIO
   now <- systemSeconds <$> getSystemTime
   let nId1 = EntityId "notifier 1"
       nId2 = EntityId "notifier 2"
       nId3 = EntityId "notifier 3"
       nId4 = EntityId "notifier 4"
   forM_ ([nId1, nId2, nId3, nId4] :: [NotifierId]) $ \nId -> storeNtf st nId =<< mkMsgNtf g now
-  ntfs <- M.assocs <$> TM.toMapIO ns
+  ntfs <- getNtfs st
   let flush nId = forM_ (lookup nId ntfs) $ \v -> atomically $ writeTVar v []
   mapM_ flush ([nId1, nId2, nId4] :: [NotifierId])
   storeNtf st nId2 =<< mkMsgNtf g now

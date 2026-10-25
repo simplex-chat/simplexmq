@@ -78,7 +78,6 @@ import Simplex.Messaging.Server.Stats (PeriodStats (..), PeriodStatCounts (..), 
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, ATransport (..), THandle (..), THandleAuth (..), THandleParams (..), TProxy, Transport (..), TransportPeer (..), defaultSupportedParams)
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server (AddHTTP, runTransportServer, runLocalTCPServer)
@@ -148,9 +147,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       logNote "Saving server state..."
       saveServer
       NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
-      liftIO $ TM.toMapIO smpSubscribers >>= mapM_ stopSubscriber
+      liftIO $ readTVarIO smpSubscribers >>= mapM_ stopSubscriber
       NtfPushServer {pushWorkers} <- asks pushServer
-      liftIO $ TM.toMapIO pushWorkers >>= mapM_ stopPushWorker
+      liftIO $ readTVarIO pushWorkers >>= mapM_ stopPushWorker
       liftIO $ closeSMPClientAgent smpAgent
       logNote "Server stopped"
       where
@@ -273,7 +272,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       ntfActiveQueueSubs <- getSMPSubMetrics a activeQueueSubs
       ntfPendingServiceSubs <- getSMPServiceSubMetrics a pendingServiceSubs smpQueueCount
       ntfPendingQueueSubs <- getSMPSubMetrics a pendingQueueSubs
-      smpSessionCount <- TM.sizeIO smpSessions
+      smpSessionCount <- M.size <$> readTVarIO smpSessions
       apnsPushQLength <- pushWorkersQLength pushWorkers
       pure
         NtfRealTimeMetrics
@@ -299,15 +298,15 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         getSMPSubMetrics a sel = getSubMetrics_ a sel countSubs
           where
             countSubs :: (NtfSMPSubMetrics, S.Set Text) -> (SMPServer, TMap NotifierId a) -> IO (NtfSMPSubMetrics, S.Set Text)
-            countSubs acc (srv, queueSubs) = subMetricsResult a acc srv <$> TM.sizeIO queueSubs
+            countSubs acc (srv, queueSubs) = subMetricsResult a acc srv . M.size <$> readTVarIO queueSubs
 
         getSubMetrics_ ::
           SMPClientAgent 'NotifierService ->
-          (SMPClientAgent 'NotifierService -> TMap SMPServer sub') ->
+          (SMPClientAgent 'NotifierService -> TVar (M.Map SMPServer sub')) ->
           ((NtfSMPSubMetrics, S.Set Text) -> (SMPServer, sub') -> IO (NtfSMPSubMetrics, S.Set Text)) ->
           IO NtfSMPSubMetrics
         getSubMetrics_ a sel countSubs = do
-          subs <- TM.toMapIO $ sel a
+          subs <- readTVarIO $ sel a
           let metrics = NtfSMPSubMetrics {ownSrvSubs = M.empty, otherServers = 0, otherSrvSubCount = 0}
           (metrics', otherSrvs) <- foldM countSubs (metrics, S.empty) $ M.assocs subs
           pure (metrics' :: NtfSMPSubMetrics) {otherServers = S.size otherSrvs}
@@ -327,7 +326,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             host = safeDecodeUtf8 $ strEncode h
 
         getSMPWorkerMetrics :: SMPClientAgent 'NotifierService -> TMap SMPServer a -> IO NtfSMPWorkerMetrics
-        getSMPWorkerMetrics a v = workerMetrics a . M.keys <$> TM.toMapIO v
+        getSMPWorkerMetrics a v = workerMetrics a . M.keys <$> readTVarIO v
         workerMetrics :: SMPClientAgent 'NotifierService -> [SMPServer] -> NtfSMPWorkerMetrics
         workerMetrics a srvs = NtfSMPWorkerMetrics {ownServers = reverse ownSrvs, otherServers}
           where
@@ -737,7 +736,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
 
 pushWorkersQLength :: TMap (Maybe T.Text, PushProvider, Int) PushWorkerVar -> IO Natural
 pushWorkersQLength workers = do
-  ws <- TM.toMapIO workers
+  ws <- readTVarIO workers
   foldM addQLength 0 ws
   where
     addQLength acc v =

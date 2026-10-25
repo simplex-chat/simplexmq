@@ -35,7 +35,6 @@ import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.SystemTime
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
 import Simplex.Messaging.Transport.Credentials (genCredentials)
 import System.FilePath ((</>))
@@ -192,7 +191,7 @@ testSMPStoreLog testSuite tests =
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
     storeState :: STMMsgStore -> IO (M.Map RecipientId QueueRec)
-    storeState st = M.mapMaybe id <$> (TM.toMapIO (queues $ queueStore st) >>= mapM (readTVarIO . queueRec))
+    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ queueStore st) >>= mapM (readTVarIO . queueRec))
 
 type FileRecState = (FileInfo, RoundedFileTime, Maybe RoundedFileTime, ServerEntityStatus)
 
@@ -298,7 +297,7 @@ testXFTPStoreLog testSuite tests =
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testFileStoreLogFile
       compacted' `shouldBe` compacted
     storeState :: STMFileStore -> IO (M.Map SenderId FileRecState)
-    storeState st = TM.toMapIO (files st) >>= mapM fileState
+    storeState st = readTVarIO (files st) >>= mapM fileState
     fileState FileRec {fileInfo, createdAt, expiresAt, fileStatus} = do
       status <- readTVarIO fileStatus
       pure (fileInfo, createdAt, expiresAt, status)

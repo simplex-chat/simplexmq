@@ -11,20 +11,22 @@ module Simplex.Messaging.Server.NtfStore
     deleteNtfs,
     deleteExpiredNtfs,
     deleteEmptyNtfs,
+    getNtfs,
   ) where
 
 import Control.Concurrent.STM
+import Control.Monad (foldM)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.Time.Clock.System (SystemTime (..))
+import qualified ListT
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EncNMsgMeta, MsgId, NotifierId)
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (whenM)
+import qualified StmContainers.Map as SM
 
-newtype NtfStore = NtfStore (TMap NotifierId (TVar [MsgNtf]))
+newtype NtfStore = NtfStore (SM.Map NotifierId (TVar [MsgNtf]))
 
 data MsgNtf = MsgNtf
   { ntfMsgId :: MsgId,
@@ -35,25 +37,25 @@ data MsgNtf = MsgNtf
 
 storeNtf :: NtfStore -> NotifierId -> MsgNtf -> IO ()
 storeNtf (NtfStore ns) nId ntf =
-  atomically $ TM.lookup nId ns >>= maybe (TM.insertM nId (newTVar [ntf]) ns) (`modifyTVar'` (ntf :))
+  atomically $ SM.lookup nId ns >>= maybe (newTVar [ntf] >>= \v -> SM.insert v nId ns) (`modifyTVar'` (ntf :))
   -- TODO [ntfdb] coalesce messages here once the client is updated to process multiple messages
   -- for single notification.
   -- when (isJust prevNtf) $ incStat $ msgNtfReplaced stats
 
 deleteNtfs :: NtfStore -> NotifierId -> IO Int
-deleteNtfs (NtfStore ns) nId = atomically (TM.lookupDelete nId ns) >>= maybe (pure 0) (fmap length . readTVarIO)
+deleteNtfs (NtfStore ns) nId = atomically (SM.lookup nId ns <* SM.delete nId ns) >>= maybe (pure 0) (fmap length . readTVarIO)
 
 deleteExpiredNtfs :: NtfStore -> Int64 -> IO Int
-deleteExpiredNtfs (NtfStore ns) old =
-  TM.foldIO (\expired -> fmap (expired +) . expireQueue . fst) 0 ns
+deleteExpiredNtfs st@(NtfStore ns) old =
+  foldM (\expired -> fmap (expired +) . expireQueue) 0 . map fst =<< getNtfs st
   where
-    expireQueue nId = atomically $ TM.lookup nId ns >>= maybe (pure 0) (expire nId)
+    expireQueue nId = atomically $ SM.lookup nId ns >>= maybe (pure 0) (expire nId)
     expire nId v = readTVar v >>= \case
-      [] -> TM.delete nId ns $> 0
+      [] -> SM.delete nId ns $> 0
       -- check the last message first, it is the earliest
       ntfs | systemSeconds (ntfTs $ last $ ntfs) < old -> do
         let !ntfs' = filter (\MsgNtf {ntfTs = ts} -> systemSeconds ts >= old) ntfs
-        if null ntfs' then TM.delete nId ns else writeTVar v ntfs'
+        if null ntfs' then SM.delete nId ns else writeTVar v ntfs'
         pure $! length ntfs - length ntfs'
       _ -> pure 0
 
@@ -63,7 +65,12 @@ deleteEmptyNtfs (NtfStore ns) = mapM_ deleteEmpty
     deleteEmpty (nId, v) =
       whenM (null <$> readTVarIO v) $
         atomically $
-          TM.lookup nId ns >>= mapM_ (\v' -> whenM (null <$> readTVar v') $ TM.delete nId ns)
+          SM.lookup nId ns >>= mapM_ (\v' -> whenM (null <$> readTVar v') $ SM.delete nId ns)
+
+getNtfs :: NtfStore -> IO [(NotifierId, TVar [MsgNtf])]
+getNtfs (NtfStore ns) = go [] $ SM.listT ns
+  where
+    go ntfs l = atomically (ListT.uncons l) >>= maybe (pure ntfs) (\(ntf, l') -> go (ntf : ntfs) l')
 
 data NtfLogRecord = NLRv1 NotifierId MsgNtf
 

@@ -36,6 +36,7 @@ import Data.Int (Int64)
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
+import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
 import qualified Data.X509.Validation as XV
@@ -46,8 +47,6 @@ import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.TSet (TSet)
-import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Transport (SMPServiceRole (..))
 import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.IO
@@ -65,8 +64,8 @@ data STMQueueStore q = STMQueueStore
 
 data STMService = STMService
   { serviceRec :: ServiceRec,
-    serviceRcvQueues :: (TSet RecipientId, TVar IdsHash),
-    serviceNtfQueues :: (TSet NotifierId, TVar IdsHash)
+    serviceRcvQueues :: TVar (Set RecipientId, IdsHash),
+    serviceNtfQueues :: TVar (Set NotifierId, IdsHash)
   }
 
 setStoreLog :: STMQueueStore q -> StoreLog 'WriteMode -> IO ()
@@ -98,9 +97,9 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   getEntityCounts :: STMQueueStore q -> IO EntityCounts
   getEntityCounts st = do
-    queueCount <- TM.sizeIO $ queues st
-    notifierCount <- TM.sizeIO $ notifiers st
-    ss <- TM.toMapIO $ services st
+    queueCount <- M.size <$> readTVarIO (queues st)
+    notifierCount <- M.size <$> readTVarIO (notifiers st)
+    ss <- readTVarIO (services st)
     rcvServiceQueuesCount <- serviceQueuesCount serviceRcvQueues ss
     ntfServiceQueuesCount <- serviceQueuesCount serviceNtfQueues ss
     pure
@@ -114,7 +113,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         }
     where
       serviceCount role = M.foldl' (\ !n s -> if serviceRole (serviceRec s) == role then n + 1 else n) 0
-      serviceQueuesCount serviceSel = foldM (\n s -> (n +) <$> atomically (TS.size $ fst $ serviceSel s)) 0
+      serviceQueuesCount serviceSel = foldM (\n s -> (n +) . S.size . fst <$> readTVarIO (serviceSel s)) 0
 
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
@@ -146,12 +145,17 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   getQueues_ :: BatchParty p => STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> SParty p -> [QueueId] -> IO [Either ErrorType q]
   getQueues_ st _ party qIds = case party of
-    SRecipient -> mapM (get queues) qIds
-    SNotifier -> mapM (\nId -> get notifiers nId $>>= get queues) qIds
+    SRecipient -> do
+      qs <- readTVarIO queues
+      pure $ map (get qs) qIds
+    SNotifier -> do
+      ns <- readTVarIO notifiers
+      qs <- readTVarIO queues
+      pure $ map (get qs <=< get ns) qIds
     where
       STMQueueStore {queues, notifiers} = st
-      get :: TMap QueueId a -> QueueId -> IO (Either ErrorType a)
-      get m qId = maybe (Left AUTH) Right <$> TM.lookupIO qId m
+      get :: M.Map QueueId a -> QueueId -> Either ErrorType a
+      get m = maybe (Left AUTH) Right . (`M.lookup` m)
 
   getQueueLinkData :: STMQueueStore q -> q -> LinkId -> IO (Either ErrorType QueueLinkData)
   getQueueLinkData _ q lnkId = atomically $ readQueueRec (queueRec q) $>>= pure . getData
@@ -306,8 +310,8 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         TM.insert fp newSrvId serviceCerts
         pure $ Right (newSrvId, True)
       newSTMService = do
-        serviceRcvQueues <- (,) <$> TS.empty <*> newTVar mempty
-        serviceNtfQueues <- (,) <$> TS.empty <*> newTVar mempty
+        serviceRcvQueues <- newTVar (S.empty, mempty)
+        serviceNtfQueues <- newTVar (S.empty, mempty)
         pure STMService {serviceRec = sr, serviceRcvQueues, serviceNtfQueues}
 
   setQueueService :: (PartyI p, ServiceParty p) => STMQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
@@ -333,7 +337,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
                 let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
                 updateServiceQueues serviceNtfQueues nId prevNtfSrvId
                 writeTVar qr q' $> Right ()
-      updateServiceQueues :: (STMService -> (TSet QueueId, TVar IdsHash)) -> QueueId -> Maybe ServiceId -> STM ()
+      updateServiceQueues :: (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> Maybe ServiceId -> STM ()
       updateServiceQueues serviceSel qId prevSrvId = do
         mapM_ (removeServiceQueue st serviceSel qId) prevSrvId
         mapM_ (addServiceQueue st serviceSel qId) serviceId
@@ -344,25 +348,24 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do
-    ss <- TM.toMapIO $ services st
+    ss <- readTVarIO (services st)
     (ssNtfs, noServiceNtfs) <- if M.null ss then pure ([], ntfs) else foldM addService ([], ntfs) (M.assocs ss)
-    ns <- S.fromList <$> filterM (`TM.memberIO` notifiers st) (map fst noServiceNtfs)
-    let (ntfs', deleteNtfs) = partition (\(nId, _) -> S.member nId ns) noServiceNtfs
+    ns <- readTVarIO (notifiers st)
+    let (ntfs', deleteNtfs) = partition (\(nId, _) -> M.member nId ns) noServiceNtfs
         ssNtfs' = (Nothing, ntfs') : ssNtfs
     pure $ Right (ssNtfs', deleteNtfs)
     where
       addService (ssNtfs, ntfs') (serviceId, s) = do
-        snIds <- S.fromList <$> filterM (atomically . (`TS.member` fst (serviceNtfQueues s))) (map fst ntfs')
+        (snIds, _) <- readTVarIO $ serviceNtfQueues s
         let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
         pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
     TM.lookupIO serviceId (services st) >>=
-      maybe (pure $ Left AUTH) (fmap (Right . first fromIntegral) . readCountHash . serviceSel)
+      maybe (pure $ Left AUTH) (fmap (Right . first (fromIntegral . S.size)) . readTVarIO . serviceSel)
     where
-      readCountHash (qs, idsHash) = atomically $ (,) <$> TS.size qs <*> readTVar idsHash
-      serviceSel :: STMService -> (TSet QueueId, TVar IdsHash)
+      serviceSel :: STMService -> TVar (Set QueueId, IdsHash)
       serviceSel = case party of
         SRecipientService -> serviceRcvQueues
         SNotifierService -> serviceNtfQueues
@@ -372,12 +375,13 @@ foldRcvServiceQueues st serviceId f acc =
   TM.lookupIO serviceId (services st) >>= \case
     Nothing -> pure acc
     Just s ->
-      TS.foldIO (\a -> get >=> maybe (pure a) (f a)) acc $ fst $ serviceRcvQueues s
+      readTVarIO (serviceRcvQueues s)
+        >>= foldM (\a -> get >=> maybe (pure a) (f a)) acc . fst
   where
     get rId = TM.lookupIO rId (queues st) $>>= \q -> (q,) <$$> readTVarIO (queueRec q)
 
 withLoadedQueues :: Monoid a => STMQueueStore q -> (q -> IO a) -> IO a
-withLoadedQueues st f = TM.foldIO (\acc -> run acc . snd) mempty $ queues st
+withLoadedQueues st f = readTVarIO (queues st) >>= foldM run mempty
   where
     run !acc = fmap (acc <>) . f
 
@@ -390,21 +394,22 @@ setStatus qr status =
     Just q -> (Right (), Just q {status})
     Nothing -> (Left AUTH, Nothing)
 
-addServiceQueue :: STMQueueStore q -> (STMService -> (TSet QueueId, TVar IdsHash)) -> QueueId -> ServiceId -> STM ()
-addServiceQueue = setServiceQueues_ TS.insert
+addServiceQueue :: STMQueueStore q -> (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> ServiceId -> STM ()
+addServiceQueue = setServiceQueues_ S.insert
 {-# INLINE addServiceQueue #-}
 
-removeServiceQueue :: STMQueueStore q -> (STMService -> (TSet QueueId, TVar IdsHash)) -> QueueId -> ServiceId -> STM ()
-removeServiceQueue = setServiceQueues_ TS.delete
+removeServiceQueue :: STMQueueStore q -> (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> ServiceId -> STM ()
+removeServiceQueue = setServiceQueues_ S.delete
 {-# INLINE removeServiceQueue #-}
 
-setServiceQueues_ :: (QueueId -> TSet QueueId -> STM ()) -> STMQueueStore q -> (STMService -> (TSet QueueId, TVar IdsHash)) -> QueueId -> ServiceId -> STM ()
+setServiceQueues_ :: (QueueId -> Set QueueId -> Set QueueId) -> STMQueueStore q -> (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> ServiceId -> STM ()
 setServiceQueues_ updateSet st serviceSel qId serviceId =
-  TM.lookup serviceId (services st) >>= mapM_ (update . serviceSel)
+  TM.lookup serviceId (services st) >>= mapM_ (\v -> modifyTVar' (serviceSel v) update)
   where
-    update (s, idsHash) = do
-      updateSet qId s
-      modifyTVar' idsHash (queueIdHash qId <>)
+    update (s, idsHash) =
+      let !s' = updateSet qId s
+          !idsHash' = queueIdHash qId <> idsHash
+       in (s', idsHash')
 
 removeNotifier :: STMQueueStore q -> NtfCreds -> STM ()
 removeNotifier st NtfCreds {notifierId = nId, ntfServiceId} = do

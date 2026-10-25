@@ -37,6 +37,8 @@ import Control.Monad
 import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
 import Data.Default (def)
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IM
 import Data.List (find)
 import Data.Maybe (fromJust, fromMaybe, maybeToList)
 import qualified Data.X509 as X
@@ -46,8 +48,6 @@ import Foreign.C.Error
 import GHC.IO.Exception (ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.Messaging.TMap (TMap)
-import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Shared
 import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow, unlessM)
@@ -177,11 +177,11 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId' `seq` (cId', cId')
       closed <- newTVarIO False
       let closeConn _ = do
-            atomically $ writeTVar closed True >> TM.delete cId clients
+            atomically $ writeTVar closed True >> modifyTVar' clients (IM.delete cId)
             gracefulClose conn 5000 `catchAll_` pure () -- catchAll_ is needed here in case the connection was closed earlier
             atomically $ modifyTVar' gracefullyClosed (+ 1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
-      atomically $ unlessM (readTVar closed) $ TM.insert cId tId clients
+      atomically $ unlessM (readTVar closed) $ modifyTVar' clients $ IM.insert cId tId
 
 -- | Recover from errors in `accept` whenever it is safe.
 -- Some errors are safe to ignore, while blindly restaring `accept` may trigger a busy loop.
@@ -206,7 +206,7 @@ safeAccept sock =
         err = "socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno
         errno = ioe_errno e
 
-type SocketState = (TVar Int, TVar Int, TMap Int (Weak ThreadId))
+type SocketState = (TVar Int, TVar Int, TVar (IntMap (Weak ThreadId)))
 
 data SocketStats = SocketStats
   { socketsAccepted :: Int,
@@ -216,20 +216,20 @@ data SocketStats = SocketStats
   }
 
 newSocketState :: IO SocketState
-newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> TM.emptyIO
+newSocketState = (,,) <$> newTVarIO 0 <*> newTVarIO 0 <*> newTVarIO mempty
 
 getSocketStats :: SocketState -> IO SocketStats
 getSocketStats (accepted, closed, active) = do
   socketsAccepted <- readTVarIO accepted
   socketsClosed <- readTVarIO closed
-  socketsActive <- TM.sizeIO active
+  socketsActive <- IM.size <$> readTVarIO active
   let socketsLeaked = socketsAccepted - socketsClosed - socketsActive
   pure SocketStats {socketsAccepted, socketsClosed, socketsActive, socketsLeaked}
 
-closeServer :: TMVar Bool -> TMap Int (Weak ThreadId) -> Socket -> IO ()
+closeServer :: TMVar Bool -> TVar (IntMap (Weak ThreadId)) -> Socket -> IO ()
 closeServer started clients sock = do
   close sock
-  TM.toMapIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
+  readTVarIO clients >>= mapM_ (deRefWeak >=> mapM_ killThread)
   void . atomically $ tryPutTMVar started False
 
 startTCPServer :: TMVar Bool -> Maybe HostName -> ServiceName -> IO Socket

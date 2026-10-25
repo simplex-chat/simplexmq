@@ -30,6 +30,7 @@ import Data.Int (Int32, Int64)
 import Data.List (intersperse)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
+import qualified Data.Set as S
 import Data.Text (Text)
 import Data.Word (Word32)
 import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), SqlError, (:.) (..))
@@ -55,8 +56,6 @@ import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.QueueStore.Postgres ()
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.SystemTime (roundedSeconds)
-import qualified Simplex.Messaging.TMap as TM
-import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Util (firstRow, tshow)
 import System.Directory (renameFile)
 import System.Exit (exitFailure)
@@ -179,7 +178,7 @@ instance FileStoreClass PostgresFileStore where
 mkFileRec :: SenderId -> FileInfo -> Maybe FilePath -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO FileRec
 mkFileRec senderId fileInfo path createdAt expiresAt status = do
   filePath <- newTVarIO path
-  recipientIds <- TS.emptyIO
+  recipientIds <- newTVarIO S.empty
   fileStatus <- newTVarIO status
   pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, fileStatus}
 
@@ -229,8 +228,8 @@ importFileStore storeLogFilePath dbCfg = do
   stmStore <- newFileStore () :: IO STMFileStore
   sl <- readWriteFileStore storeLogFilePath stmStore
   closeStoreLog sl
-  allFiles <- TM.toMapIO $ files stmStore
-  allRcps <- TM.toMapIO $ recipients stmStore
+  allFiles <- readTVarIO (files stmStore)
+  allRcps <- readTVarIO (recipients stmStore)
   let fileCount = M.size allFiles
       rcpCount = M.size allRcps
   putStrLn $ "Loaded " <> show fileCount <> " files, " <> show rcpCount <> " recipients."
