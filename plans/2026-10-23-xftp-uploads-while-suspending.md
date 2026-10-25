@@ -31,7 +31,7 @@ Chat side: https://github.com/evgeny-simplex/simplex-chat/pull/5
   - kept until TTL cleanup, `closeAgentClient` or process exit: counted files completed or failed by another process; each suspension in between waits for the suspend timeout.
 - `deleteSndFilesInternal` is run by `xftpDeleteSndFileInternal`, which is called by the chat after `SFDONE` and `SFERR`.
 - Uncounted files:
-  - files resumed at worker start, unless they remain in the set from their start in foreground;
+  - files resumed at worker start;
   - files started while suspending or suspended.
 - Condition of the send prepare and upload workers, `uploadsAllowed`:
 
@@ -95,40 +95,71 @@ remove f                       f in set -> delete f; endAgentOperation AOSndFile
 ## Tests
 
 `tests/XFTPAgent.hs`, "agent XFTP API":
-- "should complete sending file while agent is suspending" (:630):
+- "should complete sending file while agent is suspending" (:641):
   - suspend timeout 60 s;
   - all `SFPROG` within 30 s, then `SFDONE`;
   - events absent for 300 ms;
   - after `xftpDeleteSndFileInternal`, `SUSPENDED` within 5 s.
-- "should suspend on timeout when file is not sent" (:645):
+- "should suspend on timeout when file is not sent" (:656):
   - XFTP server down, suspend timeout 0.5 s: `SUSPENDED`;
   - server started: events absent for 1 s;
   - after `foregroundAgent`, `SFDONE`.
-- "should not wait for file started while agent is suspending" (:661):
+- "should not wait for file started while agent is suspending" (:672):
   - file 1 started, suspend timeout 60 s, file 2 started;
   - `SFDONE` of file 1 within 30 s;
   - after `xftpDeleteSndFileInternal` of file 1, `SUSPENDED` within 5 s; events of file 2 before it are skipped.
-- "should continue sending file when another file is deleted twice while agent is suspending" (:675):
+- "should continue sending file when another file is deleted twice while agent is suspending" (:686):
   - file 1 of 128 KB and file 2 of 17 MB started, suspend timeout 60 s;
   - `xftpDeleteSndFileInternal` of file 1, twice;
   - `SFDONE` of file 2 within 30 s; `SUSPENDED` before it: test failure;
   - after `xftpDeleteSndFileInternal` of file 2, `SUSPENDED` within 5 s; events of file 1 before it are skipped.
-- "should wait for complete file until it is deleted while agent is suspending" (:691):
+- "should wait for complete file until it is deleted while agent is suspending" (:702):
   - file of 128 KB started; `SFDONE` within 30 s;
   - suspend timeout 60 s; events absent for 300 ms;
   - after `xftpDeleteSndFileInternal`, `SUSPENDED` within 5 s.
-- `testXFTPAgentSuspendAfter` (:704), for the next four tests:
+- `testXFTPAgentSuspendAfter` (:715), for the next four tests:
   - XFTP server down; file of 128 KB started;
   - the test's step;
   - suspend timeout 60 s: `SUSPENDED` within 5 s; events of the file before it are skipped.
-- "should not wait for file deleted from database while agent is suspending" (:99): `DELETE FROM snd_files` through the agent's store.
-- "should not wait for file marked deleted while agent is suspending" (:101): `UPDATE snd_files SET deleted = 1` through the agent's store.
-- "should not wait for file marked failed while agent is suspending" (:103): `UPDATE snd_files SET failed = 1` through the agent's store.
-- "should not wait for file after agent client is closed" (:105): `disconnectAgentClient`, then `resumeAgentClient`.
-- "should not access database when suspending while database is suspended" (:715):
+- "should not wait for file deleted from database while agent is suspending" (:102): `DELETE FROM snd_files` through the agent's store.
+- "should not wait for file marked deleted while agent is suspending" (:104): `UPDATE snd_files SET deleted = 1` through the agent's store.
+- "should not wait for file marked failed while agent is suspending" (:106): `UPDATE snd_files SET failed = 1` through the agent's store.
+- "should not wait for file after agent client is closed" (:108): `disconnectAgentClient`, then `resumeAgentClient`.
+- "should not access database when suspending while database is suspended" (:726):
   - XFTP server down; file of 128 KB started;
   - suspend timeout 0;
   - while the test holds the agent store connection, `suspendAgent` with timeout 60 s returns within 5 s.
+- "should not wait for file removed by TTL cleanup while agent is suspending" (:737):
+  - cleanup after 1 s and every 1 s; `sndFilesTTL` 1 s;
+  - XFTP server down; file of 128 KB started;
+  - suspend timeout 60 s: `SUSPENDED` within 10 s, after the cleanup removes the expired file; events of the file before it are skipped.
+- "should not wait for file resumed at worker start" (:748):
+  - XFTP server down; file of 128 KB started by agent 1;
+  - agent 2 on the same database resumes it at `xftpStartWorkers`;
+  - after 0.5 s, suspend timeout 60 s: `SUSPENDED` within 5 s.
+- "should stop uploads when sending network is suspended while agent is suspending" (:760):
+  - `AOSndNetwork` begun by the test; file of 128 KB started;
+  - suspend timeout 1 µs: `SFDONE` absent for 3 s;
+  - after the test ends `AOSndNetwork`, `SUSPENDED` within 5 s.
+- "should retry creating file chunks while agent is suspending" (:773):
+  - XFTP server down; file of 128 KB started; suspend timeout 60 s;
+  - server started after 3 s: `SFDONE` within 30 s;
+  - after `xftpDeleteSndFileInternal`, `SUSPENDED` within 5 s.
+- "should retry uploading file chunks while agent is suspending" (:787):
+  - file of 17 MB started; the server is stopped after the first `SFPROG`;
+  - suspend timeout 60 s; server started after 1 s: `SFDONE` within 30 s;
+  - after `xftpDeleteSndFileInternal`, `SUSPENDED` within 5 s.
+- "should remove counted file when its deletion fails" (:804):
+  - XFTP server down; file of 128 KB started;
+  - agent store closed: `xftpDeleteSndFileInternal` throws, and the set is empty.
+- "should keep counted files when database query fails at suspension start" (:815):
+  - XFTP server down; file of 128 KB started;
+  - agent store closed; suspend timeout 60 s: the set still contains the file.
+- "should wait for counted file again after agent is in foreground" (:826):
+  - XFTP server down; file of 128 KB started;
+  - suspend timeout 0.5 s: `SUSPENDED` within 5 s;
+  - `foregroundAgent`; suspend timeout 60 s: `SUSPENDED` absent for 1 s;
+  - after `xftpDeleteSndFileInternal`, `SUSPENDED` within 5 s.
 
 `tests/AgentTests/FunctionalAPITests.hs`, "Suspending agent":
 - "should send messages queued after file is sent before agent is suspended" (:3137):
