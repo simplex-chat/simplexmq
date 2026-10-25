@@ -2479,6 +2479,7 @@ storeError = \case
   SEUserNotFound -> NO_USER
   SERatchetNotFound -> CONN NOT_FOUND ""
   SEConnDuplicate -> CONN DUPLICATE ""
+  SESndQueueExists -> CONN DUPLICATE ""
   SEBadConnType cxt CRcv -> CONN SIMPLEX cxt
   SEBadConnType cxt CSnd -> CONN SIMPLEX cxt
   SEInvitationNotFound cxt invId -> CMD PROHIBITED $ "SEInvitationNotFound " <> cxt <> ", invitationId = " <> show invId
