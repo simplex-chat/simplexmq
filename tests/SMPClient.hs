@@ -18,10 +18,12 @@ module SMPClient where
 import Control.Monad
 import Control.Monad.Except (runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket
+import Network.Socket.ByteString (recv)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
@@ -37,14 +39,14 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, unlessM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar)
+import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar, tryPutTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
@@ -429,11 +431,20 @@ serverBracket process afterProcess f = do
 -- A TCP server that accepts connections but never performs a TLS handshake, so a client
 -- connecting to it stays blocked in the TLS handshake until its connection timeout.
 withStallingServerOn :: HasCallStack => ServiceName -> IO a -> IO a
-withStallingServerOn port action =
+withStallingServerOn port = withStallingServerOn' port . const . const
+
+withStallingServerOn' :: HasCallStack => ServiceName -> (TMVar () -> TMVar () -> IO a) -> IO a
+withStallingServerOn' port action = do
+  accepted <- newEmptyTMVarIO
+  closed <- newEmptyTMVarIO
+  let waitClosed sock = unlessM (B.null <$> recv sock 4096) $ waitClosed sock
   serverBracket
-    (\started -> runLocalTCPServer started port (\_ -> threadDelay maxBound))
+    (\started -> runLocalTCPServer started port $ \sock -> do
+        void $ atomically $ tryPutTMVar accepted ()
+        waitClosed sock
+        void $ atomically $ tryPutTMVar closed ())
     (pure ())
-    (const action)
+    (const $ action accepted closed)
 
 withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const

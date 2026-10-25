@@ -5,12 +5,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module XFTPServerTests (xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight_)
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException)
+import Control.Exception (SomeException, bracket)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -28,6 +29,8 @@ import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
+import qualified Network.TLS as T
+import SMPClient (withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -35,7 +38,7 @@ import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
-import Simplex.Messaging.Client (ProtocolClientError (..))
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
@@ -50,7 +53,9 @@ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCert
 import System.Directory (removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (async, cancel)
 import UnliftIO.STM
+import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
 
@@ -65,6 +70,7 @@ xftpServerTests = do
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
+      it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
@@ -75,6 +81,8 @@ xftpServerTests = do
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
+      it "should close connection when handshake times out" testHandshakeTimeout
+      it "should close connection when cancelled during handshake" testCancelledHandshake
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -233,6 +241,15 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
+testCancelledClientConnect :: HasTestEnv => Expectation
+testCancelledClientConnect =
+  withStallingServerOn' xftpTestPort $ \accepted closed -> do
+    ts <- getCurrentTime
+    a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+    timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+    cancel a
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
@@ -374,6 +391,24 @@ testFileSkipCommitted fsType =
         downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
         liftIO $ B.readFile (testPath "received_chunk") `shouldReturn` bytes -- new chunk content got ignored
 
+testHandshakeTimeout :: HasTestEnv => AFStoreType -> Expectation
+testHandshakeTimeout _ =
+  withStallingXFTPServer $ \_ closed -> do
+    ts <- getCurrentTime
+    (void <$> getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure Nothing) (\_ -> pure ())) `shouldReturn` Left PCEResponseTimeout
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+  where
+    cfg = testXFTPClientConfig {xftpNetworkConfig = defaultNetworkConfig {tcpConnectTimeout = NetworkTimeout 2000000 2000000}}
+
+testCancelledHandshake :: HasTestEnv => AFStoreType -> Expectation
+testCancelledHandshake _ =
+  withStallingXFTPServer $ \requested closed -> do
+    ts <- getCurrentTime
+    a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+    timeout 5000000 (atomically $ takeTMVar requested) `shouldReturn` Just ()
+    cancel a
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
 -- SNI and CORS tests
 
 lookupResponseHeader :: B.ByteString -> H2.Response -> Maybe B.ByteString
@@ -384,6 +419,13 @@ getCerts :: TLS 'TClient -> [X.Certificate]
 getCerts tls =
   let X.CertificateChain cc = tlsPeerCert tls
    in map (X.signedObject . X.getSigned) cc
+
+withH2Client :: HasTestEnv => T.Supported -> TransportClientConfig -> C.KeyHash -> (HC.HTTP2Client -> IO a) -> IO a
+withH2Client tlsParams cfg caHash action =
+  runTLSTransportClient tlsParams Nothing cfg Nothing "localhost" xftpTestPort (Just caHash) $ \(tls :: TLS 'TClient) ->
+    bracket (either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls) HC.closeHTTP2Client action
+  where
+    h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
 
 testSNICertSelection :: HasTestEnv => Expectation
 testSNICertSelection =
@@ -417,9 +459,7 @@ testCORSHeaders =
     Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
       HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
@@ -431,9 +471,7 @@ testCORSPreflight =
     Fingerprint fpHTTP <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let caHTTP = C.KeyHash fpHTTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just caHTTP) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "OPTIONS" "/" []
       HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
@@ -447,9 +485,7 @@ testNoCORSWithoutSNI =
     Fingerprint fpXFTP <- loadFileFingerprint "tests/fixtures/ca.crt"
     let caXFTP = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["xftp/1"], useSNI = False}
-    runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just caXFTP) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParams cfg caXFTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
       HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Nothing
@@ -466,9 +502,7 @@ testWebHandshake =
     let webCaHash = C.KeyHash fpWeb
         keyHash = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg webCaHash $ \h2 -> do
       -- Send web challenge as XFTPClientHello
       g <- C.newRandom
       challenge <- atomically $ C.randomBytes 32 g
@@ -508,9 +542,7 @@ testWebReHandshake =
     let webCaHash = C.KeyHash fpWeb
         keyHash = C.KeyHash fpXFTP
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg webCaHash $ \h2 -> do
       g <- C.newRandom
       -- First handshake
       challenge1 <- atomically $ C.randomBytes 32 g
@@ -540,9 +572,7 @@ testStaleWebSession =
     Fingerprint fpWeb <- loadFileFingerprint "tests/fixtures/web_ca.crt"
     let webCaHash = C.KeyHash fpWeb
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
-    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfg Nothing "localhost" xftpTestPort (Just webCaHash) $ \(tls :: TLS 'TClient) -> do
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 65536}
-      h2 <- either (error . show) pure =<< HC.attachHTTP2Client h2cfg (THDomainName "localhost") xftpTestPort mempty 65536 tls
+    withH2Client defaultSupportedParamsHTTPS cfg webCaHash $ \h2 -> do
       -- Send a command on web connection without doing hello (no xftp-web-hello header)
       dummyBody <- either (error . show) pure $ C.pad "PING" xftpBlockSize
       let req = H2.requestBuilder "POST" "/" [] $ byteString dummyBody

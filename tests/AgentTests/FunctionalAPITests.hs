@@ -65,6 +65,8 @@ import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Reader
+import Crypto.Error (throwCryptoError)
+import qualified Crypto.PubKey.Curve25519 as X25519
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -98,7 +100,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig)
+import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig, defaultSMPClientConfig, getProtocolClient, sendSMPMessage)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -337,6 +339,8 @@ functionalAPITests ps = do
       withSmpServer ps testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer ps testEnablePQEncryption
+    it "should refuse joining already used invitation and keep connection" $
+      withSmpServer ps testJoinUsedInvitation
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
     xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
@@ -346,8 +350,9 @@ functionalAPITests ps = do
     testPQMatrix2 ps $ runAgentClientTestPQ True
   describe "Establishing duplex connection v2, different Ratchet versions" $
     testRatchetMatrix2 ps runAgentClientTest
-  describe "Establish duplex connection via contact address" $
+  describe "Establish duplex connection via contact address" $ do
     testMatrix2 ps runAgentClientContactTest
+    it "should not decrypt contact request with zero DH secret" $ testContactRequestZeroSecret ps
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ True True
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
@@ -915,6 +920,22 @@ runAgentClientStressTestConc n pqSupport viaProxy alice bob _baseId = runRight_ 
                 loop (s, m, r, o - 1)
               _ -> liftIO $ expectationFailure $ "unexpected: " <> show r
 
+testJoinUsedInvitation :: (HasCallStack, HasTestEnv) => IO ()
+testJoinUsedInvitation =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing (IKLinkPQ PQSupportOn) False SMSubscribe
+    (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    _ <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.CONF confId _ _ "bob's connInfo") <- get alice
+    allowConnection alice bobId confId "alice's connInfo"
+    get alice ##> ("", bobId, A.CON PQEncOn)
+    get bob ##> ("", aliceId, A.INFO PQSupportOn "alice's connInfo")
+    get bob ##> ("", aliceId, A.CON PQEncOn)
+    (aliceId', _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    r <- liftIO . runExceptT $ A.joinConnection bob NRMInteractive 1 aliceId' True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    liftIO $ r `shouldBe` Left (CONN DUPLICATE "")
+    exchangeGreetings alice bobId bob aliceId
+
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
 testEnablePQEncryption =
   withAgentClients2 $ \ca cb -> runRight_ $ do
@@ -1053,6 +1074,25 @@ runAgentClientContactTestPQ sqSecured viaProxy (alice, aPQ) (bob, bPQ) baseId =
     liftIO $ noMessages alice "nothing else should be delivered to alice"
   where
     msgId = subtract baseId . fst
+
+testContactRequestZeroSecret :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testContactRequestZeroSecret ps = withSmpServer ps $ withAgentClients2 $ \alice bob -> do
+  (contactId, qInfo@(CRContactUri ConnReqUriData {crSmpQueues = SMPQueueUri _ SMPQueueAddress {senderId} :| _} _)) <- runRight $ createConnection alice 1 True SCMContact Nothing SMSubscribe
+  (_, cReq) <- runRight $ createConnection bob 1 True SCMInvitation Nothing SMSubscribe
+  g <- C.newRandom
+  (_, pk) <- atomically $ C.generateKeyPair g
+  nonce <- atomically $ C.randomCbNonce g
+  let k = C.PublicKeyX25519 . throwCryptoError . X25519.publicKey $ B.replicate 32 '\0'
+      inv = AgentInvitation {agentVersion = currentSMPAgentVersion, connReq = cReq, connInfo = "bob's connInfo"}
+  Right encBody <- pure $ C.cbEncrypt (C.dh' k pk) nonce (smpEncode $ SMP.ClientMessage SMP.PHEmpty $ smpEncode inv) SMP.e2eEncConfirmationLength
+  let msg = smpEncode $ SMP.ClientMsgEnvelope (SMP.PubHeader SMP.currentSMPClientVersion (Just k)) nonce encBody
+  ts <- getCurrentTime
+  smp <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+  runRight_ $ sendSMPMessage smp NRMInteractive Nothing senderId SMP.noMsgFlags msg
+  get alice ##> ("", contactId, ERR $ AGENT $ A_CRYPTO DECRYPT_CB)
+  runRight_ $ do
+    void $ joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+    get alice =##> \case ("", c, REQ _ _ "bob's connInfo") -> c == contactId; _ -> False
 
 allowConfirmGreet :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ConfirmationId -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
 allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
