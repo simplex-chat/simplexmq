@@ -247,7 +247,7 @@ CREATE TABLE ntf_subscriptions(
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) WITHOUT ROWID, STRICT;
 CREATE TABLE commands(
-  command_id INTEGER PRIMARY KEY,
+  command_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
   host TEXT,
   port TEXT,
@@ -261,6 +261,7 @@ CREATE TABLE commands(
   FOREIGN KEY(host, port) REFERENCES servers
   ON DELETE RESTRICT ON UPDATE CASCADE
 ) STRICT;
+CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE snd_message_deliveries(
   snd_message_delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
   conn_id BLOB NOT NULL REFERENCES connections ON DELETE CASCADE,
@@ -269,7 +270,6 @@ CREATE TABLE snd_message_deliveries(
   failed INTEGER DEFAULT 0,
   FOREIGN KEY(conn_id, internal_id) REFERENCES messages ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
-CREATE TABLE sqlite_sequence(name,seq);
 CREATE TABLE users(
   user_id INTEGER PRIMARY KEY AUTOINCREMENT
   ,
@@ -285,7 +285,7 @@ CREATE TABLE xftp_servers(
   UNIQUE(xftp_host, xftp_port, xftp_key_hash)
 ) STRICT;
 CREATE TABLE rcv_files(
-  rcv_file_id INTEGER PRIMARY KEY,
+  rcv_file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   rcv_file_entity_id BLOB NOT NULL,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   size INTEGER NOT NULL,
@@ -312,7 +312,7 @@ CREATE TABLE rcv_files(
   UNIQUE(rcv_file_entity_id)
 ) STRICT;
 CREATE TABLE rcv_file_chunks(
-  rcv_file_chunk_id INTEGER PRIMARY KEY,
+  rcv_file_chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
   rcv_file_id INTEGER NOT NULL REFERENCES rcv_files ON DELETE CASCADE,
   chunk_no INTEGER NOT NULL,
   chunk_size INTEGER NOT NULL,
@@ -322,7 +322,7 @@ CREATE TABLE rcv_file_chunks(
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 ) STRICT;
 CREATE TABLE rcv_file_chunk_replicas(
-  rcv_file_chunk_replica_id INTEGER PRIMARY KEY,
+  rcv_file_chunk_replica_id INTEGER PRIMARY KEY AUTOINCREMENT,
   rcv_file_chunk_id INTEGER NOT NULL REFERENCES rcv_file_chunks ON DELETE CASCADE,
   replica_number INTEGER NOT NULL,
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
@@ -335,7 +335,7 @@ CREATE TABLE rcv_file_chunk_replicas(
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 ) STRICT;
 CREATE TABLE snd_files(
-  snd_file_id INTEGER PRIMARY KEY,
+  snd_file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   snd_file_entity_id BLOB NOT NULL,
   user_id INTEGER NOT NULL REFERENCES users ON DELETE CASCADE,
   num_recipients INTEGER NOT NULL,
@@ -358,7 +358,7 @@ CREATE TABLE snd_files(
   storage_time INTEGER
 ) STRICT;
 CREATE TABLE snd_file_chunks(
-  snd_file_chunk_id INTEGER PRIMARY KEY,
+  snd_file_chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
   snd_file_id INTEGER NOT NULL REFERENCES snd_files ON DELETE CASCADE,
   chunk_no INTEGER NOT NULL,
   chunk_offset INTEGER NOT NULL,
@@ -368,7 +368,7 @@ CREATE TABLE snd_file_chunks(
   updated_at TEXT NOT NULL DEFAULT(datetime('now'))
 ) STRICT;
 CREATE TABLE snd_file_chunk_replicas(
-  snd_file_chunk_replica_id INTEGER PRIMARY KEY,
+  snd_file_chunk_replica_id INTEGER PRIMARY KEY AUTOINCREMENT,
   snd_file_chunk_id INTEGER NOT NULL REFERENCES snd_file_chunks ON DELETE CASCADE,
   replica_number INTEGER NOT NULL,
   xftp_server_id INTEGER NOT NULL REFERENCES xftp_servers ON DELETE CASCADE,
@@ -645,6 +645,7 @@ CREATE INDEX idx_processed_ratchet_key_hashes_conn_id ON processed_ratchet_key_h
   conn_id,
   processed_ratchet_key_hash_id
 );
+CREATE INDEX idx_rcv_queues_switch_status ON rcv_queues(switch_status);
 CREATE TRIGGER tr_rcv_queue_insert
 AFTER INSERT ON rcv_queues
 FOR EACH ROW

@@ -32,7 +32,7 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..))
 import Simplex.Messaging.Transport
 import Test.Hspec hiding (fit, it)
-import Util (it)
+import Util (HasTestEnv, it)
 
 nameSrvCfg :: SMPServer -> ServerCfg 'SMP.PSMP
 nameSrvCfg = presetServerCfg True ServerRoles {storage = True, proxy = False, names = True} (Just 1) . SMP.noAuthSrv
@@ -40,16 +40,16 @@ nameSrvCfg = presetServerCfg True ServerRoles {storage = True, proxy = False, na
 proxySrvCfg :: SMPServer -> ServerCfg 'SMP.PSMP
 proxySrvCfg = presetServerCfg True ServerRoles {storage = True, proxy = True, names = False} (Just 1) . SMP.noAuthSrv
 
-oneSrv :: ServerCfg 'SMP.PSMP -> InitialAgentServers
+oneSrv :: HasTestEnv => ServerCfg 'SMP.PSMP -> InitialAgentServers
 oneSrv cfg_ = (initAgentServersProxy_ SPMNever SPFProhibit) {smp = [(1, [cfg_])]}
 
-withDirectResolver :: (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
+withDirectResolver :: HasTestEnv => (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
 withDirectResolver (st, body) k =
   NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
     withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ \_ ->
       withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
 
-withProxyAndResolver :: (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
+withProxyAndResolver :: HasTestEnv => (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
 withProxyAndResolver (st, body) k =
   NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
     withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
@@ -59,12 +59,12 @@ withProxyAndResolver (st, body) k =
     -- only testSMPServer2 (the resolver) has the names role; testSMPServer is the proxy
     proxyServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = [(1, [proxySrvCfg testSMPServer, nameSrvCfg testSMPServer2])]}
 
-withNoResolver :: (AgentClient -> IO a) -> IO a
+withNoResolver :: HasTestEnv => (AgentClient -> IO a) -> IO a
 withNoResolver k =
   withSmpServerConfigOn (transport @TLS) memCfg testPort $ \_ ->
     withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
 
-withNoNameServers :: (AgentClient -> IO a) -> IO a
+withNoNameServers :: HasTestEnv => (AgentClient -> IO a) -> IO a
 withNoNameServers k = withAgent 1 agentCfg (oneSrv (proxySrvCfg testSMPServer)) testDB k
 
 resolveNameTests :: Spec
@@ -88,7 +88,7 @@ resolveNameTests = do
   describe "name availability" $
     it "an unregistered name answers as available" testAvailSuccess
 
-testAvailSuccess :: HasCallStack => IO ()
+testAvailSuccess :: (HasCallStack, HasTestEnv) => IO ()
 testAvailSuccess =
   withDirectResolver (status200, availableBody) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
@@ -98,7 +98,7 @@ testAvailSuccess =
 
 -- | 404 is a resolver that predates /v2/resolve: no status from that endpoint
 -- means "not registered", since an unregistered name answers NRAvailable.
-testDirectResolverErr :: HasCallStack => IO ()
+testDirectResolverErr :: (HasCallStack, HasTestEnv) => IO ()
 testDirectResolverErr =
   withDirectResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
@@ -106,7 +106,7 @@ testDirectResolverErr =
       Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
       _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
-testProxyResolverErr :: HasCallStack => IO ()
+testProxyResolverErr :: (HasCallStack, HasTestEnv) => IO ()
 testProxyResolverErr =
   withProxyAndResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
@@ -114,7 +114,7 @@ testProxyResolverErr =
       Left (SMP host (SMP.NAME (SMP.RESOLVER _))) | testPort `isInfixOf` host -> pure ()
       _ -> expectationFailure $ "expected Left (SMP <proxyHost:" <> testPort <> "> (NAME (RESOLVER _))), got: " <> show r
 
-testTestingTldResolverErr :: HasCallStack => IO ()
+testTestingTldResolverErr :: (HasCallStack, HasTestEnv) => IO ()
 testTestingTldResolverErr =
   withDirectResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDTesting "bob" [])
@@ -122,7 +122,7 @@ testTestingTldResolverErr =
       Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
       _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
-testWebTldResolverErr :: HasCallStack => IO ()
+testWebTldResolverErr :: (HasCallStack, HasTestEnv) => IO ()
 testWebTldResolverErr =
   withDirectResolver (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDWeb "example.com" [])
@@ -130,7 +130,7 @@ testWebTldResolverErr =
       Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
       _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
-testNoResolver :: HasCallStack => IO ()
+testNoResolver :: (HasCallStack, HasTestEnv) => IO ()
 testNoResolver =
   withNoResolver $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
@@ -138,7 +138,7 @@ testNoResolver =
       Left (SMP _ (SMP.NAME SMP.NO_RESOLVER)) -> pure ()
       _ -> expectationFailure $ "expected Left (SMP _ (NAME NO_RESOLVER)), got: " <> show r
 
-testNoNameServers :: HasCallStack => IO ()
+testNoNameServers :: (HasCallStack, HasTestEnv) => IO ()
 testNoNameServers =
   withNoNameServers $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
@@ -146,7 +146,7 @@ testNoNameServers =
       Left NO_NAME_SERVERS -> pure ()
       _ -> expectationFailure $ "expected Left NO_NAME_SERVERS, got: " <> show r
 
-testBackendError :: HasCallStack => IO ()
+testBackendError :: (HasCallStack, HasTestEnv) => IO ()
 testBackendError =
   withDirectResolver (status502, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
@@ -154,7 +154,7 @@ testBackendError =
       Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
       _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER ..))), got: " <> show r
 
-testDirectSuccess :: HasCallStack => IO ()
+testDirectSuccess :: (HasCallStack, HasTestEnv) => IO ()
 testDirectSuccess =
   withDirectResolver (status200, registeredBody testNameRecord) $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
