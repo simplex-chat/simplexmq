@@ -314,7 +314,8 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       case redirect of
         Nothing -> do
           notify c rcvFileEntityId $ RFDONE fsSavePath
-          lift $ forM_ tmpPath (removePath <=< toFSFilePath)
+          flip catchAllErrors (\e -> logError $ "XFTP rcv worker error: " <> tshow e) $
+            lift $ forM_ tmpPath (removePath <=< toFSFilePath)
           liftIO $ waitUntilForeground c
           withStore' c (`updateRcvFileComplete` rcvFileId)
         Just RcvFileRedirect {redirectFileInfo, redirectDbId} -> do
