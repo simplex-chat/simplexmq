@@ -59,6 +59,8 @@ smpProxyTests = do
       testProxyRecoversWithoutDisconnect
     it "reconnects to relay after sender disconnects mid-connection" $ \_ ->
       testProxyReconnectAfterRelayRestart
+    it "closes connection to relay after sender disconnects mid-connection" $ \_ ->
+      testProxyClosesRelayConnectionAfterDisconnect
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -557,6 +559,13 @@ testProxyReconnectAfterRelayRestart =
     withStallingServerOn testPort2 $
       race_ (threadDelay 1000000) requestRelaySession
     requireProxyReconnect
+
+testProxyClosesRelayConnectionAfterDisconnect :: HasTestEnv => IO ()
+testProxyClosesRelayConnectionAfterDisconnect =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortTimeout testPort $ \_ ->
+    withStallingServerOn' testPort2 $ \accepted closed -> do
+      race_ (atomically $ takeTMVar accepted) requestRelaySession
+      timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
