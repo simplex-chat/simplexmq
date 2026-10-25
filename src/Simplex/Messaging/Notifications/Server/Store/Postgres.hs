@@ -171,9 +171,13 @@ ntfTknToRow NtfTknRec {ntfTknId, token, tknStatus, tknVerifyKey, tknDhPrivKey, t
    in (ntfTknId, pp, Binary ppToken, tknStatus, tknVerifyKey, tknDhPrivKey, tknDhSecret, Binary regCode, tknCronInterval, tknUpdatedAt)
 
 getNtfToken :: NtfPostgresStore -> NtfTokenId -> IO (Either ErrorType NtfTknRec)
-getNtfToken st tknId =
-  (maybe (Left AUTH) Right =<<) <$>
-    getNtfToken_ st " WHERE token_id = ?" (Only tknId)
+getNtfToken st tknId = withFastDB "getNtfToken" st (`getNtfToken'` tknId)
+{-# INLINE getNtfToken #-}
+
+getNtfToken' :: DB.Connection -> NtfTokenId -> IO (Either ErrorType NtfTknRec)
+getNtfToken' db tknId =
+  maybe (Left AUTH) Right <$>
+    getNtfToken_' db " WHERE token_id = ?" (Only tknId)
 
 findNtfTokenRegistration :: NtfPostgresStore -> NewNtfEntity 'Token -> IO (Either ErrorType (Maybe NtfTknRec))
 findNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) =
@@ -181,10 +185,14 @@ findNtfTokenRegistration st (NewNtfTkn (DeviceToken pp ppToken) tknVerifyKey _) 
 
 getNtfToken_ :: ToRow q => NtfPostgresStore -> Query -> q -> IO (Either ErrorType (Maybe NtfTknRec))
 getNtfToken_ st cond params =
-  withFastDB' "getNtfToken" st $ \db -> do
-    tkn_ <- maybeFirstRow rowToNtfTkn $ DB.query db (ntfTknQuery <> cond) params
-    mapM_ (updateTokenDate db) tkn_
-    pure tkn_
+  withFastDB' "getNtfToken" st $ \db -> getNtfToken_' db cond params
+{-# INLINE getNtfToken_ #-}
+
+getNtfToken_' :: ToRow q => DB.Connection -> Query -> q -> IO (Maybe NtfTknRec)
+getNtfToken_' db cond params = do
+  tkn_ <- maybeFirstRow rowToNtfTkn $ DB.query db (ntfTknQuery <> cond) params
+  mapM_ (updateTokenDate db) tkn_
+  pure tkn_
 
 updateTokenDate :: DB.Connection -> NtfTknRec -> IO ()
 updateTokenDate db NtfTknRec {ntfTknId, tknUpdatedAt} = do
@@ -382,7 +390,7 @@ getServerNtfSubscriptions st srvId afterSubId_ count =
 findNtfSubscription :: NtfPostgresStore -> NtfTokenId -> SMPQueueNtf -> IO (Either ErrorType (NtfTknRec, Maybe NtfSubRec))
 findNtfSubscription st tknId q =
   withFastDB "findNtfSubscription" st $ \db -> runExceptT $ do
-    tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ getNtfToken st tknId
+    tkn@NtfTknRec {ntfTknId, tknStatus} <- ExceptT $ getNtfToken' db tknId
     unless (allowNtfSubCommands tknStatus) $ throwE AUTH
     liftIO $ updateTokenDate db tkn
     sub_ <-

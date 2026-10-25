@@ -197,10 +197,12 @@ safeAccept sock =
     Right r -> pure r
     Left e
       | retryAccept -> logWarn err >> safeAccept sock
+      | outOfDescriptors -> logError err >> threadDelay 1000000 >> safeAccept sock
       | otherwise -> logError err >> E.throwIO e
       where
         retryAccept = maybe False ((`elem` again) . Errno) errno
         again = [eCONNABORTED, eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
+        outOfDescriptors = maybe False ((`elem` [eMFILE, eNFILE]) . Errno) errno
         err = "socket accept error: " <> tshow e <> maybe "" ((", errno=" <>) . tshow) errno
         errno = ioe_errno e
 
@@ -287,11 +289,11 @@ paramsAskClientCert clientCert params =
 validateClientCertificate :: X.CertificateChain -> IO (Maybe T.CertificateRejectReason)
 validateClientCertificate cc = case chainIdCaCerts cc of
   CCEmpty -> pure Nothing -- client certificates are only used for services
-  CCSelf cert -> validate cert
-  CCValid {caCert} -> validate caCert
+  CCSelf _ -> validate
+  CCValid {} -> validate
   CCLong -> pure $ Just $ T.CertificateRejectOther "chain too long"
   where
-    validate caCert = usage <$> x509validate caCert ("", B.empty) cc
+    validate = usage <$> x509validate ("", B.empty) cc
     usage [] = Nothing
     usage r =
       Just $

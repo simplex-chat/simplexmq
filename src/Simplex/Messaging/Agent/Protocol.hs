@@ -246,7 +246,6 @@ import Simplex.Messaging.Crypto.Ratchet
     RcvE2ERatchetParams,
     RcvE2ERatchetParamsUri,
     SndE2ERatchetParams,
-    RcvE2EPrivRatchetParams,
     pattern PQSupportOff,
     pattern PQSupportOn,
   )
@@ -612,6 +611,7 @@ data RcvSwitchStatus
   | RSSendingQADD
   | RSSendingQUSE
   | RSReceivedMessage
+  | RSReceivedQEND
   deriving (Eq, Show)
 
 instance StrEncoding RcvSwitchStatus where
@@ -620,12 +620,14 @@ instance StrEncoding RcvSwitchStatus where
     RSSendingQADD -> "sending_qadd"
     RSSendingQUSE -> "sending_quse"
     RSReceivedMessage -> "received_message"
+    RSReceivedQEND -> "received_qend"
   strP =
     A.takeTill (== ' ') >>= \case
       "switch_started" -> pure RSSwitchStarted
       "sending_qadd" -> pure RSSendingQADD
       "sending_quse" -> pure RSSendingQUSE
       "received_message" -> pure RSReceivedMessage
+      "received_qend" -> pure RSReceivedQEND
       _ -> fail "bad RcvSwitchStatus"
 
 instance ToField RcvSwitchStatus where toField = toField . decodeLatin1 . strEncode
@@ -1624,7 +1626,7 @@ newtype LinkKey = LinkKey ByteString -- sha3-256(fixed_data)
 instance ToField LinkKey where toField (LinkKey s) = toField $ Binary s
 
 -- | Parameters for creating a connection with a prepared link.
-data PreparedLinkParams = PreparedLinkParams
+data PreparedLinkParams k = PreparedLinkParams
   { -- | Correlation ID / determines sender ID
     plpNonce :: C.CbNonce,
     -- | Queue E2EE DH key pair
@@ -1639,8 +1641,8 @@ data PreparedLinkParams = PreparedLinkParams
     plpSrvWithAuth :: SMPServerWithAuth,
     -- | Initial PQ keys
     plpInitKeys :: InitialKeys,
-    -- | Contact address double ratchet keys
-    plpAddressKeys :: Maybe (RatchetKeyId, RcvE2EPrivRatchetParams 'C.X448)
+    -- | Contact address double ratchet keys or invitation X3DH keys
+    plpRatchetKeys :: k
   }
 
 instance ConnectionModeI c => ToField (ConnectionLink c) where toField = toField . Binary . strEncode

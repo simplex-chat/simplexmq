@@ -97,6 +97,14 @@ cabal test --test-option=--match="/SMP client agent/functional API/"
 
 Tests require PostgreSQL running on `localhost:5432` when using `-fserver_postgres` or `-fclient_postgres`.
 
+Tests run in parallel, one job per processor. With 4 jobs, the tests open up to 220 PostgreSQL connections with `-fserver_postgres` and up to 420 with both flags, while the default limit is 100. Raise the limit and restart PostgreSQL:
+
+```bash
+psql -U postgres -c "ALTER SYSTEM SET max_connections = 500"
+```
+
+With more than 4 processors, also limit the jobs: `--test-option=--jobs=4`.
+
 Test files are in `tests/` with structure:
 - `Test.hs`: Main runner
 - `AgentTests/`: Agent protocol and connection tests
