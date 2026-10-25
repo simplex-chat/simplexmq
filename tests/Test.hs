@@ -27,8 +27,9 @@ import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Transport (TLS, Transport (..))
 -- import Simplex.Messaging.Transport.WebSockets (WS)
-import System.Directory (createDirectory, removePathForcibly)
+import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.Environment (getArgs, setEnv, withArgs)
+import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.Core.Runner (defaultConfig, evalSpec, evaluateResult, readConfig, runSpecForest)
 import Util
@@ -45,8 +46,6 @@ import Fixtures
 import Simplex.Messaging.Agent.Store.Postgres.Migrations.App
 #else
 import AgentTests.SchemaDump (schemaDumpTest)
-import System.Directory (listDirectory)
-import System.FilePath ((</>))
 #endif
 
 #if defined(dbServerPostgres)
@@ -204,4 +203,6 @@ hspecInTmpDir spec = do
   withTmpDir (withArgs [] $ runSpecForest forest config') >>= evaluateResult
 
 withTmpDir :: IO a -> IO a
-withTmpDir = bracket_ (removePathForcibly tmpDir >> createDirectory tmpDir) (eventuallyRemove tmpDir 3)
+withTmpDir = bracket_ (createDirectoryIfMissing False tmpDir >> clearTmpDir) clearTmpDir
+  where
+    clearTmpDir = listDirectory tmpDir >>= mapM_ (removePathForcibly . (tmpDir </>))
