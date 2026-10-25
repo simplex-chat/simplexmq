@@ -35,6 +35,12 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       reduced: ${{ steps.plan.outputs.reduced }}
     steps:
+      - name: Reject a manual run on a tag
+        if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
+        run: |
+          echo "::error::A manual run starts on a branch; a tag push builds the release."
+          exit 1
+
       - name: Choose build matrix
         id: plan
         shell: bash
