@@ -19,6 +19,7 @@ import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
 import NtfClient
@@ -48,6 +49,8 @@ import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.Client (TransportHost (..))
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.STM
 import Util
@@ -62,6 +65,7 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
+  describe "Notification server restart" $ testResubscribeAfterRestart ps
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -292,6 +296,30 @@ testRetriedNtfSubscription (ATransport t, msType) =
           (tknKey', _dhSecret, tId', regCode') <- registerToken nh apns "efgh"
           RespNtf "6" _ NROk <- signSendRecvNtf nh tknKey' ("6", tId', TVFY regCode')
           RespNtf "7" NoEntity (NRErr AUTH) <- signSendRecvNtf nh tknKey' ("7", NoEntity, SNEW $ NewNtfSub tId' q nKey)
+          pure ()
+
+testResubscribeAfterRestart :: (ASrvTransport, AStoreType) -> Spec
+testResubscribeAfterRestart (ATransport t, msType) =
+  it "should resubscribe after restart with IPv4-mapped IPv6 server host" $ do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      smpTest2 t msType $ \rh sh -> do
+        ((sId, _rId, _rKey, _rcvDhSecret), nId, _rcvNtfDhSecret) <- createNtfQueueNKEY rh sPub nPub
+        ntfTest t $ \nh -> do
+          (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+          RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+          let ipv6Srv = SMPServer (THDomainName "0:0:0:0:0:ffff:7f00:1" :| []) "1" SMP.testKeyHash
+              srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+          RespNtf "3" NoEntity (NRSubId _) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf ipv6Srv (EntityId "abcd")) nKey)
+          RespNtf "4" NoEntity (NRSubId _) <- signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
+          pure ()
+        ntfTest t $ \_ -> do
+          threadDelay 500000
+          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
+          Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <-
+            5000000 `timeout` getMockNotification apns (DeviceToken PPApnsTest "abcd")
           pure ()
 
 type CreateQueueFunc =
