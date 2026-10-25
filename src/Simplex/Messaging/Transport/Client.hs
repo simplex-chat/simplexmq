@@ -97,7 +97,7 @@ instance StrEncoding TransportHost where
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
       ipv6StrP =
         A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']'
-          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':')
+          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':' || c == '.')
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
 instance ToJSON TransportHost where
