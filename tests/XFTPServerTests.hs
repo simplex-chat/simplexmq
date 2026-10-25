@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module XFTPServerTests (xftpServerTests) where
 
@@ -37,7 +38,7 @@ import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
-import Simplex.Messaging.Client (ProtocolClientError (..))
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
@@ -80,6 +81,8 @@ xftpServerTests = do
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
+      it "should close connection when handshake times out" testHandshakeTimeout
+      it "should close connection when cancelled during handshake" testCancelledHandshake
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -387,6 +390,24 @@ testFileSkipCommitted fsType =
         uploadXFTPChunk c spKey sId chunkSpec -- upload again to get FROk without getting stuck
         downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
         liftIO $ B.readFile (testPath "received_chunk") `shouldReturn` bytes -- new chunk content got ignored
+
+testHandshakeTimeout :: HasTestEnv => AFStoreType -> Expectation
+testHandshakeTimeout _ =
+  withStallingXFTPServer $ \_ closed -> do
+    ts <- getCurrentTime
+    (void <$> getXFTPClient (1, testXFTPServer, Nothing) cfg [] ts (\_ -> pure Nothing) (\_ -> pure ())) `shouldReturn` Left PCEResponseTimeout
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+  where
+    cfg = testXFTPClientConfig {xftpNetworkConfig = defaultNetworkConfig {tcpConnectTimeout = NetworkTimeout 2000000 2000000}}
+
+testCancelledHandshake :: HasTestEnv => AFStoreType -> Expectation
+testCancelledHandshake _ =
+  withStallingXFTPServer $ \requested closed -> do
+    ts <- getCurrentTime
+    a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
+    timeout 5000000 (atomically $ takeTMVar requested) `shouldReturn` Just ()
+    cancel a
+    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 -- SNI and CORS tests
 
