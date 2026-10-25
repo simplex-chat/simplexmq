@@ -29,7 +29,7 @@ fileDescriptionTests = do
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
     it "reject file description with YAML aliases" testRejectYAMLAliases
-    it "limit chunks and replicas per chunk" testFileDescriptionLimits
+    it "limit replicas per chunk and per file" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
@@ -173,11 +173,14 @@ testRejectYAMLAliases = do
 testFileDescriptionLimits :: IO ()
 testFileDescriptionLimits = do
   let largestSplit = prepareChunkSizes (maxFileSizeHard - mb 1)
+      split64GB = prepareChunkSizes (gb 64 - mb 1)
   length largestSplit `shouldBe` 1282
+  length split64GB `shouldBe` 16386
   validateFileDescription (descriptionOf largestSplit 16) `shouldSatisfy` isRight
   validateFileDescription (descriptionOf largestSplit 17) `shouldBe` Left "too many chunk replicas"
-  validateFileDescription (descriptionOf (replicate 1283 chunkSize3) 1) `shouldSatisfy` isRight
-  validateFileDescription (descriptionOf (replicate 1284 chunkSize3) 1) `shouldBe` Left "too many chunks"
+  validateFileDescription (descriptionOf split64GB 4) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf (replicate 8192 chunkSize3) 16) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf (replicate 8193 chunkSize3) 16) `shouldBe` Left "too many file replicas"
   where
     FileDescription {chunks = fixtureChunks} = fileDesc
     fixtureReplicas = concatMap (\FileChunk {replicas} -> replicas) fixtureChunks

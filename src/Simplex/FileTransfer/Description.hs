@@ -226,12 +226,13 @@ validateFileDescription :: FileDescription p -> Either String (ValidFileDescript
 validateFileDescription fd@FileDescription {size, chunks}
   | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
   | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
-  | length chunks > fromIntegral (maxFileSizeHard `div` fromIntegral chunkSize3) + 3 = Left "too many chunks"
-  | any (\FileChunk {replicas} -> length replicas > 16) chunks = Left "too many chunk replicas"
+  | any (> 16) replicaCounts = Left "too many chunk replicas"
+  | sum replicaCounts > 131072 = Left "too many file replicas"
   | otherwise = Right $ ValidFD fd
   where
     chunkNos = map (\FileChunk {chunkNo} -> chunkNo) chunks
     chunksSize = foldl' (\(s :: Int64) FileChunk {chunkSize} -> s + fromIntegral (unFileSize chunkSize)) 0
+    replicaCounts = map (\FileChunk {replicas} -> length replicas) chunks
 
 sharedDescriptionHash :: FileDescription p -> ByteString
 sharedDescriptionHash FileDescription {size, digest, key, nonce, chunkSize, chunks} =
