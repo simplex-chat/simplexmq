@@ -247,6 +247,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Lazy (fromStrict, toStrict)
 import Data.Constraint (Dict (..))
+import Data.Hashable (Hashable)
 import Data.Kind (Constraint, Type)
 import qualified Data.List.NonEmpty as L
 import Data.String
@@ -1005,7 +1006,9 @@ instance Encoding AuthTag where
 -- | Certificate fingerpint newtype.
 --
 -- Previously was used for server's public key hash in ad-hoc transport scheme, kept as is for compatibility.
-newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
+newtype KeyHash = KeyHash {unKeyHash :: ByteString}
+  deriving (Eq, Ord, Show)
+  deriving newtype (Hashable)
 
 instance Encoding KeyHash where
   smpEncode = smpEncode . unKeyHash

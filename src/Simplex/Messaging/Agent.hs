@@ -326,9 +326,9 @@ logServersStats c = do
 
 saveServersStats :: AgentClient -> AM' ()
 saveServersStats c@AgentClient {subQ, smpServersStats, xftpServersStats, ntfServersStats} = do
-  sss <- mapM (liftIO . getAgentSMPServerStats) =<< readTVarIO smpServersStats
-  xss <- mapM (liftIO . getAgentXFTPServerStats) =<< readTVarIO xftpServersStats
-  nss <- mapM (liftIO . getAgentNtfServerStats) =<< readTVarIO ntfServersStats
+  sss <- mapM (liftIO . getAgentSMPServerStats) =<< liftIO (TM.toMapIO smpServersStats)
+  xss <- mapM (liftIO . getAgentXFTPServerStats) =<< liftIO (TM.toMapIO xftpServersStats)
+  nss <- mapM (liftIO . getAgentNtfServerStats) =<< liftIO (TM.toMapIO ntfServersStats)
   let stats = AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = OptionalMap nss}
   tryAllErrors' (withStore' c (`updateServersStats` stats)) >>= \case
     Left e -> atomically $ writeTBQueue subQ ("", "", AEvt SAEConn $ ERR $ INTERNAL $ show e)
@@ -341,9 +341,9 @@ restoreServersStats c@AgentClient {smpServersStats, xftpServersStats, ntfServers
     Right (startedAt, Nothing) -> atomically $ writeTVar srvStatsStartedAt startedAt
     Right (startedAt, Just AgentPersistedServerStats {smpServersStats = sss, xftpServersStats = xss, ntfServersStats = OptionalMap nss}) -> do
       atomically $ writeTVar srvStatsStartedAt startedAt
-      atomically . writeTVar smpServersStats =<< mapM (atomically . newAgentSMPServerStats') sss
-      atomically . writeTVar xftpServersStats =<< mapM (atomically . newAgentXFTPServerStats') xss
-      atomically . writeTVar ntfServersStats =<< mapM (atomically . newAgentNtfServerStats') nss
+      atomically . (`TM.replace` smpServersStats) =<< mapM (atomically . newAgentSMPServerStats') sss
+      atomically . (`TM.replace` xftpServersStats) =<< mapM (atomically . newAgentXFTPServerStats') xss
+      atomically . (`TM.replace` ntfServersStats) =<< mapM (atomically . newAgentNtfServerStats') nss
 
 disconnectAgentClient :: AgentClient -> IO ()
 disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAgent = xa}} = do
@@ -719,7 +719,7 @@ setNetworkConfig :: AgentClient -> NetworkConfig -> AE ()
 setNetworkConfig c@AgentClient {useNetworkConfig, proxySessTs} cfg' = do
   ts <- liftIO getCurrentTime
   (ok, changed) <- atomically $ do
-    useServices <- readTVar $ useClientServices c
+    useServices <- TM.toMap $ useClientServices c
     if any id useServices && sessionMode cfg' == TSMEntity
       then pure (False, False)
       else do
@@ -918,10 +918,12 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
   atomically $ TM.delete userId $ smpServers c
   atomically $ TM.delete userId $ xftpServers c
   atomically $ TM.delete userId $ useClientServices c
-  atomically $ modifyTVar' smpServersStats $ M.filterWithKey (\(userId', _) _ -> userId' /= userId)
-  atomically $ modifyTVar' xftpServersStats $ M.filterWithKey (\(userId', _) _ -> userId' /= userId)
+  atomically $ deleteUserStats smpServersStats
+  atomically $ deleteUserStats xftpServersStats
   lift $ saveServersStats c
   where
+    deleteUserStats :: TM.TMap (UserId, ProtocolServer p) s -> STM ()
+    deleteUserStats m = TM.toMap m >>= mapM_ (`TM.delete` m) . filter ((userId ==) . fst) . M.keys
     delUser =
       whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
         writeTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
@@ -1177,7 +1179,7 @@ createRcvQueue c nm userId connId srvWithAuth@(ProtoServerWithAuth srv _) enable
 
 checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
 checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAuth srv@(ProtocolServer {host}) _) = do
-  notices <- readTVarIO clientNotices
+  notices <- liftIO $ TM.toMapIO clientNotices
   unless (M.null notices) $ checkNotices notices =<< liftIO getSystemSeconds
   where
     srvKey
@@ -1984,7 +1986,7 @@ subscribeAllConnections' c onlyNeeded activeUserId_ = handleErr $ do
     let userSrvs' = case activeUserId_ of
           Just activeUserId -> sortOn (\(uId, _) -> if uId == activeUserId then 0 else 1 :: Int) userSrvs
           Nothing -> userSrvs
-    useServices <- readTVarIO $ useClientServices c
+    useServices <- liftIO $ TM.toMapIO $ useClientServices c
     -- Service will be loaded for all user/server combinations:
     -- a) service is enabled for user ID and service record exists: subscription will be attempted,
     -- b) service is disabled and record exists: service record and all associations will be removed,
@@ -3467,7 +3469,7 @@ debugAgentLocks AgentClient {connLocks = cs, invLocks = is, deleteLock = d} = do
   delLock <- atomically $ tryReadTMVar d
   pure AgentLocks {connLocks, invLocks, delLock}
   where
-    getLocks ls = atomically $ M.mapKeys (safeDecodeUtf8 . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< readTVar ls)
+    getLocks ls = atomically $ M.mapKeys (safeDecodeUtf8 . strEncode) . M.mapMaybe id <$> (mapM tryReadTMVar =<< TM.toMap ls)
 
 getSMPServer :: AgentClient -> UserId -> AM SMPServerWithAuth
 getSMPServer c userId = getNextSMPServer c userId []

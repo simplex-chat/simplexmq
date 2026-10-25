@@ -23,12 +23,13 @@ import Simplex.Messaging.Server.QueueStore (QueueRec, ServiceRec (..))
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), STMService (..), withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (tshow, ($>>=))
 import System.IO
 
 writeQueueStore :: forall q. StoreQueueClass q => StoreLog 'WriteMode -> STMQueueStore q -> IO ()
 writeQueueStore s st = do
-  readTVarIO (services st) >>= mapM_ (logNewService s . serviceRec)
+  TM.toMapIO (services st) >>= mapM_ (logNewService s . serviceRec)
   withLoadedQueues st $ writeQueue
   where
     writeQueue :: q -> IO ()

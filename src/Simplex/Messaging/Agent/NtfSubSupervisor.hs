@@ -53,6 +53,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (catchAllErrors, catchAllErrors', diffToMicroseconds, threadDelay', tryAllErrors, tshow, whenM)
 import System.Random (randomR)
 import UnliftIO
@@ -586,7 +587,7 @@ closeNtfSupervisor ns = do
   stopWorkers $ ntfSMPWorkers ns
   stopWorkers $ ntfTknDelWorkers ns
   where
-    stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
+    stopWorkers workers = atomically (TM.flush workers) >>= mapM_ (liftIO . cancelWorker)
 
 getNtfServer :: AgentClient -> AM' (Maybe NtfServer)
 getNtfServer c = do

@@ -119,6 +119,7 @@ import Simplex.Messaging.Server.StoreLog (foldLogLines)
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.Server
@@ -275,7 +276,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           where
             updateSubConnected c = case clntSub of
               CSClient qId prevServiceId serviceId_ -> do
-                modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+                TS.insert clntId subClients -- add ID to server's subscribed cients
                 as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
                 case serviceId_ of
                   Just serviceId -> do
@@ -292,7 +293,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 as' <- endServiceSub serviceId qId DELD
                 pure $ as ++ as'
               CSService serviceId changedSubs -> do
-                modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+                TS.insert clntId subClients -- add ID to server's subscribed cients
                 modifyTVar' totalServiceSubs $ addServiceSubs changedSubs -- server count and IDs hash for all services
                 cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
             updateSubDisconnected = case clntSub of
@@ -328,7 +329,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 
         endPreviousSubscriptions :: [PrevClientSub s] -> IO ()
         endPreviousSubscriptions = mapM_ $ \(c, subAction, evt) -> do
-          atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt] (evt <|)) (clientId c)
+          atomically $ TM.alter (Just . maybe [evt] (evt <|)) (clientId c) pendingEvents
           case subAction of
             CSAEndSub qId -> atomically (endSub c qId) >>= unsubPrev
             -- like endSub, also removes the delivery subscription from the service client's subscriptions map,
@@ -336,7 +337,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             CSAEndServiceSub qId -> atomically (endServiceQueueSub c qId) >>= unsubPrev
             CSADecreaseSubs changedSubs -> do
               atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
-              forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
+              forM_ unsub_ $ \unsub -> atomically (TM.flush $ clientSubs c) >>= mapM_ unsub
           where
             unsubPrev :: Maybe sub -> IO ()
             unsubPrev s_ = sequence_ (unsub_ <*> s_)
@@ -351,9 +352,9 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 decrease = subtractServiceSubs (1, queueIdHash qId)
         -- remove client from server's subscribed cients
         removeWhenNoSubs c = do
-          noClientSubs <- null <$> readTVar (clientSubs c)
+          noClientSubs <- TM.null $ clientSubs c
           noServiceSubs <- ((0 ==) . fst) <$> readTVar (clientServiceSubs c)
-          when (noClientSubs && noServiceSubs) $ modifyTVar' subClients $ IS.delete (clientId c)
+          when (noClientSubs && noServiceSubs) $ TS.delete (clientId c) subClients
 
     deliverNtfsThread :: Server s -> M s ()
     deliverNtfsThread srv@Server {ntfSubscribers = ServerSubscribers {subClients, serviceSubscribers}} = do
@@ -367,7 +368,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       where
         runDeliverNtfs :: s -> NtfStore -> ServerStats -> IO ()
         runDeliverNtfs ms ns'@(NtfStore ns) stats = do
-          ntfs <- M.assocs <$> readTVarIO ns
+          ntfs <- TM.foldIO (\acc ntf -> pure $ ntf : acc) [] ns
           unless (null ntfs) $
             getQueueNtfServices @(StoreQueue s) (queueStore ms) ntfs >>= \case
               Left e -> logError $ "NOTIFICATIONS: getQueueNtfServices error " <> tshow e
@@ -375,16 +376,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 forM_ sNtfs $ \(serviceId_, ntfs') -> case serviceId_ of
                   Just sId -> getSubscribedClient sId serviceSubscribers >>= mapM_ (deliverServiceNtfs ntfs')
                   Nothing -> do -- legacy code that does almost the same as before for non-service subscribers
-                    cIds <- IS.toList <$> readTVarIO subClients
+                    cIds <- S.toList <$> TS.toSetIO subClients
                     forM_ cIds $ \cId -> getServerClient cId srv >>= mapM_ (deliverQueueNtfs ntfs')
-                atomically $ modifyTVar' ns (`M.withoutKeys` S.fromList (map fst deleted))
+                atomically $ mapM_ ((`TM.delete` ns) . fst) deleted
                 deleteEmptyNtfs ns' ntfs
           where
             deliverQueueNtfs ntfs' c@Client {ntfSubscriptions} =
-              whenM (currentClient readTVarIO c) $ do
-                subs <- readTVarIO ntfSubscriptions
-                unless (M.null subs) $ do
-                  let ntfs'' = filter (\(nId, _) -> M.member nId subs) ntfs'
+              whenM (atomically $ currentClient c) $
+                unlessM (atomically $ TM.null ntfSubscriptions) $ do
+                  ntfs'' <- filterM (\(nId, _) -> TM.memberIO nId ntfSubscriptions) ntfs'
                   tryAny (atomically $ flushSubscribedNtfs ntfs'' c) >>= updateNtfStats c
             deliverServiceNtfs ntfs' cv = readTVarIO cv >>= mapM_ deliver
               where
@@ -396,12 +396,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
               ts_ <- foldM addNtfs [] ntfs
               forM_ (L.nonEmpty ts_) $ \ts -> do
                 let cancelNtfs s = throwSTM $ userError $ s <> ", " <> show (length ts_) <> " ntfs kept"
-                unlessM (currentClient readTVar c) $ cancelNtfs "not current client"
+                unlessM (currentClient c) $ cancelNtfs "not current client"
                 whenM (isFullTBQueue sndQ) $ cancelNtfs "sending queue full"
                 writeTBQueue sndQ (ts, [])
               pure $ length ts_
-            currentClient :: Monad m => (forall a. TVar a -> m a) -> Client s' -> m Bool
-            currentClient rd Client {clientId, connected} = (&&) <$> rd connected <*> (IS.member clientId <$> rd subClients)
+            currentClient :: Client s' -> STM Bool
+            currentClient Client {clientId, connected} = (&&) <$> readTVar connected <*> TS.member clientId subClients
             addNtfs :: [Transmission BrokerMsg] -> (NotifierId, TVar [MsgNtf]) -> STM [Transmission BrokerMsg]
             addNtfs acc (nId, v) =
               readTVar v >>= \case
@@ -429,8 +429,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         sendPending ntfSubscribers stats
       where
         sendPending ServerSubscribers {pendingEvents} stats = do
-          pending <- atomically $ swapTVar pendingEvents IM.empty
-          unless (null pending) $ forM_ (IM.assocs pending) $ \(cId, evts) ->
+          pending <- atomically $ TM.flush pendingEvents
+          unless (null pending) $ forM_ (M.assocs pending) $ \(cId, evts) ->
             getServerClient cId srv >>= mapM_ (enqueueEvts evts)
           where
             enqueueEvts evts c@Client {connected, sndQ} =
@@ -712,15 +712,15 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients} = do
-          subsCount <- M.size <$> getSubscribedClients queueSubscribers
-          subClientsCount <- IS.size <$> readTVarIO subClients
-          subServicesCount <- M.size <$> getSubscribedClients serviceSubscribers
+          subsCount <- getSubscribedClientsCount queueSubscribers
+          subClientsCount <- atomically $ TS.size subClients
+          subServicesCount <- getSubscribedClientsCount serviceSubscribers
           subServiceSubsCount <- fst <$> readTVarIO totalServiceSubs
           pure RTSubscriberMetrics {subsCount, subClientsCount, subServicesCount, subServiceSubsCount}
         getDeliveredMetrics ts' = foldM countClnt (RTSubscriberMetrics 0 0 0 0, emptyTimeBuckets) =<< getServerClients srv
           where
             countClnt acc@(metrics, times) Client {subscriptions} = do
-              (cnt, times') <- foldM countSubs (0, times) =<< readTVarIO subscriptions
+              (cnt, times') <- TM.foldIO (\r -> countSubs r . snd) (0, times) subscriptions
               pure $ if cnt > 0
                 then (metrics {subsCount = subsCount metrics + cnt, subClientsCount = subClientsCount metrics + 1}, times')
                 else acc
@@ -804,7 +804,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                   sndActiveAt' <- strEncode <$> readTVarIO sndActiveAt
                   now <- liftIO getSystemTime
                   let age = systemSeconds now - systemSeconds createdAt
-                  subscriptions' <- bshow . M.size <$> readTVarIO subscriptions
+                  subscriptions' <- bshow <$> TM.sizeIO subscriptions
                   hPutStrLn h . B.unpack $ B.intercalate "," [bshow cid, encode sessionId, connected', strEncode createdAt, rcvActiveAt', sndActiveAt', bshow age, subscriptions']
               CPStats -> withUserRole $ do
                 ss <- unliftIO u $ asks serverStats
@@ -855,7 +855,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 readTVarIO role >>= \case
                   CPRAdmin -> do
                     NtfStore ns <- unliftIO u $ asks ntfStore
-                    ntfCount2 <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< readTVarIO ns
+                    ntfCount2 <- liftIO . foldM (\(!n) q -> (n +) . length <$> readTVarIO q) 0 =<< TM.toMapIO ns
                     hPutStrLn h $ "ntfCount 2: " <> show ntfCount2
                   _ -> pure ()
                 putProxyStat "pRelays" pRelays
@@ -893,8 +893,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 unliftIO u (asks sockets) >>= readTVarIO >>= mapM_ putSocketThreads
                 where
                   putSocketThreads (tcpPort, (_, _, active')) = do
-                    active <- readTVarIO active'
-                    forM_ (IM.toList active) $ \(sid, tid') ->
+                    active <- TM.toMapIO active'
+                    forM_ (M.toList active) $ \(sid, tid') ->
                       deRefWeak tid' >>= \case
                         Nothing -> hPutStrLn h $ intercalate "," [tcpPort, show sid, "", "gone", ""]
                         Just tid -> do
@@ -940,8 +940,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                       -- TODO [certs rcv] service subscriptions
                       clnts <- countSubClients activeSubs
                       hPutStrLn h $ protoName <> " subscribed clients: " <> show (IS.size clnts) <> (if showIds then " " <> show (IS.toList clnts) else "")
-                      clnts' <- readTVarIO subClients
-                      hPutStrLn h $ protoName <> " subscribed clients count 2: " <> show (IS.size clnts') <> (if showIds then " " <> show clnts' else "")
+                      clnts' <- TS.toSetIO subClients
+                      hPutStrLn h $ protoName <> " subscribed clients count 2: " <> show (S.size clnts') <> (if showIds then " " <> show clnts' else "")
                       where
                         countSubClients :: Map QueueId (TVar (Maybe (Client s))) -> IO IS.IntSet
                         countSubClients = foldM (\ !s c -> maybe s ((`IS.insert` s) . clientId) <$> readTVarIO c) IS.empty
@@ -950,7 +950,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                       where
                         addSubs :: (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural)) -> Client s -> IO (Int, (Int, Int, Int, Int), Int, (Natural, Natural, Natural))
                         addSubs (!subCnt, cnts@(!c1, !c2, !c3, !c4), !clCnt, !qs) cl = do
-                          subs <- readTVarIO $ subSel cl
+                          subs <- TM.toMapIO $ subSel cl
                           cnts' <- case countSubs_ of
                             Nothing -> pure cnts
                             Just countSubs -> do
@@ -1083,7 +1083,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
     noSubscriptions Client {clientId} s =
       not <$> anyM [hasSubs (subscribers s), hasSubs (ntfSubscribers s)]
       where
-        hasSubs ServerSubscribers {subClients} = IS.member clientId <$> readTVarIO subClients
+        hasSubs ServerSubscribers {subClients} = atomically $ TS.member clientId subClients
 
 controlPortAuth :: Handle -> Maybe BasicAuth -> Maybe BasicAuth -> TVar CPClientRole -> BasicAuth -> IO ()
 controlPortAuth h user admin role auth = do
@@ -1106,8 +1106,8 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceS
   -- these can be in separate transactions,
   -- because the client already disconnected and they won't change
   atomically $ writeTVar connected False
-  subs <- atomically $ swapTVar subscriptions M.empty
-  ntfSubs <- atomically $ swapTVar ntfSubscriptions M.empty
+  subs <- atomically $ TM.flush subscriptions
+  ntfSubs <- atomically $ TM.flush ntfSubscriptions
   liftIO $ mapM_ cancelSub subs
   whenM (asks serverActive >>= readTVarIO) $ do
     srv@Server {subscribers, ntfSubscribers} <- asks server
@@ -1120,13 +1120,13 @@ clientDisconnected c@Client {clientId, subscriptions, ntfSubscriptions, serviceS
           | serviceRole == SRMessaging -> updateServiceSubs serviceId serviceSubsCount subscribers
           | serviceRole == SRNotifier -> updateServiceSubs serviceId ntfServiceSubsCount ntfSubscribers
         _ -> pure ()
-  tIds <- atomically $ swapTVar endThreads IM.empty
+  tIds <- atomically $ TM.flush endThreads
   liftIO $ mapM_ (mapM_ killThread <=< deRefWeak) tIds
   where
     updateSubscribers :: Map QueueId a -> ServerSubscribers s -> IO ()
     updateSubscribers subs ServerSubscribers {queueSubscribers, subClients} = do
       mapM_ (\qId -> deleteSubcribedClient qId c queueSubscribers) (M.keys subs)
-      atomically $ modifyTVar' subClients $ IS.delete clientId
+      atomically $ TS.delete clientId subClients
     updateServiceSubs :: ServiceId -> TVar (Int64, IdsHash) -> ServerSubscribers s -> IO ()
     updateServiceSubs serviceId subsCount ServerSubscribers {totalServiceSubs, serviceSubscribers} = do
       deleteSubcribedClient serviceId c serviceSubscribers
@@ -1402,8 +1402,8 @@ forkClient Client {endThreads, endThreadSeq} label action = do
   tId <- atomically $ stateTVar endThreadSeq $ \next -> (next, next + 1)
   t <- forkIO $ do
     labelMyThread label
-    action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
-  mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
+    action `finally` atomically (TM.delete tId endThreads)
+  mkWeakThreadId t >>= \w -> atomically $ TM.insert tId w endThreads
 
 client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
 client
@@ -2472,7 +2472,7 @@ saveServerNtfs = asks (storeNtfsFile . config) >>= mapM_ saveNtfs
       logNote $ "saving notifications to file " <> T.pack f
       NtfStore ns <- asks ntfStore
       liftIO . withFile f WriteMode $ \h ->
-        readTVarIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
+        TM.toMapIO ns >>= mapM_ (saveQueueNtfs h) . M.assocs
       logNote "notifications saved"
       where
         -- reverse on save, to save notifications in order, will become reversed again when restoring.
@@ -2497,7 +2497,7 @@ restoreServerNtfs =
           Right (lineCount, storedMsgsCount, expiredMsgsCount) -> do
             renameFile f $ f <> ".bak"
             let NtfStore ns' = ns
-            storedQueues <- M.size <$> readTVarIO ns'
+            storedQueues <- TM.sizeIO ns'
             logNote $ "notifications restored, " <> tshow lineCount <> " lines processed"
             pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues}
       where

@@ -122,6 +122,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Hashable (Hashable)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.Tuple (swap)
@@ -528,7 +529,7 @@ type ServiceId = EntityId
 -- this type is used for server entities only
 newtype EntityId = EntityId {unEntityId :: ByteString}
   deriving (Eq, Ord, Show)
-  deriving newtype (Encoding, StrEncoding)
+  deriving newtype (Encoding, Hashable, StrEncoding)
 
 pattern NoEntity :: EntityId
 pattern NoEntity = EntityId ""

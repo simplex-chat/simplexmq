@@ -27,8 +27,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, isJust)
-import Data.Set (Set)
-import qualified Data.Set as S
 import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..), XFTPFileId)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
@@ -41,6 +39,8 @@ import System.IO (IOMode (..))
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.TSet (TSet)
+import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Util (ifM)
 
 data FSType = FSMemory | FSPostgres
@@ -53,7 +53,7 @@ data FileRec = FileRec
   { senderId :: SenderId,
     fileInfo :: FileInfo,
     filePath :: TVar (Maybe FilePath),
-    recipientIds :: TVar (Set RecipientId),
+    recipientIds :: TSet RecipientId,
     createdAt :: RoundedFileTime,
     expiresAt :: Maybe RoundedFileTime,
     fileStatus :: TVar ServerEntityStatus
@@ -127,19 +127,19 @@ instance FileStoreClass STMFileStore where
 
   addRecipient st@STMFileStore {recipients} senderId (FileRecipient rId rKey) = atomically $
     withFile st senderId $ \FileRec {recipientIds} -> do
-      rIds <- readTVar recipientIds
+      memR <- TS.member rId recipientIds
       mem <- TM.member rId recipients
-      if rId `S.member` rIds || mem
+      if memR || mem
         then pure $ Left DUPLICATE_
         else do
-          writeTVar recipientIds $! S.insert rId rIds
+          TS.insert rId recipientIds
           TM.insert rId (senderId, rKey) recipients
           pure $ Right ()
 
   deleteFile STMFileStore {files, recipients} senderId = atomically $ do
     TM.lookupDelete senderId files >>= \case
       Just FileRec {recipientIds} -> do
-        readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
+        TS.toSet recipientIds >>= mapM_ (`TM.delete` recipients)
         pure $ Right ()
       _ -> pure $ Left AUTH
 
@@ -150,7 +150,7 @@ instance FileStoreClass STMFileStore where
 
   deleteRecipient STMFileStore {recipients} rId FileRec {recipientIds} = atomically $ do
     TM.delete rId recipients
-    modifyTVar' recipientIds $ S.delete rId
+    TS.delete rId recipientIds
 
   getFile st party fId = atomically $ case party of
     SFSender -> withFile st fId $ pure . Right . (\f -> (f, sndKey $ fileInfo f))
@@ -163,12 +163,12 @@ instance FileStoreClass STMFileStore where
     TM.lookupDelete recipientId recipients >>= \case
       Just (sId, _) ->
         withFile st sId $ \FileRec {recipientIds} -> do
-          modifyTVar' recipientIds $ S.delete recipientId
+          TS.delete recipientId recipientIds
           pure $ Right ()
       _ -> pure $ Left AUTH
 
   expiredFiles STMFileStore {files} now old _limit = do
-    fs <- readTVarIO files
+    fs <- TM.toMapIO files
     fmap catMaybes . forM (M.toList fs) $ \(sId, FileRec {fileInfo = FileInfo {size}, filePath, createdAt = RoundedSystemTime createdAt, expiresAt}) ->
       let expired = case expiresAt of
             Just e -> roundedSeconds e < roundedSeconds now
@@ -179,18 +179,18 @@ instance FileStoreClass STMFileStore where
               pure $ Just (sId, path, size)
             else pure Nothing
 
-  getUsedStorage STMFileStore {files} = foldM addSize 0 =<< readTVarIO files
+  getUsedStorage STMFileStore {files} = TM.foldIO (\acc -> addSize acc . snd) 0 files
     where
       addSize acc FileRec {fileInfo = FileInfo {size}, filePath} =
         ifM (isJust <$> readTVarIO filePath) (pure $! acc + fromIntegral size) (pure acc)
 
-  getFileCount STMFileStore {files} = M.size <$> readTVarIO files
+  getFileCount STMFileStore {files} = TM.sizeIO files
 
 -- Internal STM helpers
 
 newFileRec :: SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> STM FileRec
 newFileRec senderId fileInfo createdAt expiresAt status = do
-  recipientIds <- newTVar S.empty
+  recipientIds <- TS.empty
   filePath <- newTVar Nothing
   fileStatus <- newTVar status
   pure FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, fileStatus}

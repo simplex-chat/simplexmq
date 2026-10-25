@@ -19,6 +19,7 @@ import qualified Simplex.Messaging.Agent.TSessionSubs as SS
 import Simplex.Messaging.Client (SMPTransportSession, TransportSessionMode (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EntityId (..), RecipientId, SMPServer)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SessionId)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
@@ -31,7 +32,7 @@ instance IsString EntityId where fromString = EntityId . B.pack
 
 dumpSessionSubs :: SS.TSessionSubs -> IO (M.Map SMPTransportSession (Maybe SessionId, (M.Map RecipientId RcvQueueSub, M.Map RecipientId RcvQueueSub)))
 dumpSessionSubs =
-  readTVarIO . SS.sessionSubs
+  TM.toMapIO . SS.sessionSubs
     >=> mapM (\s -> (,) <$> readTVarIO (SS.subsSessId s) <*> SS.mapSubs id s)
 
 srv1 :: SMPServer

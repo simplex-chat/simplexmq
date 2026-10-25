@@ -129,7 +129,7 @@ closeXFTPAgent a = do
   stopWorkers $ xftpSndWorkers a
   stopWorkers $ xftpDelWorkers a
   where
-    stopWorkers workers = atomically (swapTVar workers M.empty) >>= mapM_ (liftIO . cancelWorker)
+    stopWorkers workers = atomically (TM.flush workers) >>= mapM_ (liftIO . cancelWorker)
 
 xftpReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AM RcvFileId
 xftpReceiveFile' c userId vfd cfArgs approvedRelays = do

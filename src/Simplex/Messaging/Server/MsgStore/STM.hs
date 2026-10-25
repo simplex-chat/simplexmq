@@ -36,6 +36,7 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM
 import Simplex.Messaging.Server.QueueStore.Types
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util ((<$$>), ($>>=))
 
 data STMMsgStore = STMMsgStore
@@ -95,8 +96,8 @@ instance MsgStoreClass STMMsgStore where
 
   loadedQueueCounts :: STMMsgStore -> IO LoadedQueueCounts
   loadedQueueCounts STMMsgStore {queueStore_ = st} = do
-    loadedQueueCount <- M.size <$> readTVarIO (queues st)
-    loadedNotifierCount <- M.size <$> readTVarIO (notifiers st)
+    loadedQueueCount <- TM.sizeIO $ queues st
+    loadedNotifierCount <- TM.sizeIO $ notifiers st
     pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount}
 
   mkQueue _ rId qr = STMQueue rId <$> newTVarIO (Just qr) <*> newTVarIO Nothing

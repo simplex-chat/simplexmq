@@ -333,10 +333,10 @@ instance StrEncoding StatsByServerData where
       serverP = (,) <$> strP_ <*> A.decimal
 
 getStatsByServer :: TMap Text (TVar Int) -> IO StatsByServerData
-getStatsByServer s = readTVarIO s >>= fmap (StatsByServerData . M.toList) . mapM readTVarIO
+getStatsByServer s = TM.toMapIO s >>= fmap (StatsByServerData . M.toList) . mapM readTVarIO
 
 setStatsByServer :: TMap Text (TVar Int) -> StatsByServerData -> IO ()
-setStatsByServer s (StatsByServerData d) = mapM newTVarIO (M.fromList d) >>= atomically . writeTVar s
+setStatsByServer s (StatsByServerData d) = mapM newTVarIO (M.fromList d) >>= atomically . (`TM.replace` s)
 
 -- double lookup avoids STM transaction with a shared map in most cases
 incServerStat :: Text -> TMap Text (TVar Int) -> IO ()

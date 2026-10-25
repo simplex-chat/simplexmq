@@ -303,7 +303,7 @@ getMockNotification APNSMockServer {notifications} (DeviceToken _ token) = do
 
 getAnyMockNotification :: MonadIO m => APNSMockServer -> m APNSMockRequest
 getAnyMockNotification APNSMockServer {notifications} = do
-  atomically $ readTVar notifications >>= mapM readTBQueue . M.elems >>= \case [] -> retry; ntf : _ -> pure ntf
+  atomically $ TM.toMap notifications >>= mapM readTBQueue . M.elems >>= \case [] -> retry; ntf : _ -> pure ntf
 
 closeAPNSMockServer :: APNSMockServer -> IO ()
 closeAPNSMockServer APNSMockServer {action, http2Server} = do

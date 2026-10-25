@@ -15,6 +15,7 @@ import Control.Concurrent.STM
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
+import Data.Hashable (Hashable)
 import Data.Time (UTCTime)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
@@ -27,7 +28,7 @@ data SessionVar a = SessionVar
     sessionVarTs :: UTCTime
   }
 
-getSessVar :: forall k a. Ord k => TVar Int -> k -> TMap k (SessionVar a) -> UTCTime -> STM (Either (SessionVar a) (SessionVar a))
+getSessVar :: forall k a. Hashable k => TVar Int -> k -> TMap k (SessionVar a) -> UTCTime -> STM (Either (SessionVar a) (SessionVar a))
 getSessVar sessSeq sessKey vs sessionVarTs = maybe (Left <$> newSessionVar) (pure . Right) =<< TM.lookup sessKey vs
   where
     newSessionVar :: STM (SessionVar a)
@@ -38,7 +39,7 @@ getSessVar sessSeq sessKey vs sessionVarTs = maybe (Left <$> newSessionVar) (pur
       TM.insert sessKey v vs
       pure v
 
-removeSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
+removeSessVar :: Hashable k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
 removeSessVar v sessKey vs =
   TM.lookup sessKey vs >>= \case
     Just v' | sessionVarId v == sessionVarId v' -> TM.delete sessKey vs
@@ -51,7 +52,7 @@ removeSessVar v sessKey vs =
 -- A thrown ExceptT error is a normal result (the var keeps the error it was filled with) - only
 -- an interrupting exception drops the empty var.
 withGetSessVar ::
-  (Ord k, MonadUnliftIO m) =>
+  (Hashable k, MonadUnliftIO m) =>
   TVar Int -> k -> TMap k (SessionVar a) -> UTCTime ->
   (SessionVar a -> ExceptT e m b) -> (SessionVar a -> ExceptT e m b) -> ExceptT e m b
 withGetSessVar sessSeq sessKey vs ts onNew onExisting =
@@ -59,7 +60,7 @@ withGetSessVar sessSeq sessKey vs ts onNew onExisting =
 
 -- | withGetSessVar for actions in the underlying monad (without ExceptT).
 withGetSessVar' ::
-  (Ord k, MonadUnliftIO m) =>
+  (Hashable k, MonadUnliftIO m) =>
   TVar Int -> k -> TMap k (SessionVar a) -> UTCTime ->
   (SessionVar a -> m b) -> (SessionVar a -> m b) -> m b
 withGetSessVar' sessSeq sessKey vs ts onNew onExisting =
@@ -70,5 +71,5 @@ withGetSessVar' sessSeq sessKey vs ts onNew onExisting =
   where
     dropEmptySessVar v = whenM (isEmptyTMVar $ sessionVar v) $ removeSessVar v sessKey vs
 
-tryReadSessVar :: Ord k => k -> TMap k (SessionVar a) -> STM (Maybe a)
+tryReadSessVar :: Hashable k => k -> TMap k (SessionVar a) -> STM (Maybe a)
 tryReadSessVar sessKey vs = TM.lookup sessKey vs $>>= (tryReadTMVar . sessionVar)

@@ -36,7 +36,6 @@ import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..), (<|))
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes)
-import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Word (Word16)
 import qualified Simplex.Messaging.Crypto as C
@@ -46,6 +45,8 @@ import Simplex.Messaging.Protocol (NtfPrivateAuthKey, NtfPublicAuthKey, SMPServe
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.TSet (TSet)
+import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Util (whenM, ($>>=))
 
 data NtfSTMStore = NtfSTMStore
@@ -53,7 +54,7 @@ data NtfSTMStore = NtfSTMStore
     -- multiple registrations exist to protect from malicious registrations if token is compromised
     tokenRegistrations :: TMap DeviceToken (TMap ByteString NtfTokenId),
     subscriptions :: TMap NtfSubscriptionId NtfSubData,
-    tokenSubscriptions :: TMap NtfTokenId (TVar (Set NtfSubscriptionId)),
+    tokenSubscriptions :: TMap NtfTokenId (TSet NtfSubscriptionId),
     subscriptionLookup :: TMap SMPQueueNtf NtfSubscriptionId,
     tokenLastNtfs :: TMap NtfTokenId (TVar (NonEmpty PNMessageData)),
     ntfServices :: TMap SMPServer ServiceId
@@ -123,7 +124,7 @@ stmRemoveInactiveTokenRegistrations st NtfTknData {ntfTknId = tId, token} =
   where
     removeRegs :: TMap ByteString NtfTokenId -> STM [NtfTokenId]
     removeRegs tknRegs = do
-      tIds <- filter ((/= tId) . snd) . M.assocs <$> readTVar tknRegs
+      tIds <- filter ((/= tId) . snd) . M.assocs <$> TM.toMap tknRegs
       forM_ tIds $ \(regKey, tId') -> do
         TM.delete regKey tknRegs
         TM.delete tId' $ tokens st
@@ -157,7 +158,7 @@ deleteTokenSubs :: NtfSTMStore -> NtfTokenId -> STM [SMPQueueNtf]
 deleteTokenSubs st tknId = do
   qs <-
     TM.lookupDelete tknId (tokenSubscriptions st)
-      >>= mapM (readTVar >=> mapM deleteSub . S.toList)
+      >>= mapM (TS.toSet >=> mapM deleteSub . S.toList)
   pure $ maybe [] catMaybes qs
   where
     deleteSub subId = do
@@ -173,11 +174,11 @@ stmAddNtfSubscription st subId sub@NtfSubData {smpQueue, tokenId} =
   TM.lookup tokenId (tokenSubscriptions st) >>= maybe newTokenSub pure >>= insertSub
   where
     newTokenSub = do
-      ts <- newTVar S.empty
+      ts <- TS.empty
       TM.insert tokenId ts $ tokenSubscriptions st
       pure ts
     insertSub ts = do
-      modifyTVar' ts $ S.insert subId
+      TS.insert subId ts
       TM.insert subId sub $ subscriptions st
       TM.insert smpQueue subId (subscriptionLookup st)
       -- return Nothing if subscription existed before
@@ -190,7 +191,7 @@ stmDeleteNtfSubscription st subId = do
       ( \NtfSubData {smpQueue, tokenId} -> do
           TM.delete smpQueue $ subscriptionLookup st
           ts_ <- TM.lookup tokenId (tokenSubscriptions st)
-          forM_ ts_ $ \ts -> modifyTVar' ts $ S.delete subId
+          forM_ ts_ $ TS.delete subId
       )
 
 -- This function is expected to be called after store log is read,

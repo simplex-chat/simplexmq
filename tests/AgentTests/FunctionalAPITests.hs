@@ -115,6 +115,7 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
@@ -4524,7 +4525,7 @@ testTwoUsers = withAgentClients2 $ \a b -> do
     exchangeGreetingsMsgId 6 a bId2' b aId2'
   where
     hasClients :: HasCallStack => AgentClient -> Int -> ExceptT AgentErrorType IO ()
-    hasClients c n = liftIO $ M.size <$> readTVarIO (smpClients c) `shouldReturn` n
+    hasClients c n = liftIO $ TM.sizeIO (smpClients c) `shouldReturn` n
     reconnected :: HasCallStack => AgentClient -> [[ConnId]] -> [ConnId] -> ExceptT AgentErrorType IO ()
     reconnected c downs ups = liftIO $ getInAnyOrder c $ map down downs <> map up ups
       where

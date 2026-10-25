@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.DB
   ( BoolInt (..),
@@ -32,6 +33,7 @@ import Control.Exception
 import Control.Monad (when)
 import qualified Data.Aeson.TH as J
 import Data.ByteString (ByteString)
+import Data.Hashable (Hashable (..))
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
@@ -61,6 +63,9 @@ data Connection = Connection
     track :: TrackQueries,
     slow :: TMap Query SlowQueryStats
   }
+
+instance Hashable Query where
+  hashWithSalt s = hashWithSalt s . SQL.fromQuery
 
 data TrackQueries = TQAll | TQSlow Int64 | TQOff
   deriving (Eq)

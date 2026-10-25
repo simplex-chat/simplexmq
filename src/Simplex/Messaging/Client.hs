@@ -655,7 +655,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             `E.finally` (failPendingRequests c >> disconnected c')
 
     failPendingRequests :: PClient v err msg -> IO ()
-    failPendingRequests PClient {sentCommands} = atomically $ swapTVar sentCommands mempty >>= mapM_ failRequest
+    failPendingRequests PClient {sentCommands} = atomically $ TM.flush sentCommands >>= mapM_ failRequest
       where
         failRequest Request {pending, responseVar} =
           whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError

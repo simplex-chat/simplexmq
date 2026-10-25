@@ -14,10 +14,8 @@ module Simplex.Messaging.Server.NtfStore
   ) where
 
 import Control.Concurrent.STM
-import Control.Monad (foldM)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -47,7 +45,7 @@ deleteNtfs (NtfStore ns) nId = atomically (TM.lookupDelete nId ns) >>= maybe (pu
 
 deleteExpiredNtfs :: NtfStore -> Int64 -> IO Int
 deleteExpiredNtfs (NtfStore ns) old =
-  foldM (\expired -> fmap (expired +) . expireQueue) 0 . M.keys =<< readTVarIO ns
+  TM.foldIO (\expired -> fmap (expired +) . expireQueue . fst) 0 ns
   where
     expireQueue nId = atomically $ TM.lookup nId ns >>= maybe (pure 0) (expire nId)
     expire nId v = readTVar v >>= \case

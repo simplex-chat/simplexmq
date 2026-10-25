@@ -101,6 +101,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres (PostgresQueueStore, batchIn
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (closeStoreLog, logNewService, logCreateQueue, openWriteStoreLog)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Util (ifM)
 import System.Directory (renameFile)
 import System.IO (IOMode (..), withFile)
@@ -618,8 +619,8 @@ importStoreLogToDatabase storeLogFile dbOpts = do
   let st = queueStore ms
   sl <- readWriteQueueStore True (mkQueue ms) storeLogFile st
   closeStoreLog sl
-  qs <- readTVarIO $ queues st
-  services' <- M.elems <$> readTVarIO (services st)
+  qs <- TM.toMapIO $ queues st
+  services' <- M.elems <$> TM.toMapIO (services st)
   let storeCfg = PostgresStoreCfg {dbOpts = dbOpts {createSchema = True}, dbStoreLogPath = Nothing, confirmMigrations = MCConsole, deletedTTL = 86400 * defaultDeletedTTL}
   ps :: PostgresQueueStore PostgresQueue <- newQueueStore @PostgresQueue storeCfg
   sCnt <- batchInsertServices services' ps

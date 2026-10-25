@@ -38,6 +38,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Char (isAsciiLower, isDigit, isHexDigit)
 import Data.Default (def)
 import Data.Functor (($>))
+import Data.Hashable (Hashable (..))
 import Data.IORef
 import Data.IP
 import Data.List.NonEmpty (NonEmpty (..))
@@ -73,6 +74,13 @@ data TransportHost
   | THOnionHost ByteString
   | THDomainName HostName
   deriving (Eq, Ord, Show)
+
+instance Hashable TransportHost where
+  hashWithSalt s = \case
+    THIPv4 addr -> s `hashWithSalt` (0 :: Int) `hashWithSalt` addr
+    THIPv6 addr -> s `hashWithSalt` (1 :: Int) `hashWithSalt` addr
+    THOnionHost host -> s `hashWithSalt` (2 :: Int) `hashWithSalt` host
+    THDomainName host -> s `hashWithSalt` (3 :: Int) `hashWithSalt` host
 
 instance Encoding TransportHost where
   smpEncode = smpEncode . strEncode

@@ -48,6 +48,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Hashable (Hashable (..))
 import Data.Kind
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
@@ -381,6 +382,9 @@ data SMPQueueNtf = SMPQueueNtf
   }
   deriving (Eq, Ord, Show)
 
+instance Hashable SMPQueueNtf where
+  hashWithSalt s SMPQueueNtf {smpServer, notifierId} = s `hashWithSalt` smpServer `hashWithSalt` notifierId
+
 instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
@@ -401,6 +405,9 @@ data PushProvider
   | PPApnsTest -- used for tests, to use APNS mock server
   | PPApnsNull -- used to test servers from the client - does not communicate with APNS
   deriving (Eq, Ord, Show)
+
+instance Hashable PushProvider where
+  hashWithSalt s = hashWithSalt s . smpEncode
 
 instance Encoding PushProvider where
   smpEncode = \case
@@ -436,6 +443,9 @@ instance ToField PushProvider where toField = toField . decodeLatin1 . strEncode
 
 data DeviceToken = DeviceToken PushProvider ByteString
   deriving (Eq, Ord, Show)
+
+instance Hashable DeviceToken where
+  hashWithSalt s (DeviceToken p t) = s `hashWithSalt` p `hashWithSalt` t
 
 instance Encoding DeviceToken where
   smpEncode (DeviceToken p t) = smpEncode (p, t)

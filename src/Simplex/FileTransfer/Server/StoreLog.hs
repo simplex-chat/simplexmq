@@ -40,6 +40,8 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (BlockingInfo, EntityId (..), RcvPublicAuthKey, RecipientId, SenderId)
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog
+import qualified Simplex.Messaging.TMap as TM
+import qualified Simplex.Messaging.TSet as TS
 import Simplex.Messaging.Util (bshow)
 import System.FilePath (takeFileName)
 import System.IO
@@ -132,14 +134,14 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
 
 writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()
 writeFileStore s STMFileStore {files, recipients} = do
-  allRcps <- readTVarIO recipients
-  readTVarIO files >>= mapM_ (logFile allRcps)
+  allRcps <- TM.toMapIO recipients
+  TM.toMapIO files >>= mapM_ (logFile allRcps)
   where
     logFile :: Map RecipientId (SenderId, RcvPublicAuthKey) -> FileRec -> IO ()
     logFile allRcps FileRec {senderId, fileInfo, filePath, recipientIds, createdAt, expiresAt, fileStatus} = do
       status <- readTVarIO fileStatus
       logAddFile s senderId fileInfo createdAt expiresAt status
-      (rcpErrs, rcps) <- M.mapEither getRcp . M.fromSet id <$> readTVarIO recipientIds
+      (rcpErrs, rcps) <- M.mapEither getRcp . M.fromSet id <$> TS.toSetIO recipientIds
       mapM_ (logAddRecipients s senderId) $ L.nonEmpty $ M.elems rcps
       mapM_ (B.putStrLn . ("Error storing log: " <>)) rcpErrs
       readTVarIO filePath >>= mapM_ (logPutFile s senderId)

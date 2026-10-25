@@ -246,7 +246,7 @@ queueMapSizes ms = (,,,) <$> size queues <*> size senders <*> size links <*> siz
   where
     STMQueueStore {queues, senders, links, notifiers} = queueStore ms
     size :: TMap k v -> IO Int
-    size = fmap M.size . readTVarIO
+    size = TM.sizeIO
 
 testDeleteQueueMaps :: STMMsgStore -> IO ()
 testDeleteQueueMaps ms = do
@@ -292,7 +292,7 @@ mkMsgNtf g ts = do
   pure MsgNtf {ntfMsgId, ntfTs = MkSystemTime ts 0, ntfNonce, ntfEncMeta = "meta"}
 
 ntfCounts :: NtfStore -> IO [(NotifierId, Int)]
-ntfCounts (NtfStore ns) = M.assocs <$> (mapM (fmap length . readTVarIO) =<< readTVarIO ns)
+ntfCounts (NtfStore ns) = M.assocs <$> (mapM (fmap length . readTVarIO) =<< TM.toMapIO ns)
 
 testExpireNtfs :: IO ()
 testExpireNtfs = do
@@ -324,7 +324,7 @@ testDeleteEmptyNtfs = do
       nId3 = EntityId "notifier 3"
       nId4 = EntityId "notifier 4"
   forM_ ([nId1, nId2, nId3, nId4] :: [NotifierId]) $ \nId -> storeNtf st nId =<< mkMsgNtf g now
-  ntfs <- M.assocs <$> readTVarIO ns
+  ntfs <- M.assocs <$> TM.toMapIO ns
   let flush nId = forM_ (lookup nId ntfs) $ \v -> atomically $ writeTVar v []
   mapM_ flush ([nId1, nId2, nId4] :: [NotifierId])
   storeNtf st nId2 =<< mkMsgNtf g now
