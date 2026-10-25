@@ -25,6 +25,8 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
@@ -35,8 +37,11 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.SystemTime (getSystemDate)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole (..))
+import Simplex.Messaging.Transport.Credentials (genCredentials)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -73,6 +78,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
+      it "should group pending notifiers by service" $ withMsgStore cfg testGetQueueNtfServices
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -145,6 +151,20 @@ testNtfCreds g = do
         notifierKey,
         rcvNtfDhSecret = C.dh' k pk,
         ntfServiceId = Nothing
+      }
+
+newTestServiceRec :: TVar ChaChaDRG -> IO ServiceRec
+newTestServiceRec g = do
+  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
+  (_, cert) <- genCredentials g Nothing (0, 2400) "ntf.example.com"
+  serviceCreatedAt <- getSystemDate
+  pure
+    ServiceRec
+      { serviceId,
+        serviceRole = SRNotifier,
+        serviceCert  = X.CertificateChain [cert],
+        serviceCertHash = XV.getFingerprint cert X.HashSHA256,
+        serviceCreatedAt
       }
 
 testGetQueue :: MsgStoreClass s => s -> IO ()
@@ -237,6 +257,30 @@ testLinkDataSecuredQueue ms = do
     liftIO $ ld' `shouldBe` ld
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
+
+testGetQueueNtfServices :: forall s. MsgStoreClass s => s -> IO ()
+testGetQueueNtfServices ms = do
+  g <- C.newRandom
+  ntfCreds <- testNtfCreds g
+  sr <- newTestServiceRec g
+  sr' <- newTestServiceRec g
+  let st = queueStore ms
+      ntf1 = (EntityId "notifier 1", ())
+      ntf2 = (EntityId "notifier 2", ())
+      ntf3 = (EntityId "notifier 3", ())
+      ntf4 = (EntityId "notifier 4", ())
+      addNtfQueue (notifierId, _) ntfServiceId = do
+        (rId, qr) <- liftIO $ testNewQueueRec g QMMessaging
+        void $ ExceptT $ addQueue ms rId qr {notifier = Just ntfCreds {notifierId, ntfServiceId}}
+  runRight_ $ do
+    serviceId <- ExceptT $ getCreateService @(StoreQueue s) st sr
+    void $ ExceptT $ getCreateService @(StoreQueue s) st sr'
+    addNtfQueue ntf1 Nothing
+    addNtfQueue ntf2 $ Just serviceId
+    addNtfQueue ntf3 $ Just serviceId
+    liftIO $
+      getQueueNtfServices @(StoreQueue s) st [ntf1, ntf2, ntf3, ntf4]
+        `shouldReturn` Right ([(Nothing, [ntf1]), (Just serviceId, [ntf2, ntf3])], [ntf4])
 
 -- sizes of queues, senders, links and notifiers maps
 type QueueMapSizes = (Int, Int, Int, Int)
