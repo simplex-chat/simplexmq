@@ -14,12 +14,12 @@ import Network.Socket
 import qualified Network.TLS as T
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Transport (ALPN, SessionId, TLS, closeConnection, tlsALPN, tlsUniq)
+import Simplex.Messaging.Transport (ALPN, SessionId, TLS, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
 import Simplex.Messaging.Util (threadDelay')
 import UnliftIO (finally)
-import UnliftIO.Concurrent (forkIO, killThread)
+import UnliftIO.Concurrent (forkIO, killThread, myThreadId)
 
 type HTTP2ServerFunc = SessionId -> Maybe ALPN -> Request -> (Response -> IO ()) -> IO ()
 
@@ -84,18 +84,19 @@ runHTTP2ServerWith bufferSize tlsSetup http2Server =
 runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> (((SNICredentialUsed, TLS p) -> IO ()) -> a) -> (SNICredentialUsed -> HTTP2ServerFunc) -> a
 runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup $ \(sniUsed, tls) -> do
   activeAt <- newTVarIO =<< getSystemTime
-  tid_ <- mapM (forkIO . expireInactiveClient tls activeAt) expCfg_
+  sessionThread <- myThreadId
+  tid_ <- mapM (forkIO . expireInactiveClient sessionThread activeAt) expCfg_
   withHTTP2 bufferSize (run sniUsed tls activeAt) (clientFinished $ tlsUniq tls) tls `finally` mapM_ killThread tid_
   where
     run sniUsed tls activeAt cfg = H.run cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
       http2Server sniUsed (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
-    expireInactiveClient tls activeAt expCfg = loop
+    expireInactiveClient sessionThread activeAt expCfg = loop
       where
         loop = do
           threadDelay' $ checkInterval expCfg * 1000000
           old <- expireBeforeEpoch expCfg
           ts <- readTVarIO activeAt
           if systemSeconds ts < old
-            then closeConnection tls
+            then killThread sessionThread
             else loop

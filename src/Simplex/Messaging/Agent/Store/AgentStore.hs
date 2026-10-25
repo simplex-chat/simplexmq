@@ -792,16 +792,16 @@ getDeletedRcvQueue db connId (SMPServer host port _) rcvId =
   firstRow toRcvQueue SEConnNotFound $
     DB.query db (rcvQueueQuery <> " WHERE q.conn_id = ? AND q.host = ? AND q.port = ? AND q.rcv_id = ? AND q.deleted = 1") (connId, host, port, rcvId)
 
-setRcvQueueNtfCreds :: DB.Connection -> ConnId -> Maybe ClientNtfCreds -> IO ()
-setRcvQueueNtfCreds db connId clientNtfCreds =
+setRcvQueueNtfCreds :: DB.Connection -> RcvQueue -> Maybe ClientNtfCreds -> IO ()
+setRcvQueueNtfCreds db RcvQueue {rcvId, server = ProtocolServer {host, port}} clientNtfCreds =
   DB.execute
     db
     [sql|
       UPDATE rcv_queues
       SET ntf_public_key = ?, ntf_private_key = ?, ntf_id = ?, rcv_ntf_dh_secret = ?
-      WHERE conn_id = ?
+      WHERE host = ? AND port = ? AND rcv_id = ?
     |]
-    (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_, connId)
+    (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_, host, port, rcvId)
   where
     (ntfPublicKey_, ntfPrivateKey_, notifierId_, rcvNtfDhSecret_) = case clientNtfCreds of
       Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret} -> (Just ntfPublicKey, Just ntfPrivateKey, Just notifierId, Just rcvNtfDhSecret)

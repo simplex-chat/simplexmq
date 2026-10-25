@@ -94,16 +94,16 @@ attachStaticFiles path action = do
       -- Initialize internal per-connection resources.
       addr <- getPeerName socket
       withConnection addr cxt $ \(conn, transport) ->
-        withTimeout ii conn $ \th ->
+        withTimeout ii $ \th ->
           -- Run Warp connection handler to process HTTP requests for static files.
           WI.serveConnection conn ii th addr transport warpSettings app
   where
     -- from warp-tls
     withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
     -- from warp
-    withTimeout ii conn =
+    withTimeout ii =
       bracket
-        (WI.registerKillThread (WI.timeoutManager ii) (WI.connClose conn))
+        (WI.registerKillThread (WI.timeoutManager ii) (pure ()))
         WI.cancel
     -- shared clean up
     terminate conn = WI.connClose conn `finally` (readIORef (WI.connWriteBuffer conn) >>= WI.bufFree)
