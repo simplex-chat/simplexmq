@@ -142,6 +142,10 @@ smpProxyTests = do
           agentDeliverMessageViaProxy ([srv1], SPMNever, False) ([srv2], SPMNever, False) C.SEd448 "hello 1" "hello 2" 1
         it "first via proxy for unknown" $ twoServers $
           agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([srv1, srv2], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
+        it "first via proxy for unknown chosen host" $ twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, True) ([SMPServer (testHost2 <> testHost) testPort2 testKeyHash], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
+        it "first without proxy for known chosen host" $ twoServers $
+          agentDeliverMessageViaProxy ([srv1], SPMUnknown, False) ([SMPServer (testHost <> testHost2) testPort2 testKeyHash], SPMUnknown, False) C.SEd448 "hello 1" "hello 2" 1
         it "retries sending when destination or proxy relay is offline" $ \_ ->
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
@@ -471,10 +475,15 @@ testChangedFwdVersion =
     (cmdPubKey, cmdPrivKey) <- atomically $ C.generateKeyPair g
     nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
     let v = currentClientSMPRelayVersion
-    et <- either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) (SMP.encTransmissionNonce v nonce) "" SMP.paddedProxiedTLength
-    let forward fwdVersion = forwardSMPTransmission rc (either error id $ C.corrCbNonce corrId) fwdVersion cmdPubKey et
-    _ <- runExceptT' $ forward v
-    runExceptT (forward $ prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+        t = SMP.tEncodeBatch1 False (Nothing, SMP.encodeTransmission (thParams rc) (SMP.CorrId corrId, SMP.NoEntity, SMP.Cmd SMP.SIdleClient SMP.PING))
+        encrypt n = either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) n t SMP.paddedProxiedTLength
+        forward fwdCorrId fwdVersion = forwardSMPTransmission rc (either error id $ C.corrCbNonce fwdCorrId) fwdVersion cmdPubKey
+    et <- encrypt $ SMP.encTransmissionNonce v nonce
+    _ <- runExceptT' $ forward corrId v et
+    runExceptT (forward corrId (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion v) =<< encrypt nonce
+    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion v) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
 
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =

@@ -380,6 +380,14 @@ jobs:
           docker restart ${{ job.services.postgres.id }}
           timeout 60 sh -c 'until docker exec ${{ job.services.postgres.id }} pg_isready -U postgres; do sleep 1; done'
 
+      - name: Mount RAM disk for tests
+        if: matrix.should_run == true && matrix.arch == 'x86-64'
+        shell: bash
+        run: |
+          mkdir -p tests/tmp
+          sudo mount -t tmpfs -o size=2G tmpfs tests/tmp
+          sudo chown $(id -u):$(id -g) tests/tmp
+
       - name: Test
         if: matrix.should_run == true && matrix.arch == 'x86-64'
         timeout-minutes: 120

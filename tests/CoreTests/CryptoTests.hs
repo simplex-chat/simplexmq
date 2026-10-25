@@ -10,6 +10,10 @@ import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (bracket, evaluate)
 import Control.Monad.Except
+import Crypto.Error (throwCryptoError)
+import Crypto.Number.Serialize.LE (i2ospOf_)
+import qualified Crypto.PubKey.Curve25519 as X25519
+import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
@@ -41,6 +45,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (RNGFunc)
 import Simplex.Messaging.Encoding (Large (..), smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.Credentials (genCredentials)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.QuickCheck (modifyMaxSuccess)
@@ -101,7 +106,9 @@ cryptoTests = do
   describe "Ed signatures" $ do
     describe "Ed25519" $ testSignature C.SEd25519
     describe "Ed448" $ testSignature C.SEd448
-  describe "DH X25519 + cryptobox" testDHCryptoBox
+  describe "DH X25519 + cryptobox" $ do
+    testDHCryptoBox
+    it "should not decrypt with zero DH secret" testDHCryptoBoxZeroSecret
   describe "secretbox" testSecretBox
   describe "lazy secretbox" $ do
     testLazySecretBox
@@ -175,6 +182,21 @@ testDHCryptoBox = it "should encrypt / decrypt string with asymmetric DH keys" .
         cipher = C.cbEncrypt (C.dh' rk spk) nonce b paddedLen
         plain = C.cbDecrypt (C.dh' sk rpk) nonce =<< cipher
      in isRight cipher && cipher /= plain && Right b == plain
+
+testDHCryptoBoxZeroSecret :: IO ()
+testDHCryptoBoxZeroSecret = do
+  g <- C.newRandom
+  (_, pk) <- atomically $ C.generateKeyPair g
+  nonce <- atomically $ C.randomCbNonce g
+  mapM_ (decryptWithKey pk nonce) [u + b | u <- us, b <- [0, 2 ^ (255 :: Int)]]
+  where
+    p = 2 ^ (255 :: Int) - 19
+    us = [0, 1, 325606250916557431795983626356110631294008115727848805560023387167927233504, 39382357235489614581723060781553021112529911719440698176882885853963445705823, p - 1, p, p + 1]
+    decryptWithKey pk nonce u = do
+      let k = C.PublicKeyX25519 . throwCryptoError . X25519.publicKey $ (i2ospOf_ 32 u :: B.ByteString)
+          secret = C.dh' k pk
+      Right cipher <- pure $ C.cbEncrypt secret nonce "hello" 64
+      C.cbDecrypt secret nonce cipher `shouldBe` Left C.CBDecryptError
 
 testSecretBox :: Spec
 testSecretBox = it "should encrypt / decrypt string with a random symmetric key" . ioProperty $ do
@@ -292,11 +314,38 @@ testValidateX509 = do
   -- messed up key rotation or other configuration problems
   checkChain [server2, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
 
+  checkChain [server, ca, ca, ca] `shouldReturn` []
+  checkChain [server, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+  checkChain [server, ca, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid]
+  checkChain [server2, ca, ca2] `shouldReturn` [XV.InvalidSignature XV.SignatureInvalid, XV.InvalidSignature XV.SignatureInvalid]
+
   -- self-signed, unrelated to CA
   ssCreds <- XS.readCertificates "tests/fixtures/ss.crt"
   ssCreds `shouldNotBe` []
   let ss = head ssCreds
   checkChain [ss, ca] `shouldReturn` [XV.SelfSigned]
+
+  let rsaKey = X.PubKeyRSA $ RSA.PublicKey 1024 (2 ^ (8192 :: Int) - 1) 65537
+      rsaCert = fst $ X.objectToSignedExact (\_ -> ("", X.SignatureALG_IntrinsicHash X.PubKeyALG_Ed448, ())) (X.getCertificate server) {X.certPubKey = rsaKey}
+  checkChain [rsaCert, ca] `shouldReturn` [XV.InvalidSignature XV.SignatureUnimplemented]
+
+  g <- C.newRandom
+  root <- genCredentials g Nothing (1, 24) "root"
+  op <- genCredentials g (Just root) (1, 24) "operator"
+  ident <- genCredentials g (Just op) (1, 24) "identity"
+  leaf <- genCredentials g (Just ident) (1, 24) "leaf"
+  expiredOp <- genCredentials g (Just root) (48, -24) "operator"
+  expiredOpIdent <- genCredentials g (Just expiredOp) (1, 24) "identity"
+  expiredOpLeaf <- genCredentials g (Just expiredOpIdent) (1, 24) "leaf"
+  let checkPinned creds = validateCertificateChain (C.KeyHash fp) "localhost" "5223" $ X.CertificateChain $ map snd creds
+        where
+          XV.Fingerprint fp = XV.getFingerprint (snd $ creds !! 1) X.HashSHA256
+  checkPinned [leaf, ident, op] `shouldReturn` []
+  checkPinned [expiredOpLeaf, expiredOpIdent, expiredOp] `shouldReturn` [XV.Expired]
+  checkPinned [leaf, ident] `shouldReturn` [XV.UnknownCA]
+  otherCA <- genCredentials g Nothing (1, 24) "other"
+  otherLeaf <- genCredentials g (Just otherCA) (1, 24) "leaf"
+  checkPinned [otherLeaf, ident, otherCA] `shouldReturn` [XV.UnknownCA, XV.UnknownCA]
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do
