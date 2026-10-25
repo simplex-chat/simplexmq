@@ -429,7 +429,7 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
           -- worker may terminate because it was deleted from the map (getWorker returns Nothing), then it won't restart
           restart <- atomically $ getWorker >>= maybe (pure False) (shouldRestart e_ (toW w) t maxRestarts)
           when restart runWork
-        shouldRestart e_ Worker {workerId = wId, doWork, action, restarts} t maxRestarts w'
+        shouldRestart e_ Worker {workerId = wId, doWork, restarts} t maxRestarts w'
           | wId == workerId (toW w') = do
               rc <- readTVar restarts
               isActive <- readTVar $ active c
@@ -441,7 +441,6 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
               | isActive && restartCount rc < maxRestarts = do
                   writeTVar restarts rc
                   hasWorkToDo' doWork
-                  void $ tryPutTMVar action Nothing
                   notifyErr INTERNAL
                   pure True
               | otherwise = do
@@ -464,10 +463,10 @@ newWorker c = do
 
 runWorkerAsync :: MonadUnliftIO m => Worker -> m () -> m ()
 runWorkerAsync Worker {action} work =
-  E.bracket
+  E.bracketOnError
     (atomically $ takeTMVar action) -- get current action, locking to avoid race conditions
-    (atomically . tryPutTMVar action) -- if it was running (or if start crashes), put it back and unlock (don't lock if it was just started)
-    (\a -> when (isNothing a) start) -- start worker if it's not running
+    (atomically . tryPutTMVar action)
+    (\a -> if isNothing a then start else void $ atomically $ tryPutTMVar action a) -- start worker if it's not running
   where
     start = atomically . putTMVar action . Just =<< mkWeakThreadId =<< forkIO work
 
