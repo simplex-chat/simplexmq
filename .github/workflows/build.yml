@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tests:
-        description: "hspec match patterns, one per line; empty runs all tests"
+        description: "hspec match patterns, one per line; / runs all tests, empty runs none"
         type: string
         default: ""
 
@@ -32,34 +32,13 @@ jobs:
   maybe-release:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      reduced: ${{ steps.plan.outputs.reduced }}
+      reduced: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == true }}
     steps:
       - name: Reject a manual run on a tag
         if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
         run: |
-          echo "::error::A manual run starts on a branch; a tag push builds the release."
+          echo "::error::A manual run starts on a branch; to retry a release, re-run the jobs of its tag push."
           exit 1
-
-      - name: Choose build matrix
-        id: plan
-        shell: bash
-        env:
-          REDUCED: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == true }}
-          GHC8: ${{ !(github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }}
-        run: |
-          ghc8='{"os":"22.04","os_underscore":"22_04","arch":"x86-64","runner":"ubuntu-22.04","ghc":"8.10.7","should_run":'"$GHC8"'}'
-          x86_2204='{"os":"22.04","os_underscore":"22_04","arch":"x86-64","runner":"ubuntu-22.04","ghc":"9.6.3","should_run":true}'
-          x86_2404='{"os":"24.04","os_underscore":"24_04","arch":"x86-64","runner":"ubuntu-24.04","ghc":"9.6.3","should_run":true}'
-          arm_2204='{"os":"22.04","os_underscore":"22_04","arch":"aarch64","runner":"ubuntu-22.04-arm","ghc":"9.6.3","should_run":true}'
-          arm_2404='{"os":"24.04","os_underscore":"24_04","arch":"aarch64","runner":"ubuntu-24.04-arm","ghc":"9.6.3","should_run":true}'
-          if [ "$REDUCED" = true ]; then
-            entries=$x86_2404
-          else
-            entries=$ghc8,$x86_2204,$x86_2404,$arm_2204,$arm_2404
-          fi
-          echo "matrix={\"include\":[$entries]}" >> "$GITHUB_OUTPUT"
-          echo "reduced=$REDUCED" >> "$GITHUB_OUTPUT"
 
       - name: Clone project
         if: startsWith(github.ref, 'refs/tags/v')
@@ -102,10 +81,11 @@ jobs:
   build:
     name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
     needs: maybe-release
+    if: needs.maybe-release.outputs.reduced != 'true'
     permissions:
       contents: write
       packages: write
-    env:
+    env: &build-env
       apps: "smp-server xftp-server ntf-server xftp"
       opt: ${{ github.event_name == 'push' && 'O2' || 'O0' }}
       ghc_options: ${{ github.event_name != 'push' && '--ghc-options=-O0' || '' }}
@@ -116,7 +96,7 @@ jobs:
       image_cache: ghcr.io/${{ github.repository_owner }}/simplexmq-build-cache:${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}
       source_hashes: dist-newstyle/sources.sha256
     runs-on: ${{ matrix.runner }}
-    services:
+    services: &build-services
       postgres:
         image: postgres:15
         env:
@@ -131,8 +111,39 @@ jobs:
           - 5432:5432
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.maybe-release.outputs.matrix) }}
-    steps:
+      matrix:
+        include:
+          - os: 22.04
+            os_underscore: 22_04
+            arch: x86-64
+            runner: "ubuntu-22.04"
+            ghc: "8.10.7"
+            should_run: ${{ !(github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }}
+          - os: 22.04
+            os_underscore: 22_04
+            arch: x86-64
+            runner: "ubuntu-22.04"
+            ghc: "9.6.3"
+            should_run: true
+          - os: 24.04
+            os_underscore: 24_04
+            arch: x86-64
+            runner: "ubuntu-24.04"
+            ghc: "9.6.3"
+            should_run: true
+          - os: 22.04
+            os_underscore: 22_04
+            arch: aarch64
+            runner: "ubuntu-22.04-arm"
+            ghc: "9.6.3"
+            should_run: true
+          - os: 24.04
+            os_underscore: 24_04
+            arch: aarch64
+            runner: "ubuntu-24.04-arm"
+            ghc: "9.6.3"
+            should_run: true
+    steps: &build-steps
       - name: Clone project
         if: matrix.should_run == true
         uses: actions/checkout@v3
@@ -399,6 +410,7 @@ jobs:
         shell: bash
         env:
           PGHOST: localhost
+          REDUCED: ${{ needs.maybe-release.outputs.reduced }}
           TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
           PR_BODY: ${{ github.event.pull_request.draft == true && github.event.pull_request.body || '' }}
         run: |
@@ -409,7 +421,12 @@ jobs:
           while read -r p; do
             if [ -n "$p" ]; then args+=(-m "$p"); fi
           done <<< "$TESTS"
-          if [ "${#args[@]}" -gt 0 ]; then args+=(--fail-on=empty); fi
+          if [ "${#args[@]}" -gt 0 ]; then
+            args+=(--fail-on=empty)
+          elif [ "$REDUCED" = true ]; then
+            echo "No tests selected"
+            exit 0
+          fi
           i=1
           attempts=1
           ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }} && attempts=3
@@ -472,6 +489,27 @@ jobs:
             dist-newstyle
             dist-postgres
           key: ${{ steps.keys.outputs.dist }}-O0-${{ env.branch }}-${{ github.sha }}
+
+  build-reduced:
+    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
+    needs: maybe-release
+    if: needs.maybe-release.outputs.reduced == 'true'
+    permissions:
+      contents: write
+      packages: write
+    env: *build-env
+    runs-on: ${{ matrix.runner }}
+    services: *build-services
+    strategy:
+      matrix:
+        include:
+          - os: 24.04
+            os_underscore: 24_04
+            arch: x86-64
+            runner: "ubuntu-24.04"
+            ghc: "9.6.3"
+            should_run: true
+    steps: *build-steps
 
 # =============================
 #      Resolver test job
