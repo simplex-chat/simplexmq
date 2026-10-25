@@ -1340,7 +1340,7 @@ testTiming =
           ok `shouldBe` True
 
 testAuthErrorDelay :: SpecWith (ASrvTransport, AStoreType)
-testAuthErrorDelay =
+testAuthErrorDelay = do
   it "should send AUTH errors after the delay and other responses without it" $ \(ATransport t, msType) ->
     smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000}) supportedClientSMPRelayVRange t $ \rh sh -> do
       g <- C.newRandom
@@ -1359,12 +1359,40 @@ testAuthErrorDelay =
       suspendedTime `shouldSatisfy` (>= 0.5)
       noLinkTime `shouldSatisfy` (>= 0.5)
       subTime `shouldSatisfy` (< 0.5)
+  it "should not read client commands while its delayed AUTH errors fill the queue" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000, tbqSize = 1}) supportedClientSMPRelayVRange t $ \h _ -> do
+      g <- C.newRandom
+      (_, badKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (pongTime, authCorrIds) <- pongTimeAfter h $
+        forM_ (["1", "2", "3"] :: [ByteString]) $ \corrId -> signSend_ h badKey Nothing (corrId, EntityId "1234", SUB)
+      authCorrIds `shouldMatchList` ["1", "2", "3"]
+      pongTime `shouldSatisfy` (>= 0.5)
+  it "should not process client commands while its delayed AUTH errors fill the queue" $ \(ATransport t, msType) ->
+    smpTest2Cfg (updateCfg (cfgMS msType) $ \cfg' -> cfg' {authErrorDelay = 500000, tbqSize = 1}) supportedClientSMPRelayVRange t $ \rh sh -> do
+      g <- C.newRandom
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+      Resp "1" _ OK <- signSendRecv rh rKey ("1", rId, OFF)
+      (pongTime, authCorrIds) <- pongTimeAfter sh $
+        forM_ (["2", "3", "4"] :: [ByteString]) $ \corrId -> signSend_ sh sKey Nothing (corrId, sId, _SEND "hello")
+      authCorrIds `shouldMatchList` ["2", "3", "4"]
+      pongTime `shouldSatisfy` (>= 0.5)
 
 responseTime :: IO a -> IO (NominalDiffTime, a)
 responseTime action = do
   t <- getCurrentTime
   r <- action
   (,r) . (`diffUTCTime` t) <$> getCurrentTime
+
+pongTimeAfter :: Transport c => THandleSMP c 'TClient -> IO () -> IO (NominalDiffTime, [CorrId])
+pongTimeAfter h@THandle {params} sendCmds = do
+  start <- getCurrentTime
+  sendCmds
+  let TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId "ping", NoEntity, PING)
+  Right () <- tPut1 h (Nothing, tToSend)
+  rs <- replicateM 4 $ (,) <$> tGet1 h <*> getCurrentTime
+  [pongAt] <- pure [at | (Resp "ping" _ PONG, at) <- rs]
+  pure (pongAt `diffUTCTime` start, [corrId | (Resp corrId _ (ERR AUTH), _) <- rs])
 
 testMessageNotifications :: SpecWith (ASrvTransport, AStoreType)
 testMessageNotifications =
