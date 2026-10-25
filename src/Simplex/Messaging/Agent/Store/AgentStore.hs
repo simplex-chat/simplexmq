@@ -563,7 +563,7 @@ updateNewConnSnd db connId sq =
     (SomeConn c _) -> pure . Left . SEBadConnType "updateNewConnSnd" $ connType c
   where
     updateConn :: IO (Either StoreError SndQueue)
-    updateConn = Right <$> addConnSndQueue_ db connId sq
+    updateConn = addConnSndQueue_ db connId sq
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
@@ -638,7 +638,7 @@ deleteConn db waitDeliveryTimeout_ connId = case waitDeliveryTimeout_ of
 upgradeRcvConnToDuplex :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 upgradeRcvConnToDuplex db connId sq =
   getConnForUpdate db connId $>>= \case
-    (SomeConn _ RcvConnection {}) -> Right <$> addConnSndQueue_ db connId sq
+    (SomeConn _ RcvConnection {}) -> addConnSndQueue_ db connId sq
     (SomeConn c _) -> pure . Left . SEBadConnType "upgradeRcvConnToDuplex" $ connType c
 
 upgradeSndConnToDuplex :: DB.Connection -> ConnId -> NewRcvQueue -> SubscriptionMode -> IO (Either StoreError RcvQueue)
@@ -663,14 +663,15 @@ addConnRcvQueue_ db connId rq@RcvQueue {server} subMode = do
 addConnSndQueue :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
 addConnSndQueue db connId sq =
   getConnForUpdate db connId >>= \case
-    Right (SomeConn _ DuplexConnection {}) -> Right <$> addConnSndQueue_ db connId sq
+    Right (SomeConn _ DuplexConnection {}) -> addConnSndQueue_ db connId sq
     Right (SomeConn c _) -> pure . Left . SEBadConnType "addConnSndQueue" $ connType c
     _ -> pure $ Left SEConnNotFound
 
-addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO SndQueue
-addConnSndQueue_ db connId sq@SndQueue {server} = do
-  serverKeyHash_ <- createServer db server
-  insertSndQueue_ db connId sq serverKeyHash_
+addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
+addConnSndQueue_ db connId sq@SndQueue {server} =
+  ifM (checkConfirmedSndQueueExists_ db sq) (pure $ Left SESndQueueExists) $ do
+    serverKeyHash_ <- createServer db server
+    Right <$> insertSndQueue_ db connId sq serverKeyHash_
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
 setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
