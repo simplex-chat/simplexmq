@@ -14,6 +14,7 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
+import Control.Monad (forM, unless)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
@@ -22,6 +23,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
+import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
 import SMPClient as SMP
 import ServerTests
@@ -38,11 +40,13 @@ import ServerTests
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
+import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
@@ -66,6 +70,8 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
   describe "Notification server restart" $ testResubscribeAfterRestart ps
+  describe "Notification service" $ do
+    it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -321,6 +327,38 @@ testResubscribeAfterRestart (ATransport t, msType) =
           Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <-
             5000000 `timeout` getMockNotification apns (DeviceToken PPApnsTest "abcd")
           pure ()
+
+testResubscribeOnServiceIdChange :: HasTestEnv => (ASrvTransport, AStoreType) -> Expectation
+testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = do
+  g <- C.newRandom
+  (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let ntfCfg = ntfServerCfg {transports = [(ntfTestPort, ATransport t, False)], subsBatchSize = 1, smpAgentCfg = (smpAgentCfg ntfServerCfg) {agentQSize = 1}}
+      srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+  withAPNSMockServer $ \apns ->
+    withNtfServerCfg ntfCfg $ \_ ->
+      testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
+        (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+        let checkActive subId = do
+              RespNtf "4" _ (NRSub status) <- signSendRecvNtf nh tknKey ("4", subId, SCHK)
+              unless (status == NSActive) $ threadDelay 100000 >> checkActive subId
+            waitActive subIds = timeout 5000000 (mapM_ checkActive subIds) `shouldReturn` Just ()
+        (sId, subIds) <- withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+          ((sId, _, _, _), nId1, _) <- createNtfQueueNKEY h sPub nPub
+          (_, nId2, _) <- createNtfQueueNKEY h sPub nPub
+          subIds <- forM [nId1, nId2] $ \nId -> do
+            RespNtf "3" NoEntity (NRSubId subId) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
+            pure subId
+          waitActive subIds
+          pure (sId, subIds)
+        st <- newNtfDbStore ntfTestDBCfg
+        Right 1 <- withDB' "test" st $ \db -> PSQL.execute_ db "UPDATE smp_servers SET ntf_service_cert = NULL, ntf_service_cert_hash = NULL, ntf_service_priv_key = NULL"
+        closeNtfDbStore st
+        withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+          Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND' "hello")
+          APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <- getMockNotification apns $ DeviceToken PPApnsTest "abcd"
+          waitActive subIds
 
 type CreateQueueFunc =
   forall c.

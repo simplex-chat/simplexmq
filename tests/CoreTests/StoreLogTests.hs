@@ -72,6 +72,8 @@ storeLogTests =
       q <- testNewQueueRecData g qm (Just (lnkId, qd))
       pure (q, lnkId, qd)
     let pubKey = fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+        rcvSr = sr {serviceRole = SRMessaging}
+        blockedWithNotice = BlockingInfo {reason = BRContent, notice = Just ClientNotice {ttl = Just 86400}}
     newKeys <- runIO $ L.fromList <$> sequence [pubKey, pubKey]
     testSMPStoreLog
       ("SMP server store log, queueMode = " <> show qm)
@@ -122,6 +124,12 @@ storeLogTests =
             saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, NewService sr, QueueService rId (ASP SNotifierService) (Just serviceId)],
             compacted = [NewService sr, CreateQueue rId qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}}],
             state = M.fromList [(rId, qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}})]
+          },
+        SLTC
+          { name = "create queue, register and associate messaging service, block queue with notice",
+            saved = [CreateQueue rId qr, NewService rcvSr, QueueService rId (ASP SRecipientService) (Just serviceId), BlockQueue rId blockedWithNotice],
+            compacted = [NewService rcvSr, CreateQueue rId qr {rcvServiceId = Just serviceId, status = EntityBlocked blockedWithNotice}],
+            state = M.fromList [(rId, qr {rcvServiceId = Just serviceId, status = EntityBlocked blockedWithNotice})]
           },
         SLTC
           { name = "delete notifier",
