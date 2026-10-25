@@ -29,7 +29,6 @@ where
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Monad
-import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
@@ -39,7 +38,6 @@ import Data.IORef
 import Data.Int (Int64)
 import Data.List (intersperse)
 import qualified Data.Map.Strict as M
-import Data.Text (Text)
 import Data.Time.Clock.System (SystemTime (..))
 import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -56,7 +54,7 @@ import Simplex.Messaging.Server.QueueStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog (foldLogLines)
 import Simplex.Messaging.Encoding.String
-import Simplex.Messaging.Util (maybeFirstRow, maybeFirstRow', (<$$>))
+import Simplex.Messaging.Util (maybeFirstRow, maybeFirstRow')
 import System.IO (Handle, hFlush, stdout)
 
 data PostgresMsgStore = PostgresMsgStore
@@ -81,31 +79,19 @@ instance StoreQueueClass PostgresQueue where
   {-# INLINE recipientId #-}
   queueRec = queueRec'
   {-# INLINE queueRec #-}
-  withQueueLock PostgresQueue {} _ = id -- TODO [messages] maybe it's just transaction?
-  {-# INLINE withQueueLock #-}
-
-newtype DBTransaction = DBTransaction {dbConn :: DB.Connection}
-
-type DBStoreIO a = ReaderT DBTransaction IO a
 
 instance MsgStoreClass PostgresMsgStore where
-  type StoreMonad PostgresMsgStore = ReaderT DBTransaction IO
-  type MsgQueue PostgresMsgStore = ()
   type QueueStore PostgresMsgStore = PostgresQueueStore'
   type StoreQueue PostgresMsgStore = PostgresQueue
   type MsgStoreConfig PostgresMsgStore = PostgresMsgStoreCfg
 
   newMsgStore :: PostgresMsgStoreCfg -> IO PostgresMsgStore
   newMsgStore config = do
-    queueStore_ <- newQueueStore @PostgresQueue (queueStoreCfg config, False)
+    queueStore_ <- newQueueStore @PostgresQueue (queueStoreCfg config)
     pure PostgresMsgStore {config, queueStore_}
 
   closeMsgStore :: PostgresMsgStore -> IO ()
   closeMsgStore = closeQueueStore @PostgresQueue . queueStore_
-
-  withActiveMsgQueues _ _ = error "withActiveMsgQueues not used"
-
-  unsafeWithAllMsgQueues _ _ _ = error "unsafeWithAllMsgQueues not used"
 
   expireOldMessages :: Bool -> PostgresMsgStore -> Int64 -> Int64 -> IO MessageStats
   expireOldMessages _tty ms now ttl =
@@ -150,34 +136,15 @@ instance MsgStoreClass PostgresMsgStore where
             msg_ = toMaybeMessage mRow
          in f a rId $ Right ((qr,) <$> msg_)
 
-  logQueueStates _ = error "logQueueStates not used"
-
-  logQueueState _ = error "logQueueState not used"
-
   queueStore = queueStore_
   {-# INLINE queueStore #-}
 
   loadedQueueCounts :: PostgresMsgStore -> IO LoadedQueueCounts
-  loadedQueueCounts ms = do
-    loadedQueueCount <- M.size <$> readTVarIO queues
-    loadedNotifierCount <- M.size <$> readTVarIO notifiers
-    notifierLockCount <- M.size <$> readTVarIO notifierLocks
-    pure LoadedQueueCounts {loadedQueueCount, loadedNotifierCount, openJournalCount = 0, queueLockCount = 0, notifierLockCount}
-    where
-      PostgresQueueStore {queues, notifiers, notifierLocks} = queueStore_ ms
+  loadedQueueCounts _ = pure LoadedQueueCounts {loadedQueueCount = 0, loadedNotifierCount = 0}
 
-  mkQueue :: PostgresMsgStore -> Bool -> RecipientId -> QueueRec -> IO PostgresQueue
-  mkQueue _ _keepLock rId qr = PostgresQueue rId <$> newTVarIO (Just qr)
+  mkQueue :: PostgresMsgStore -> RecipientId -> QueueRec -> IO PostgresQueue
+  mkQueue _ rId qr = PostgresQueue rId <$> newTVarIO (Just qr)
   {-# INLINE mkQueue #-}
-
-  getMsgQueue _ _ _ = pure ()
-  {-# INLINE getMsgQueue #-}
-
-  getPeekMsgQueue :: PostgresMsgStore -> PostgresQueue -> DBStoreIO (Maybe ((), Message))
-  getPeekMsgQueue _ q = ((),) <$$> tryPeekMsg_ q ()
-
-  withIdleMsgQueue :: Int64 -> PostgresMsgStore -> PostgresQueue -> (() -> DBStoreIO a) -> DBStoreIO (Maybe a, Int)
-  withIdleMsgQueue _ _ _ _ = error "withIdleMsgQueue not used"
 
   deleteQueue :: PostgresMsgStore -> PostgresQueue -> IO (Either ErrorType QueueRec)
   deleteQueue ms q = deleteStoreQueue (queueStore_ ms) q
@@ -188,8 +155,6 @@ instance MsgStoreClass PostgresMsgStore where
     size <- getQueueSize ms q
     qr <- ExceptT $ deleteStoreQueue (queueStore_ ms) q
     pure (qr, size)
-
-  getQueueMessages_ _ _ _ = error "getQueueMessages_ not used"
 
   writeMsg :: PostgresMsgStore -> PostgresQueue -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   writeMsg ms q _ msg =
@@ -202,18 +167,12 @@ instance MsgStoreClass PostgresMsgStore where
           DB.query
             db
             "SELECT quota_written, was_empty FROM write_message(?,?,?,?,?,?,?)"
-            (recipientId' q, Binary (messageId msg), systemSeconds (messageTs msg), msgQuota, ntf, Binary body, quota)
+            (recipientId' q, messageId msg, systemSeconds (messageTs msg), msgQuota, ntf, Binary body, quota)
     where
       toResult = \case
         ((msgQuota, wasEmpty) : _) -> if msgQuota then Nothing else Just (msg, wasEmpty)
         [] -> Nothing
       PostgresMsgStore {config = PostgresMsgStoreCfg {quota}} = ms
-
-  setOverQuota_ :: PostgresQueue -> IO () -- can ONLY be used while restoring messages, not while server running
-  setOverQuota_ _ = error "TODO setOverQuota_" -- TODO [messages]
-
-  getQueueSize_ :: () -> DBStoreIO Int
-  getQueueSize_ _ = error "getQueueSize_ not used"
 
   getQueueSize :: PostgresMsgStore -> PostgresQueue -> ExceptT ErrorType IO Int
   getQueueSize ms q =
@@ -221,31 +180,19 @@ instance MsgStoreClass PostgresMsgStore where
       maybeFirstRow' 0 fromOnly $
         DB.query db "SELECT msg_queue_size FROM msg_queues WHERE recipient_id = ? AND deleted_at IS NULL" (Only (recipientId' q))
 
-  tryPeekMsg_ :: PostgresQueue -> () -> DBStoreIO (Maybe Message)
-  tryPeekMsg_ q _ = do
-    db <- asks dbConn
-    liftIO $ maybeFirstRow toMessage $
-      DB.query
-        db
-        [sql|
-          SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-          FROM messages
-          WHERE recipient_id = ?
-          ORDER BY message_id ASC LIMIT 1
-        |]
-        (Only (recipientId' q))
-
-  tryDeleteMsg_ :: PostgresQueue -> () -> Bool -> DBStoreIO ()
-  tryDeleteMsg_ _q _ _ = error "tryDeleteMsg_ not used" -- do
-
-  isolateQueue :: PostgresMsgStore -> PostgresQueue -> Text -> DBStoreIO a -> ExceptT ErrorType IO a
-  isolateQueue ms _q op a = uninterruptibleMask_ $ withDB' op (queueStore_ ms) $ runReaderT a . DBTransaction
-
-  unsafeRunStore _ _ _ = error "unsafeRunStore not used"
-
   tryPeekMsg :: PostgresMsgStore -> PostgresQueue -> ExceptT ErrorType IO (Maybe Message)
-  tryPeekMsg ms q = isolateQueue ms q "tryPeekMsg" $ tryPeekMsg_ q ()
-  {-# INLINE tryPeekMsg #-}
+  tryPeekMsg ms q =
+    uninterruptibleMask_ $ withDB' "tryPeekMsg" (queueStore_ ms) $ \db ->
+      maybeFirstRow toMessage $
+        DB.query
+          db
+          [sql|
+            SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+            FROM messages
+            WHERE recipient_id = ?
+            ORDER BY message_id ASC LIMIT 1
+          |]
+          (Only (recipientId' q))
 
   tryPeekMsgs :: PostgresMsgStore -> [PostgresQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
   tryPeekMsgs _ms [] = pure M.empty
@@ -271,14 +218,14 @@ instance MsgStoreClass PostgresMsgStore where
     uninterruptibleMask_ $
       withDB' "tryDelMsg" (queueStore_ ms) $ \db ->
         maybeFirstRow toMessage $
-          DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_msg(?, ?)" (recipientId' q, Binary msgId)
+          DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_msg(?, ?)" (recipientId' q, msgId)
 
   tryDelPeekMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)
   tryDelPeekMsg ms q msgId =
     uninterruptibleMask_ $
       withDB' "tryDelPeekMsg" (queueStore_ ms) $ \db ->
         toResult . map toMessage
-          <$> DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_peek_msg(?, ?)" (recipientId' q, Binary msgId)
+          <$> DB.query db "SELECT r_msg_id, r_msg_ts, r_msg_quota, r_msg_ntf_flag, r_msg_body FROM try_del_peek_msg(?, ?)" (recipientId' q, msgId)
     where
       toResult = \case
         [] -> (Nothing, Nothing)
@@ -297,13 +244,13 @@ uninterruptibleMask_ :: ExceptT ErrorType IO a -> ExceptT ErrorType IO a
 uninterruptibleMask_ = ExceptT . E.uninterruptibleMask_ . runExceptT
 {-# INLINE uninterruptibleMask_ #-}
 
-toMaybeMessage :: (Maybe (Binary MsgId), Maybe Int64, Maybe Bool, Maybe Bool, Maybe (Binary MsgBody)) -> Maybe Message
+toMaybeMessage :: (Maybe MsgId, Maybe Int64, Maybe Bool, Maybe Bool, Maybe (Binary MsgBody)) -> Maybe Message
 toMaybeMessage = \case
   (Just msgId, Just ts, Just msgQuota, Just ntf, Just body) -> Just $ toMessage (msgId, ts, msgQuota, ntf, body)
   _ -> Nothing
 
-toMessage :: (Binary MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
-toMessage (Binary msgId, ts, msgQuota, ntf, Binary body)
+toMessage :: (MsgId, Int64, Bool, Bool, Binary MsgBody) -> Message
+toMessage (msgId, ts, msgQuota, ntf, Binary body)
   | msgQuota = MessageQuota {msgId, msgTs}
   | otherwise = Message {msgId, msgTs, msgFlags = MsgFlags ntf, msgBody = C.unsafeMaxLenBS body} -- TODO [messages] unsafeMaxLenBS?
   where
@@ -429,7 +376,7 @@ messageRecToText rId msg =
     tabFields = BB.char7 ',' `intersperse` fields
     fields =
       [ renderField (toField rId),
-        renderField (toField $ Binary (messageId msg)),
+        renderField (toField $ messageId msg),
         renderField (toField $ systemSeconds (messageTs msg)),
         renderField (toField msgQuota),
         renderField (toField ntf),

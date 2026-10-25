@@ -28,7 +28,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types (ClientNotice (..))
 import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
-import Simplex.Messaging.Server.MsgStore.Journal
+import Simplex.Messaging.Server.MsgStore.STM (STMMsgStore (..))
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
@@ -47,18 +47,6 @@ import Simplex.Messaging.Server.Main
 
 testPublicAuthKey :: C.APublicAuthKey
 testPublicAuthKey = C.APublicAuthKey C.SEd25519 (C.publicKey "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe")
-
-testNtfCreds :: TVar ChaChaDRG -> IO NtfCreds
-testNtfCreds g = do
-  (notifierKey, _) <- atomically $ C.generateAuthKeyPair C.SX25519 g
-  (k, pk) <- atomically $ C.generateKeyPair @'C.X25519 g
-  pure
-    NtfCreds
-      { notifierId = EntityId "ijkl",
-        notifierKey,
-        rcvNtfDhSecret = C.dh' k pk,
-        ntfServiceId = Nothing
-      }
 
 data StoreLogTestCase r s = SLTC {name :: String, saved :: [r], state :: s, compacted :: [r]}
 
@@ -84,6 +72,8 @@ storeLogTests =
       q <- testNewQueueRecData g qm (Just (lnkId, qd))
       pure (q, lnkId, qd)
     let pubKey = fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+        rcvSr = sr {serviceRole = SRMessaging}
+        blockedWithNotice = BlockingInfo {reason = BRContent, notice = Just ClientNotice {ttl = Just 86400}}
     newKeys <- runIO $ L.fromList <$> sequence [pubKey, pubKey]
     testSMPStoreLog
       ("SMP server store log, queueMode = " <> show qm)
@@ -136,6 +126,12 @@ storeLogTests =
             state = M.fromList [(rId, qr {notifier = Just ntfCreds {ntfServiceId = Just serviceId}})]
           },
         SLTC
+          { name = "create queue, register and associate messaging service, block queue with notice",
+            saved = [CreateQueue rId qr, NewService rcvSr, QueueService rId (ASP SRecipientService) (Just serviceId), BlockQueue rId blockedWithNotice],
+            compacted = [NewService rcvSr, CreateQueue rId qr {rcvServiceId = Just serviceId, status = EntityBlocked blockedWithNotice}],
+            state = M.fromList [(rId, qr {rcvServiceId = Just serviceId, status = EntityBlocked blockedWithNotice})]
+          },
+        SLTC
           { name = "delete notifier",
             saved = [CreateQueue rId qr, AddNotifier rId ntfCreds, DeleteNotifier rId],
             compacted = [CreateQueue rId qr],
@@ -177,10 +173,10 @@ testSMPStoreLog testSuite tests =
     closeStoreLog l
     replicateM_ 3 $ testReadWrite t
 #if defined(dbServerPostgres)
-    (sCnt, qCnt) <- importStoreLogToDatabase "tests/tmp/" testStoreLogFile testStoreDBOpts
+    (sCnt, qCnt) <- importStoreLogToDatabase testStoreLogFile testStoreDBOpts
     fromIntegral (sCnt + qCnt) `shouldBe` length (compacted t)
     imported <- B.readFile $ testStoreLogFile <> ".bak"
-    (sCnt', qCnt') <- exportDatabaseToStoreLog "tests/tmp/" testStoreDBOpts testStoreLogFile
+    (sCnt', qCnt') <- exportDatabaseToStoreLog testStoreDBOpts testStoreLogFile
     sCnt' `shouldBe` fromIntegral sCnt
     qCnt' `shouldBe` fromIntegral qCnt
     exported <- B.readFile testStoreLogFile
@@ -188,14 +184,14 @@ testSMPStoreLog testSuite tests =
 #endif
   where
     testReadWrite SLTC {compacted, state} = do
-      st <- newMsgStore $ testJournalStoreCfg MQStoreCfg
-      l <- readWriteQueueStore True (mkQueue st True) testStoreLogFile $ stmQueueStore st
+      st <- newMsgStore testSMTStoreConfig
+      l <- readWriteQueueStore True (mkQueue st) testStoreLogFile $ queueStore st
       storeState st `shouldReturn` state
       closeStoreLog l
       ([], compacted') <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
       compacted' `shouldBe` compacted
-    storeState :: JournalMsgStore 'QSMemory -> IO (M.Map RecipientId QueueRec)
-    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ stmQueueStore st) >>= mapM (readTVarIO . queueRec))
+    storeState :: STMMsgStore -> IO (M.Map RecipientId QueueRec)
+    storeState st = M.mapMaybe id <$> (readTVarIO (queues $ queueStore st) >>= mapM (readTVarIO . queueRec))
 
 type FileRecState = (FileInfo, RoundedFileTime, Maybe RoundedFileTime, ServerEntityStatus)
 
@@ -207,8 +203,8 @@ deriving instance Eq FileRecipient
 
 deriving instance Eq FileStoreLogRecord
 
-testFileStoreLogFile :: FilePath
-testFileStoreLogFile = "tests/tmp/xftp-server-store.log"
+testFileStoreLogFile :: HasTestEnv => FilePath
+testFileStoreLogFile = testPath "xftp-server-store.log"
 
 fileExpirationTests :: Spec
 fileExpirationTests =

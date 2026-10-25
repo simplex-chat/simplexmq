@@ -124,6 +124,7 @@ storeTests = do
           testSetConnUserIdNewConn
         describe "upgradeRcvConnToDuplex" $ do
           testUpgradeRcvConnToDuplex
+          testSndQueueOfAnotherConn
         describe "upgradeSndConnToDuplex" $ do
           testUpgradeSndConnToDuplex
         describe "set Queue status" $ do
@@ -428,6 +429,24 @@ testUpgradeRcvConnToDuplex =
     upgradeRcvConnToDuplex db "conn1" anotherSndQueue
       `shouldReturn` Left (SEBadConnType "upgradeRcvConnToDuplex" CDuplex)
 
+testSndQueueOfAnotherConn :: SpecWith DBStore
+testSndQueueOfAnotherConn =
+  it "should not add confirmed SndQueue of another connection" . withStoreTransaction $ \db -> do
+    g <- C.newRandom
+    Right (_, sq) <- createSndConn db g cData1 sndQueue1
+    setSndQueueStatus db sq Confirmed
+    Right _ <- createNewConn db g cData1 {connId = "conn2"} SCMInvitation
+    updateNewConnSnd db "conn2" sndQueue1
+      `shouldReturn` Left SESndQueueExists
+    Right _ <- updateNewConnRcv db "conn2" rcvQueue1 SMSubscribe
+    upgradeRcvConnToDuplex db "conn2" sndQueue1
+      `shouldReturn` Left SESndQueueExists
+    Right _ <- upgradeRcvConnToDuplex db "conn2" (sndQueue1 :: NewSndQueue) {sndId = EntityId "4567"}
+    addConnSndQueue db "conn2" sndQueue1
+      `shouldReturn` Left SESndQueueExists
+    getConn db "conn1"
+      `shouldReturn` Right (SomeConn SCSnd (SndConnection cData1 (sq {status = Confirmed} :: SndQueue)))
+
 testUpgradeSndConnToDuplex :: SpecWith DBStore
 testUpgradeSndConnToDuplex =
   it "should throw error on attempt to add RcvQueue to RcvConnection or DuplexConnection" . withStoreTransaction $ \db -> do
@@ -513,7 +532,7 @@ hw = encodeUtf8 "Hello world!"
 ts :: UTCTime
 ts = UTCTime (fromGregorian 2021 02 24) (secondsToDiffTime 0)
 
-mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> BrokerId -> MsgHash -> RcvMsgData
+mkRcvMsgData :: InternalId -> InternalRcvId -> ExternalSndId -> ByteString -> MsgHash -> RcvMsgData
 mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
   RcvMsgData
     { internalRcvId,
@@ -522,7 +541,7 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
           { integrity = MsgOk,
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
-            broker = (brokerId, ts),
+            broker = (SMP.unsafeMsgId $ mconcat (replicate 24 brokerId), ts),
             pqEncryption = CR.PQEncOn
           },
       msgType = AM_A_MSG_,
@@ -688,7 +707,7 @@ hasMigrations :: DBStore -> Expectation
 hasMigrations st = getMigrations st `shouldReturn` True
 
 errorGettingMigrations :: DBStore -> Expectation
-errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "ErrorMisuse" `isInfixOf` show e
+errorGettingMigrations st = getMigrations st `shouldThrow` \(e :: SomeException) -> "withTransaction: database closed" `isInfixOf` show e
 
 testGetPendingQueueMsg :: DBStore -> Expectation
 testGetPendingQueueMsg st = do

@@ -8,7 +8,10 @@ module FileDescriptionTests where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
+import Data.Either (isRight)
 import qualified Data.Yaml as Y
+import Simplex.FileTransfer.Chunks (chunkSize3)
+import Simplex.FileTransfer.Client (prepareChunkSizes)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -25,6 +28,8 @@ fileDescriptionTests = do
     it "parse YAML file description" testParseYAMLFileDescription
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
+    it "reject file description with YAML aliases" testRejectYAMLAliases
+    it "limit replicas per chunk and per file" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
@@ -33,8 +38,8 @@ fileDescriptionTests = do
 fileDescPath :: FilePath
 fileDescPath = "tests/fixtures/file_description.yaml"
 
-tmpFileDescPath :: FilePath
-tmpFileDescPath = "tests/tmp/file_description.yaml"
+tmpFileDescPath :: HasTestEnv => FilePath
+tmpFileDescPath = testPath "file_description.yaml"
 
 testSbKey :: C.SbKey
 testSbKey = either error id $ strDecode "00n8p1tJq5E-SGnHcYTOrS4A9I07gTA_WFD6MTFFFOY="
@@ -144,7 +149,7 @@ testParseYAMLFileDescription = do
   yfd <- Y.decodeFileThrow fileDescPath
   yfd `shouldBe` yamlFileDesc
 
-testSerializeYAMLFileDescription :: IO ()
+testSerializeYAMLFileDescription :: HasTestEnv => IO ()
 testSerializeYAMLFileDescription = withRemoveTmpFile $ do
   Y.encodeFile tmpFileDescPath yamlFileDesc
   fdSer <- B.readFile tmpFileDescPath
@@ -158,7 +163,42 @@ testParseFileDescription = do
     Left e -> expectationFailure $ show e
     Right fd -> fd `shouldBe` fileDesc
 
-testSerializeFileDescription :: IO ()
+testRejectYAMLAliases :: IO ()
+testRejectYAMLAliases = do
+  (yaml, sizeLine) <- B.breakSubstring "size: " <$> B.readFile fileDescPath
+  let (header, groups) = B.breakSubstring "- chunks:" yaml
+      aliased = header <> "- &g\n  " <> B.drop 2 groups <> "- *g\n" <> sizeLine
+  (strDecode aliased :: Either String (FileDescription 'FRecipient)) `shouldBe` Left "YAML aliases are not allowed"
+
+testFileDescriptionLimits :: IO ()
+testFileDescriptionLimits = do
+  let largestSplit = prepareChunkSizes (maxFileSizeHard - mb 1)
+      split64GB = prepareChunkSizes (gb 64 - mb 1)
+  length largestSplit `shouldBe` 1282
+  length split64GB `shouldBe` 16386
+  validateFileDescription (descriptionOf largestSplit 16) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf largestSplit 17) `shouldBe` Left "too many chunk replicas"
+  validateFileDescription (descriptionOf split64GB 4) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf (replicate 8192 chunkSize3) 16) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf (replicate 8193 chunkSize3) 16) `shouldBe` Left "too many file replicas"
+  where
+    FileDescription {chunks = fixtureChunks} = fileDesc
+    fixtureReplicas = concatMap (\FileChunk {replicas} -> replicas) fixtureChunks
+    descriptionOf sizes n =
+      FileDescription
+        { party = SFRecipient,
+          size = FileSize $ sum $ map fromIntegral sizes,
+          digest = FileDigest "abc",
+          key = testSbKey,
+          nonce = testCbNonce,
+          chunkSize = FileSize chunkSize3,
+          chunks = zipWith chunk [1 ..] sizes,
+          redirect = Nothing
+        }
+      where
+        chunk chunkNo sz = FileChunk {chunkNo, chunkSize = FileSize sz, digest = FileDigest "ghi", replicas = take n $ cycle fixtureReplicas}
+
+testSerializeFileDescription :: HasTestEnv => IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
   B.writeFile tmpFileDescPath $ strEncode fileDesc
   fdSer <- B.readFile tmpFileDescPath
@@ -177,7 +217,7 @@ testFileDescriptionURIExtras = do
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
 
-withRemoveTmpFile :: IO () -> IO ()
+withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =
   bracket_
     (pure ())
