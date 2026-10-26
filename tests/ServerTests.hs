@@ -28,12 +28,13 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Foldable (foldrM)
+import Data.Foldable (foldrM, toList)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
+import qualified Data.Set as S
 import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
@@ -100,6 +101,7 @@ serverTests = do
     testMessageNotifications
     testMessageServiceNotifications
     testServiceNotificationsTwoRestarts
+    testNotificationsInChunks
   describe "Message expiration" $ do
     testMsgExpireOnSend
     testMsgExpireOnInterval
@@ -1542,6 +1544,46 @@ testServiceNotificationsTwoRestarts =
         (dec mId msg, Right msgText) #== "delivered from queue"
         Resp "" _ (NMSG _ _) <- tGet1 nh
         pure ()
+
+testNotificationsInChunks :: SpecWith (ASrvTransport, AStoreType)
+testNotificationsInChunks = do
+  it "should deliver pending notifications in chunks to queue subscriber" $ \(ATransport t, msType) ->
+    smpTest2Cfg (ntfChunkCfg msType) supportedClientSMPRelayVRange t $ \rh sh -> do
+      ntfs <- replicateM 5 $ createQueueWithPendingNtf rh sh
+      runSMPClient t $ \nh -> subscribeNotifiers nh Nothing ntfs
+  it "should deliver pending notifications in chunks to service subscriber" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    smpTest2Cfg (ntfChunkCfg msType) supportedClientSMPRelayVRange t $ \rh sh -> do
+      ntfs <- replicateM 5 $ createQueueWithPendingNtf rh sh
+      testNtfServiceClient t serviceKeys $ \nh -> subscribeNotifiers nh (Just servicePK) ntfs
+  where
+    ntfChunkCfg :: HasTestEnv => AStoreType -> AServerConfig
+    ntfChunkCfg msType = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {ntfDeliveryChunk = 2}
+    createQueueWithPendingNtf :: Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO (NotifierId, C.APrivateAuthKey)
+    createQueueWithPendingNtf rh sh = do
+      g <- C.newRandom
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND' "hello")
+      Resp "" _ (Msg _ _) <- tGet1 rh
+      pure (nId, nKey)
+    subscribeNotifiers :: Transport c => THandleSMP c 'TClient -> Maybe C.PrivateKeyEd25519 -> [(NotifierId, C.APrivateAuthKey)] -> IO ()
+    subscribeNotifiers nh serviceKey_ ntfs = do
+      forM_ ntfs $ \(nId, nKey) -> signSend_ nh nKey serviceKey_ ("3", nId, NSUB)
+      ts <- receiveTransmissions nh $ 2 * length ntfs
+      let nIds = S.fromList $ map fst ntfs
+      S.fromList [nId | Resp "3" nId (SOK _) <- ts] `shouldBe` nIds
+      S.fromList [nId | Resp "" nId (NMSG _ _) <- ts] `shouldBe` nIds
+    receiveTransmissions :: Transport c => THandleSMP c 'TClient -> Int -> IO [Transmission (Either ErrorType BrokerMsg)]
+    receiveTransmissions h n
+      | n <= 0 = pure []
+      | otherwise = do
+          ts <- 5000000 `timeout` tGetClient h >>= maybe (error "receive timeout") (pure . toList)
+          (ts <>) <$> receiveTransmissions h (n - length ts)
 
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =
