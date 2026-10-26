@@ -43,6 +43,7 @@ module Simplex.Messaging.Server
 where
 
 import Control.Concurrent.STM (throwSTM)
+import Control.Concurrent.STM.TSem (signalTSem, waitTSem)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -51,7 +52,6 @@ import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import Control.Monad.STM (retry)
-import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first, second)
 import qualified Data.Aeson as J
 import Data.ByteString.Base64 (encode)
@@ -733,24 +733,24 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
     runClient srvCert srvSignKey tp h = do
       ms <- asks msgStore
-      g <- asks random
+      salt <- asks serviceIdSalt
       idSize <- asks $ queueIdBytes . config
       kh <- asks serverIdentity
       ks <- atomically . C.generateKeyPair =<< asks random
       ServerConfig {smpServerVRange, smpHandshakeTimeout, information} <- asks config
       let serverInfo = LB.toStrict . J.encode <$> information
       labelMyThread $ "smp handshake for " <> transportName tp
-      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> runClientTransport th
+      liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms salt idSize) >>= \case
+        Just (Right (th, newServiceRec)) -> runClientTransport th newServiceRec
         _ -> pure ()
 
-    getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
-    getClientService ms g idSize role cert fp = do
-      newServiceId <- EntityId <$> atomically (C.randomBytes idSize g)
+    getClientService :: s -> ByteString -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO (ServiceId, Maybe ServiceRec)
+    getClientService ms salt idSize role cert fp@(XV.Fingerprint fpBytes) = do
+      let newServiceId = EntityId $ B.take idSize $ C.sha3_256 $ salt <> fpBytes
       ts <- liftIO getSystemDate
       let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
-        getCreateService @(StoreQueue s) (queueStore ms) sr
+        maybe (newServiceId, Just sr) (,Nothing) <$$> getServiceId @(StoreQueue s) (queueStore ms) sr
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
@@ -1059,13 +1059,13 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     logError "Unauthorized control port command"
                     hPutStrLn h "AUTH"
 
-runClientTransport :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> M s ()
-runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
+runClientTransport :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> Maybe ServiceRec -> M s ()
+runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} newServiceRec = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   nextClientId <- asks clientSeq
   clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
-  c <- liftIO $ newClient clientId q thParams ts
+  c <- liftIO $ newClient clientId q thParams newServiceRec ts
   runClientThreads c `finally` clientDisconnected c
   where
     runClientThreads :: Client s -> M s ()
@@ -1202,11 +1202,12 @@ sendResponses c@Client {sndQ} stats authDelay since rs@(ts, _)
   | otherwise = atomically $ writeTBQueue sndQ rs
 
 sendAfterDelay :: Client s -> ServerStats -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
-sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats delay since rs
+sendAfterDelay c@Client {sndQ, authDelaySlots, clientTHParams = THandleParams {sessionId}} stats delay since rs
   | delay > 0 = do
+      atomically $ waitTSem authDelaySlots
       elapsed <- subtract (microseconds since) . microseconds <$> getSystemTime
       when (elapsed >= delay) $ incStat $ authDelayExceeded stats
-      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' (delay - elapsed `mod` delay) >> write
+      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ (threadDelay' (delay - elapsed `mod` delay) >> write) `finally` atomically (signalTSem authDelaySlots)
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
@@ -1409,7 +1410,7 @@ client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
 client
   Server {subscribers, ntfSubscribers}
   ms
-  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {clientId, newServiceRec, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -1445,7 +1446,12 @@ client
       where
         ifNotNull qs f = if null qs then pure M.empty else f qs
         setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId (Either ErrorType ()))
-        setService party sId = ExceptT . setQueueServices (queueStore ms) party sId
+        setService party sId qs = forM_ newServiceRec storeService >> ExceptT (setQueueServices (queueStore ms) party sId qs)
+
+    storeService :: ServiceRec -> ExceptT ErrorType IO ServiceId
+    storeService sr =
+      withExceptT (\case e@SERVICE -> e; e@STORE {} -> e; _ -> INTERNAL) $
+        ExceptT $ getCreateService @(StoreQueue s) (queueStore ms) sr
 
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M s (Maybe ResponseAndMessage)
     processProxiedCmd (corrId, EntityId sessId, command) = (\t -> ((corrId, EntityId sessId, t), Nothing)) <$$> case command of
@@ -1673,7 +1679,7 @@ client
                                   updatedAt,
                                   rcvServiceId = clntServiceId
                                 }
-                        liftIO (addQueue ms rcvId qr) >>= \case
+                        liftIO (runExceptT (forM_ newServiceRec storeService) $>> addQueue ms rcvId qr) >>= \case
                           Left DUPLICATE_ -- TODO [short links] possibly, we somehow need to understand which IDs caused collision to retry if it's not client-supplied?
                             | clntIds -> pure $ ERR AUTH -- no retry on collision if sender ID is client-supplied
                             | otherwise -> tryCreate (n - 1)
