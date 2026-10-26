@@ -13,8 +13,8 @@ module Simplex.Messaging.Compression
   ) where
 
 import qualified Codec.Compression.Zstd as Z1
-import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.ByteString (ByteString)
 import Simplex.Messaging.Encoding
 
 data Compressed
