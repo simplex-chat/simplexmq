@@ -339,4 +339,4 @@ setStatsByServer :: TMap Text (TVar Int) -> StatsByServerData -> IO ()
 setStatsByServer s (StatsByServerData d) = mapM newTVarIO (M.fromList d) >>= atomically . writeTVar s
 
 incServerStat :: Text -> TMap Text (TVar Int) -> IO ()
-incServerStat h s = TM.lookupOrInsertIO h (newTVar 1) s >>= either (\_ -> pure ()) (atomically . (`modifyTVar'` (+ 1)))
+incServerStat h s = TM.lookupOrInsertIO h (newTVar 1) s >>= mapM_ (atomically . (`modifyTVar'` (+ 1)))

@@ -535,7 +535,9 @@ addActiveSubs = addSubsList_ . activeQueueSubs
 {-# INLINE addActiveSubs #-}
 
 addPendingSubs :: SMPClientAgent p -> SMPServer -> [(QueueId, C.APrivateAuthKey)] -> IO ()
-addPendingSubs ca srv ss = TM.lookupIO srv (pendingQueueSubs ca) >>= atomically . maybe (addSubsList_ (pendingQueueSubs ca) srv ss) (TM.union $ M.fromList ss)
+addPendingSubs ca srv ss = TM.lookupOrInsertIO srv (newTVar ss') (pendingQueueSubs ca) >>= mapM_ (atomically . TM.union ss')
+  where
+    ss' = M.fromList ss
 {-# INLINE addPendingSubs #-}
 
 addSubsList_ :: TMap SMPServer (TMap QueueId s) -> SMPServer -> [(QueueId, s)] -> STM ()

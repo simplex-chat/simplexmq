@@ -3639,24 +3639,24 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             Right () -> pure ()
     processSubOk :: RcvQueue -> TVar [ConnId] -> TVar [RcvQueue] -> Maybe SMP.ServiceId -> IO ()
     processSubOk rq@RcvQueue {connId} upConnIds serviceRQs serviceId_ =
-      void . whenPendingSub rq $ do
-        SS.addActiveSub tSess sessId serviceId_ rq $ currentSubs c
-        modifyTVar' upConnIds (connId :)
-        when (isJust serviceId_ && serviceId_ == clientServiceId_) $ modifyTVar' serviceRQs (rq :)
+      whenPendingSub rq addSub $ pure ()
+      where
+        addSub = do
+          SS.addActiveSub tSess sessId serviceId_ rq $ currentSubs c
+          modifyTVar' upConnIds (connId :)
+          when (isJust serviceId_ && serviceId_ == clientServiceId_) $ modifyTVar' serviceRQs (rq :)
     clientServiceId_ = (\THClientService {serviceId} -> serviceId) <$> (clientService =<< thAuth)
     processSubErr :: RcvQueue -> SMPClientError -> AM' ()
     processSubErr rq@RcvQueue {connId} e = do
-      whenM (whenPendingSub rq $ failSubscription c tSess rq e) $
-        incSMPServerStat c userId srv connSubErrs
+      whenPendingSub rq (failSubscription c tSess rq e) $ incSMPServerStat c userId srv connSubErrs
       processClientNotice rq e
       notifyErr connId e
-    whenPendingSub :: MonadIO m => RcvQueue -> STM () -> m Bool
-    whenPendingSub rq action = do
+    whenPendingSub :: MonadIO m => RcvQueue -> STM () -> m () -> m ()
+    whenPendingSub rq action afterAction = do
       pending <- atomically $ do
         pending <- (&&) <$> SS.hasPendingSub tSess (queueId rq) (currentSubs c) <*> activeClientSession c tSess sessId
         pending <$ when pending action
-      unless pending $ incSMPServerStat c userId srv connSubIgnored
-      pure pending
+      if pending then afterAction else incSMPServerStat c userId srv connSubIgnored
     processClientNotice rq e =
       forM_ (smpErrorClientNotice e) $ \notice_ ->
         E.bracket_
