@@ -420,7 +420,7 @@ subscribeQueuesNtfs = subscribeQueues_
 
 subscribeQueues_ :: ServiceParty p => SMPClientAgent p -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
 subscribeQueues_ ca srv subs = do
-  atomically $ addPendingSubs ca srv $ L.toList subs
+  addSubsIO_ (pendingQueueSubs ca) srv $ M.fromList $ L.toList subs
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeQueues ca smp srv subs
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
@@ -480,7 +480,7 @@ subscribeServiceNtfs = subscribeService_
 
 subscribeService_ :: (PartyI p, ServiceParty p) => SMPClientAgent p -> SMPServer -> ServiceSub -> IO ()
 subscribeService_ ca srv serviceSub = do
-  atomically $ setPendingServiceSub ca srv $ Just serviceSub
+  setServiceSubIO_ pendingServiceSubs ca srv $ Just serviceSub
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeService ca smp srv serviceSub
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
@@ -512,7 +512,7 @@ smpSubscribeService ca smp srv serviceSub@(ServiceSub serviceId n idsHash) = cas
     serviceAvailable THClientService {serviceRole, serviceId = serviceId'} =
       serviceId == serviceId' && partyServiceRole (agentParty ca) == serviceRole
     notifyUnavailable = do
-      atomically $ setPendingServiceSub ca srv Nothing
+      setServiceSubIO_ pendingServiceSubs ca srv Nothing
       notify ca $ CAServiceUnavailable srv serviceSub -- this will resubscribe all queues directly
     sessId = sessionId $ thParams smp
 
@@ -534,10 +534,6 @@ addActiveSubs :: SMPClientAgent p -> SMPServer -> [(QueueId, (SessionId, C.APriv
 addActiveSubs = addSubsList_ . activeQueueSubs
 {-# INLINE addActiveSubs #-}
 
-addPendingSubs :: SMPClientAgent p -> SMPServer -> [(QueueId, C.APrivateAuthKey)] -> STM ()
-addPendingSubs = addSubsList_ . pendingQueueSubs
-{-# INLINE addPendingSubs #-}
-
 addSubsList_ :: TMap SMPServer (TMap QueueId s) -> SMPServer -> [(QueueId, s)] -> STM ()
 addSubsList_ subs srv ss = addSubs_ subs srv $ M.fromList ss
   -- where
@@ -548,6 +544,9 @@ addSubs_ subs srv ss =
   TM.lookup srv subs >>= \case
     Just m -> TM.union ss m
     _ -> TM.insertM srv (newTVar ss) subs
+
+addSubsIO_ :: TMap SMPServer (TMap QueueId s) -> SMPServer -> Map QueueId s -> IO ()
+addSubsIO_ subs srv ss = TM.lookupOrInsertIO srv (newTVar ss) subs >>= either (\_ -> pure ()) (atomically . TM.union ss)
 
 setActiveServiceSub :: SMPClientAgent p -> SMPServer -> Maybe (ServiceSub, SessionId) -> STM ()
 setActiveServiceSub = setServiceSub_ activeServiceSubs
@@ -567,6 +566,14 @@ setServiceSub_ subsSel ca srv sub =
   TM.lookup srv (subsSel ca) >>= \case
     Just v -> writeTVar v sub
     Nothing -> TM.insertM srv (newTVar sub) (subsSel ca)
+
+setServiceSubIO_ ::
+  (SMPClientAgent p -> TMap SMPServer (TVar (Maybe sub))) ->
+  SMPClientAgent p ->
+  SMPServer ->
+  Maybe sub ->
+  IO ()
+setServiceSubIO_ subsSel ca srv sub = TM.lookupOrInsertIO srv (newTVar sub) (subsSel ca) >>= either (\_ -> pure ()) (atomically . (`writeTVar` sub))
 
 updateActiveServiceSub :: SMPClientAgent p -> SMPServer -> (ServiceSub, SessionId) -> STM ()
 updateActiveServiceSub ca srv sub@(ServiceSub serviceId' n' idsHash', sessId') =

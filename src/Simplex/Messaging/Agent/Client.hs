@@ -408,15 +408,12 @@ getAgentWorker = getAgentWorker' id pure
 
 getAgentWorker' :: forall a k e m. (Ord k, Show k, AnyError e, MonadUnliftIO m) => (a -> Worker) -> (Worker -> STM a) -> String -> Bool -> AgentClient -> k -> TMap k a -> (a -> ExceptT e m ()) -> m a
 getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
-  atomically (getWorker >>= maybe createWorker whenExists) >>= \w -> runWorker w $> w
+  liftIO (TM.lookupOrInsertIO key createWorker ws) >>= either pure whenExists >>= \w -> runWorker w $> w
   where
     getWorker = TM.lookup key ws
-    createWorker = do
-      w <- fromW =<< newWorker c
-      TM.insert key w ws
-      pure w
+    createWorker = fromW =<< newWorker c
     whenExists w
-      | hasWork = hasWorkToDo (toW w) $> w
+      | hasWork = atomically (hasWorkToDo $ toW w) $> w
       | otherwise = pure w
     runWorker w = runWorkerAsync (toW w) runWork
       where
@@ -696,12 +693,12 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
   unlessM (readTVarIO active) $ throwE INACTIVE
   proxySrv <- maybe (getNextServer c userId proxySrvs [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
-  (tSess, auth) <- atomically $ proxiedTransportSession proxySrv
+  (tSess, auth) <- liftIO $ proxiedTransportSession proxySrv
   withGetSessVar workerSeq tSess smpClients ts (newProxyClient tSess auth ts) (waitForProxyClient tSess auth)
   where
-    proxiedTransportSession :: SMPServerWithAuth -> STM (SMPTransportSession, Maybe SMP.BasicAuth)
+    proxiedTransportSession :: SMPServerWithAuth -> IO (SMPTransportSession, Maybe SMP.BasicAuth)
     proxiedTransportSession proxySrv = do
-      ProtoServerWithAuth srv auth <- TM.lookup destSess smpProxiedRelays >>= maybe (TM.insert destSess proxySrv smpProxiedRelays $> proxySrv) pure
+      ProtoServerWithAuth srv auth <- either id id <$> TM.lookupOrInsertIO destSess (pure proxySrv) smpProxiedRelays
       pure ((userId, srv, qId), auth)
     newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> UTCTime -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     newProxyClient tSess auth ts v = do
@@ -1102,15 +1099,15 @@ withConnLocks AgentClient {connLocks} = withLocksMap connLocks
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
-withLockMap = withGetLock . getPutMapLock
+withLockMap = withGetLock . getMapLock
 {-# INLINE withLockMap #-}
 
 withLocksMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> Text -> m a -> m a
-withLocksMap = withGetLocks . getPutMapLock
+withLocksMap = withGetLocks . getMapLock
 {-# INLINE withLocksMap #-}
 
-getPutMapLock :: Ord k => TMap k Lock -> k -> Text -> IO Lock
-getPutMapLock locks key name = TM.lookupOrInsertIO key (newTMVar name) locks >>= either pure (\l -> atomically $ putTMVar l name $> l)
+getMapLock :: Ord k => TMap k Lock -> k -> IO Lock
+getMapLock locks key = either id id <$> TM.lookupOrInsertIO key createLock locks
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do
@@ -1960,18 +1957,13 @@ sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {s
 
 getQueueMessage :: AgentClient -> RcvQueue -> AM (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
-  atomically createTakeGetLock
+  liftIO createTakeGetLock
   msg_ <- withSMPClient c NRMInteractive rq "GET" $ \smp ->
     getSMPMessage smp rcvPrivateKey rcvId
   mapM decryptMeta msg_
   where
     decryptMeta msg@SMP.RcvMessage {msgId} = SMP.rcvMessageMeta msgId <$> decryptSMPMessage rq msg
-    createTakeGetLock = TM.alterF takeLock (server, rcvId) $ getMsgLocks c
-      where
-        takeLock l_ = do
-          l <- maybe (newTMVar ()) pure l_
-          takeTMVar l
-          pure $ Just l
+    createTakeGetLock = TM.lookupOrInsertIO (server, rcvId) newEmptyTMVar (getMsgLocks c) >>= either (\_ -> pure ()) (atomically . takeTMVar)
 {-# INLINE getQueueMessage #-}
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody

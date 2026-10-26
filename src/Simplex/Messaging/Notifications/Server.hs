@@ -495,7 +495,7 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
     >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
   where
     getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
-    getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
+    getSubscriberVar = getSessVarIO subscriberSeq smpServer smpSubscribers =<< getCurrentTime
 
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     createSMPSubscriber v =

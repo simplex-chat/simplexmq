@@ -1,5 +1,6 @@
 module Simplex.Messaging.Agent.Lock
   ( Lock,
+    createLock,
     createLockIO,
     withLock,
     withLock',
@@ -11,6 +12,7 @@ where
 import Control.Monad (void)
 import Control.Monad.Except (ExceptT (..), runExceptT)
 import Control.Monad.IO.Unlift
+import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -19,6 +21,10 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
 type Lock = TMVar Text
+
+createLock :: STM Lock
+createLock = newEmptyTMVar
+{-# INLINE createLock #-}
 
 createLockIO :: IO Lock
 createLockIO = newEmptyTMVarIO
@@ -34,15 +40,18 @@ withLock' lock name =
     (atomically $ putTMVar lock name)
     (void . atomically $ takeTMVar lock)
 
-withGetLock :: MonadUnliftIO m => (k -> Text -> IO Lock) -> k -> Text -> m a -> m a
-withGetLock getPutLock key name a =
+withGetLock :: MonadUnliftIO m => (k -> IO Lock) -> k -> Text -> m a -> m a
+withGetLock getLock key name a =
   E.bracket
-    (liftIO $ getPutLock key name)
+    (liftIO $ getPutLock getLock key name)
     (atomically . takeTMVar)
     (const a)
 
-withGetLocks :: MonadUnliftIO m => (k -> Text -> IO Lock) -> Set k -> Text -> m a -> m a
-withGetLocks getPutLock keys name = E.bracket holdLocks releaseLocks . const
+withGetLocks :: MonadUnliftIO m => (k -> IO Lock) -> Set k -> Text -> m a -> m a
+withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
   where
-    holdLocks = forConcurrently (S.toList keys) $ \key -> liftIO $ getPutLock key name
+    holdLocks = forConcurrently (S.toList keys) $ \key -> liftIO $ getPutLock getLock key name
     releaseLocks = mapM_ (atomically . takeTMVar)
+
+getPutLock :: (k -> IO Lock) -> k -> Text -> IO Lock
+getPutLock getLock key name = getLock key >>= \l -> atomically (putTMVar l name) $> l
