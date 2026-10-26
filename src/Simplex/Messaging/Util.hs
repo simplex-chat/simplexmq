@@ -44,7 +44,6 @@ module Simplex.Messaging.Util
     catchAllOwnErrors,
     catchAllOwnErrors',
     eitherToMaybe,
-    fromEither,
     listToEither,
     firstRow,
     maybeFirstRow,
@@ -98,7 +97,7 @@ import Data.Word (Word8)
 import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Storable (peekByteOff, pokeByteOff)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
-import UnliftIO hiding (atomicModifyIORef', fromEither)
+import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
@@ -339,10 +338,6 @@ catchAllOwnErrors' action handler = tryAllOwnErrors' action >>= either handler p
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
 {-# INLINE eitherToMaybe #-}
-
-fromEither :: Either a a -> a
-fromEither = either id id
-{-# INLINE fromEither #-}
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x

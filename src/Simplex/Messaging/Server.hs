@@ -131,7 +131,7 @@ import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
-import UnliftIO.Exception hiding (fromEither)
+import UnliftIO.Exception
 import UnliftIO.IO
 import UnliftIO.STM
 
@@ -1775,7 +1775,7 @@ client
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
         getSub :: IO Sub
-        getSub = fromEither <$> TM.lookupOrInsertIO entId (newSubscription NoSub) (subscriptions clnt)
+        getSub = either id id <$> TM.lookupOrInsertIO entId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeNewQueue :: RecipientId -> QueueRec -> M s ()
         subscribeNewQueue rId QueueRec {rcvServiceId} = do
