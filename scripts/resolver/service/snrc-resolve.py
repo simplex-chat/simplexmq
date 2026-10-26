@@ -44,6 +44,8 @@ Environment:
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
+  SNRC_NAME_POLICY_<TLD> SimplexNamePolicy (proxy) for the TLD; reservations, in place
+                         of the controller (default: empty, as .testing has none)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
   SNRC_WORKERS           Worker processes sharing the port (default: CPU count, at most 4)
@@ -138,6 +140,14 @@ CONTROLLERS = {
     # Recorded in deployments.json as ETHRegistrarController.
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
+}
+
+# Controllers from simplex-network/ens-contracts#42 keep no reservations: their
+# SimplexNamePolicy does, with the same Reason. Empty means the controller keeps
+# them, as on .testing.
+NAME_POLICIES = {
+    "testing": os.environ.get("SNRC_NAME_POLICY_TESTING", ""),
+    "simplex": os.environ.get("SNRC_NAME_POLICY_SIMPLEX", ""),  # not deployed yet
 }
 
 # `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
@@ -515,12 +525,17 @@ def expiry_status(expires: int, grace: int, now: int) -> str:
     return "expired"
 
 
+def reservations_contract(tld: str) -> str:
+    """The contract holding the TLD's `reservedNames`, empty when none is configured."""
+    return NAME_POLICIES.get(tld) or CONTROLLERS.get(tld) or ""
+
+
 def reservation_reason(tld: str, token: int) -> int:
     """The SimplexController.Reason held for the name, 0 when not reserved."""
-    controller = CONTROLLERS.get(tld)
-    if not controller:
+    contract = reservations_contract(tld)
+    if not contract:
         return 0
-    return decode_uint(eth_call(*reserved_call(controller, token)))
+    return decode_uint(eth_call(*reserved_call(contract, token)))
 
 
 def pricing_params(tld: str):
@@ -829,8 +844,9 @@ def lookup_reads(name: str):
         reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
         if len(labels) == 2 and is_encoded_labelhash(labels[0]):
             reads.append(eth_call_read(*label_call(registrar, token)))
-        if CONTROLLERS.get(tld):
-            reads.append(eth_call_read(*reserved_call(CONTROLLERS[tld], token)))
+        contract = reservations_contract(tld)
+        if contract:
+            reads.append(eth_call_read(*reserved_call(contract, token)))
     registry = REGISTRIES.get(tld)
     if registry:
         node = node_of(name)

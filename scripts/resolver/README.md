@@ -357,7 +357,7 @@ from before the enum stores a boolean, whose `true` decodes as 1, which is why
 
 ### Configuring addresses
 
-The resolver reads three contracts, each configured per TLD.
+The resolver reads three or four contracts, each configured per TLD.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
@@ -372,6 +372,13 @@ held-back name reads as not reserved, and no name can be priced.
 All three default to the mainnet `.testing` deployment. `.simplex` is unset
 until it is deployed.
 
+Contracts from simplex-network/ens-contracts#42, which `.simplex` will run, keep
+`reservedNames` in a **name policy** (`SimplexNamePolicy`), with the same
+`Reason`, and their controller answers no `reservedNames` call. For such a TLD
+set `SNRC_NAME_POLICY_<TLD>` to the policy's proxy, `SimplexNamePolicyProxy`,
+and reservations are read from it. Without it every lookup under that TLD
+answers 502. `.testing` has no name policy, so its controller keeps them.
+
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two
 deployment files use different names for that proxy:
@@ -380,9 +387,9 @@ deployment files use different names for that proxy:
 `SimplexControllerProxy`. Both are the same address, and it is the one used
 here.
 
-To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
-`SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
-as env vars when you run the script directly.
+To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>`,
+`SNRC_CONTROLLER_<TLD>` or `SNRC_NAME_POLICY_<TLD>` on the `resolver` service in
+`docker-compose.yml`, or as env vars when you run the script directly.
 
 ### Load and scaling
 

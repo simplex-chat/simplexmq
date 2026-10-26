@@ -362,20 +362,22 @@ class NameStatusTests(unittest.TestCase):
 class ReservedTests(unittest.TestCase):
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    NAME_POLICY = "0x4b7e0c1a9d2f3e5b6c8a7d9e0f1b2c3d4e5f6a7b"
 
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now)
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now)
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
+        snrc.NAME_POLICIES = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now = self._saved
 
     def _chain(self, expires, reserved):
         def eth_call(to, data):
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
-                self.assertEqual(to, self.CONTROLLER)
+                self.assertEqual(to, snrc.NAME_POLICIES["testing"] or self.CONTROLLER)
                 return "0x" + snrc.encode_uint(1 if reserved else 0)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(90 * 86400)
@@ -420,6 +422,11 @@ class ReservedTests(unittest.TestCase):
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(0, True)
         self.assertEqual(snrc.name_status(hashed + ".testing")["reasonCode"], "internal")
+
+    def test_a_configured_name_policy_is_asked_instead_of_the_controller(self):
+        snrc.NAME_POLICIES = {"testing": self.NAME_POLICY}
+        snrc.eth_call = self._chain(0, True)
+        self.assertEqual(snrc.name_status("acme.testing")["reasonCode"], "internal")
 
 
 class ReservedReasonTests(unittest.TestCase):
@@ -1275,18 +1282,19 @@ class FakeNodeTestCase(unittest.TestCase):
 
     def setUp(self):
         self.node = FakeNode()
-        self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS)
+        self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
         snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
+        snrc.NAME_POLICIES = {"testing": ""}
         snrc._multicall_failed_logged = False
         self._drain_pool()
 
     def tearDown(self):
         self._drain_pool()
-        snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS = self._saved
+        snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES = self._saved
         self.node.stop()
 
     def _drain_pool(self):
@@ -1397,6 +1405,17 @@ class BatchedReadsTests(FakeNodeTestCase):
 
     def test_v1_answers_the_same(self):
         self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+
+    def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
+        policy = ReservedTests.NAME_POLICY
+        snrc.NAME_POLICIES = {"testing": policy}
+        # the controller answers no reservedNames, as one from simplex-network/ens-contracts#42
+        for label in ("acme", "free"):
+            token = snrc.label_token(label)
+            self.node.chain.answers[snrc.reserved_call(policy, token)] = self.node.chain.answers.pop(snrc.reserved_call(FakeChain.CONTROLLER, token))
+        self.assert_same_answer(snrc.registration, "acme.testing", 2)
+        status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
+        self.assertEqual(body["registration"]["type"], "available")
 
     def test_without_multicall_a_round_is_still_one_batch(self):
         self.node.multicall = False
