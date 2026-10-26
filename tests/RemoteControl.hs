@@ -4,6 +4,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
 module RemoteControl where
 
@@ -47,6 +48,7 @@ remoteControlTests = do
   describe "New controller/host pairing" $ do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
+    it "should reject host certificate not signed by CA of known host" testHostCertNotSignedByCA
   describe "Multicast discovery" $ do
     it "should find paired host and connect" testMulticast
     it "should accept announcement only within timestamp window" testAnnouncementTimestamp
@@ -228,6 +230,25 @@ testExistingPairing = do
               timeout 5000000 (waitBoth ctrl3 host3) >>= \case
                 Nothing -> fail "timeout"
                 Just _ -> pure ()
+
+testHostCertNotSignedByCA :: IO ()
+testHostCertNotSignedByCA = do
+  drg <- C.newRandom
+  invVar <- newEmptyMVar
+  hp <- RC.newRCHostPairing drg
+  ctrl <- runCtrl drg False hp invVar
+  inv <- takeMVar invVar
+  host <- runHostURI drg Nothing inv
+  timeout 5000000 (waitBoth ctrl host) >>= \case
+    Nothing -> fail "timeout"
+    Just (hp', cp') -> do
+      (_, caKey) <- atomically $ C.generateSignatureKeyPair C.SEd25519 drg
+      (_found, signedInv, hc, r) <- runRight $ RC.connectRCHost drg hp' (J.String "app") False Nothing Nothing
+      inv' <- maybe (fail "bad invite") pure $ verifySignedInvitation signedInv
+      (_, r') <- runRight $ RC.connectRCCtrl drg inv' (Just (cp' :: RCCtrlPairing) {caKey}) (J.String "app")
+      void <$> atomically (takeTMVar r') `shouldReturn` Left RCEIdentity
+      atomically (isEmptyTMVar r) `shouldReturn` True
+      RC.cancelHostClient hc
 
 testMulticast :: IO ()
 testMulticast = do
