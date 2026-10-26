@@ -323,7 +323,7 @@ runNtfWorker c srv Worker {doWork} =
     incStatByUserId :: NtfServer -> (AgentNtfServerStats -> TVar Int) -> [NtfSubscription] -> AM' ()
     incStatByUserId ntfServer sel ss =
       forM_ (M.assocs userIdsCounts) $ \(userId, count) ->
-        atomically $ incNtfServerStat' c userId ntfServer sel count
+        incNtfServerStat' c userId ntfServer sel count
       where
         userIdsCounts = foldl' (\acc NtfSubscription {userId} -> M.insertWith (+) userId 1 acc) M.empty ss
     -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records;
@@ -361,10 +361,10 @@ runNtfWorker c srv Worker {doWork} =
       Just nSubId ->
         lift getNtfToken >>= \case
           Just tkn@NtfToken {ntfServer} -> do
-            atomically $ incNtfServerStat c userId ntfServer ntfDelAttempts
+            incNtfServerStat c userId ntfServer ntfDelAttempts
             tryAllErrors (agentNtfDeleteSubscription c nSubId tkn) >>= \case
               Right _ -> do
-                atomically $ incNtfServerStat c userId ntfServer ntfDeleted
+                incNtfServerStat c userId ntfServer ntfDeleted
                 continue'
               Left e
                 | temporaryOrHostError e -> pure $ Just sub -- don't continue, retry

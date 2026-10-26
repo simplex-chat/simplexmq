@@ -207,7 +207,7 @@ getPushClient :: NtfPushServer -> PushProvider -> IO (PushProviderClient, PushCl
 getPushClient s@NtfPushServer {apnsConfig = APNSPushClientConfig {reconnectInterval}} pp =
   withRetryIntervalCount reconnectInterval $ \n _delay loop -> do
     ts <- getCurrentTime
-    E.try (atomically (getSessVar (pushClientSeq s) pp (pushClients s) ts) >>= either (newPushClient s pp) waitForPushClient) >>= \case
+    E.try (getSessVarIO (pushClientSeq s) pp (pushClients s) ts >>= either (newPushClient s pp) waitForPushClient) >>= \case
       Right result -> pure result
       Left e
         | n < 2 -> do
