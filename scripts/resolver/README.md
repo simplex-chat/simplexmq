@@ -374,10 +374,12 @@ until it is deployed.
 
 Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
-answers no `reservedNames` call. For such a TLD
-set `SNRC_NAME_POLICY_<TLD>` to the policy's proxy, `SimplexNamePolicyProxy`,
-and reservations are read from it. Without it every lookup under that TLD
-answers 502. `.testing` has no name policy, so its controller keeps them.
+answers no `reservedNames` call. For such a TLD set `SNRC_NAME_POLICY_<TLD>` to
+the policy's proxy, `SimplexNamePolicyProxy`, and reservations are read from
+it. Without it every lookup under that TLD answers 502. After the controller's
+owner calls `setNamePolicy`, set it to the new proxy, which the controller's
+`namePolicy()` returns. `.testing` has no name policy, so its controller keeps
+them.
 
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two

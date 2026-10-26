@@ -230,10 +230,12 @@ class NameStatusTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
             snrc.rpc,
+            snrc.NAME_POLICIES,
         )
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
+        snrc.NAME_POLICIES = {"testing": ""}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
 
@@ -244,6 +246,7 @@ class NameStatusTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
             snrc.rpc,
+            snrc.NAME_POLICIES,
         ) = self._saved
 
     def test_now_is_the_latest_blocks_timestamp(self):
@@ -362,7 +365,6 @@ class NameStatusTests(unittest.TestCase):
 class ReservedTests(unittest.TestCase):
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
-    NAME_POLICY = "0x4b7e0c1a9d2f3e5b6c8a7d9e0f1b2c3d4e5f6a7b"
 
     def setUp(self):
         self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now)
@@ -374,10 +376,10 @@ class ReservedTests(unittest.TestCase):
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now = self._saved
 
-    def _chain(self, expires, reserved, holder=CONTROLLER):
+    def _chain(self, expires, reserved):
         def eth_call(to, data):
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
-                self.assertEqual(to, holder)
+                self.assertEqual(to, self.CONTROLLER)
                 return "0x" + snrc.encode_uint(1 if reserved else 0)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(90 * 86400)
@@ -422,11 +424,6 @@ class ReservedTests(unittest.TestCase):
         hashed = "[e29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf]"
         snrc.eth_call = self._chain(0, True)
         self.assertEqual(snrc.name_status(hashed + ".testing")["reasonCode"], "internal")
-
-    def test_a_configured_name_policy_is_asked_instead_of_the_controller(self):
-        snrc.NAME_POLICIES = {"testing": self.NAME_POLICY}
-        snrc.eth_call = self._chain(0, True, self.NAME_POLICY)
-        self.assertEqual(snrc.name_status("acme.testing")["reasonCode"], "internal")
 
 
 class ReservedReasonTests(unittest.TestCase):
@@ -1148,6 +1145,7 @@ class FakeChain:
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    NAME_POLICY = "0x4b7e0c1a9d2f3e5b6c8a7d9e0f1b2c3d4e5f6a7b"
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
     RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
@@ -1407,15 +1405,10 @@ class BatchedReadsTests(FakeNodeTestCase):
         self.assert_same_answer(snrc.resolve, "acme.testing", 2)
 
     def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
-        policy = ReservedTests.NAME_POLICY
-        snrc.NAME_POLICIES = {"testing": policy}
-        # the controller answers no reservedNames, as one with a name policy
-        for label in ("acme", "free"):
-            token = snrc.label_token(label)
-            self.node.chain.answers[snrc.reserved_call(policy, token)] = self.node.chain.answers.pop(snrc.reserved_call(FakeChain.CONTROLLER, token))
-        self.assert_same_answer(snrc.registration, "acme.testing", 2)
+        snrc.NAME_POLICIES = {"testing": FakeChain.NAME_POLICY}
+        self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("free"))] = "0x" + snrc.encode_uint(1)
         status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
-        self.assertEqual(body["registration"]["type"], "available")
+        self.assertEqual(body["registration"], {"type": "reserved", "reservedReason": "internal"})
 
     def test_without_multicall_a_round_is_still_one_batch(self):
         self.node.multicall = False
@@ -1735,7 +1728,8 @@ class WorkerProcessesTests(unittest.TestCase):
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
-                   SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
+                   SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER,
+                   SNRC_NAME_POLICY_TESTING="")
         self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
         self.workers = self._wait_for_workers(2)
 
