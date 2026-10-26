@@ -32,6 +32,7 @@ import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.SystemTime
+import Simplex.Messaging.Transport (SMPServiceRole (..))
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import Util
