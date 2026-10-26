@@ -51,6 +51,7 @@ import Simplex.Messaging.Protocol
   )
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (ServerConfig (..))
+import Simplex.Messaging.Server.Names (NamesConfig (..))
 import Simplex.Messaging.SimplexName (SimplexDomain)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Version (mkVersionRange)
@@ -108,6 +109,7 @@ rslvTests = do
     it "a record naming a different name is rejected" testRslvWrongName
   describe "RSLV resource use" $ do
     it "one connection has at most client_concurrency lookups in flight" testRslvConnectionCap
+    it "all connections have at most resolver_global_concurrency lookups in flight" testRslvFanOut
     it "a lookup waiting for a slot runs when a slot is released" testRslvSlotWait
     it "a lookup waiting for a slot fails when the client times out" testRslvSlotWaitTimeout
 
@@ -296,6 +298,19 @@ testRslvConnectionCap =
         recvResponses h 16 `shouldReturn` replicate 16 (Right (ERR (NAME (RESOLVER "timeout"))))
   where
     connCap = 4
+
+testRslvFanOut :: HasTestEnv => IO ()
+testRslvFanOut =
+  NRS.withResolverServerDelayed 3000 (NRS.resolveResp status200 "{}") $ \port reqs ->
+    withSmpServerConfigOn (transport @TLS) (updateCfg (withNames port memCfg) $ \c -> c {serverClientConcurrency = 32}) testPort $ const $
+      testSMPClient @TLS $ \h1 -> testSMPClient @TLS $ \h2 -> do
+        sendRslvs h1 "a" 32
+        sendRslvs h2 "b" 32
+        threadDelay 800000
+        length <$> resolvePaths reqs `shouldReturn` resolverGlobalConcurrency (NRS.testNamesConfig port)
+        let timedOut = replicate 32 (Right (ERR (NAME (RESOLVER "timeout"))))
+        recvResponses h1 32 `shouldReturn` timedOut
+        recvResponses h2 32 `shouldReturn` timedOut
 
 -- 4 lookups take the slots for the 1s resolver timeout, the 5th waits for a slot.
 testRslvSlotWait :: HasTestEnv => IO ()
