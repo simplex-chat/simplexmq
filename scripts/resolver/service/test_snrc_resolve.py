@@ -230,12 +230,10 @@ class NameStatusTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
             snrc.rpc,
-            snrc.NAME_POLICIES,
         )
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         # Expiry alone; ReservedTests covers a configured controller.
         snrc.CONTROLLERS = {"testing": ""}
-        snrc.NAME_POLICIES = {"testing": ""}
         self.now = int(time.time())
         snrc.chain_now = lambda: self.now
 
@@ -246,7 +244,6 @@ class NameStatusTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
             snrc.rpc,
-            snrc.NAME_POLICIES,
         ) = self._saved
 
     def test_now_is_the_latest_blocks_timestamp(self):
@@ -367,14 +364,13 @@ class ReservedTests(unittest.TestCase):
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
 
     def setUp(self):
-        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now)
+        self._saved = (snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now)
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": self.CONTROLLER}
-        snrc.NAME_POLICIES = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
 
     def tearDown(self):
-        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now = self._saved
+        snrc.REGISTRARS, snrc.CONTROLLERS, snrc.eth_call, snrc.chain_now = self._saved
 
     def _chain(self, expires, reserved):
         def eth_call(to, data):
@@ -1286,7 +1282,6 @@ class FakeNodeTestCase(unittest.TestCase):
         snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
-        snrc.NAME_POLICIES = {"testing": ""}
         snrc._multicall_failed_logged = False
         self._drain_pool()
 
@@ -1728,8 +1723,7 @@ class WorkerProcessesTests(unittest.TestCase):
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
-                   SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER,
-                   SNRC_NAME_POLICY_TESTING="")
+                   SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
         self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
         self.workers = self._wait_for_workers(2)
 

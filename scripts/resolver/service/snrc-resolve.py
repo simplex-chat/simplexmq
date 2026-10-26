@@ -142,8 +142,6 @@ CONTROLLERS = {
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
-# A controller with a SimplexNamePolicy keeps no reservations: the policy does,
-# with the same Reason. Empty means the controller keeps them, as on .testing.
 NAME_POLICIES = {
     "testing": os.environ.get("SNRC_NAME_POLICY_TESTING", ""),
     "simplex": os.environ.get("SNRC_NAME_POLICY_SIMPLEX", ""),  # not deployed yet
