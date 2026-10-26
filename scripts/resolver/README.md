@@ -372,9 +372,9 @@ held-back name reads as not reserved, and no name can be priced.
 All three default to the mainnet `.testing` deployment. `.simplex` is unset
 until it is deployed.
 
-Contracts from simplex-network/ens-contracts#42, which `.simplex` will run, keep
-`reservedNames` in a **name policy** (`SimplexNamePolicy`), with the same
-`Reason`, and their controller answers no `reservedNames` call. For such a TLD
+Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
+policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
+answers no `reservedNames` call. For such a TLD
 set `SNRC_NAME_POLICY_<TLD>` to the policy's proxy, `SimplexNamePolicyProxy`,
 and reservations are read from it. Without it every lookup under that TLD
 answers 502. `.testing` has no name policy, so its controller keeps them.

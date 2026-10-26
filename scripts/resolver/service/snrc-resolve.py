@@ -142,9 +142,8 @@ CONTROLLERS = {
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
-# Controllers from simplex-network/ens-contracts#42 keep no reservations: their
-# SimplexNamePolicy does, with the same Reason. Empty means the controller keeps
-# them, as on .testing.
+# A controller with a SimplexNamePolicy keeps no reservations: the policy does,
+# with the same Reason. Empty means the controller keeps them, as on .testing.
 NAME_POLICIES = {
     "testing": os.environ.get("SNRC_NAME_POLICY_TESTING", ""),
     "simplex": os.environ.get("SNRC_NAME_POLICY_SIMPLEX", ""),  # not deployed yet
@@ -801,8 +800,8 @@ def label_call(registrar: str, token: int):
     return registrar, selector("labelOf(uint256)") + encode_uint(token)
 
 
-def reserved_call(controller: str, token: int):
-    return controller, selector("reservedNames(bytes32)") + encode_uint(token)
+def reserved_call(contract: str, token: int):
+    return contract, selector("reservedNames(bytes32)") + encode_uint(token)
 
 
 def prices_call(contract: str):
@@ -844,9 +843,8 @@ def lookup_reads(name: str):
         reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
         if len(labels) == 2 and is_encoded_labelhash(labels[0]):
             reads.append(eth_call_read(*label_call(registrar, token)))
-        contract = reservations_contract(tld)
-        if contract:
-            reads.append(eth_call_read(*reserved_call(contract, token)))
+        if reservations_contract(tld):
+            reads.append(eth_call_read(*reserved_call(reservations_contract(tld), token)))
     registry = REGISTRIES.get(tld)
     if registry:
         node = node_of(name)

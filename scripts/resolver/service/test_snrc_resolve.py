@@ -374,10 +374,10 @@ class ReservedTests(unittest.TestCase):
     def tearDown(self):
         snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES, snrc.eth_call, snrc.chain_now = self._saved
 
-    def _chain(self, expires, reserved):
+    def _chain(self, expires, reserved, holder=CONTROLLER):
         def eth_call(to, data):
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
-                self.assertEqual(to, snrc.NAME_POLICIES["testing"] or self.CONTROLLER)
+                self.assertEqual(to, holder)
                 return "0x" + snrc.encode_uint(1 if reserved else 0)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(90 * 86400)
@@ -425,7 +425,7 @@ class ReservedTests(unittest.TestCase):
 
     def test_a_configured_name_policy_is_asked_instead_of_the_controller(self):
         snrc.NAME_POLICIES = {"testing": self.NAME_POLICY}
-        snrc.eth_call = self._chain(0, True)
+        snrc.eth_call = self._chain(0, True, self.NAME_POLICY)
         self.assertEqual(snrc.name_status("acme.testing")["reasonCode"], "internal")
 
 
@@ -1409,7 +1409,7 @@ class BatchedReadsTests(FakeNodeTestCase):
     def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
         policy = ReservedTests.NAME_POLICY
         snrc.NAME_POLICIES = {"testing": policy}
-        # the controller answers no reservedNames, as one from simplex-network/ens-contracts#42
+        # the controller answers no reservedNames, as one with a name policy
         for label in ("acme", "free"):
             token = snrc.label_token(label)
             self.node.chain.answers[snrc.reserved_call(policy, token)] = self.node.chain.answers.pop(snrc.reserved_call(FakeChain.CONTROLLER, token))
