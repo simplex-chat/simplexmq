@@ -14,7 +14,7 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM, unless)
+import Control.Monad (forM, replicateM_, unless)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
@@ -69,6 +69,8 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
+  describe "Batched notification subscriptions" $ testBatchedNtfSubscriptions ps
+  describe "Pending notification subscription" $ testPendingNtfSubscription ps
   describe "Notification server restart" $ testResubscribeAfterRestart ps
   describe "Notification service" $ do
     it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
@@ -303,6 +305,44 @@ testRetriedNtfSubscription (ATransport t, msType) =
           RespNtf "6" _ NROk <- signSendRecvNtf nh tknKey' ("6", tId', TVFY regCode')
           RespNtf "7" NoEntity (NRErr AUTH) <- signSendRecvNtf nh tknKey' ("7", NoEntity, SNEW $ NewNtfSub tId' q nKey)
           pure ()
+
+testBatchedNtfSubscriptions :: (ASrvTransport, AStoreType) -> Spec
+testBatchedNtfSubscriptions (ATransport t, msType) =
+  it "should not delay subscription by AUTH errors of preceding subscriptions" $ do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      smpTest2 t msType $ \rh sh ->
+        ntfTest t $ \nh -> do
+          ((sId, _rId, _rKey, _rcvDhSecret), nId, _rcvNtfDhSecret) <- createNtfQueueNKEY rh sPub nPub
+          (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+          RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+          let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+          replicateM_ 250 $ do
+            nId' <- EntityId <$> atomically (C.randomBytes 24 g)
+            RespNtf "3" NoEntity (NRSubId _) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId') nKey)
+            pure ()
+          RespNtf "4" NoEntity (NRSubId _) <- signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
+          Resp "5" _ OK <- signSendRecv sh sKey ("5", sId, _SEND' "hello")
+          Just APNSMockRequest {} <- timeout 2000000 $ getMockNotification apns $ DeviceToken PPApnsTest "abcd"
+          pure ()
+
+testPendingNtfSubscription :: (ASrvTransport, AStoreType) -> Spec
+testPendingNtfSubscription (ATransport t, _) =
+  it "should mark new subscription as pending" $ do
+    g <- C.newRandom
+    (_nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      ntfTest t $ \nh -> do
+        (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "1" _ NROk <- signSendRecvNtf nh tknKey ("1", tId, TVFY regCode)
+        let srv = SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+        RespNtf "2" NoEntity (NRSubId subId) <- signSendRecvNtf nh tknKey ("2", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv (EntityId "abcd")) nKey)
+        let checkPending = do
+              RespNtf "3" _ (NRSub status) <- signSendRecvNtf nh tknKey ("3", subId, SCHK)
+              unless (status == NSPending) $ threadDelay 100000 >> checkPending
+        timeout 2000000 checkPending `shouldReturn` Just ()
 
 testResubscribeAfterRestart :: (ASrvTransport, AStoreType) -> Spec
 testResubscribeAfterRestart (ATransport t, msType) =
