@@ -2359,7 +2359,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                     secureQueue c NRMBackground rq' senderKey
                     -- we may add more statistics special to queue rotation later on,
                     -- not accounting secure during rotation for now:
-                    -- atomically $ incSMPServerStat c userId server connSecured
+                    -- incSMPServerStat c userId server connSecured
                     rq1' <- withStore' c $ \db -> setRcvQueueStatus db rq' Secured >> setRcvSwitchStatus db rq1 (Just RSSendingQUSE)
                     void . enqueueMessages c cData sqs SMP.noMsgFlags $ QUSE [((server, sndId), True)]
                     withStore' c (`deleteCommand` cmdId)

@@ -174,7 +174,6 @@ module Simplex.Messaging.Agent.Client
     incSMPServerStat,
     incSMPServerStat',
     incXFTPServerStat,
-    incXFTPServerStat',
     incXFTPServerSizeStat,
     incNtfServerStat,
     incNtfServerStat',
@@ -698,7 +697,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
   where
     proxiedTransportSession :: SMPServerWithAuth -> IO (SMPTransportSession, Maybe SMP.BasicAuth)
     proxiedTransportSession proxySrv = do
-      ProtoServerWithAuth srv auth <- either id id <$> TM.lookupOrInsertIO destSess (pure proxySrv) smpProxiedRelays
+      ProtoServerWithAuth srv auth <- fromEither <$> TM.lookupOrInsertIO destSess (pure proxySrv) smpProxiedRelays
       pure ((userId, srv, qId), auth)
     newProxyClient :: SMPTransportSession -> Maybe SMP.BasicAuth -> UTCTime -> SMPClientVar -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
     newProxyClient tSess auth ts v = do
@@ -1107,7 +1106,7 @@ withLocksMap = withGetLocks . getMapLock
 {-# INLINE withLocksMap #-}
 
 getMapLock :: Ord k => TMap k Lock -> k -> IO Lock
-getMapLock locks key = either id id <$> TM.lookupOrInsertIO key createLock locks
+getMapLock locks key = fromEither <$> TM.lookupOrInsertIO key createLock locks
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do
@@ -2576,10 +2575,6 @@ incXFTPServerStat :: MonadIO m => AgentClient -> UserId -> XFTPServer -> (AgentX
 incXFTPServerStat c userId srv sel = incXFTPServerStat_ c userId srv sel 1
 {-# INLINE incXFTPServerStat #-}
 
-incXFTPServerStat' :: MonadIO m => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> m ()
-incXFTPServerStat' = incXFTPServerStat_
-{-# INLINE incXFTPServerStat' #-}
-
 incXFTPServerSizeStat :: MonadIO m => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> m ()
 incXFTPServerSizeStat = incXFTPServerStat_
 {-# INLINE incXFTPServerSizeStat #-}
@@ -2598,7 +2593,7 @@ incNtfServerStat' = incServerStat (\AgentClient {ntfServersStats = s} -> s) newA
 
 incServerStat :: (MonadIO m, Num n) => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> m ()
 incServerStat statsSel mkNewStats c userId srv sel n = liftIO $ do
-  v <- either id id <$> TM.lookupOrInsertIO (userId, srv) mkNewStats (statsSel c)
+  v <- fromEither <$> TM.lookupOrInsertIO (userId, srv) mkNewStats (statsSel c)
   atomically $ modifyTVar' (sel v) (+ n)
 
 data AgentServersSummary = AgentServersSummary

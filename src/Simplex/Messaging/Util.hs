@@ -44,6 +44,7 @@ module Simplex.Messaging.Util
     catchAllOwnErrors,
     catchAllOwnErrors',
     eitherToMaybe,
+    fromEither,
     listToEither,
     firstRow,
     maybeFirstRow,
@@ -338,6 +339,10 @@ catchAllOwnErrors' action handler = tryAllOwnErrors' action >>= either handler p
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
 {-# INLINE eitherToMaybe #-}
+
+fromEither :: Either a a -> a
+fromEither = either id id
+{-# INLINE fromEither #-}
 
 listToEither :: e -> [a] -> Either e a
 listToEither _ (x : _) = Right x

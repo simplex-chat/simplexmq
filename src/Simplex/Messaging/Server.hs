@@ -1775,7 +1775,7 @@ client
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
         getSub :: IO Sub
-        getSub = either id id <$> TM.lookupOrInsertIO entId (newSubscription NoSub) (subscriptions clnt)
+        getSub = fromEither <$> TM.lookupOrInsertIO entId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeNewQueue :: RecipientId -> QueueRec -> M s ()
         subscribeNewQueue rId QueueRec {rcvServiceId} = do
