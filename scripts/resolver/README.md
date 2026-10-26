@@ -379,7 +379,7 @@ the policy's proxy, `SimplexNamePolicyProxy`, and reservations are read from
 it. Without it every lookup under that TLD answers 502. After the controller's
 owner calls `setNamePolicy`, set it to the new proxy, which the controller's
 `namePolicy()` returns. `.testing` has no name policy, so its controller keeps
-them.
+the reservations.
 
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two
