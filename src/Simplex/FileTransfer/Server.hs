@@ -573,7 +573,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}, filePath} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> skipCommitted $ ifM reserve receive (pure $ FRErr QUOTA)
+      Just getBody -> skipCommitted $ mask $ \restore -> ifM reserve (receive restore) (pure $ FRErr QUOTA)
         where
           -- having a filePath means the file is already uploaded and committed, must not change anything
           skipCommitted = ifM (isJust <$> readTVarIO filePath) (liftIO $ drain $ fromIntegral size)
@@ -591,10 +591,10 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
             atomically . stateTVar us $
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
-          receive = do
+          receive restore = do
             path <- asks $ filesPath . config
             let fPath = path </> serverFileName senderId
-            receiveChunk (XFTPRcvChunkSpec fPath size digest) >>= \case
+            (restore (receiveChunk $ XFTPRcvChunkSpec fPath size digest) `onException` release fPath) >>= \case
               Right () -> do
                 stats <- asks serverStats
                 st <- asks fileStore
@@ -605,16 +605,12 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                     incFileStat filesCount
                     liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
                     pure FROk
-                  Left _e -> do
-                    us <- asks usedStorage
-                    atomically $ modifyTVar' us $ subtract (fromIntegral size)
-                    liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
-                    pure $ FRErr AUTH
-              Left e -> do
-                us <- asks usedStorage
-                atomically $ modifyTVar' us $ subtract (fromIntegral size)
-                liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
-                pure $ FRErr e
+                  Left _e -> FRErr AUTH <$ release fPath
+              Left e -> FRErr e <$ release fPath
+          release fPath = do
+            us <- asks usedStorage
+            atomically $ modifyTVar' us $ subtract (fromIntegral size)
+            liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
           receiveChunk spec = do
             t <- asks $ fileTimeout . config
             liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT $ receiveFile getBody spec)
@@ -664,7 +660,7 @@ blockServerFile fr@FileRec {senderId} info = do
   deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
 
 deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType ())) -> M s (Either XFTPErrorType ())
-deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
+deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $ runExceptT $ do
   path <- readTVarIO filePath
   stats <- asks serverStats
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))

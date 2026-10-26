@@ -9,7 +9,7 @@
 
 module XFTPServerTests (xftpServerTests) where
 
-import AgentTests.FunctionalAPITests (runRight_)
+import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, bracket)
 import Control.Monad
@@ -35,7 +35,7 @@ import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileInfo (..), XFTPFileId, xftpBlockSize)
+import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
@@ -50,10 +50,10 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import System.Directory (removeFile)
+import System.Directory (listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
@@ -72,6 +72,7 @@ xftpServerTests = do
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
+      it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
@@ -277,6 +278,31 @@ testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsTyp
     deleteXFTPChunk c spKey sId1
     uploadXFTPChunk c spKey sId3 chunkSpec
     download rId3
+
+testInterruptedUploadStorage :: HasTestEnv => AFStoreType -> Expectation
+testInterruptedUploadStorage fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 10}) $
+  \_ -> do
+    g <- C.newRandom
+    (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    void $ createTestChunk testChunkPath
+    digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+    let file = FileInfo {sndKey, size = chSize, digest}
+        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+        interruptUpload = testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+          (sId, _) <- runRight $ createXFTPChunk c spKey file [rcvKey] Nothing
+          t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+          let req = H2.requestStreaming "POST" "/" [] $ \send flush -> do
+                send $ byteString t
+                send $ byteString $ B.replicate 1024 'x'
+                flush
+                threadDelay maxBound
+          race_ (HC.sendRequest http2Client req Nothing) (threadDelay 20000)
+          sId <$ closeXFTPClient c
+    sIds <- pooledReplicateConcurrentlyN 10 300 interruptUpload
+    threadDelay 1000000
+    listDirectory xftpServerFiles `shouldReturn` []
+    testXFTPClient $ \c -> runRight_ $ forM_ (take 10 sIds) $ \sId -> uploadXFTPChunk c spKey sId chunkSpec
 
 testFileLog :: HasTestEnv => AFStoreType -> Expectation
 testFileLog _ = do
