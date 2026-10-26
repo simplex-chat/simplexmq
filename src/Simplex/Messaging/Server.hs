@@ -1926,8 +1926,7 @@ client
                 Nothing -> pure (qCnt + 1, msgCnt, dupCnt, evts)
                 Just (qr, msg) ->
                   getSubscription rId >>= \case
-                    -- If delivery subscription already exists, then there is no need to deliver message.
-                    -- It may have been created when the message is sent after service subscription is created.
+                    -- delivered via the existing subscription, e.g. made by SEND after SUBS
                     Right _sub -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
                     Left sub -> do
                       ts <- getSystemSeconds

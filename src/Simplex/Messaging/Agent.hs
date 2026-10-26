@@ -3589,7 +3589,7 @@ data ACKd = ACKd | ACKPending
 -- It cannot be finally, as sometimes it needs to be ACK+DEL,
 -- and sometimes ACK has to be sent from the consumer.
 processSMPTransmissions :: AgentClient -> ServerTransmissionBatch SMPVersion ErrorType BrokerMsg -> AM' ()
-processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandleParams {thAuth, sessionId = sessId}, ts) = do
+processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, srv, _), THandleParams {thAuth, sessionId = sessId}, ts) = do
   upConnIds <- newTVarIO []
   serviceRQs <- newTVarIO ([] :: [RcvQueue])
   forM_ ts $ \(entId, t) -> case t of
@@ -3638,25 +3638,27 @@ processSMPTransmissions c@AgentClient {subQ} (tSess@(userId, srv, _), THandlePar
             Left e -> notify' connId (ERR e)
             Right () -> pure ()
     processSubOk :: RcvQueue -> TVar [ConnId] -> TVar [RcvQueue] -> Maybe SMP.ServiceId -> IO ()
-    processSubOk rq@RcvQueue {connId} upConnIds serviceRQs serviceId_ =
-      whenPendingSub rq addSub $ pure ()
-      where
-        addSub = do
-          SS.addActiveSub tSess sessId serviceId_ rq $ currentSubs c
-          modifyTVar' upConnIds (connId :)
-          when (isJust serviceId_ && serviceId_ == clientServiceId_) $ modifyTVar' serviceRQs (rq :)
+    processSubOk rq@RcvQueue {connId} upConnIds serviceRQs serviceId_ = do
+      srvStats <- getSrvStats
+      atomically . whenM (isPendingSub srvStats rq) $ do
+        SS.addActiveSub tSess sessId serviceId_ rq $ currentSubs c
+        modifyTVar' upConnIds (connId :)
+        when (isJust serviceId_ && serviceId_ == clientServiceId_) $ modifyTVar' serviceRQs (rq :)
     clientServiceId_ = (\THClientService {serviceId} -> serviceId) <$> (clientService =<< thAuth)
     processSubErr :: RcvQueue -> SMPClientError -> AM' ()
     processSubErr rq@RcvQueue {connId} e = do
-      whenPendingSub rq (failSubscription c tSess rq e) $ incSMPServerStat c userId srv connSubErrs
+      srvStats <- liftIO getSrvStats
+      atomically . whenM (isPendingSub srvStats rq) $
+        failSubscription c tSess rq e >> modifyTVar' (connSubErrs srvStats) (+ 1)
       processClientNotice rq e
       notifyErr connId e
-    whenPendingSub :: MonadIO m => RcvQueue -> STM () -> m () -> m ()
-    whenPendingSub rq action afterAction = do
-      pending <- atomically $ do
-        pending <- (&&) <$> SS.hasPendingSub tSess (queueId rq) (currentSubs c) <*> activeClientSession c tSess sessId
-        pending <$ when pending action
-      if pending then afterAction else incSMPServerStat c userId srv connSubIgnored
+    isPendingSub :: AgentSMPServerStats -> RcvQueue -> STM Bool
+    isPendingSub srvStats rq = do
+      pending <- (&&) <$> SS.hasPendingSub tSess (queueId rq) (currentSubs c) <*> activeClientSession c tSess sessId
+      unless pending $ modifyTVar' (connSubIgnored srvStats) (+ 1)
+      pure pending
+    getSrvStats :: IO AgentSMPServerStats
+    getSrvStats = either id id <$> TM.lookupOrInsertIO (userId, srv) newAgentSMPServerStats smpServersStats
     processClientNotice rq e =
       forM_ (smpErrorClientNotice e) $ \notice_ ->
         E.bracket_
