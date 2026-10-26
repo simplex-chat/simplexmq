@@ -131,7 +131,7 @@ import System.Mem.Weak (deRefWeak)
 import UnliftIO (timeout)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
-import UnliftIO.Exception
+import UnliftIO.Exception hiding (fromEither)
 import UnliftIO.IO
 import UnliftIO.STM
 

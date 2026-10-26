@@ -98,7 +98,7 @@ import Data.Word (Word8)
 import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Storable (peekByteOff, pokeByteOff)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
-import UnliftIO hiding (atomicModifyIORef')
+import UnliftIO hiding (atomicModifyIORef', fromEither)
 import qualified UnliftIO.Exception as UE
 
 raceAny_ :: MonadUnliftIO m => [m a] -> m ()
