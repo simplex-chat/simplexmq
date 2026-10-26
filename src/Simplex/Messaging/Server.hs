@@ -61,7 +61,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
-import Data.Either (fromRight, partitionEithers)
+import Data.Either (fromRight, isRight, partitionEithers)
 import Data.Foldable (foldrM)
 import Data.Functor (($>), (<&>))
 import Data.IORef
@@ -385,12 +385,20 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                 subs <- readTVarIO ntfSubscriptions
                 unless (M.null subs) $ do
                   let ntfs'' = filter (\(nId, _) -> M.member nId subs) ntfs'
-                  tryAny (atomically $ flushSubscribedNtfs ntfs'' c) >>= updateNtfStats c
+                  deliverChunks c (`flushSubscribedNtfs` c) ntfs''
             deliverServiceNtfs ntfs' cv = readTVarIO cv >>= mapM_ deliver
               where
-                deliver c = tryAny (atomically $ withSubscribed $ flushSubscribedNtfs ntfs') >>= updateNtfStats c
+                deliver c = deliverChunks c (withSubscribed . flushSubscribedNtfs) ntfs'
                 withSubscribed :: (Client s -> STM Int) -> STM Int
                 withSubscribed a = readTVar cv >>= maybe (throwSTM $ userError "service unsubscribed") a
+            deliverChunks :: Client s' -> ([(NotifierId, TVar [MsgNtf])] -> STM Int) -> [(NotifierId, TVar [MsgNtf])] -> IO ()
+            deliverChunks c flush ntfs = go $ toChunks (ntfDeliveryChunk cfg) ntfs
+              where
+                go [] = pure ()
+                go (ch : chs) = do
+                  r <- tryAny $ atomically $ flush $ L.toList ch
+                  updateNtfStats c r
+                  when (isRight r) $ go chs
             flushSubscribedNtfs :: [(NotifierId, TVar [MsgNtf])] -> Client s' -> STM Int
             flushSubscribedNtfs ntfs c@Client {sndQ} = do
               ts_ <- foldM addNtfs [] ntfs

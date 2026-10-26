@@ -270,6 +270,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       prometheusMetricsFile = testPrometheusMetricsFile,
       pendingENDInterval = 500000,
       ntfDeliveryInterval = 200000,
+      ntfDeliveryChunk = 1000,
       authErrorDelay = 20000,
       smpCredentials =
         ServerCredentials

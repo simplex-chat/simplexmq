@@ -177,6 +177,7 @@ data ServerConfig s = ServerConfig
     prometheusMetricsFile :: FilePath,
     -- | notification delivery interval
     ntfDeliveryInterval :: Int,
+    ntfDeliveryChunk :: Int,
     -- | interval between sending pending END events to unsubscribed clients, seconds
     pendingENDInterval :: Int,
     authErrorDelay :: Int64,

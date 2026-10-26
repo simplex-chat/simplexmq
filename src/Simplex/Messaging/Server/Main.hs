@@ -499,6 +499,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
               ntfDeliveryInterval = 1500000, -- 1.5 second
+              ntfDeliveryChunk = 1000,
               authErrorDelay = 1000 * readIniDefault defaultAuthErrorDelayMs "TRANSPORT" "auth_error_delay_ms" ini,
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
