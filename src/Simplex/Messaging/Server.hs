@@ -33,9 +33,6 @@ module Simplex.Messaging.Server
   ( runSMPServer,
     runSMPServerBlocking,
     controlPortAuth,
-    importMessages,
-    exportMessages,
-    printMessageStats,
     disconnectTransport,
     verifyCmdAuthorization,
     dummyVerifyCmd,
@@ -98,8 +95,8 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (ProtocolClient (thParams), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, smpProxyError, temporaryClientError)
-import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, netTimeoutInt, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -108,7 +105,6 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.MsgStore.Journal (JournalMsgStore, JournalQueue (..), getJournalQueueMessages)
 import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -116,6 +112,7 @@ import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.Prometheus
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
+import Simplex.Messaging.Server.QueueStore.STM (withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
 import Simplex.Messaging.Server.StoreLog (foldLogLines)
@@ -145,7 +142,7 @@ import GHC.Conc.Sync (threadLabel)
 #endif
 
 #if defined(dbServerPostgres)
-import Simplex.Messaging.Server.MsgStore.Postgres (exportDbMessages, getDbMessageStats)
+import Simplex.Messaging.Server.MsgStore.Postgres (getDbMessageStats)
 #endif
 
 -- | Runs an SMP server using passed configuration.
@@ -369,7 +366,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         runDeliverNtfs ms ns' stats
       where
         runDeliverNtfs :: s -> NtfStore -> ServerStats -> IO ()
-        runDeliverNtfs ms (NtfStore ns) stats = do
+        runDeliverNtfs ms ns'@(NtfStore ns) stats = do
           ntfs <- M.assocs <$> readTVarIO ns
           unless (null ntfs) $
             getQueueNtfServices @(StoreQueue s) (queueStore ms) ntfs >>= \case
@@ -381,6 +378,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     cIds <- IS.toList <$> readTVarIO subClients
                     forM_ cIds $ \cId -> getServerClient cId srv >>= mapM_ (deliverQueueNtfs ntfs')
                 atomically $ modifyTVar' ns (`M.withoutKeys` S.fromList (map fst deleted))
+                deleteEmptyNtfs ns' ntfs
           where
             deliverQueueNtfs ntfs' c@Client {ntfSubscriptions} =
               whenM (currentClient readTVarIO c) $ do
@@ -1212,7 +1210,23 @@ sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
-    microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
+
+updateSlotWaitStats :: ServerStats -> SystemTime -> Bool -> IO ()
+updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, cmdSlotWaitTimeouts} since taken = do
+  waitMs <- fromIntegral . (`div` 1000) . subtract (microseconds since) . microseconds <$> getSystemTime
+  incStat cmdSlotWaits
+  atomicModifyIORef'_ cmdSlotWaitMs (+ waitMs)
+  atomicModifyIORef'_ cmdSlotWaitMaxMs (max waitMs)
+  unless taken $ incStat cmdSlotWaitTimeouts
+
+rslvTooManyRequests :: BrokerMsg
+rslvTooManyRequests = ERR $ NAME $ RESOLVER "too many requests"
+
+forwardedCmdWait :: ServerConfig s -> Int
+forwardedCmdWait = (`netTimeoutInt` NRMBackground) . tcpTimeout . networkConfig . smpCfg . smpAgentCfg
+
+microseconds :: SystemTime -> Int64
+microseconds (MkSystemTime s ns) = s * 1000000 + fromIntegral (ns `div` 1000)
 
 send :: Transport c => MVar (THandleSMP c 'TServer) -> Client s -> IO ()
 send th c@Client {sndQ, msgQ, clientTHParams = THandleParams {sessionId}} = do
@@ -1246,8 +1260,8 @@ tSend th Client {sndActiveAt} ts = do
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
-disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
-disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
+disconnectTransport :: THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport THandle {params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
@@ -1257,7 +1271,7 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
     checkExpired = do
       old <- expireBeforeEpoch expCfg
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
-      if systemSeconds ts < old then closeConnection connection else loop
+      unless (systemSeconds ts < old) loop
 
 data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFailed ErrorType
 
@@ -1491,21 +1505,45 @@ client
           Nothing -> inc False pRequests >> inc False pErrorsConnect $> Just (ERR $ PROXY NO_SESSION)
       where
         forkProxiedCmd :: M s BrokerMsg -> M s (Maybe BrokerMsg)
-        forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId)
-    -- Run a slow command on a thread
-    forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> M s BrokerMsg -> M s (Maybe a)
-    forkCmd concurrency corrId entId cmdAction = do
-      bracket_ wait signal . forkClient clnt (B.unpack $ "client $" <> encode sessionId <> " cmd") $
-        -- commands MUST be processed under a reasonable timeout or the client would halt
-        cmdAction >>= \t -> atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+        forkProxiedCmd = forkCmd serverClientConcurrency corrId (EntityId sessId) (ERR $ smpProxyError PCEResponseTimeout)
+    -- Run a slow command on a thread, responding with timeoutErr if it was not started before the client timeout
+    forkCmd :: (ServerConfig s -> Int) -> CorrId -> EntityId -> BrokerMsg -> M s BrokerMsg -> M s (Maybe a)
+    forkCmd concurrency corrId entId timeoutErr cmdAction =
+      -- commands MUST be processed under a reasonable timeout or the client would halt
+      forkCmd_ concurrency maxClientCmdWait (sendResp timeoutErr) $ cmdAction >>= sendResp
+      where
+        sendResp t = atomically $ writeTBQueue sndQ ([(corrId, entId, t)], [])
+    -- Run a slow command on a thread that sends its response
+    forkCmd_ :: (ServerConfig s -> Int) -> (ServerConfig s -> Int) -> M s () -> M s () -> M s (Maybe a)
+    forkCmd_ concurrency waitTimeout onTimeout cmd = do
+      let label = B.unpack $ "client $" <> encode sessionId <> " cmd"
+      -- Exceptions are masked so the slot is never lost between taking it and starting the thread.
+      -- The thread frees the slot when the command finishes; the caller frees it only if forking failed.
+      mask $ \restore ->
+        ifM
+          wait
+          (forkClient clnt label (restore cmd `finally` signal) `onException` signal)
+          (restore onTimeout)
       pure Nothing
       where
+        -- Takes a free slot at once if there is one. Otherwise waits for a slot until the client
+        -- timeout, after which the client no longer expects the response.
+        -- Other commands of this client are not processed while it waits.
         wait = do
           limit <- asks (concurrency . config)
-          atomically $ do
-            used <- readTVar procThreads
-            when (used >= limit) retry
-            writeTVar procThreads $! used + 1
+          ifM (atomically $ takeSlot limit) (pure True) $ do
+            clientTimeout <- asks $ waitTimeout . config
+            waitStarted <- liftIO getSystemTime
+            expired <- liftIO $ registerDelay clientTimeout
+            taken <- atomically $ ifM (takeSlot limit) (pure True) (ifM (readTVar expired) (pure False) retry)
+            stats <- asks serverStats
+            liftIO $ updateSlotWaitStats stats waitStarted taken
+            pure taken
+        takeSlot limit = do
+          used <- readTVar procThreads
+          let free = used < limit
+          when free $ writeTVar procThreads $! used + 1
+          pure free
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
@@ -1515,7 +1553,7 @@ client
         Nothing -> incStat (rslvDisabled st) $> Nothing
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
-    -- concurrency is limited by serverResolverConcurrency in forkCmd.
+    -- concurrency is limited in forkCmd by serverClientConcurrency for direct and serverResolverConcurrency for forwarded RSLV.
     resolveNameMsg :: VersionSMP -> NamesEnv -> NameQuery -> M s BrokerMsg
     resolveNameMsg v nenv q = do
       st <- asks (rslvStats . serverStats)
@@ -1545,7 +1583,7 @@ client
       Cmd SProxyService (RFWD encBlock) -> (response . (corrId, NoEntity,) =<<) <$> processForwardedCommand encBlock
       Cmd SResolver (RSLV d) -> rslvNamesEnv >>= \case
         Nothing -> pure $ response (corrId, NoEntity, ERR (NAME NO_RESOLVER))
-        Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity (resolveNameMsg (thVersion thParams') nenv d)
+        Just nenv -> forkCmd serverClientConcurrency corrId NoEntity rslvTooManyRequests (resolveNameMsg (thVersion thParams') nenv d)
       Cmd SSenderLink command -> case command of
         LKEY k -> withQueue $ \q qr -> checkMode QMMessaging qr $ secureQueue_ q k $>> getQueueLink_ q qr
         LGET -> withQueue $ \q qr -> checkContact qr $ getQueueLink_ q qr
@@ -2158,7 +2196,9 @@ client
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
-            t :| [] -> pure $ tDecodeServer clntTHParams t
+            t@(Right (RawTransmission _ _ _ _ (CorrId tCorrId) _ _)) :| []
+              | tCorrId == C.unCbNonce fwdCorrId -> pure $ tDecodeServer clntTHParams t
+              | otherwise -> throwE CRYPTO
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do
@@ -2181,9 +2221,12 @@ client
             Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
               Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
                 Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> forkCmd serverResolverConcurrency corrId NoEntity $ do
-                  msg <- resolveNameMsg (thVersion clntTHParams) nenv d
-                  either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                Just nenv -> do
+                  let sendResolved msg = do
+                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
+                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
               _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
@@ -2304,40 +2347,27 @@ randomId = fmap EntityId . randomId'
 
 saveServerMessages :: Bool -> MsgStore s -> IO ()
 saveServerMessages drainMsgs ms = case ms of
-  StoreMemory STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-    Just f -> exportMessages False ms f drainMsgs
+  StoreMemory ms'@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
+    Just f -> exportMessages ms' f drainMsgs
     Nothing -> logNote "undelivered messages are not saved"
-  StoreJournal _ -> logNote "closed journal message storage"
 #if defined(dbServerPostgres)
   StoreDatabase _ -> logNote "closed postgres message storage"
 #endif
 
-exportMessages :: forall s. MsgStoreClass s => Bool -> MsgStore s -> FilePath -> Bool -> IO ()
-exportMessages tty st f drainMsgs = do
+exportMessages :: STMMsgStore -> FilePath -> Bool -> IO ()
+exportMessages ms f drainMsgs = do
   logNote $ "saving messages to file " <> T.pack f
-  run $ case st of
-    StoreMemory ms -> exportMessages_ ms $ getMsgs ms
-    StoreJournal ms -> exportMessages_ ms $ getJournalMsgs ms
-#if defined(dbServerPostgres)
-    StoreDatabase ms -> exportDbMessages tty ms
-#endif
+  run $ fmap (\(Sum n) -> n) . withLoadedQueues (queueStore ms) . saveQueueMsgs
   where
-    exportMessages_ ms get = fmap (\(Sum n) -> n) . unsafeWithAllMsgQueues tty ms . saveQueueMsgs get
     run :: (Handle -> IO Int) -> IO ()
     run a = liftIO $ withFile f WriteMode $ tryAny . a >=> \case
       Right n -> logNote $ "messages saved: " <> tshow n
       Left e -> do
         logError $ "error exporting messages: " <> tshow e
         exitFailure
-    getJournalMsgs ms q =
-      readTVarIO (msgQueue' q) >>= \case
-        Just _ -> getMsgs ms q
-        Nothing -> getJournalQueueMessages ms q
-    getMsgs :: MsgStoreClass s' => s' -> StoreQueue s' -> IO [Message]
-    getMsgs ms q = unsafeRunStore q "saveQueueMsgs" $ getQueueMessages_ drainMsgs q =<< getMsgQueue ms q False
-    saveQueueMsgs :: (StoreQueue s -> IO [Message]) -> Handle -> StoreQueue s -> IO (Sum Int)
-    saveQueueMsgs get h q = do
-      msgs <- get q
+    saveQueueMsgs :: Handle -> STMQueue -> IO (Sum Int)
+    saveQueueMsgs h q = do
+      msgs <- atomically $ getQueueMessages_ drainMsgs =<< getMsgQueue q
       unless (null msgs) $ BLD.hPutBuilder h $ encodeMessages (recipientId q) msgs
       pure $ Sum $ length msgs
     encodeMessages rId = mconcat . map (\msg -> BLD.byteString (strEncode $ MLRv3 rId msg) <> BLD.char8 '\n')
@@ -2349,37 +2379,16 @@ processServerMessages StartOptions {skipWarnings} = do
   asks msgStore_ >>= liftIO . processMessages old_ expire
     where
       processMessages :: Maybe Int64 -> Bool -> MsgStore s' -> IO (Maybe MessageStats)
+#if defined(dbServerPostgres)
       processMessages old_ expire = \case
+#else
+      processMessages old_ _ = \case
+#endif
         StoreMemory ms@STMMsgStore {storeConfig = STMStoreConfig {storePath}} -> case storePath of
-          Just f -> ifM (doesFileExist f) (Just <$> importMessages False ms f old_ skipWarnings) (pure Nothing)
+          Just f -> ifM (doesFileExist f) (Just <$> importMessages ms f old_ skipWarnings) (pure Nothing)
           Nothing -> pure Nothing
-        StoreJournal ms -> processJournalMessages old_ expire ms
 #if defined(dbServerPostgres)
         StoreDatabase ms -> processDbMessages old_ expire ms
-#endif
-      processJournalMessages :: forall s. Maybe Int64 -> Bool -> JournalMsgStore s -> IO (Maybe MessageStats)
-      processJournalMessages old_ expire ms
-        | expire = Just <$> case old_ of
-            Just old -> do
-              logNote "expiring journal store messages..."
-              run $ processExpireQueue old
-            Nothing -> do
-              logNote "validating journal store messages..."
-              run processValidateQueue
-        | otherwise = logWarn "skipping message expiration" $> Nothing
-        where
-          run a = unsafeWithAllMsgQueues False ms a `catchAny` \_ -> exitFailure
-          processExpireQueue :: Int64 -> JournalQueue s -> IO MessageStats
-          processExpireQueue old q = unsafeRunStore q "processExpireQueue" $ do
-            mq <- getMsgQueue ms q False
-            expiredMsgsCount <- deleteExpireMsgs_ old q mq
-            storedMsgsCount <- getQueueSize_ mq
-            pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = 1}
-          processValidateQueue :: JournalQueue s -> IO MessageStats
-          processValidateQueue q = unsafeRunStore q "processValidateQueue" $ do
-            storedMsgsCount <- getQueueSize_ =<< getMsgQueue ms q False
-            pure newMessageStats {storedMsgsCount, storedQueues = 1}
-#if defined(dbServerPostgres)
       processDbMessages old_ expire ms
         | expire = Just <$> case old_ of
             Just old -> do
@@ -2391,18 +2400,17 @@ processServerMessages StartOptions {skipWarnings} = do
         | otherwise = logWarn "skipping message expiration" $> Nothing
 #endif
 
-importMessages :: forall s. MsgStoreClass s => Bool -> s -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
-importMessages tty ms f old_ skipWarnings  = do
+importMessages :: STMMsgStore -> FilePath -> Maybe Int64 -> Bool -> IO MessageStats
+importMessages ms f old_ skipWarnings  = do
   logNote $ "restoring messages from file " <> T.pack f
   (_, (storedMsgsCount, expiredMsgsCount, overQuota)) <-
-    foldLogLines tty f restoreMsg (Nothing, (0, 0, M.empty))
+    foldLogLines False f restoreMsg (Nothing, (0, 0, M.empty))
   renameFile f $ f <> ".bak"
   mapM_ setOverQuota_ overQuota
-  logQueueStates ms
-  EntityCounts {queueCount} <- liftIO $ getEntityCounts @(StoreQueue s) $ queueStore ms
+  EntityCounts {queueCount} <- liftIO $ getEntityCounts @STMQueue $ queueStore ms
   pure MessageStats {storedMsgsCount, expiredMsgsCount, storedQueues = queueCount}
   where
-    restoreMsg :: (Maybe (RecipientId, StoreQueue s), (Int, Int, Map RecipientId (StoreQueue s))) -> Bool -> ByteString -> IO (Maybe (RecipientId, StoreQueue s), (Int, Int, Map RecipientId (StoreQueue s)))
+    restoreMsg :: (Maybe (RecipientId, STMQueue), (Int, Int, Map RecipientId STMQueue)) -> Bool -> ByteString -> IO (Maybe (RecipientId, STMQueue), (Int, Int, Map RecipientId STMQueue))
     restoreMsg (q_, counts@(!stored, !expired, !overQuota)) eof s = case strDecode s of
       Right (MLRv3 rId msg) -> runExceptT (addToMsgQueue rId msg) >>= either (exitErr . tshow) pure
       Left e
@@ -2410,7 +2418,6 @@ importMessages tty ms f old_ skipWarnings  = do
         | otherwise -> exitErr $ parsingErr e
       where
         exitErr e = do
-          when tty $ putStrLn ""
           logError $ "error restoring messages: " <> e
           liftIO exitFailure
         parsingErr :: String -> Text
@@ -2423,7 +2430,6 @@ importMessages tty ms f old_ skipWarnings  = do
           case qOrErr of
             Right q -> addToQueue_ q rId msg
             Left AUTH -> liftIO $ do
-              when tty $ putStrLn ""
               warnOrExit $ "queue " <> safeDecodeUtf8 (encode $ unEntityId rId) <> " does not exist"
               pure (Nothing, counts)
             Left e -> throwE e
@@ -2434,7 +2440,6 @@ importMessages tty ms f old_ skipWarnings  = do
                   writeMsg ms q False msg >>= \case
                     Just _ -> pure (stored + 1, expired, overQuota)
                     Nothing -> liftIO $ do
-                      when tty $ putStrLn ""
                       logError $ decodeLatin1 $ "message queue " <> strEncode rId <> " is full, message not restored: " <> strEncode (messageId msg)
                       pure counts
               | otherwise -> pure (stored, expired + 1, overQuota)
@@ -2445,8 +2450,8 @@ importMessages tty ms f old_ skipWarnings  = do
               where
                 -- if the first message in queue head is "quota", remove it.
                 mergeQuotaMsgs =
-                  withPeekMsgQueue ms q "mergeQuotaMsgs" $ maybe (pure ()) $ \case
-                    (mq, MessageQuota {}) -> tryDeleteMsg_ q mq False
+                  withPeekMsgQueue q $ maybe (pure ()) $ \case
+                    (mq, MessageQuota {}) -> tryDeleteMsg_ mq
                     _ -> pure ()
         warnOrExit e
           | skipWarnings = logWarn e'
