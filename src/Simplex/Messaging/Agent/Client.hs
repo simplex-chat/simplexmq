@@ -2597,11 +2597,9 @@ incNtfServerStat' = incServerStat (\AgentClient {ntfServersStats = s} -> s) newA
 {-# INLINE incNtfServerStat' #-}
 
 incServerStat :: (MonadIO m, Num n) => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> m ()
-incServerStat statsSel mkNewStats c userId srv sel n =
-  liftIO $ TM.lookupOrInsertIO (userId, srv) newStats (statsSel c) >>= either (\_ -> pure ()) (atomically . incStat)
-  where
-    newStats = mkNewStats >>= \s -> s <$ incStat s
-    incStat s = modifyTVar' (sel s) (+ n)
+incServerStat statsSel mkNewStats c userId srv sel n = liftIO $ do
+  v <- either id id <$> TM.lookupOrInsertIO (userId, srv) mkNewStats (statsSel c)
+  atomically $ modifyTVar' (sel v) (+ n)
 
 data AgentServersSummary = AgentServersSummary
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,

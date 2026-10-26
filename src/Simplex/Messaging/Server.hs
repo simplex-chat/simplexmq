@@ -1790,8 +1790,7 @@ client
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         getMessage q qr = do
           liftIO (TM.lookupOrInsertIO entId newSub $ subscriptions clnt) >>= \case
-            Left s ->
-              getMessage_ s Nothing
+            Left s -> getMessage_ s Nothing
             Right s@Sub {subThread} ->
               case subThread of
                 ProhibitSub ->
