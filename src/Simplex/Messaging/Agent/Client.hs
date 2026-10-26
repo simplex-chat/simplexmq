@@ -1102,17 +1102,15 @@ withConnLocks AgentClient {connLocks} = withLocksMap connLocks
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
-withLockMap = withGetLock . getMapLock
+withLockMap = withGetLock . getPutMapLock
 {-# INLINE withLockMap #-}
 
 withLocksMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> Set k -> Text -> m a -> m a
-withLocksMap = withGetLocks . getMapLock
+withLocksMap = withGetLocks . getPutMapLock
 {-# INLINE withLocksMap #-}
 
-getMapLock :: Ord k => TMap k Lock -> k -> STM Lock
-getMapLock locks key = TM.lookup key locks >>= maybe newLock pure
-  where
-    newLock = createLock >>= \l -> TM.insert key l locks $> l
+getPutMapLock :: Ord k => TMap k Lock -> k -> Text -> IO Lock
+getPutMapLock locks key name = TM.lookupOrInsertIO key (newTMVar name) locks >>= either pure (\l -> atomically $ putTMVar l name $> l)
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do
