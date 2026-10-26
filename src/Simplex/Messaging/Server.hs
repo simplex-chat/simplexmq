@@ -1789,7 +1789,11 @@ client
         -- clients that use GET are not added to server subscribers
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         getMessage q qr = do
-          liftIO (TM.lookupOrInsertIO entId newSub $ subscriptions clnt) >>= \case
+          -- Here we don't account for this client as subscribed in the server
+          -- and don't notify other subscribed clients.
+          -- This is tracked as "subscription" in the client to prevent these
+          -- clients from being able to subscribe.
+          liftIO (TM.lookupOrInsertIO entId newProhibitedSub $ subscriptions clnt) >>= \case
             Left s -> getMessage_ s Nothing
             Right s@Sub {subThread} ->
               case subThread of
@@ -1802,14 +1806,6 @@ client
                   incStat $ msgGetProhibited stats
                   pure $ err $ CMD PROHIBITED
           where
-            newSub :: STM Sub
-            newSub = do
-              s <- newProhibitedSub
-              -- Here we don't account for this client as subscribed in the server
-              -- and don't notify other subscribed clients.
-              -- This is tracked as "subscription" in the client to prevent these
-              -- clients from being able to subscribe.
-              pure s
             getMessage_ :: Sub -> Maybe (MsgId, SystemSeconds) -> M s (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               stats <- asks serverStats
@@ -1930,19 +1926,15 @@ client
                 Nothing -> pure (qCnt + 1, msgCnt, dupCnt, evts)
                 Just (qr, msg) ->
                   getSubscription rId >>= \case
-                    Nothing -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
-                    Just sub -> do
+                    -- If delivery subscription already exists, then there is no need to deliver message.
+                    -- It may have been created when the message is sent after service subscription is created.
+                    Right _sub -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
+                    Left sub -> do
                       ts <- getSystemSeconds
                       atomically $ setDelivered sub msg ts
                       atomically $ writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]
                       pure (qCnt + 1, msgCnt + 1, dupCnt, evts)
-            getSubscription rId =
-              TM.lookupOrInsertIO rId (newSubscription NoSub) (subscriptions clnt) >>= \case
-                -- If delivery subscription already exists, then there is no need to deliver message.
-                -- It may have been created when the message is sent after service subscription is created.
-                Right _sub -> pure Nothing
-                Left sub ->
-                  pure $ Just sub
+            getSubscription rId = TM.lookupOrInsertIO rId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeServiceNotifications :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceNotifications serviceId expected =
