@@ -480,7 +480,7 @@ subscribeServiceNtfs = subscribeService_
 
 subscribeService_ :: (PartyI p, ServiceParty p) => SMPClientAgent p -> SMPServer -> ServiceSub -> IO ()
 subscribeService_ ca srv serviceSub = do
-  setServiceSubIO_ pendingServiceSubs ca srv $ Just serviceSub
+  setServiceSubIO_ (pendingServiceSubs ca) srv $ Just serviceSub
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeService ca smp srv serviceSub
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
@@ -512,7 +512,7 @@ smpSubscribeService ca smp srv serviceSub@(ServiceSub serviceId n idsHash) = cas
     serviceAvailable THClientService {serviceRole, serviceId = serviceId'} =
       serviceId == serviceId' && partyServiceRole (agentParty ca) == serviceRole
     notifyUnavailable = do
-      setServiceSubIO_ pendingServiceSubs ca srv Nothing
+      setServiceSubIO_ (pendingServiceSubs ca) srv Nothing
       notify ca $ CAServiceUnavailable srv serviceSub -- this will resubscribe all queues directly
     sessId = sessionId $ thParams smp
 
@@ -567,13 +567,8 @@ setServiceSub_ subsSel ca srv sub =
     Just v -> writeTVar v sub
     Nothing -> TM.insertM srv (newTVar sub) (subsSel ca)
 
-setServiceSubIO_ ::
-  (SMPClientAgent p -> TMap SMPServer (TVar (Maybe sub))) ->
-  SMPClientAgent p ->
-  SMPServer ->
-  Maybe sub ->
-  IO ()
-setServiceSubIO_ subsSel ca srv sub = TM.lookupOrInsertIO srv (newTVar sub) (subsSel ca) >>= either (\_ -> pure ()) (atomically . (`writeTVar` sub))
+setServiceSubIO_ :: TMap SMPServer (TVar (Maybe sub)) -> SMPServer -> Maybe sub -> IO ()
+setServiceSubIO_ subs srv sub = TM.lookupOrInsertIO srv (newTVar sub) subs >>= either (\_ -> pure ()) (atomically . (`writeTVar` sub))
 
 updateActiveServiceSub :: SMPClientAgent p -> SMPServer -> (ServiceSub, SessionId) -> STM ()
 updateActiveServiceSub ca srv sub@(ServiceSub serviceId' n' idsHash', sessId') =

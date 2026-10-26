@@ -173,6 +173,8 @@ module Simplex.Messaging.Agent.Client
     withNextSrv,
     incSMPServerStat,
     incSMPServerStat',
+    incSMPServerStatIO,
+    incSMPServerStatIO',
     incXFTPServerStat,
     incXFTPServerStat',
     incXFTPServerSizeStat,
@@ -413,7 +415,7 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
     getWorker = TM.lookup key ws
     createWorker = fromW =<< newWorker c
     whenExists w
-      | hasWork = atomically (hasWorkToDo $ toW w) $> w
+      | hasWork = atomically $ hasWorkToDo (toW w) $> w
       | otherwise = pure w
     runWorker w = runWorkerAsync (toW w) runWork
       where
@@ -1161,11 +1163,11 @@ sendOrProxySMPMessage c nm userId destSrv connId cmdStr spKey_ senderId msgFlags
   fst <$> sendOrProxySMPCommand c nm userId destSrv connId cmdStr senderId sendViaProxy sendDirectly
   where
     sendViaProxy smp proxySess = do
-      atomically $ incSMPServerStat c userId destSrv sentViaProxyAttempts
-      atomically $ incSMPServerStat c userId (protocolClientServer' smp) sentProxiedAttempts
+      incSMPServerStatIO c userId destSrv sentViaProxyAttempts
+      incSMPServerStatIO c userId (protocolClientServer' smp) sentProxiedAttempts
       proxySMPMessage smp nm proxySess spKey_ senderId msgFlags msg
     sendDirectly smp = do
-      atomically $ incSMPServerStat c userId destSrv sentDirectAttempts
+      incSMPServerStatIO c userId destSrv sentDirectAttempts
       sendSMPMessage smp nm spKey_ senderId msgFlags msg
 
 sendOrProxySMPCommand ::
@@ -1241,8 +1243,8 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
               sameProxiedRelay proxySess' = prSessionId proxySess == prSessionId proxySess'
       case r of
         Right r'@(srv_, _) -> do
-          atomically $ incSMPServerStat c userId destSrv sentViaProxy
-          forM_ srv_ $ \proxySrv -> atomically $ incSMPServerStat c userId proxySrv sentProxied
+          incSMPServerStatIO c userId destSrv sentViaProxy
+          forM_ srv_ $ \proxySrv -> incSMPServerStatIO c userId proxySrv sentProxied
           pure r'
         Left e
           | serverHostError e -> ifM directAllowed ((Nothing,) <$> sendDirectly destSess) (throwE e)
@@ -1250,7 +1252,7 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
     sendDirectly tSess =
       withLogClient_ c nm tSess (unEntityId entId) ("SEND " <> cmdStr) $ \(SMPConnectedClient smp _) -> do
         tryAllErrors (liftClient SMP (clientServer smp) $ sendCmdDirectly smp) >>= \case
-          Right r -> r <$ atomically (incSMPServerStat c userId destSrv sentDirect)
+          Right r -> r <$ incSMPServerStatIO c userId destSrv sentDirect
           Left e -> throwE e
 
 ipAddressProtected :: NetworkConfig -> ProtocolServer p -> Bool
@@ -1706,7 +1708,7 @@ subscribeSessQueues_ c withEvents qs = sendClientBatch_ "SUB" False subscribe_ c
     subscribe_ :: SMPClient -> NonEmpty RcvQueueSub -> IO (BatchResponses RcvQueueSub SMPClientError (Maybe ServiceId), Bool)
     subscribe_ smp qs' = do
       let (userId, srv, _) = tSess
-      atomically $ incSMPServerStat' c userId srv connSubAttempts $ length qs'
+      incSMPServerStatIO' c userId srv connSubAttempts $ length qs'
       rs <- sendBatch (\smp' _ -> subscribeSMPQueues smp') smp NRMBackground qs'
       cs_ <-
         if withEvents
@@ -1957,13 +1959,18 @@ sendInvitation c nm userId connId (Compatible (SMPQueueInfo v SMPQueueAddress {s
 
 getQueueMessage :: AgentClient -> RcvQueue -> AM (Maybe SMPMsgMeta)
 getQueueMessage c rq@RcvQueue {server, rcvId, rcvPrivateKey} = do
-  liftIO createTakeGetLock
+  atomically createTakeGetLock
   msg_ <- withSMPClient c NRMInteractive rq "GET" $ \smp ->
     getSMPMessage smp rcvPrivateKey rcvId
   mapM decryptMeta msg_
   where
     decryptMeta msg@SMP.RcvMessage {msgId} = SMP.rcvMessageMeta msgId <$> decryptSMPMessage rq msg
-    createTakeGetLock = TM.lookupOrInsertIO (server, rcvId) newEmptyTMVar (getMsgLocks c) >>= either (\_ -> pure ()) (atomically . takeTMVar)
+    createTakeGetLock = TM.alterF takeLock (server, rcvId) $ getMsgLocks c
+      where
+        takeLock l_ = do
+          l <- maybe (newTMVar ()) pure l_
+          takeTMVar l
+          pure $ Just l
 {-# INLINE getQueueMessage #-}
 
 decryptSMPMessage :: RcvQueue -> SMP.RcvMessage -> AM SMP.ClientRcvMsgBody
@@ -2106,10 +2113,10 @@ deleteQueues c nm = sendTSessionBatches "DEL" mkSMPTSession deleteQueues_ c nm
   where
     deleteQueues_ smp rqs = do
       let (userId, srv, _) = transportSession' smp
-      atomically $ incSMPServerStat' c userId srv connDelAttempts $ length rqs
+      incSMPServerStatIO' c userId srv connDelAttempts $ length rqs
       rs <- sendBatch deleteSMPQueues smp nm rqs
       let successes = foldl' (\n (_, r) -> if isRight r then n + 1 else n) 0 rs
-      atomically $ incSMPServerStat' c userId srv connDeleted successes
+      incSMPServerStatIO' c userId srv connDeleted successes
       pure rs
 
 -- This is only used in background
@@ -2569,28 +2576,34 @@ incSMPServerStat c userId srv sel = incSMPServerStat' c userId srv sel 1
 incSMPServerStat' :: AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> STM ()
 incSMPServerStat' = incServerStat (\AgentClient {smpServersStats = s} -> s) newAgentSMPServerStats
 
-incXFTPServerStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> STM ()
+incSMPServerStatIO :: MonadIO m => AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> m ()
+incSMPServerStatIO c userId srv sel = incSMPServerStatIO' c userId srv sel 1
+
+incSMPServerStatIO' :: MonadIO m => AgentClient -> UserId -> SMPServer -> (AgentSMPServerStats -> TVar Int) -> Int -> m ()
+incSMPServerStatIO' = incServerStatIO (\AgentClient {smpServersStats = s} -> s) newAgentSMPServerStats
+
+incXFTPServerStat :: MonadIO m => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> m ()
 incXFTPServerStat c userId srv sel = incXFTPServerStat_ c userId srv sel 1
 {-# INLINE incXFTPServerStat #-}
 
-incXFTPServerStat' :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> STM ()
+incXFTPServerStat' :: MonadIO m => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int) -> Int -> m ()
 incXFTPServerStat' = incXFTPServerStat_
 {-# INLINE incXFTPServerStat' #-}
 
-incXFTPServerSizeStat :: AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> STM ()
+incXFTPServerSizeStat :: MonadIO m => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar Int64) -> Int64 -> m ()
 incXFTPServerSizeStat = incXFTPServerStat_
 {-# INLINE incXFTPServerSizeStat #-}
 
-incXFTPServerStat_ :: Num n => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar n) -> n -> STM ()
-incXFTPServerStat_ = incServerStat (\AgentClient {xftpServersStats = s} -> s) newAgentXFTPServerStats
+incXFTPServerStat_ :: (MonadIO m, Num n) => AgentClient -> UserId -> XFTPServer -> (AgentXFTPServerStats -> TVar n) -> n -> m ()
+incXFTPServerStat_ = incServerStatIO (\AgentClient {xftpServersStats = s} -> s) newAgentXFTPServerStats
 {-# INLINE incXFTPServerStat_ #-}
 
-incNtfServerStat :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> STM ()
+incNtfServerStat :: MonadIO m => AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> m ()
 incNtfServerStat c userId srv sel = incNtfServerStat' c userId srv sel 1
 {-# INLINE incNtfServerStat #-}
 
-incNtfServerStat' :: AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> Int -> STM ()
-incNtfServerStat' = incServerStat (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats
+incNtfServerStat' :: MonadIO m => AgentClient -> UserId -> NtfServer -> (AgentNtfServerStats -> TVar Int) -> Int -> m ()
+incNtfServerStat' = incServerStatIO (\AgentClient {ntfServersStats = s} -> s) newAgentNtfServerStats
 {-# INLINE incNtfServerStat' #-}
 
 incServerStat :: Num n => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> STM ()
@@ -2601,6 +2614,13 @@ incServerStat statsSel mkNewStats c userId srv sel n = do
       newStats <- mkNewStats
       modifyTVar' (sel newStats) (+ n)
       TM.insert (userId, srv) newStats (statsSel c)
+
+incServerStatIO :: (MonadIO m, Num n) => (AgentClient -> TMap (UserId, ProtocolServer p) s) -> STM s -> AgentClient -> UserId -> ProtocolServer p -> (s -> TVar n) -> n -> m ()
+incServerStatIO statsSel mkNewStats c userId srv sel n =
+  liftIO $ TM.lookupOrInsertIO (userId, srv) newStats (statsSel c) >>= either (\_ -> pure ()) (atomically . incStat)
+  where
+    newStats = mkNewStats >>= \s -> s <$ incStat s
+    incStat s = modifyTVar' (sel s) (+ n)
 
 data AgentServersSummary = AgentServersSummary
   { smpServersStats :: Map (UserId, SMPServer) AgentSMPServerStatsData,

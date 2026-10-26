@@ -83,6 +83,7 @@ lookupOrInsertIO :: Ord k => k -> STM a -> TMap k a -> IO (Either a a)
 lookupOrInsertIO k new m = lookupIO k m >>= maybe (atomically lookupOrInsert) (pure . Right)
   where
     lookupOrInsert = M.lookup k <$> readTVar m >>= maybe (new >>= \v -> Left v <$ insert k v m) (pure . Right)
+{-# INLINE lookupOrInsertIO #-}
 
 lookupDelete :: Ord k => k -> TMap k a -> STM (Maybe a)
 lookupDelete k m = stateTVar m $ M.alterF (,Nothing) k
