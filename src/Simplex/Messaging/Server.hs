@@ -1886,8 +1886,8 @@ client
               Just _ -> do
                 -- unassociation already done in prepareBatchSubs
                 incSrvStat srvAssocRemoved
-                -- getSubscription may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
-                -- For notification service it can only be Just if storage and session states diverge.
+                -- getSubscription may find a subscription for receiving service, where clientSubs also hold active deliveries for service subscriptions.
+                -- For notification service it can only find one if storage and session states diverge.
                 r <- getSubscription
                 atomically writeSub
                 pure r
