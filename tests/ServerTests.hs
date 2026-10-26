@@ -1574,16 +1574,19 @@ testNotificationsInChunks = do
     subscribeNotifiers :: Transport c => THandleSMP c 'TClient -> Maybe C.PrivateKeyEd25519 -> [(NotifierId, C.APrivateAuthKey)] -> IO ()
     subscribeNotifiers nh serviceKey_ ntfs = do
       forM_ ntfs $ \(nId, nKey) -> signSend_ nh nKey serviceKey_ ("3", nId, NSUB)
-      ts <- receiveTransmissions nh $ 2 * length ntfs
-      let nIds = S.fromList $ map fst ntfs
+      blocks <- receiveBlocks nh $ 2 * length ntfs
+      let ts = concat blocks
+          nIds = S.fromList $ map fst ntfs
+          nmsgIds b = [nId | Resp "" nId (NMSG _ _) <- b]
       S.fromList [nId | Resp "3" nId (SOK _) <- ts] `shouldBe` nIds
-      S.fromList [nId | Resp "" nId (NMSG _ _) <- ts] `shouldBe` nIds
-    receiveTransmissions :: Transport c => THandleSMP c 'TClient -> Int -> IO [Transmission (Either ErrorType BrokerMsg)]
-    receiveTransmissions h n
+      S.fromList (nmsgIds ts) `shouldBe` nIds
+      map (length . nmsgIds) blocks `shouldSatisfy` all (<= 2)
+    receiveBlocks :: Transport c => THandleSMP c 'TClient -> Int -> IO [[Transmission (Either ErrorType BrokerMsg)]]
+    receiveBlocks h n
       | n <= 0 = pure []
       | otherwise = do
           ts <- 5000000 `timeout` tGetClient h >>= maybe (error "receive timeout") (pure . toList)
-          (ts <>) <$> receiveTransmissions h (n - length ts)
+          (ts :) <$> receiveBlocks h (n - length ts)
 
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =
