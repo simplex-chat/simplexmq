@@ -77,7 +77,7 @@ import Simplex.Messaging.Server.MsgStore.Types (SQSType (..), SMSType (..))
 import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
-import Simplex.Messaging.Transport.HTTP2 (httpALPN)
+import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
@@ -504,7 +504,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               transportConfig =
                 mkTransportServerConfig
                   (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
-                  (Just $ alpnSupportedSMPHandshakes <> httpALPN)
+                  (Just $ alpnSupportedSMPHandshakes <> [httpALPN11])
                   True,
               controlPort = eitherToMaybe $ T.unpack <$> lookupValue "TRANSPORT" "control_port" ini,
               smpAgentCfg =

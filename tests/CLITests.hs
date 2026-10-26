@@ -10,10 +10,12 @@ import AgentTests.FunctionalAPITests (runRight_)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
 import Data.List (isInfixOf, isPrefixOf)
+import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
@@ -24,9 +26,8 @@ import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.CLI (simplexmqVersionCommit)
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
-import Simplex.Messaging.Transport (TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
+import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
@@ -46,7 +47,6 @@ import UnliftIO.Exception (bracket)
 import Util
 
 #if defined(dbServerPostgres)
-import qualified Data.ByteString.Char8 as B
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Types (Query (..))
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBConnstr, ntfTestServerDBOpts)
@@ -168,22 +168,26 @@ smpServerTestStatic = do
 
     threadDelay 2000000
 
-    let cfgHttp = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    let cfgHttp = defaultTransportClientConfig {clientALPN = Just ["h2", "http/1.1"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
-      tlsALPN tls `shouldBe` Just "h2"
+      tlsALPN tls `shouldBe` Just "http/1.1"
       case getCerts tls of
         X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca -> RSA.public_size rsa `shouldBe` 512
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
 
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 1024 * 1024}
+      getIndexHTTP11 tls `shouldReturn` html
+      fds <- length <$> listDirectory "/dev/fd"
+      replicateM_ 100 $ getIndexHTTP11 tls
+      length <$> listDirectory "/dev/fd" >>= (`shouldSatisfy` (< fds + 10))
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
+      tlsALPN tls `shouldBe` Just "http/1.1"
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.connTimeout = 1000000}
       bracket (either (error . show) pure =<< HC.attachHTTP2Client h2cfg "localhost" "5223" mempty 65536 tls) HC.closeHTTP2Client $ \h2 -> do
         let req = H2.requestNoBody "GET" "/" []
-        HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead = shsBody}} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 1000000)
-        BL.fromStrict shsBody `shouldBe` html
-        fds <- length <$> listDirectory "/dev/fd"
-        replicateM_ 100 $ HC.sendRequest h2 req (Just 1000000)
-        length <$> listDirectory "/dev/fd" >>= (`shouldSatisfy` (< fds + 10))
+        HC.sendRequest h2 req (Just 1000000) >>= \case
+          Left _ -> pure ()
+          Right _ -> expectationFailure "served over HTTP/2"
     logDebug "Combined HTTPS works"
 
     -- "local" CA signing SMP credentials
@@ -203,6 +207,17 @@ smpServerTestStatic = do
     getCerts tls =
       let X.CertificateChain cc = tlsPeerCert tls
        in map (X.signedObject . X.getSigned) cc
+    getIndexHTTP11 :: TLS 'TClient -> IO BL.ByteString
+    getIndexHTTP11 tls = do
+      cPut tls "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+      getLn tls `shouldReturn` "HTTP/1.1 200 OK"
+      [len] <- mapMaybe (B.stripPrefix "Content-Length: ") <$> getHeaders
+      BL.fromStrict <$> cGet tls (read $ B.unpack len)
+      where
+        getHeaders =
+          getLn tls >>= \case
+            "" -> pure []
+            h -> (h :) <$> getHeaders
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do
