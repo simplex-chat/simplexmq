@@ -1218,7 +1218,7 @@ sendDelayed Client {sndQ, delayedQ, clientTHParams = THandleParams {sessionId}} 
   forever $ do
     (sendAt, rs) <- atomically $ readTBQueue delayedQ
     now <- microseconds <$> getSystemTime
-    when (sendAt > now) $ threadDelay' (sendAt - now)
+    threadDelay' (sendAt - now)
     atomically $ writeTBQueue sndQ rs
 
 updateSlotWaitStats :: ServerStats -> SystemTime -> Bool -> IO ()
