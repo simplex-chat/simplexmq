@@ -33,18 +33,14 @@ getSessVar sessSeq sessKey vs sessionVarTs = maybe (Left <$> newSessionVar) (pur
   where
     newSessionVar :: STM (SessionVar a)
     newSessionVar = do
-      v <- createSessionVar sessSeq sessionVarTs
+      sessionVar <- newEmptyTMVar
+      sessionVarId <- stateTVar sessSeq $ \next -> (next, next + 1)
+      let v = SessionVar {sessionVar, sessionVarId, sessionVarTs}
       TM.insert sessKey v vs
       pure v
 
 getSessVarIO :: Ord k => TVar Int -> k -> TMap k (SessionVar a) -> UTCTime -> IO (Either (SessionVar a) (SessionVar a))
-getSessVarIO sessSeq sessKey vs sessionVarTs = TM.lookupOrInsertIO sessKey (createSessionVar sessSeq sessionVarTs) vs
-
-createSessionVar :: TVar Int -> UTCTime -> STM (SessionVar a)
-createSessionVar sessSeq sessionVarTs = do
-  sessionVar <- newEmptyTMVar
-  sessionVarId <- stateTVar sessSeq $ \next -> (next, next + 1)
-  pure SessionVar {sessionVar, sessionVarId, sessionVarTs}
+getSessVarIO sessSeq sessKey vs ts = TM.lookupIO sessKey vs >>= maybe (atomically $ getSessVar sessSeq sessKey vs ts) (pure . Right)
 
 removeSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
 removeSessVar v sessKey vs =

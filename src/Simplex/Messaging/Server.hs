@@ -1789,11 +1789,7 @@ client
         -- clients that use GET are not added to server subscribers
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         getMessage q qr = do
-          -- Here we don't account for this client as subscribed in the server
-          -- and don't notify other subscribed clients.
-          -- This is tracked as "subscription" in the client to prevent these
-          -- clients from being able to subscribe.
-          liftIO (TM.lookupOrInsertIO entId newProhibitedSub $ subscriptions clnt) >>= \case
+          liftIO (TM.lookupOrInsertIO entId newSub $ subscriptions clnt) >>= \case
             Left s ->
               getMessage_ s Nothing
             Right s@Sub {subThread} ->
@@ -1807,6 +1803,14 @@ client
                   incStat $ msgGetProhibited stats
                   pure $ err $ CMD PROHIBITED
           where
+            newSub :: STM Sub
+            newSub = do
+              s <- newProhibitedSub
+              -- Here we don't account for this client as subscribed in the server
+              -- and don't notify other subscribed clients.
+              -- This is tracked as "subscription" in the client to prevent these
+              -- clients from being able to subscribe.
+              pure s
             getMessage_ :: Sub -> Maybe (MsgId, SystemSeconds) -> M s (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               stats <- asks serverStats
@@ -1938,7 +1942,8 @@ client
                 -- If delivery subscription already exists, then there is no need to deliver message.
                 -- It may have been created when the message is sent after service subscription is created.
                 Right _sub -> pure Nothing
-                Left sub -> pure $ Just sub
+                Left sub ->
+                  pure $ Just sub
 
         subscribeServiceNotifications :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceNotifications serviceId expected =
