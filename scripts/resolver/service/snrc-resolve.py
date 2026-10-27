@@ -536,7 +536,7 @@ def reservations_contract(tld: str) -> str:
 def name_policies() -> dict:
     """The name policy of each controller that names one. A controller from before
     name policies reverts and keeps the reservations; an RPC error or an empty
-    answer reads the same, so all are logged. A node that does not answer raises."""
+    answer reads the same, so all are logged. Raises when the node does not answer."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:

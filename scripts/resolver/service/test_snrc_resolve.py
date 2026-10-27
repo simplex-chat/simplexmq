@@ -1281,7 +1281,7 @@ class FakeNodeTestCase(unittest.TestCase):
         snrc.RPC_URL = urlparse(snrc.RPC)
         snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
-        snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
+        snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER, "simplex": ""}
         snrc._multicall_failed_logged = False
         self._drain_pool()
 
@@ -1448,11 +1448,16 @@ class NamePoliciesTests(FakeNodeTestCase):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
         self.assertEqual(snrc.name_policies(), {"testing": FakeChain.NAME_POLICY})
 
-    def test_a_controller_from_before_name_policies_keeps_the_reservations_and_says_so(self):
+    def test_a_controller_from_before_name_policies_keeps_the_reservations_and_is_logged(self):
         with self.assertLogs("snrc_resolve", "WARNING") as logs:
             self.assertEqual(snrc.name_policies(), {})
         [record] = logs.records
         self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
+
+    def test_an_address_without_a_contract_is_read_as_no_policy(self):
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x"
+        with self.assertLogs("snrc_resolve", "WARNING"):
+            self.assertEqual(snrc.name_policies(), {})
 
     def test_a_controller_naming_no_policy_is_left_out(self):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(0)
@@ -1743,6 +1748,8 @@ class WorkerProcessesTests(unittest.TestCase):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
+        self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("acme"))] = "0x" + snrc.encode_uint(2)
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
                    SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
         self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
@@ -1794,6 +1801,11 @@ class WorkerProcessesTests(unittest.TestCase):
         for _ in range(20):
             with urlopen(f"http://127.0.0.1:{self.port}/v2/resolve/acme.testing", timeout=5) as res:
                 self.assertEqual(json.loads(res.read())["registration"]["type"], "registered")
+
+    def test_workers_read_reservations_from_the_policy_on_their_own_connections(self):
+        with urlopen(f"http://127.0.0.1:{self.port}/v2/resolve/acme.testing", timeout=5) as res:
+            self.assertEqual(json.loads(res.read())["registration"]["reservedReason_"], "trademark")
+        self.assertEqual(self.node.connections, 2)
 
     def test_stopping_the_service_stops_every_worker(self):
         self.service.send_signal(signal.SIGTERM)

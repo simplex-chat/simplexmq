@@ -144,7 +144,8 @@ services:
       # The startup read of the controllers' name policies is the exception:
       # until reth answers, the resolver exits and restarts, and a read answered
       # from a state before a controller or its name policy, or with an error,
-      # leaves that TLD's lookups at 502 until the resolver restarts.
+      # leaves lookups under a TLD whose controller has a name policy at 502
+      # until the resolver restarts.
       reth:
         condition: service_started
     environment:

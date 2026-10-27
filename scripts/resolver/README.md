@@ -380,7 +380,8 @@ answers no `reservedNames` call. The resolver reads each controller's
 from the policy it names, and logs the policies in `listening`. `.testing`'s
 controller is from before name policies: the read reverts and the controller
 keeps the reservations. An RPC error at that read looks the same, so both are
-logged as `no_name_policy`, and after an RPC error every lookup under a TLD
+logged as `no_name_policy`, and after an RPC error, or a read from a node that
+has not yet reached the controller or its name policy, every lookup under a TLD
 whose controller has a name policy answers 502 until a restart. A node that
 does not answer stops the resolver, and the container restarts. After the
 controller's owner calls `setNamePolicy`, restart the resolver.
