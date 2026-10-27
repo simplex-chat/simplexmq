@@ -31,9 +31,9 @@ import Control.Logger.Simple
 import Control.Monad
 import Data.Bifunctor (first)
 import Data.Bitraversable (bimapM)
+import Data.Foldable (foldrM)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Set (Set)
@@ -348,17 +348,16 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 
   getQueueNtfServices :: STMQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = do
-    ss <- readTVarIO (services st)
-    (ssNtfs, noServiceNtfs) <- if M.null ss then pure ([], ntfs) else foldM addService ([], ntfs) (M.assocs ss)
     ns <- readTVarIO (notifiers st)
-    let (ntfs', deleteNtfs) = partition (\(nId, _) -> M.member nId ns) noServiceNtfs
-        ssNtfs' = (Nothing, ntfs') : ssNtfs
-    pure $ Right (ssNtfs', deleteNtfs)
+    qs <- readTVarIO (queues st)
+    Right . first M.assocs <$> foldrM (addNtf ns qs) (M.empty, []) ntfs
     where
-      addService (ssNtfs, ntfs') (serviceId, s) = do
-        (snIds, _) <- readTVarIO $ serviceNtfQueues s
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-        pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf ns qs ntf@(nId, _) (ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
+        Just q -> do
+          qr <- readTVarIO (queueRec q)
+          let serviceId = qr >>= notifier >>= ntfServiceId
+          pure (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
+        Nothing -> pure (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =

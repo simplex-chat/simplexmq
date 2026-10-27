@@ -50,7 +50,7 @@ import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
 import Data.Functor (($>))
 import Data.Int (Int64)
-import Data.List (foldl', intersperse, partition)
+import Data.List (intersperse)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe)
@@ -405,23 +405,15 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
-    snIds <-
+    nsIds <-
       withDB' "getQueueNtfServices" st $ \db ->
-        DB.query db "SELECT ntf_service_id, notifier_id FROM msg_queues WHERE notifier_id IN ? AND deleted_at IS NULL" (Only (In (map fst ntfs)))
-    pure $
-      if null snIds
-        then ([], ntfs)
-        else
-          let snIds' = foldl' (\m (sId, nId) -> M.alter (Just . maybe (S.singleton nId) (S.insert nId)) sId m) M.empty snIds
-           in foldr addService ([], ntfs) (M.assocs snIds')
+        DB.query db "SELECT notifier_id, ntf_service_id FROM msg_queues WHERE notifier_id IN ? AND deleted_at IS NULL" (Only (In (map fst ntfs)))
+    let (ssNtfs, deleteNtfs) = foldr (addNtf $ M.fromList nsIds) (M.empty, []) ntfs
+    pure (M.assocs ssNtfs, deleteNtfs)
     where
-      addService ::
-        (Maybe ServiceId, S.Set NotifierId) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)])
-      addService (serviceId, snIds) (ssNtfs, ntfs') =
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-         in ((serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf nsIds ntf@(nId, _) (ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
+        Just serviceId -> (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
+        Nothing -> (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
