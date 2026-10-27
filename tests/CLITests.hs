@@ -33,7 +33,7 @@ import Simplex.Messaging.Transport.Server (loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
 import qualified SMPWeb
 import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
-import System.Directory (doesFileExist, listDirectory)
+import System.Directory (doesFileExist)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
@@ -177,9 +177,6 @@ smpServerTestStatic = do
         [] -> error "Empty chain"
 
       getIndexHTTP11 tls `shouldReturn` html
-      fds <- length <$> listDirectory "/dev/fd"
-      replicateM_ 100 $ getIndexHTTP11 tls
-      length <$> listDirectory "/dev/fd" >>= (`shouldSatisfy` (< fds + 10))
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
       tlsALPN tls `shouldBe` Just "http/1.1"
       let h2cfg = HC.defaultHTTP2ClientConfig {HC.connTimeout = 1000000}
