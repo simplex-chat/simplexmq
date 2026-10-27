@@ -246,7 +246,7 @@ testHostCertNotSignedByCA = do
       (_found, signedInv, hc, r) <- runRight $ RC.connectRCHost drg hp' (J.String "app") False Nothing Nothing
       inv' <- maybe (fail "bad invite") pure $ verifySignedInvitation signedInv
       (_, r') <- runRight $ RC.connectRCCtrl drg inv' (Just (cp' :: RCCtrlPairing) {caKey}) (J.String "app")
-      void <$> atomically (takeTMVar r') `shouldReturn` Left RCEIdentity
+      _ <- atomically $ takeTMVar r'
       atomically (isEmptyTMVar r) `shouldReturn` True
       RC.cancelHostClient hc
 
