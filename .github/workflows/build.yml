@@ -18,7 +18,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
 
@@ -32,7 +32,7 @@ jobs:
   maybe-release:
     runs-on: ubuntu-latest
     outputs:
-      reduced: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == true }}
+      reduced: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == true || (github.event_name == 'push' && github.ref_type == 'branch' && github.repository != 'simplex-chat/simplexmq') }}
     steps:
       - name: Reject a manual run on a tag
         if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
@@ -260,6 +260,7 @@ jobs:
         run: scripts/ci/source-timestamps.sh restore ${{ env.source_hashes }}
 
       - name: Build smp-server, xftp-server (postgresql) and tests
+        id: build-postgres
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
@@ -418,7 +419,7 @@ jobs:
 
       - name: Remove -O2 build directories
         id: remove-o2
-        if: env.cache_o0 == 'true' && !cancelled() && steps.build-standard.outcome == 'success'
+        if: env.cache_o0 == 'true' && !cancelled() && steps.build-postgres.outcome == 'success' && steps.build-standard.outcome != 'failure'
         shell: docker exec -t builder sh -eu {0}
         run: rm -rf dist-newstyle dist-postgres
 

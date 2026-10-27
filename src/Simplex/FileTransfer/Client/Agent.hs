@@ -75,7 +75,7 @@ type ME a = ExceptT XFTPClientAgentError IO a
 
 getXFTPServerClient :: XFTPClientAgent -> XFTPServer -> ME XFTPClient
 getXFTPServerClient XFTPClientAgent {xftpClients, startedAt, config} srv = do
-  atomically getClientVar >>= either newXFTPClient waitForXFTPClient
+  liftIO getClientVar >>= either newXFTPClient waitForXFTPClient
   where
     connectClient :: ME XFTPClient
     connectClient =
@@ -88,14 +88,8 @@ getXFTPServerClient XFTPClientAgent {xftpClients, startedAt, config} srv = do
       atomically $ TM.delete srv xftpClients
       logInfo $ "disconnected from " <> showServer srv
 
-    getClientVar :: STM (Either XFTPClientVar XFTPClientVar)
-    getClientVar = maybe (Left <$> newClientVar) (pure . Right) =<< TM.lookup srv xftpClients
-      where
-        newClientVar :: STM XFTPClientVar
-        newClientVar = do
-          var <- newEmptyTMVar
-          TM.insert srv var xftpClients
-          pure var
+    getClientVar :: IO (Either XFTPClientVar XFTPClientVar)
+    getClientVar = TM.lookupOrInsertIO srv newEmptyTMVar xftpClients
 
     waitForXFTPClient :: XFTPClientVar -> ME XFTPClient
     waitForXFTPClient clientVar = do
