@@ -1765,7 +1765,6 @@ class WorkerProcessesTests(unittest.TestCase):
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
-        self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("acme"))] = "0x" + snrc.encode_uint(2)
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
                    SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
         self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
@@ -1819,6 +1818,7 @@ class WorkerProcessesTests(unittest.TestCase):
                 self.assertEqual(json.loads(res.read())["registration"]["type"], "registered")
 
     def test_workers_read_reservations_from_the_policy_on_their_own_connections(self):
+        self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("acme"))] = "0x" + snrc.encode_uint(2)
         with urlopen(f"http://127.0.0.1:{self.port}/v2/resolve/acme.testing", timeout=5) as res:
             self.assertEqual(json.loads(res.read())["registration"]["reservedReason_"], "trademark")
         self.assertEqual(self.node.connections, 2)

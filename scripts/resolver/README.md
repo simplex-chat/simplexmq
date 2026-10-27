@@ -376,10 +376,9 @@ until it is deployed.
 Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
 answers no `reservedNames` call. The resolver reads each controller's
-`namePolicy()` once at startup, before its workers start, reads reservations
-from the policy it names, and logs the policies in `listening`. `.testing`'s
-controller is from before name policies: the read reverts and the controller
-keeps the reservations. A read that reverts, answers nothing, names no policy or
+`namePolicy()` once at startup, before its workers start, and reads reservations
+from the policy it names. `.testing`'s controller is from before name policies,
+so the read reverts. A read that reverts, answers nothing, names no policy or
 fails with an RPC error is logged as `no_name_policy`, and reservations are read
 from the controller. For a controller that has a name policy, every lookup under
 its TLD then answers 502 until a restart: after an RPC error, or when the node
