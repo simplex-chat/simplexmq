@@ -72,6 +72,7 @@ main = do
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
+    setEnv "SYSTEM_CERTIFICATE_PATH" "./tests/fixtures/ca.crt"
     hspecInTmpDir
 #if defined(dbPostgres)
       . aroundAll_ (postgressBracket testDBConnectInfo)

@@ -14,12 +14,13 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM, unless)
+import Control.Monad (forM, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
@@ -64,6 +65,8 @@ ntfServerTests ps@(t, _) = do
   describe "Notifications server protocol syntax" $ ntfSyntaxTests t
   describe "Push provider policy" $ do
     it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
+  describe "APNS client" $ do
+    it "should validate APNS server certificate" testApnsServerCertificate
   describe "Database pool" $ do
     it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
@@ -101,6 +104,16 @@ testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
       RespNtf "1" NoEntity (NRErr (CMD PROHIBITED)) <-
         signSendRecvNtf nh tknKey ("1", NoEntity, TNEW $ NewNtfTkn tkn tknPub dhPub)
       pure ()
+
+testApnsServerCertificate :: HasTestEnv => Expectation
+testApnsServerCertificate = withAPNSMockServer $ \_ -> do
+  void $ createAPNSPushClient "localhost" apnsConfig
+  void $ createAPNSPushClient "localhost" apnsConfig {caStoreFile = "tests/fixtures/no_ca.crt"}
+  createAPNSPushClient "localhost" apnsConfig {caStoreFile = "tests/fixtures/ca2.crt"} `shouldThrow` certError "InvalidSignature"
+  createAPNSPushClient "127.0.0.1" apnsConfig `shouldThrow` certError "NameMismatch"
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
+    certError s (e :: IOError) = s `isInfixOf` show e
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
