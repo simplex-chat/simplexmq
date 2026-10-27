@@ -20,6 +20,7 @@ import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
+import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Text.Encoding (encodeUtf8)
@@ -107,11 +108,12 @@ testApnsTestProviderRejected (ATransport (t :: TProxy c 'TServer)) = do
 testApnsServerCertificate :: HasTestEnv => Expectation
 testApnsServerCertificate = withAPNSMockServer $ \_ -> do
   void $ createAPNSPushClient "localhost" apnsConfig
-  createAPNSPushClient "localhost" apnsConfig {caStoreFile = "tests/fixtures/ca2.crt"} `shouldThrow` anyIOException
-  createAPNSPushClient "127.0.0.1" apnsConfig `shouldThrow` anyIOException
-  createAPNSPushClient "localhost" apnsConfig {caStoreFile = "tests/fixtures/no_ca.crt"} `shouldThrow` anyIOException
+  void $ createAPNSPushClient "localhost" apnsConfig {caStoreFile = "tests/fixtures/no_ca.crt"}
+  createAPNSPushClient "localhost" apnsConfig {caStoreFile = "tests/fixtures/ca2.crt"} `shouldThrow` certError "InvalidSignature"
+  createAPNSPushClient "127.0.0.1" apnsConfig `shouldThrow` certError "NameMismatch"
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
+    certError s (e :: IOError) = s `isInfixOf` show e
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
