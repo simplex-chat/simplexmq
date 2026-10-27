@@ -24,6 +24,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (mapConcurrently)
+import Control.Concurrent.STM (flushTQueue)
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -488,8 +489,8 @@ subscribeSrvSubs ca st batchSize (srv, srvId, service_) = do
 
 -- this function is concurrency-safe - only onle subscriber per server can be created at a time,
 -- other threads would wait for the first thread to create it.
-subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> Int64 -> ServerNtfSub -> IO ()
-subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer srvId ntfSub =
+subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> Int -> SMPServer -> Int64 -> ServerNtfSub -> IO ()
+subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st batchSize smpServer srvId ntfSub =
   getSubscriberVar
     >>= either createSMPSubscriber waitForSMPSubscriber
     >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
@@ -501,7 +502,7 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
     createSMPSubscriber v =
       E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
         q <- newTQueueIO
-        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
+        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer q)
         let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
         atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
         pure $ Just sub
@@ -518,13 +519,12 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
       atomically $ removeSessVar v smpServer smpSubscribers
       pure Nothing
 
-    runSMPSubscriber :: SMPServer -> Int64 -> TQueue ServerNtfSub -> IO ()
-    runSMPSubscriber smpServer' srvId' q = forever $ do
-      -- TODO [ntfdb] possibly, the subscriptions can be batched here and sent every say 5 seconds
-      -- this should be analysed once we have prometheus stats
-      (nId, sub) <- atomically $ readTQueue q
-      void $ updateSubStatus st srvId' nId NSPending
-      subscribeQueuesNtfs ca smpServer' [sub]
+    runSMPSubscriber :: SMPServer -> TQueue ServerNtfSub -> IO ()
+    runSMPSubscriber smpServer' q = forever $ do
+      subs <- atomically $ (:) <$> readTQueue q <*> flushTQueue q
+      forM_ (toChunks batchSize subs) $ \subs' -> do
+        void $ batchUpdateSubStatus st subs' NSPending
+        subscribeQueuesNtfs ca smpServer' $ L.map snd subs'
 
 ntfSubscriber :: NtfSubscriber -> M ()
 ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}} =
@@ -922,7 +922,8 @@ client NtfServerClient {rcvQ, sndQ} ns@NtfSubscriber {smpAgent = ca} ps =
           withNtfStore (`addNtfSubscription` sub) $ \case
             (srvId, True) -> do
               st <- asks store
-              liftIO $ subscribeNtfs ns st srv srvId (subId, (nId, nKey))
+              batchSize <- asks $ subsBatchSize . config
+              liftIO $ subscribeNtfs ns st batchSize srv srvId (subId, (nId, nKey))
               incNtfStat subCreated
               pure $ NRSubId subId
             (_, False) -> pure $ NRErr AUTH
