@@ -1561,7 +1561,7 @@ createRatchet_ db g connId maxSupported pqSupport e2eRcvParams@(CR.E2ERatchetPar
   (_, rcDHRs) <- atomically $ C.generateKeyPair g
   rcParams <- liftEitherWith (SEAgentError . cryptoError) $ CR.pqX3dhSnd pks e2eRcvParams
   let rcVs = CR.RatchetVersions {current = v, maxSupported}
-      rc = CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
+  rc <- liftEitherWith (SEAgentError . cryptoError) $ CR.initSndRatchet rcVs rcDHRr rcDHRs rcParams
   liftIO $ createSndRatchet db connId rc e2eSndParams
   pure (rc, e2eSndParams)
 
@@ -4349,7 +4349,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                 | otherwise = do
                     (_, rcDHRs) <- atomically . C.generateKeyPair =<< asks random
                     rcParams <- liftEitherWith cryptoError $ CR.pqX3dhSnd (pk1, pk2, CR.APRKP CR.SRKSProposed <$> pKem) e2eOtherPartyParams
-                    recreateRatchet replyKey_ (Just $ EREADY lastExternalSndId) $ CR.initSndRatchet rcVs k2Rcv rcDHRs rcParams
+                    recreateRatchet replyKey_ (Just $ EREADY lastExternalSndId) =<< liftEitherWith cryptoError (CR.initSndRatchet rcVs k2Rcv rcDHRs rcParams)
 
           checkMsgIntegrity :: PrevExternalSndId -> ExternalSndId -> PrevRcvMsgHash -> ByteString -> MsgIntegrity
           checkMsgIntegrity prevExtSndId extSndId internalPrevMsgHash receivedPrevMsgHash
