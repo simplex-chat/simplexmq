@@ -1281,7 +1281,7 @@ class FakeNodeTestCase(unittest.TestCase):
         snrc.RPC_URL = urlparse(snrc.RPC)
         snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
-        snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER, "simplex": ""}
+        snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
         snrc._multicall_failed_logged = False
         self._drain_pool()
 
@@ -1453,6 +1453,10 @@ class NamePoliciesTests(FakeNodeTestCase):
             self.assertEqual(snrc.name_policies(), {})
         [record] = logs.records
         self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
+
+    def test_an_unconfigured_controller_is_not_read(self):
+        snrc.CONTROLLERS = {"simplex": ""}
+        self.assertEqual(self.requests_made(snrc.name_policies), ({}, 0))
 
     def test_an_address_without_a_contract_is_read_as_no_policy(self):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x"
@@ -1744,7 +1748,7 @@ class StartupTests(unittest.TestCase):
         node = FakeNode()
         self.addCleanup(node.stop)
         node.status = 502
-        env = dict(os.environ, SNRC_RPC=node.url)
+        env = dict(os.environ, SNRC_RPC=node.url, SNRC_WORKERS="1")
         service = subprocess.run([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True, timeout=10)
         self.assertEqual(service.returncode, 1)
         self.assertRegex(service.stderr, r"ERROR startup_failed")

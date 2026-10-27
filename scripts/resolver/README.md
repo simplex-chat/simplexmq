@@ -436,7 +436,7 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 | `listening` | info | started: address, workers, RPC endpoint, registries, name policies, trusted proxies |
 | `request` | info | one answered request; `/health` only at debug |
 | `upstream_error` | warn | a read from the node failed; the caller got 502 |
-| `no_name_policy` | warn | at startup, a controller's `namePolicy()` reverted, as `.testing`'s does, answered nothing, named no policy or failed with an RPC error; its reservations are read from the controller |
+| `no_name_policy` | warn | at startup, a controller's `namePolicy()` named no policy (see Configuring addresses); its reservations are read from the controller |
 | `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |

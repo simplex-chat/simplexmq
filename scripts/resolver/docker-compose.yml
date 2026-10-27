@@ -141,11 +141,8 @@ services:
       # starting before reth has finished snapshot replay just yields a few
       # 502s until the chain is queryable. The upstream reth image doesn't
       # ship a HEALTHCHECK, so we can't gate on healthy.
-      # The startup read of the controllers' name policies is the exception:
-      # until reth answers, the resolver exits and restarts, and a read answered
-      # from a state before a controller or its name policy, or with an error,
-      # leaves lookups under a TLD whose controller has a name policy at 502
-      # until the resolver restarts.
+      # The startup read of the name policies is the exception: until reth
+      # answers, the resolver exits and restarts (README, "Configuring addresses").
       reth:
         condition: service_started
     environment:
