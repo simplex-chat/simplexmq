@@ -527,17 +527,21 @@ def reservations_contract(tld: str) -> str:
 
 def name_policies() -> dict:
     """The name policy of each controller that names one. A controller from before
-    name policies reverts and keeps the reservations; an RPC error or an empty
-    answer reads the same, so all are logged. A node that does not answer raises."""
+    name policies reverts and keeps the reservations; an RPC error reads the same,
+    so both are logged. A node that does not answer raises, and so does an empty
+    answer: no contract at the address, as on a node not synced to its deployment."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:
             continue
         try:
-            policy = decode_address(eth_call(*name_policy_call(controller)))
+            reply = rpc(*eth_call_read(*name_policy_call(controller)))
         except RuntimeError as e:
             log_event(logging.WARNING, "no_name_policy", tld=tld, controller=controller, message=str(e), reservations="controller")
             continue
+        if reply == "0x":
+            raise RuntimeError(f"empty return from {controller}: no contract at that address?")
+        policy = decode_address(reply)
         if policy != ZERO_ADDR:
             policies[tld] = policy
     return policies

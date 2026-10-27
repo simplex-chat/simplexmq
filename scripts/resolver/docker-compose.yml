@@ -140,10 +140,11 @@ services:
       # eth_call failures gracefully (returns 502 with the error body), so
       # starting before reth has finished snapshot replay just yields a few
       # 502s until the chain is queryable. The startup read of the
-      # controllers' name policies is the exception: until reth answers, the
-      # resolver exits and restarts, and a read answered from a state before
-      # the controller or its name policy, or with an error, leaves that TLD's
-      # lookups at 502 until the resolver restarts. The upstream reth image
+      # controllers' name policies is the exception: until reth answers, and
+      # while it answers from a state before a controller's deployment, the
+      # resolver exits and restarts; a read answered from a state before the
+      # controller's name policy, or with an error, leaves that TLD's lookups
+      # at 502 until the resolver restarts. The upstream reth image
       # doesn't ship a HEALTHCHECK, so we can't gate on healthy.
       reth:
         condition: service_started
