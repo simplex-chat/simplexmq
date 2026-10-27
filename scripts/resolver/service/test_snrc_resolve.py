@@ -1443,6 +1443,27 @@ class BatchedReadsTests(FakeNodeTestCase):
         self.assertEqual(trips, 0)
 
 
+class NamePoliciesTests(FakeNodeTestCase):
+    def test_a_controller_naming_a_policy_has_reservations_read_from_it(self):
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
+        self.assertEqual(snrc.name_policies(), {"testing": FakeChain.NAME_POLICY})
+
+    def test_a_controller_from_before_name_policies_keeps_the_reservations_and_says_so(self):
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assertEqual(snrc.name_policies(), {})
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
+
+    def test_a_controller_naming_no_policy_keeps_the_reservations(self):
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(0)
+        self.assertEqual(snrc.name_policies(), {})
+
+    def test_a_node_that_does_not_answer_stops_the_read(self):
+        self.node.status = 502
+        with self.assertRaises(HTTPError):
+            snrc.name_policies()
+
+
 class Aggregate3Tests(unittest.TestCase):
     def test_calls_are_encoded_as_multicall3_reads_them(self):
         calls = [(FakeChain.REGISTRY, "0x0178b8bf" + "11" * 32), (FakeChain.RESOLVER, "0x59d1d43c" + "22" * 100)]

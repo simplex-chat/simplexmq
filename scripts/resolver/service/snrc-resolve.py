@@ -42,10 +42,9 @@ Environment:
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
+                         read from its `namePolicy()` when it names one,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
-  SNRC_NAME_POLICY_<TLD> SimplexNamePolicy (proxy) for the TLD; reservations, in place
-                         of the controller (default: empty, as .testing has none)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
   SNRC_WORKERS           Worker processes sharing the port (default: CPU count, at most 4)
@@ -142,10 +141,9 @@ CONTROLLERS = {
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
 
-NAME_POLICIES = {
-    "testing": os.environ.get("SNRC_NAME_POLICY_TESTING", ""),
-    "simplex": os.environ.get("SNRC_NAME_POLICY_SIMPLEX", ""),  # not deployed yet
-}
+# The name policy each TLD's controller names, which holds its reservations in
+# place of the controller; set at startup from `name_policies()`.
+NAME_POLICIES = {}
 
 # `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
 # controller from before the enum stores a bool, whose `true` decodes as 1,
@@ -527,6 +525,24 @@ def reservations_contract(tld: str) -> str:
     return NAME_POLICIES.get(tld) or CONTROLLERS.get(tld) or ""
 
 
+def name_policies() -> dict:
+    """The name policy of each controller that names one. A controller from before
+    name policies reverts or answers nothing, and keeps the reservations; an RPC
+    error reads the same, so both are logged. A node that does not answer raises."""
+    policies = {}
+    for tld, controller in CONTROLLERS.items():
+        if not controller:
+            continue
+        try:
+            policy = decode_address(eth_call(*name_policy_call(controller)))
+        except RuntimeError as e:
+            log_event(logging.WARNING, "no_name_policy", tld=tld, controller=controller, message=str(e), reservations="controller")
+            continue
+        if policy != ZERO_ADDR:
+            policies[tld] = policy
+    return policies
+
+
 def reservation_reason(tld: str, token: int) -> int:
     """The SimplexController.Reason held for the name, 0 when not reserved."""
     contract = reservations_contract(tld)
@@ -796,6 +812,10 @@ def grace_call(registrar: str):
 
 def label_call(registrar: str, token: int):
     return registrar, selector("labelOf(uint256)") + encode_uint(token)
+
+
+def name_policy_call(controller: str):
+    return controller, selector("namePolicy()")
 
 
 def reserved_call(contract: str, token: int):
@@ -1500,6 +1520,12 @@ def supervise(workers: int):
 
 def main():
     setup_logging()
+    try:
+        # before the workers fork, so all of them read reservations from the same contract
+        NAME_POLICIES.update(name_policies())
+    except Exception:
+        log_event(logging.ERROR, "startup_failed", exc_info=True)
+        sys.exit(1)
     log_event(
         logging.INFO,
         "listening",
@@ -1508,6 +1534,7 @@ def main():
         workers=WORKERS,
         rpc=public_endpoint(RPC),
         registries=",".join(f"{tld}={addr or '-'}" for tld, addr in REGISTRIES.items()),
+        name_policies=",".join(f"{tld}={NAME_POLICIES.get(tld, '-')}" for tld in CONTROLLERS),
         trusted_proxies=",".join(map(str, TRUSTED_PROXIES)) or None,
     )
     if WORKERS > 1:

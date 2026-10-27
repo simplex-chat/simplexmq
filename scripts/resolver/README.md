@@ -357,7 +357,7 @@ from before the enum stores a boolean, whose `true` decodes as 1, which is why
 
 ### Configuring addresses
 
-The resolver reads three or four contracts, each configured per TLD.
+The resolver reads three contracts, each configured per TLD, and the name policy a controller names.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
@@ -374,12 +374,15 @@ until it is deployed.
 
 Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
-answers no `reservedNames` call. For such a TLD set `SNRC_NAME_POLICY_<TLD>` to
-the policy's proxy, `SimplexNamePolicyProxy`, and reservations are read from
-it. Without it every lookup under that TLD answers 502. After the controller's
-owner calls `setNamePolicy`, set it to the new proxy, which the controller's
-`namePolicy()` returns. `.testing` has no name policy, so its controller keeps
-the reservations.
+answers no `reservedNames` call. The resolver reads each controller's
+`namePolicy()` once at startup, before its workers start, reads reservations
+from the policy it names, and logs the policies in `listening`. `.testing`'s
+controller is from before name policies: the read reverts and the controller
+keeps the reservations. An RPC error at that read looks the same, so both are
+logged as `no_name_policy`, and after an RPC error every lookup under a TLD
+whose controller has a name policy answers 502 until a restart. A node that does not answer stops the
+resolver, and the container restarts. After the controller's owner calls
+`setNamePolicy`, restart the resolver.
 
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two
@@ -389,9 +392,9 @@ deployment files use different names for that proxy:
 `SimplexControllerProxy`. Both are the same address, and it is the one used
 here.
 
-To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>`,
-`SNRC_CONTROLLER_<TLD>` or `SNRC_NAME_POLICY_<TLD>` on the `resolver` service in
-`docker-compose.yml`, or as env vars when you run the script directly.
+To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
+`SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
+as env vars when you run the script directly.
 
 ### Load and scaling
 
@@ -427,13 +430,15 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `listening` | info | started: address, workers, RPC endpoint, registries, trusted proxies |
+| `listening` | info | started: address, workers, RPC endpoint, registries, name policies, trusted proxies |
 | `request` | info | one answered request; `/health` only at debug |
 | `upstream_error` | warn | a read from the node failed; the caller got 502 |
+| `no_name_policy` | warn | at startup, a controller's `namePolicy()` reverted, as `.testing`'s does, or failed with an RPC error; its reservations are read from the controller |
 | `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
 | `request_failed` | error | a request failed unexpectedly, with its traceback |
+| `startup_failed` | error | the node did not answer the startup read of the name policies; the container restarts |
 | `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
 | `stopping` | info | stopped by a signal |
 
