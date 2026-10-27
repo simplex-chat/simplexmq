@@ -1739,18 +1739,18 @@ class KeepAliveTests(unittest.TestCase):
             self.assertEqual(sock.recv(1), b"")
 
 
-@unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")
 class StartupTests(unittest.TestCase):
     def test_a_node_that_does_not_answer_stops_the_service(self):
         node = FakeNode()
         self.addCleanup(node.stop)
         node.status = 502
-        env = dict(os.environ, SNRC_RPC=node.url, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
+        env = dict(os.environ, SNRC_RPC=node.url)
         service = subprocess.run([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True, timeout=10)
         self.assertEqual(service.returncode, 1)
         self.assertRegex(service.stderr, r"ERROR startup_failed")
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")
 class WorkerProcessesTests(unittest.TestCase):
     """Workers share the port, and the service stops as a whole, so the
     container restarts rather than serving on fewer workers."""
