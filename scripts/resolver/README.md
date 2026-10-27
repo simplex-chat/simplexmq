@@ -46,7 +46,8 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`.
+returns `502`. A TLD whose controller has a name policy then still answers `502`
+until `docker compose restart resolver` (see Configuring addresses).
 
 ## Verify
 

@@ -530,8 +530,9 @@ def reservation_reason(tld: str, token: int) -> int:
 
 def name_policies() -> dict:
     """The name policy of each configured controller that names one. A controller
-    that reverts, answers nothing or names no policy keeps the reservations and is
-    logged; an RPC error is taken as a revert. Raises when the node does not answer."""
+    that reverts, answers nothing or names no policy is logged, and its reservations
+    are read from it; an RPC error is taken as a revert. Raises when the node does
+    not answer."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:
