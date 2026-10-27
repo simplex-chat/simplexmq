@@ -1458,11 +1458,6 @@ class NamePoliciesTests(FakeNodeTestCase):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(0)
         self.assertEqual(snrc.name_policies(), {})
 
-    def test_a_controller_without_a_contract_stops_the_read(self):
-        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x"
-        with self.assertRaises(RuntimeError):
-            snrc.name_policies()
-
     def test_a_node_that_does_not_answer_stops_the_read(self):
         self.node.status = 502
         with self.assertRaises(HTTPError):

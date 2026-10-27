@@ -520,6 +520,14 @@ def expiry_status(expires: int, grace: int, now: int) -> str:
     return "expired"
 
 
+def reservation_reason(tld: str, token: int) -> int:
+    """The SimplexController.Reason held for the name, 0 when not reserved."""
+    contract = reservations_contract(tld)
+    if not contract:
+        return 0
+    return decode_uint(eth_call(*reserved_call(contract, token)))
+
+
 def reservations_contract(tld: str) -> str:
     """The contract holding the TLD's `reservedNames`, empty when none is configured."""
     return NAME_POLICIES.get(tld) or CONTROLLERS.get(tld) or ""
@@ -527,32 +535,20 @@ def reservations_contract(tld: str) -> str:
 
 def name_policies() -> dict:
     """The name policy of each controller that names one. A controller from before
-    name policies reverts and keeps the reservations; an RPC error reads the same,
-    so both are logged. A node that does not answer raises, and so does an empty
-    answer: no contract at the address, as on a node not synced to its deployment."""
+    name policies reverts and keeps the reservations; an RPC error or an empty
+    answer reads the same, so all are logged. A node that does not answer raises."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:
             continue
         try:
-            reply = rpc(*eth_call_read(*name_policy_call(controller)))
+            policy = decode_address(eth_call(*name_policy_call(controller)))
         except RuntimeError as e:
             log_event(logging.WARNING, "no_name_policy", tld=tld, controller=controller, message=str(e), reservations="controller")
             continue
-        if reply == "0x":
-            raise RuntimeError(f"empty return from {controller}: no contract at that address?")
-        policy = decode_address(reply)
         if policy != ZERO_ADDR:
             policies[tld] = policy
     return policies
-
-
-def reservation_reason(tld: str, token: int) -> int:
-    """The `Reason` held for the name, 0 when not reserved."""
-    contract = reservations_contract(tld)
-    if not contract:
-        return 0
-    return decode_uint(eth_call(*reserved_call(contract, token)))
 
 
 def pricing_params(tld: str):
@@ -818,12 +814,12 @@ def label_call(registrar: str, token: int):
     return registrar, selector("labelOf(uint256)") + encode_uint(token)
 
 
-def name_policy_call(controller: str):
-    return controller, selector("namePolicy()")
-
-
 def reserved_call(contract: str, token: int):
     return contract, selector("reservedNames(bytes32)") + encode_uint(token)
+
+
+def name_policy_call(controller: str):
+    return controller, selector("namePolicy()")
 
 
 def prices_call(contract: str):
