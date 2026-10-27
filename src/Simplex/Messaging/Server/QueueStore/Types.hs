@@ -17,6 +17,7 @@ import Data.Map.Strict (Map)
 import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.SystemTime
+import Simplex.Messaging.Transport (SMPServiceRole)
 
 class StoreQueueClass q where
   recipientId :: q -> RecipientId
@@ -43,6 +44,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   unblockQueue :: s -> q -> IO (Either ErrorType ())
   updateQueueTime :: s -> q -> SystemDate -> IO (Either ErrorType QueueRec)
   deleteStoreQueue :: s -> q -> IO (Either ErrorType QueueRec)
+  getServiceId :: s -> SMPServiceRole -> CertFingerprint -> IO (Either ErrorType (Maybe ServiceId))
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
   setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
   setQueueServices :: (PartyI p, ServiceParty p) => s -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (Map RecipientId (Either ErrorType ())))
