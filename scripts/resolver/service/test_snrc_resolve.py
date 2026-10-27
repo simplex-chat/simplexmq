@@ -1444,7 +1444,7 @@ class BatchedReadsTests(FakeNodeTestCase):
 
 
 class NamePoliciesTests(FakeNodeTestCase):
-    def test_a_controller_naming_a_policy_has_reservations_read_from_it(self):
+    def test_a_controller_naming_a_policy_is_mapped_to_it(self):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
         self.assertEqual(snrc.name_policies(), {"testing": FakeChain.NAME_POLICY})
 
@@ -1454,7 +1454,7 @@ class NamePoliciesTests(FakeNodeTestCase):
         [record] = logs.records
         self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
 
-    def test_a_controller_naming_no_policy_keeps_the_reservations(self):
+    def test_a_controller_naming_no_policy_is_left_out(self):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(0)
         self.assertEqual(snrc.name_policies(), {})
 

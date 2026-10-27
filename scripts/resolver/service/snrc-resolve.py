@@ -527,8 +527,8 @@ def reservations_contract(tld: str) -> str:
 
 def name_policies() -> dict:
     """The name policy of each controller that names one. A controller from before
-    name policies reverts or answers nothing, and keeps the reservations; an RPC
-    error reads the same, so both are logged. A node that does not answer raises."""
+    name policies reverts and keeps the reservations; an RPC error or an empty
+    answer reads the same, so all are logged. A node that does not answer raises."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:
@@ -544,7 +544,7 @@ def name_policies() -> dict:
 
 
 def reservation_reason(tld: str, token: int) -> int:
-    """The SimplexController.Reason held for the name, 0 when not reserved."""
+    """The `Reason` held for the name, 0 when not reserved."""
     contract = reservations_contract(tld)
     if not contract:
         return 0
@@ -1496,6 +1496,9 @@ def supervise(workers: int):
         stop()
         stop_on(signum, frame)
 
+    # each worker opens its own connections: one shared would mix their replies
+    while not _rpc_pool.empty():
+        _rpc_pool.get_nowait().close()
     # before forking, so a signal during startup cannot orphan the workers
     signal.signal(signal.SIGTERM, stop_and_exit)
     signal.signal(signal.SIGINT, stop_and_exit)
