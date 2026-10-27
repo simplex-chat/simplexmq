@@ -2152,16 +2152,16 @@ client
                       labelMyThread $ B.unpack ("client $" <> encode sessionId) <> " deliver/SEND"
                       -- lookup can be outside of STM transaction,
                       -- as long as the check that it is the same client is inside.
-                      getSubscribed >>= mapM_ deliverIfSame
+                      getSubscribed >>= maybe (atomically $ writeTVar st NoSub) deliverIfSame
                     deliverIfSame rcv = do
                       ts <- getSystemSeconds
-                      atomically $ whenM (sameClient rc rcv) $
-                        readTVar delivered >>= \case
-                          Just _ -> pure () -- if a message was already delivered, should not deliver more
-                          Nothing -> do
+                      atomically $ do
+                        whenM (sameClient rc rcv) $
+                          readTVar delivered >>= \case
+                            Just _ -> pure () -- if a message was already delivered, should not deliver more
                             -- a separate thread is needed because it blocks when client sndQ is full.
-                            deliver sndQ' s ts
-                            writeTVar st NoSub
+                            Nothing -> deliver sndQ' s ts
+                        writeTVar st NoSub
 
             enqueueNotification :: NtfCreds -> Message -> M s ()
             enqueueNotification _ MessageQuota {} = pure ()

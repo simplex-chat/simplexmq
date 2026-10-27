@@ -270,6 +270,12 @@ Commits:
    - `deliverQueueMsg`, which creates the Sub with `delivered` set inside it.
 5. `updateSMPSubscribers` runs a registration transaction and `endPrevSMP` under one `uninterruptibleMask_`. Callers: SUBS, DEL, NEW with `SMSubscribe`.
 6. `withDB op st = withDBPriority op st False`, as `withTransaction` (PGC:89-91).
+7. T4 (`testSubPendingDelivery`) keeps the test `tbqSize` 4 (tests/SMPClient.hs:249) and fills the send path of recipient connection C without reading:
+   - 4 blocks of 255 LGET of one contact queue with 13 KB link data, one LNK per 16 KB block, 4 sndQ items in all;
+   - one SEND from C to a probe queue of connection S; its MSG on S confirms that C's commands thread processed the LGET blocks;
+   - SENDs from S to 4 filler queues of C, then to the tested queue, whose delivery thread then waits for sndQ;
+   - SUB of the tested queue from C, then 0.5 s before C reads.
+   - Full sndQ is reached when the TCP buffers hold less than the 4 LGET batches (≈16 MB); otherwise the test passes on master too.
 
 ## 4. Dangers
 
