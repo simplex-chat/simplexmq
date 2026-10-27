@@ -163,7 +163,7 @@ runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpSer
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
--- actions used in serverThread to reduce STM transaction scope
+-- actions used to reduce STM transaction scope
 data ClientSubAction
   = CSAEndSub QueueId -- end single direct queue subscription
   | CSAEndServiceSub QueueId -- end service subscription to one queue

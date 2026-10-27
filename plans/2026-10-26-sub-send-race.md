@@ -228,7 +228,7 @@ The blocked transaction is re-run after the `delivered` write of a duplicate SUB
 ### 3.8 Diff (expected line deltas)
 
 Commits:
-1. Tests T1, T2, T5 (failing or timing-dependent before the fix).
+1. Tests T1, T2 (failing or timing-dependent before the fix) and T5 (passing before the fix, §4 item 9).
 2. Pure move of the serverThread helpers.
 3. The fix, with D4, D8, D9, D10.
 4. D7 with T4.
@@ -313,7 +313,11 @@ Commits:
    - Registration and END handling are kept together by `uninterruptibleMask_`.
    - `clientDisconnected` is run after the client threads end (S:1069; `raceAny_` cancel waits, INFERENCE). Registrations whose keys are in the swapped map (S:1109, 1126-1128) and the service registration (S:1131-1133) are removed.
    - The Sub key and the registry entry are written in one transaction.
-9. DEL ordering [I3]. If an asynchronous `CSDeleted` were applied after a synchronous SUBS registration, the new connection's count would be reduced by a queue absent from that count (S:292, 312-314, 336, 346-351; aggregate MIG:536-538). Resolution: `CSDeleted` is registered synchronously in `delQueueAndMsgs` after `deleteQueue` returns (§3.5 item 2). Test T5.
+9. DEL ordering [I3]. If an asynchronous `CSDeleted` were applied after a synchronous SUBS registration, the new connection's count would be reduced by a queue absent from that count (S:292, 312-314, 336, 346-351; aggregate MIG:536-538).
+   - `CSDeleted` is registered synchronously in `delQueueAndMsgs` (§3.5 item 2). The window is narrowed to the steps between `deleteQueue` (S:2251) and that registration (S:2259) in the deleting connection's commands thread: the Sub removal, `cancelSub` and the count update.
+   - A SUBS of another connection of the same service can read the count (S:1951) and register (S:1963) within that window. `CSAEndServiceSub` is then returned for that connection by the `CSDeleted` registration, and its count is reduced by the deleted queue; a count of 1 is set to `(0, mempty)` (Protocol.hs:1600-1602), although a queue remains associated.
+   - The window is closed only when the count read and the SUBS registration are ordered against the deletion under a lock; SUBS registers without a store lock (D3).
+   - T5 checks the final outcome; it does not reproduce [I3], since C2 is connected only after the DEL response is received. T5 passed on master code in https://github.com/evgeny-simplex/simplexmq/actions/runs/40420084415 (09eda0ed), where `CSDeleted` is queued to the FIFO `subQ` before the later `CSService`.
 10. DEL and key changes during a batch.
     - Committed before the lock: the row is re-checked by `FOR UPDATE`, and AUTH is returned for a deleted row or changed keys.
     - Arriving during the lock: DEL's UPDATE (QPG:334) is delayed until COMMIT; the batch's registration is then removed by the synchronous `CSDeleted`.
@@ -349,7 +353,7 @@ Commits:
 3. T4, D7, both stores.
    - Test server config with a small `tbqSize`; the test client stops reading until `sndQ` is full.
    - SEND; duplicate SUB; ACK; SEND. Expected: MSG for the second SEND.
-   - Determinism of the full-`sndQ` step is confirmed when the test is written.
+   - Determinism of the full-`sndQ` step: T4 was run on e85d8579 (commit 3 with T4, without D7) in https://github.com/evgeny-simplex/simplexmq/actions/runs/40443527767 (job 121989282031). It failed on both stores with `expected: (Just QNoSub,True,1) but got: (Just QSubThread,False,1)`.
 4. T5, DEL ordering, both stores.
    - Service connection C1 with queues Q1, Q2; DEL Q1; SUBS from C2 of the same service; SUBS from C3.
    - Expected: ENDS to C2 with count 1 and the hash of Q2.
