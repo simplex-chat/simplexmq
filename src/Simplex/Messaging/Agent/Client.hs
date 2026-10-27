@@ -1157,7 +1157,7 @@ withSMPClient c nm q cmdStr action = do
 
 sendOrProxySMPMessage :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> ConnId -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
 sendOrProxySMPMessage c nm userId destSrv connId cmdStr spKey_ senderId msgFlags msg =
-  fst <$> sendOrProxySMPCommand c nm userId destSrv connId cmdStr senderId sendViaProxy sendDirectly
+  fst <$> sendOrProxySMPCommand c nm userId destSrv False connId cmdStr senderId sendViaProxy sendDirectly
   where
     sendViaProxy smp proxySess = do
       incSMPServerStat c userId destSrv sentViaProxyAttempts
@@ -1173,13 +1173,14 @@ sendOrProxySMPCommand ::
   NetworkRequestMode ->
   UserId ->
   SMPServer ->
+  Bool ->
   ConnId -> -- session entity ID, for short links LinkId is used
   ByteString ->
   SMP.EntityId -> -- sender or link ID
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError a)) ->
   (SMPClient -> ExceptT SMPClientError IO a) ->
   AM (Maybe SMPServer, a)
-sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
+sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} proxyKnown connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
   tSess <- mkTransportSession c userId destSrv connId
   ifM shouldUseProxy (sendViaProxy Nothing tSess) ((Nothing,) <$> sendDirectly tSess)
   where
@@ -1187,10 +1188,10 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
       cfg <- getNetworkConfig c
       case smpProxyMode cfg of
         SPMAlways -> pure True
-        SPMUnknown -> unknownServer cfg
+        SPMUnknown -> (proxyKnown ||) <$> unknownServer cfg
         SPMUnprotected
           | ipAddressProtected cfg destSrv -> pure False
-          | otherwise -> unknownServer cfg
+          | otherwise -> (proxyKnown ||) <$> unknownServer cfg
         SPMNever -> pure False
     directAllowed = do
       cfg <- getNetworkConfig c
@@ -1981,7 +1982,7 @@ secureQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
 
 secureSndQueue :: AgentClient -> NetworkRequestMode -> SndQueue -> AM ()
 secureSndQueue c nm SndQueue {userId, connId, server, sndId, sndPrivateKey} =
-  void $ sendOrProxySMPCommand c nm userId server connId "SKEY <key>" sndId secureViaProxy secureDirectly
+  void $ sendOrProxySMPCommand c nm userId server False connId "SKEY <key>" sndId secureViaProxy secureDirectly
   where
     -- TODO track statistics
     secureViaProxy smp proxySess = proxySecureSndSMPQueue smp nm proxySess sndPrivateKey sndId
@@ -1997,14 +1998,14 @@ deleteQueueLink c nm rq@RcvQueue {rcvId, rcvPrivateKey} =
 
 secureGetQueueLink :: AgentClient -> NetworkRequestMode -> UserId -> InvShortLink -> AM (SMP.SenderId, QueueLinkData)
 secureGetQueueLink c nm userId InvShortLink {server, linkId, sndPrivateKey} =
-  snd <$> sendOrProxySMPCommand c nm userId server (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server False (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
   where
     secureGetViaProxy smp proxySess = proxySecureGetSMPQueueLink smp nm proxySess sndPrivateKey linkId
     secureGetDirectly smp = secureGetSMPQueueLink smp nm sndPrivateKey linkId
 
 getQueueLink :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SMP.LinkId -> AM (SMP.SenderId, QueueLinkData)
 getQueueLink c nm userId server lnkId =
-  snd <$> sendOrProxySMPCommand c nm userId server (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server False (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
   where
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp nm proxySess lnkId
     getDirectly smp = getSMPQueueLink smp nm lnkId
@@ -2015,7 +2016,7 @@ getQueueLink c nm userId server lnkId =
 -- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
 resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameResponse
 resolveName c nm userId server domain =
-  snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server True "" "RSLV" NoEntity resolveViaProxy resolveDirectly
   where
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
