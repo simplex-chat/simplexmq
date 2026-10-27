@@ -379,10 +379,11 @@ answers no `reservedNames` call. The resolver reads each controller's
 `namePolicy()` once at startup, before its workers start, reads reservations
 from the policy it names, and logs the policies in `listening`. `.testing`'s
 controller is from before name policies: the read reverts and the controller
-keeps the reservations. An RPC error at that read looks the same, so both are
-logged as `no_name_policy`, and after an RPC error, or a read from a node that
-has not yet reached the controller or its name policy, every lookup under a TLD
-whose controller has a name policy answers 502 until a restart. A node that
+keeps the reservations. A read that reverts, answers nothing, names no policy or
+fails with an RPC error is logged as `no_name_policy`, and reservations are read
+from the controller. For a controller that has a name policy, every lookup under
+its TLD then answers 502 until a restart: after an RPC error, or when the node
+has not yet reached the controller or its `setNamePolicy`. A node that
 does not answer stops the resolver, and the container restarts. After the
 controller's owner calls `setNamePolicy`, restart the resolver.
 
@@ -435,7 +436,7 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 | `listening` | info | started: address, workers, RPC endpoint, registries, name policies, trusted proxies |
 | `request` | info | one answered request; `/health` only at debug |
 | `upstream_error` | warn | a read from the node failed; the caller got 502 |
-| `no_name_policy` | warn | at startup, a controller's `namePolicy()` reverted, as `.testing`'s does, answered nothing or failed with an RPC error; its reservations are read from the controller |
+| `no_name_policy` | warn | at startup, a controller's `namePolicy()` reverted, as `.testing`'s does, answered nothing, named no policy or failed with an RPC error; its reservations are read from the controller |
 | `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |

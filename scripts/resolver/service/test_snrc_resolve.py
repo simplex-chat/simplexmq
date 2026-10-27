@@ -1459,9 +1459,10 @@ class NamePoliciesTests(FakeNodeTestCase):
         with self.assertLogs("snrc_resolve", "WARNING"):
             self.assertEqual(snrc.name_policies(), {})
 
-    def test_a_controller_naming_no_policy_is_left_out(self):
+    def test_a_controller_naming_no_policy_is_left_out_and_logged(self):
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(0)
-        self.assertEqual(snrc.name_policies(), {})
+        with self.assertLogs("snrc_resolve", "WARNING"):
+            self.assertEqual(snrc.name_policies(), {})
 
     def test_a_node_that_does_not_answer_stops_the_read(self):
         self.node.status = 502
@@ -1739,6 +1740,17 @@ class KeepAliveTests(unittest.TestCase):
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")
+class StartupTests(unittest.TestCase):
+    def test_a_node_that_does_not_answer_stops_the_service(self):
+        node = FakeNode()
+        self.addCleanup(node.stop)
+        node.status = 502
+        env = dict(os.environ, SNRC_RPC=node.url, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
+        service = subprocess.run([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True, timeout=10)
+        self.assertEqual(service.returncode, 1)
+        self.assertRegex(service.stderr, r"ERROR startup_failed")
+
+
 class WorkerProcessesTests(unittest.TestCase):
     """Workers share the port, and the service stops as a whole, so the
     container restarts rather than serving on fewer workers."""

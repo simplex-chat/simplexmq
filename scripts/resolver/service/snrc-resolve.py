@@ -528,26 +528,28 @@ def reservation_reason(tld: str, token: int) -> int:
     return decode_uint(eth_call(*reserved_call(contract, token)))
 
 
-def reservations_contract(tld: str) -> str:
+def reservations_contract(tld: str) -> str | None:
     """The contract holding the TLD's `reservedNames`, empty when none is configured."""
-    return NAME_POLICIES.get(tld) or CONTROLLERS.get(tld) or ""
+    return NAME_POLICIES.get(tld) or CONTROLLERS.get(tld)
 
 
 def name_policies() -> dict:
     """The name policy of each controller that names one. A controller from before
-    name policies reverts and keeps the reservations; an RPC error or an empty
-    answer reads the same, so all are logged. Raises when the node does not answer."""
+    name policies reverts and keeps the reservations; an RPC error, an empty answer
+    or a controller naming no policy reads the same, so all are logged. Raises when
+    the node does not answer."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:
             continue
         try:
             policy = decode_address(eth_call(*name_policy_call(controller)))
+            if policy == ZERO_ADDR:
+                raise RuntimeError("namePolicy() is unset")
         except RuntimeError as e:
             log_event(logging.WARNING, "no_name_policy", tld=tld, controller=controller, message=str(e), reservations="controller")
             continue
-        if policy != ZERO_ADDR:
-            policies[tld] = policy
+        policies[tld] = policy
     return policies
 
 
