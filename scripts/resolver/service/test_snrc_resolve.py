@@ -1765,7 +1765,6 @@ class WorkerProcessesTests(unittest.TestCase):
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
         self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
-        # every worker test reads the name's reservation from the policy
         self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("acme"))] = "0x" + snrc.encode_uint(2)
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
                    SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)

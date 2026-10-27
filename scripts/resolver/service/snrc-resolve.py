@@ -42,7 +42,7 @@ Environment:
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
-                         read from its `namePolicy()` when it names one,
+                         read from the policy its `namePolicy()` names, if any,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
@@ -534,10 +534,9 @@ def reservations_contract(tld: str) -> str | None:
 
 
 def name_policies() -> dict:
-    """The name policy of each controller that names one. A controller from before
-    name policies reverts and keeps the reservations; an RPC error, an empty answer
-    or a controller naming no policy reads the same, so all are logged. Raises when
-    the node does not answer."""
+    """The name policy of each configured controller that names one. A controller
+    that reverts, answers nothing or names no policy keeps the reservations and is
+    logged; an RPC error is taken as a revert. Raises when the node does not answer."""
     policies = {}
     for tld, controller in CONTROLLERS.items():
         if not controller:
