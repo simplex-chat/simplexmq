@@ -133,8 +133,11 @@ instance MsgStoreClass STMMsgStore where
   tryPeekMsg _ q = snd <$$> withPeekMsgQueue q pure
   {-# INLINE tryPeekMsg #-}
 
-  tryPeekMsgs :: STMMsgStore -> [STMQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
-  tryPeekMsgs st qs = M.fromList . catMaybes <$> mapM (\q -> (recipientId q,) <$$> tryPeekMsg st q) qs
+  tryPeekMsgs :: STMMsgStore -> [(STMQueue, QueueRec)] -> (STMQueue -> QueueRec -> QueueRec -> Maybe Message -> STM a) -> ExceptT ErrorType IO (M.Map RecipientId a)
+  tryPeekMsgs _ qs f = liftIO $ M.fromList . catMaybes <$> mapM run qs
+    where
+      run (q, qr) = atomically $ readTVar (queueRec q) $>>= \qr' -> Just . (recipientId q,) <$> (f q qr qr' =<< peek q)
+      peek STMQueue {msgQueue'} = readTVar msgQueue' $>>= tryPeekMsg_
 
   tryDelMsg :: STMMsgStore -> STMQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message)
   tryDelMsg _ q msgId' =

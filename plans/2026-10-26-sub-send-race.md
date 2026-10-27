@@ -257,6 +257,20 @@ Commits:
 | QPG | export `queueRecQuery`; priority `withDB` variant; ordered lock in `setQueueServices` (D4) | +8 |
 | tests/ServerTests.hs | T1, T2, T4, T5 | +170 |
 
+### 3.9 Deviations in the implementation
+
+1. `clntServiceId` stays a `let` binding of `client`. A `where` binding would be shadowed by the `processCommand` parameter of the same name, which is `Nothing` for forwarded commands (S:2207).
+   - `subscribeLocked` and `subscribeQueue` are local to `prepareBatchSubs` and read its `clntServiceId_` parameter.
+   - `sharedSubscribeQueue` takes the client's service ID and the entity ID as its first two parameters.
+2. `sharedSubscribeQueue` and `setDelivered` are moved from the `processCommand` `where` to the `client` `where`.
+3. `sharedSubscribeQueue` returns the service counters to increment, `[ServiceStats -> IORef Int]`. They are incremented after the transaction, on `rcvServices` for SUB and on `ntfServices` for NSUB.
+4. TMap exports `lookupOrInsert` in STM; `lookupOrInsertIO` calls it. Callers:
+   - `sharedSubscribeQueue`;
+   - `subscribeQueue`;
+   - `deliverQueueMsg`, which creates the Sub with `delivered` set inside it.
+5. `updateSMPSubscribers` runs a registration transaction and `endPrevSMP` under one `uninterruptibleMask_`. Callers: SUBS, DEL, NEW with `SMSubscribe`.
+6. `withDB op st = withDBPriority op st False`, as `withTransaction` (PGC:89-91).
+
 ## 4. Dangers
 
 1. Deadlocks on `msg_queues` rows.
