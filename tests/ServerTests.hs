@@ -112,6 +112,7 @@ serverTests = do
     testInvQueueLinkData
     testContactQueueLinkData
     testDuplicateQueueLinkData
+    testLargeCommand
     testSwapQueueLink
     testSwapQueueLinkKeys
     testConcurrentSwapQueueLink
@@ -1796,6 +1797,25 @@ testDuplicateQueueLinkData =
       lnkId2 `shouldBe` lnkId
       victimSId2 `shouldBe` victimSId
       victimLD2 `shouldBe` victimLD
+
+testLargeCommand :: SpecWith (ASrvTransport, AStoreType)
+testLargeCommand =
+  it "refuses a command larger than an encrypted block and keeps the session" $ \(at, msType) ->
+    withSmpServer (at, msType) $ do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      c <- getProtocolClient g NRMInteractive (1, SMPServer testHost testPort testKeyHash, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ()) >>= either (fail . show) pure
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      fd <- atomically $ C.randomBytes 2048 g
+      Right QIK {rcvId = rId} <- runExceptT $ createSMPQueue c NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing
+      let largestUserData = 14165
+          linkData n = (EncDataBytes fd, EncDataBytes $ B.replicate n 'a')
+          setLink n = runExceptT $ addSMPQueueLink c NRMInteractive rKey rId lnkId (linkData n)
+      setLink largestUserData `shouldReturn` Right ()
+      setLink (largestUserData + 1) `shouldReturn` Left (PCETransportError TELargeMsg)
+      (fmap snd <$> runExceptT (getSMPQueueLink c NRMInteractive lnkId)) `shouldReturn` Right (linkData largestUserData)
 
 testSwapQueueLink :: SpecWith (ASrvTransport, AStoreType)
 testSwapQueueLink =
