@@ -1,4 +1,6 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -12,6 +14,7 @@ module Simplex.Messaging.Names.Record
     NameRegistration (..),
     NamePricing (..),
     BonaFideTerms (..),
+    ZstdTerms (..),
     USDCents (..),
     NameReservedReason (..),
   )
@@ -20,6 +23,7 @@ where
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import Data.ByteString (ByteString)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -106,13 +110,18 @@ data NamePricing = NamePricing
   }
   deriving (Eq, Show)
 
--- | The community terms a bona fide name is registered under, whose keccak256 a buyer accepts.
+-- | The community terms a bona fide name is registered under. The name policy keeps their text
+-- in one zstd frame, and the keccak256 of that frame is what a buyer accepts.
 data BonaFideTerms
-  = -- | their text, when it fits the answer
-    BFTText {termsText :: Text}
-  | -- | the 0x hex keccak256 of their text, when it does not
+  = -- | the frame, when it fits the answer
+    BFTZstd {termsZstd :: ZstdTerms}
+  | -- | the 0x hex keccak256 of the frame, when it does not
     BFTHash {termsHash :: Text}
   deriving (Eq, Show)
+
+newtype ZstdTerms = ZstdTerms ByteString
+  deriving newtype (Eq, Show, StrEncoding)
+  deriving (ToJSON, FromJSON) via (StrJSON "ZstdTerms" ZstdTerms)
 
 -- | Why the registry holds a name back.
 data NameReservedReason
