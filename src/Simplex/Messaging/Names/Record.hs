@@ -13,7 +13,8 @@ module Simplex.Messaging.Names.Record
     NameResponse (..),
     NameRegistration (..),
     NamePricing (..),
-    BonaFideTerms (..),
+    NameTerms (..),
+    TermsDoc (..),
     ZstdTerms (..),
     USDCents (..),
     NameReservedReason (..),
@@ -92,8 +93,8 @@ data NameRegistration
   | -- | Held by nobody, and registrable now.
     NRAvailable
       { pricing :: NamePricing,
-        -- | a bona fide community name, registrable only under these community terms
-        bonaFideTerms_ :: Maybe BonaFideTerms
+        -- | absent only from a router before v24
+        nameTerms :: Maybe NameTerms
       }
   | -- | Held back by the registry, and not for sale at its price.
     NRReserved {reservedReason :: NameReservedReason}
@@ -110,13 +111,20 @@ data NamePricing = NamePricing
   }
   deriving (Eq, Show)
 
--- | The community terms a bona fide name is registered under. The name policy keeps their text
--- in one zstd frame, and the keccak256 of that frame is what a buyer accepts.
-data BonaFideTerms
+-- | The terms a buyer of the name accepts, which the name policy keeps.
+data NameTerms
+  = -- | the general name terms
+    NTName {termsDoc :: TermsDoc}
+  | -- | a bona fide community name's community terms, which include the general ones
+    NTBonaFide {termsDoc :: TermsDoc}
+  deriving (Eq, Show)
+
+-- | Terms as the name policy keeps them: their text in one zstd frame, whose keccak256 a buyer accepts.
+data TermsDoc
   = -- | the frame, when it fits the answer
-    BFTZstd {termsZstd :: ZstdTerms}
+    TDZstd {termsZstd :: ZstdTerms}
   | -- | the 0x hex keccak256 of the frame, when it does not
-    BFTHash {termsHash :: Text}
+    TDHash {termsHash :: Text}
   deriving (Eq, Show)
 
 newtype ZstdTerms = ZstdTerms ByteString
@@ -159,7 +167,9 @@ instance FromJSON NameReservedReason where
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 
-$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "BFT") ''BonaFideTerms)
+$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "TD") ''TermsDoc)
+
+$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NT") ''NameTerms)
 
 -- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
 -- resolver contract, so it must not vary with the swift build flag.
