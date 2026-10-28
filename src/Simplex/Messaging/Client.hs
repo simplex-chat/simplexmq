@@ -1374,7 +1374,7 @@ sendProtocolCommand c nm = sendProtocolCommand_ c nm Nothing Nothing
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {blockSize, encryptBlock, serviceAuth}} nm nonce_ tOut pKey entId cmd =
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
   where
     -- two separate "atomically" needed to avoid blocking
@@ -1382,15 +1382,12 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
     sendRecv t_ r = case t_ of
       Left e -> pure . Left $ PCETransportError e
       Right t
-        | B.length s > maxBlockContent -> pure . Left $ PCETransportError TELargeMsg
+        | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
             nonBlockingWriteTBQueue sndQ (Just r, s)
             response <$> getResponse c nm tOut r
         where
           s = tEncodeBatch1 serviceAuth t
-    maxBlockContent = case encryptBlock of
-      Just _ -> blockSize - 18
-      Nothing -> blockSize - 2
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do

@@ -719,9 +719,10 @@ instance Encoding TransportError where
 tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} block = do
   block_ <- case encryptBlock of
-    Just TSbChainKeys {sndKey} -> do
-      (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
-      pure $ C.sbEncrypt sk nonce block (blockSize - 16)
+    Just TSbChainKeys {sndKey} ->
+      forM (C.pad block (blockSize - 16)) $ \padded -> do
+        (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
+        pure $ C.sbEncryptNoPad sk nonce padded
     Nothing -> pure $ C.pad block blockSize
   bimapM (const $ pure TELargeMsg) (cPut c) block_
 
