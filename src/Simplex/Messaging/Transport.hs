@@ -239,10 +239,7 @@ currentServerSMPRelayVersion = VersionSMP 24
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (23)
--- for this release because forwarded commands use the nonces from
--- fwdNoncesSMPVersion (23), so the one-version anti-fingerprinting buffer does
--- not apply yet; it reappears once the current version advances past 23.
+-- when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 23
 
