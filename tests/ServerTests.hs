@@ -19,12 +19,14 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
-import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.Async (concurrently, concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except (runExceptT)
 import qualified Crypto.PubKey.ECC.Types as ECC
+import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -44,7 +46,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
-import Simplex.Messaging.Client (authTransmission)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), pattern NRMInteractive, ProtocolClientError (..), addSMPQueueLink, authTransmission, createSMPQueue, defaultSMPClientConfig, getProtocolClient, getSMPQueueLink, swapSMPQueueLink)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -143,6 +145,11 @@ serverTests = do
     testInvQueueLinkData
     testContactQueueLinkData
     testDuplicateQueueLinkData
+    testSwapQueueLink
+    testSwapQueueLinkKeys
+    testConcurrentSwapQueueLink
+    testSwapQueueLinkClient
+    testSwapQueueLinkStoreLog
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
