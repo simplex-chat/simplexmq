@@ -27,14 +27,15 @@ import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
+import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), QueueLinkData, RecipientId, SParty (..), linkDataHash, noMsgFlags, randomMsgId)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), readQueueRecIO)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.TMap (TMap)
+import Simplex.Messaging.Util (($>>=))
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -69,6 +70,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
+      it "should swap link data and recipient keys" $ withMsgStore cfg testSwapQueueLinkData
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -233,6 +235,46 @@ testLinkDataSecuredQueue ms = do
     liftIO $ ld' `shouldBe` ld
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
+
+testSwapQueueLinkData :: MsgStoreClass s => s -> IO ()
+testSwapQueueLinkData ms = do
+  g <- C.newRandom
+  (rKey2, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+      rndId = atomically $ EntityId <$> C.randomBytes 24 g
+      (fd, ud) = testLinkData
+      d1 = (fd, EncDataBytes "user data 1")
+      d2 = (fd, EncDataBytes "user data 2")
+  lnkId <- rndId
+  otherLnkId <- rndId
+  (rId, qr) <- testNewQueueRecData g QMContact (Just (lnkId, testLinkData))
+  (noLinkRId, noLinkQr) <- testNewQueueRec g QMContact
+  let rKeys = recipientKeys qr <> [rKey2]
+      storedKeys = fmap recipientKeys <$> (getQueue ms SRecipient rId $>>= readQueueRecIO . queueRec)
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    noLinkQ <- ExceptT $ addQueue ms noLinkRId noLinkQr
+    liftIO $ do
+      swapQueueLinkData st noLinkQ lnkId (linkDataHash ud) Nothing d1 `shouldReturn` Left AUTH
+      swapQueueLinkData st q otherLnkId (linkDataHash ud) Nothing d1 `shouldReturn` Left AUTH
+      swapQueueLinkData st q lnkId (linkDataHash ud) Nothing (EncDataBytes "other fixed data", snd d1) `shouldReturn` Left AUTH
+      swapQueueLinkData st q lnkId (linkDataHash $ snd d1) (Just rKeys) d1 `shouldReturn` Right (Just ud)
+      getQueueLinkData st q lnkId `shouldReturn` Right testLinkData
+      storedKeys `shouldReturn` Right (recipientKeys qr)
+      swapQueueLinkData st q lnkId (linkDataHash ud) Nothing d1 `shouldReturn` Right Nothing
+      getQueueLinkData st q lnkId `shouldReturn` Right d1
+    staleQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ do
+      swapQueueLinkData st q lnkId (linkDataHash $ snd d1) (Just rKeys) d2 `shouldReturn` Right Nothing
+      getQueueLinkData st q lnkId `shouldReturn` Right d2
+      storedKeys `shouldReturn` Right rKeys
+      addQueueLinkData st staleQ lnkId d1 `shouldReturn` Left AUTH
+    freshQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ do
+      addQueueLinkData st freshQ lnkId d1 `shouldReturn` Left AUTH
+      getQueueLinkData st freshQ lnkId `shouldReturn` Right d2
+    void $ ExceptT $ deleteQueue ms q
+    void $ ExceptT $ deleteQueue ms noLinkQ
 
 -- sizes of queues, senders, links and notifiers maps
 type QueueMapSizes = (Int, Int, Int, Int)

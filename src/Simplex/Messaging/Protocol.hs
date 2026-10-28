@@ -64,6 +64,8 @@ module Simplex.Messaging.Protocol
     EncFixedDataBytes,
     EncUserDataBytes,
     EncDataBytes (..),
+    LinkDataHash (..),
+    linkDataHash,
     NewNtfCreds (..),
     ServerNtfCreds (..),
     Party (..),
@@ -669,6 +671,12 @@ instance Encoding EncDataBytes where
 instance ToField EncDataBytes where
   toField (EncDataBytes s) = toField (Binary s)
   {-# INLINE toField #-}
+
+newtype LinkDataHash = LinkDataHash ByteString
+  deriving (Eq, Show)
+
+linkDataHash :: EncUserDataBytes -> LinkDataHash
+linkDataHash (EncDataBytes s) = LinkDataHash $ C.sha256Hash s
 
 data NewNtfCreds = NewNtfCreds NtfPublicAuthKey RcvNtfPublicDhKey deriving (Show)
 

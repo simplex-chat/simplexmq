@@ -31,7 +31,7 @@ import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.STM (STMMsgStore (..))
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.QueueStore
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), setStoreLog)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.SystemTime
@@ -61,7 +61,8 @@ deriving instance Eq StoreLogRecord
 deriving instance Eq NtfCreds
 
 storeLogTests :: Spec
-storeLogTests =
+storeLogTests = do
+  it "should log link data swaps and restore them" testSwapLinkStoreLog
   forM_ [QMMessaging, QMContact] $ \qm -> do
     g <- runIO C.newRandom
     ((rId, qr), ntfCreds, date, sr@ServiceRec {serviceId}) <- runIO $
@@ -73,6 +74,9 @@ storeLogTests =
       pure (q, lnkId, qd)
     let pubKey = fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
     newKeys <- runIO $ L.fromList <$> sequence [pubKey, pubKey]
+    newKeys' <- runIO $ L.fromList <$> sequence [pubKey, pubKey, pubKey]
+    let qd' = (fst qd, EncDataBytes "user data 1")
+        qd'' = (fst qd, EncDataBytes "user data 2")
     testSMPStoreLog
       ("SMP server store log, queueMode = " <> show qm)
       [ SLTC
@@ -140,6 +144,18 @@ storeLogTests =
             saved = [CreateQueue rId qr, UpdateKeys rId newKeys],
             compacted = [CreateQueue rId qr {recipientKeys = newKeys}],
             state = M.fromList [(rId, qr {recipientKeys = newKeys})]
+          },
+        SLTC
+          { name = "swap link data and recipient keys twice",
+            saved = [CreateQueue rId' qr', CreateLinkKeys rId' lnkId qd' newKeys, UpdateKeys rId' newKeys, CreateLinkKeys rId' lnkId qd'' newKeys', UpdateKeys rId' newKeys'],
+            compacted = [CreateQueue rId' qr' {recipientKeys = newKeys', queueData = Just (lnkId, qd'')}],
+            state = M.fromList [(rId', qr' {recipientKeys = newKeys', queueData = Just (lnkId, qd'')})]
+          },
+        SLTC
+          { name = "swap link data and recipient keys, then swap link data",
+            saved = [CreateQueue rId' qr', CreateLinkKeys rId' lnkId qd' newKeys, UpdateKeys rId' newKeys, CreateLink rId' lnkId qd''],
+            compacted = [CreateQueue rId' qr' {recipientKeys = newKeys, queueData = Just (lnkId, qd'')}],
+            state = M.fromList [(rId', qr' {recipientKeys = newKeys, queueData = Just (lnkId, qd'')})]
           }
       ]
 
@@ -184,6 +200,30 @@ testSMPStoreLog testSuite tests =
       compacted' `shouldBe` compacted
     storeState :: STMMsgStore -> IO (M.Map RecipientId QueueRec)
     storeState st = M.mapMaybe id <$> (readTVarIO (queues $ queueStore st) >>= mapM (readTVarIO . queueRec))
+
+testSwapLinkStoreLog :: HasTestEnv => IO ()
+testSwapLinkStoreLog = do
+  g <- C.newRandom
+  lnkId <- atomically $ EntityId <$> C.randomBytes 24 g
+  (rId, qr) <- testNewQueueRecData g QMContact (Just (lnkId, testLinkData))
+  (rKey2, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let (fd, ud) = testLinkData
+      d1 = (fd, EncDataBytes "user data 1")
+      d2 = (fd, EncDataBytes "user data 2")
+      rKeys = rKey2 L.<| recipientKeys qr
+  ms <- newMsgStore testSMTStoreConfig
+  setStoreLog (queueStore ms) =<< openWriteStoreLog False testStoreLogFile
+  Right q <- addQueue ms rId qr
+  swapQueueLinkData (queueStore ms) q lnkId (linkDataHash ud) (Just rKeys) d1 `shouldReturn` Right Nothing
+  swapQueueLinkData (queueStore ms) q lnkId (linkDataHash $ snd d1) Nothing d2 `shouldReturn` Right Nothing
+  closeMsgStore ms
+  ([], logged) <- partitionEithers . map strDecode . B.lines <$> B.readFile testStoreLogFile
+  logged `shouldBe` [CreateQueue rId qr, CreateLinkKeys rId lnkId d1 rKeys, UpdateKeys rId rKeys, CreateLink rId lnkId d2]
+  ms' <- newMsgStore testSMTStoreConfig
+  sl <- readWriteQueueStore True (mkQueue ms') testStoreLogFile $ queueStore ms'
+  Right q' <- getQueue ms' SRecipient rId
+  readTVarIO (queueRec q') `shouldReturn` Just qr {recipientKeys = rKeys, queueData = Just (lnkId, d2)}
+  closeStoreLog sl
 
 type FileRecState = (FileInfo, RoundedFileTime, Maybe RoundedFileTime, ServerEntityStatus)
 

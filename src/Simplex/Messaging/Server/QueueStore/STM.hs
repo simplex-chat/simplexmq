@@ -19,6 +19,7 @@ module Simplex.Messaging.Server.QueueStore.STM
     STMService (..),
     foldRcvServiceQueues,
     withLoadedQueues,
+    restoreQueueLinkData,
     setStoreLog,
     withLog',
     readQueueRecIO,
@@ -34,8 +35,9 @@ import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (partition)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -171,20 +173,25 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     where
       rId = recipientId sq
       qr = queueRec sq
-      add q = case queueData q of
-        _ | isSecuredMsgQueue q -> pure $ Left AUTH
-        Nothing -> addLink
-        Just (lnkId', d') | lnkId' == lnkId && fst d' == fst d -> addLink
+      add q = case recipientKeys q of
+        _ :| [] -> addLinkData st sq lnkId d q
         _ -> pure $ Left AUTH
-        where
-          addLink = do
-            TM.lookup lnkId (links st) >>= \case
-              Just rId' | rId' /= rId -> pure $ Left AUTH
-              _ -> do
-                let !q' = q {queueData = Just (lnkId, d)}
-                writeTVar qr $ Just q'
-                TM.insert lnkId rId $ links st
-                pure $ Right ()
+
+  swapQueueLinkData :: STMQueueStore q -> q -> LinkId -> LinkDataHash -> Maybe (NonEmpty RcvPublicAuthKey) -> QueueLinkData -> IO (Either ErrorType (Maybe EncUserDataBytes))
+  swapQueueLinkData st sq lnkId h rKeys_ d =
+    atomically (readQueueRec qr $>>= swap) $>>= \case
+      Just ud -> pure $ Right $ Just ud
+      Nothing -> Nothing <$$ withLog "swapQueueLinkData" st (\s -> logSwapLink s (recipientId sq) lnkId d rKeys_)
+    where
+      qr = queueRec sq
+      swap q = case queueData q of
+        Just (lnkId', (fd', ud'))
+          | lnkId' /= lnkId || fd' /= fst d -> pure $ Left AUTH
+          | linkDataHash ud' /= h -> pure $ Right $ Just ud'
+          | otherwise -> do
+              let !q' = q {recipientKeys = fromMaybe (recipientKeys q) rKeys_, queueData = Just (lnkId, d)}
+              writeTVar qr (Just q') $> Right Nothing
+        Nothing -> pure $ Left AUTH
 
   deleteQueueLinkData :: STMQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
@@ -384,6 +391,27 @@ withLoadedQueues :: Monoid a => STMQueueStore q -> (q -> IO a) -> IO a
 withLoadedQueues st f = readTVarIO (queues st) >>= foldM run mempty
   where
     run !acc = fmap (acc <>) . f
+
+restoreQueueLinkData :: StoreQueueClass q => STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+restoreQueueLinkData st sq lnkId d = atomically $ readQueueRec (queueRec sq) $>>= addLinkData st sq lnkId d
+
+addLinkData :: StoreQueueClass q => STMQueueStore q -> q -> LinkId -> QueueLinkData -> QueueRec -> STM (Either ErrorType ())
+addLinkData st sq lnkId d q = case queueData q of
+  _ | isSecuredMsgQueue q -> pure $ Left AUTH
+  Nothing -> addLink
+  Just (lnkId', d') | lnkId' == lnkId && fst d' == fst d -> addLink
+  _ -> pure $ Left AUTH
+  where
+    rId = recipientId sq
+    qr = queueRec sq
+    addLink = do
+      TM.lookup lnkId (links st) >>= \case
+        Just rId' | rId' /= rId -> pure $ Left AUTH
+        _ -> do
+          let !q' = q {queueData = Just (lnkId, d)}
+          writeTVar qr $ Just q'
+          TM.insert lnkId rId $ links st
+          pure $ Right ()
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a
