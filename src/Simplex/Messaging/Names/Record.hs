@@ -11,6 +11,7 @@ module Simplex.Messaging.Names.Record
     NameResponse (..),
     NameRegistration (..),
     NamePricing (..),
+    BonaFideTerms (..),
     USDCents (..),
     NameReservedReason (..),
   )
@@ -85,7 +86,11 @@ data NameRegistration
         nameRecord :: NameRecord
       }
   | -- | Held by nobody, and registrable now.
-    NRAvailable {pricing :: NamePricing}
+    NRAvailable
+      { pricing :: NamePricing,
+        -- | a bona fide community name, registrable only under these community terms
+        bonaFideTerms_ :: Maybe BonaFideTerms
+      }
   | -- | Held back by the registry, and not for sale at its price.
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
@@ -99,6 +104,14 @@ data NamePricing = NamePricing
     -- | characters; the registry refuses shorter labels
     minLabelLength :: Int
   }
+  deriving (Eq, Show)
+
+-- | The community terms a bona fide name is registered under, whose keccak256 a buyer accepts.
+data BonaFideTerms
+  = -- | their text, when it fits the answer
+    BFTText {termsText :: Text}
+  | -- | the 0x hex keccak256 of their text, when it does not
+    BFTHash {termsHash :: Text}
   deriving (Eq, Show)
 
 -- | Why the registry holds a name back.
@@ -136,6 +149,8 @@ instance FromJSON NameReservedReason where
   parseJSON = textParseJSON "NameReservedReason"
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
+
+$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "BFT") ''BonaFideTerms)
 
 -- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
 -- resolver contract, so it must not vary with the swift build flag.
