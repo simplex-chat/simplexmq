@@ -585,6 +585,7 @@ data Command (p :: Party) where
   KEY :: SndPublicAuthKey -> Command Recipient
   RKEY :: NonEmpty RcvPublicAuthKey -> Command Recipient
   LSET :: LinkId -> QueueLinkData -> Command Recipient
+  LSWP :: LinkId -> LinkDataHash -> Maybe (NonEmpty RcvPublicAuthKey) -> QueueLinkData -> Command Recipient
   LDEL :: Command Recipient
   NKEY :: NtfPublicAuthKey -> RcvNtfPublicDhKey -> Command Recipient
   NDEL :: Command Recipient
@@ -674,6 +675,7 @@ instance ToField EncDataBytes where
 
 newtype LinkDataHash = LinkDataHash ByteString
   deriving (Eq, Show)
+  deriving newtype (Encoding)
 
 linkDataHash :: EncUserDataBytes -> LinkDataHash
 linkDataHash (EncDataBytes s) = LinkDataHash $ C.sha256Hash s
@@ -742,6 +744,7 @@ data BrokerMsg where
   -- SMP broker messages (responses, client messages, notifications)
   IDS :: QueueIdsKeys -> BrokerMsg
   LNK :: SenderId -> QueueLinkData -> BrokerMsg
+  LCUR :: EncUserDataBytes -> BrokerMsg
   -- | Service subscription success - confirms when queue was associated with the service
   SOK :: Maybe ServiceId -> BrokerMsg
   -- | The number of queues and XOR-hash of their IDs subscribed with SUBS command
@@ -959,6 +962,7 @@ data CommandTag (p :: Party) where
   KEY_ :: CommandTag Recipient
   RKEY_ :: CommandTag Recipient
   LSET_ :: CommandTag Recipient
+  LSWP_ :: CommandTag Recipient
   LDEL_ :: CommandTag Recipient
   NKEY_ :: CommandTag Recipient
   NDEL_ :: CommandTag Recipient
@@ -988,6 +992,7 @@ deriving instance Show CmdTag
 data BrokerMsgTag
   = IDS_
   | LNK_
+  | LCUR_
   | SOK_
   | SOKS_
   | MSG_
@@ -1023,6 +1028,7 @@ instance PartyI p => Encoding (CommandTag p) where
     KEY_ -> "KEY"
     RKEY_ -> "RKEY"
     LSET_ -> "LSET"
+    LSWP_ -> "LSWP"
     LDEL_ -> "LDEL"
     NKEY_ -> "NKEY"
     NDEL_ -> "NDEL"
@@ -1052,6 +1058,7 @@ instance ProtocolMsgTag CmdTag where
     "KEY" -> Just $ CT SRecipient KEY_
     "RKEY" -> Just $ CT SRecipient RKEY_
     "LSET" -> Just $ CT SRecipient LSET_
+    "LSWP" -> Just $ CT SRecipient LSWP_
     "LDEL" -> Just $ CT SRecipient LDEL_
     "NKEY" -> Just $ CT SRecipient NKEY_
     "NDEL" -> Just $ CT SRecipient NDEL_
@@ -1084,6 +1091,7 @@ instance Encoding BrokerMsgTag where
   smpEncode = \case
     IDS_ -> "IDS"
     LNK_ -> "LNK"
+    LCUR_ -> "LCUR"
     SOK_ -> "SOK"
     SOKS_ -> "SOKS"
     MSG_ -> "MSG"
@@ -1107,6 +1115,7 @@ instance ProtocolMsgTag BrokerMsgTag where
   decodeTag = \case
     "IDS" -> Just IDS_
     "LNK" -> Just LNK_
+    "LCUR" -> Just LCUR_
     "SOK" -> Just SOK_
     "SOKS" -> Just SOKS_
     "MSG" -> Just MSG_
@@ -1874,6 +1883,7 @@ instance PartyI p => ProtocolEncoding SMPVersion ErrorType (Command p) where
     KEY k -> e (KEY_, ' ', k)
     RKEY ks -> e (RKEY_, ' ', ks)
     LSET lnkId d -> e (LSET_, ' ', lnkId, d)
+    LSWP lnkId h keys_ d -> e (LSWP_, ' ', lnkId, h, keys_, d)
     LDEL -> e LDEL_
     NKEY k dhKey -> e (NKEY_, ' ', k, dhKey)
     NDEL -> e NDEL_
@@ -1969,6 +1979,7 @@ instance ProtocolEncoding SMPVersion ErrorType Cmd where
         KEY_ -> KEY <$> _smpP
         RKEY_ -> RKEY <$> _smpP
         LSET_ -> LSET <$> _smpP <*> smpP
+        LSWP_ -> LSWP <$> _smpP <*> smpP <*> smpP <*> smpP
         LDEL_ -> pure LDEL
         NKEY_ -> NKEY <$> _smpP <*> smpP
         NDEL_ -> pure NDEL
@@ -2017,6 +2028,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       where
         ids = e (IDS_, ' ', rcvId, sndId, srvDh)
     LNK sId d -> e (LNK_, ' ', sId, d)
+    LCUR d -> e (LCUR_, ' ', d)
     SOK serviceId_
       | v >= serviceCertsSMPVersion -> e (SOK_, ' ', serviceId_)
       | otherwise -> e OK_ -- won't happen, the association with the service requires v >= serviceCertsSMPVersion
@@ -2079,6 +2091,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
           serverNtfCreds <- p4
           pure $ IDS QIK {rcvId, sndId, rcvPublicDhKey, queueMode, linkId, serviceId, serverNtfCreds}
     LNK_ -> LNK <$> _smpP <*> smpP
+    LCUR_ -> LCUR <$> _smpP
     SOK_ -> SOK <$> _smpP
     SOKS_ -> serviceRespP SOKS
     NID_ -> NID <$> _smpP <*> smpP

@@ -57,6 +57,7 @@ module Simplex.Messaging.Client
     secureSndSMPQueue,
     proxySecureSndSMPQueue,
     addSMPQueueLink,
+    swapSMPQueueLink,
     deleteSMPQueueLink,
     secureGetSMPQueueLink,
     proxySecureGetSMPQueueLink,
@@ -74,6 +75,7 @@ module Simplex.Messaging.Client
     deleteSMPQueues,
     connectSMPProxiedRelay,
     proxySMPMessage,
+    proxySMPCommand,
     proxyResolveName,
     directResolveName,
     forwardSMPTransmission,
@@ -975,6 +977,15 @@ proxySecureSndSMPQueue c nm proxiedRelay spKey sId = proxyOKSMPCommand c nm prox
 addSMPQueueLink :: SMPClient -> NetworkRequestMode -> RcvPrivateAuthKey -> RecipientId -> LinkId -> QueueLinkData -> ExceptT SMPClientError IO ()
 addSMPQueueLink c nm rpKey rId lnkId d = okSMPCommand (LSET lnkId d) c nm rpKey rId
 {-# INLINE addSMPQueueLink #-}
+
+swapSMPQueueLink :: SMPClient -> NetworkRequestMode -> RcvPrivateAuthKey -> RecipientId -> LinkId -> LinkDataHash -> Maybe (NonEmpty RcvPublicAuthKey) -> QueueLinkData -> ExceptT SMPClientError IO (Maybe EncUserDataBytes)
+swapSMPQueueLink c nm rpKey rId lnkId h ks_ d
+  | thVersion (thParams c) >= linkSwapSMPVersion =
+      sendSMPCommand c nm (Just rpKey) rId (LSWP lnkId h ks_ d) >>= \case
+        OK -> pure Nothing
+        LCUR ud -> pure $ Just ud
+        r -> throwE $ unexpectedResponse r
+  | otherwise = throwE $ PCETransportError TEVersion
 
 -- | Delete queue link
 deleteSMPQueueLink :: SMPClient -> NetworkRequestMode -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO ()

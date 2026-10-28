@@ -19,11 +19,13 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
-import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.Async (concurrently, concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except (runExceptT)
+import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -31,7 +33,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Foldable (foldrM)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
@@ -41,6 +43,7 @@ import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
+import Simplex.Messaging.Client (ProtocolClientConfig (..), pattern NRMInteractive, ProtocolClientError (..), addSMPQueueLink, createSMPQueue, defaultSMPClientConfig, getProtocolClient, getSMPQueueLink, swapSMPQueueLink)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -109,6 +112,11 @@ serverTests = do
     testInvQueueLinkData
     testContactQueueLinkData
     testDuplicateQueueLinkData
+    testSwapQueueLink
+    testSwapQueueLinkKeys
+    testConcurrentSwapQueueLink
+    testSwapQueueLinkClient
+    testSwapQueueLinkStoreLog
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
@@ -1788,6 +1796,164 @@ testDuplicateQueueLinkData =
       lnkId2 `shouldBe` lnkId
       victimSId2 `shouldBe` victimSId
       victimLD2 `shouldBe` victimLD
+
+testSwapQueueLink :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLink =
+  it "swaps short link user data when the stored data hash matches" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      otherLnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          ld1 = (fst ld, EncDataBytes "user data 1")
+      (rId, rKey, _) <- createLinkQueue g r $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+
+      Resp "1" _ (LCUR ud) <- signSendRecv r rKey ("1", rId, LSWP lnkId (userDataHash ld1) Nothing ld1)
+      (ud, snd ld) #== "returns stored user data when the hash differs"
+      Resp "2" _ (LNK _ ld') <- sendRecv s ("", "2", lnkId, LGET)
+      (ld', ld) #== "link data unchanged after the hash differs"
+
+      Resp "3" _ err1 <- signSendRecv r rKey ("3", rId, LSWP otherLnkId (userDataHash ld) Nothing ld1)
+      (err1, ERR AUTH) #== "rejects another link ID"
+      Resp "4" _ err2 <- signSendRecv r rKey ("4", rId, LSWP lnkId (userDataHash ld) Nothing (EncDataBytes "other fixed data", snd ld1))
+      (err2, ERR AUTH) #== "rejects other fixed data"
+
+      Resp "5" rId' OK <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld) Nothing ld1)
+      rId' `shouldBe` rId
+      Resp "6" _ (LNK _ ld1') <- sendRecv s ("", "6", lnkId, LGET)
+      (ld1', ld1) #== "replaces user data and keeps fixed data"
+
+      (noLinkRId, noLinkKey, Nothing) <- createLinkQueue g r $ \_ -> QRContact Nothing
+      Resp "7" _ err3 <- signSendRecv r noLinkKey ("7", noLinkRId, LSWP lnkId (userDataHash ld1) Nothing ld1)
+      (err3, ERR AUTH) #== "rejects queue without link"
+
+      (msgRId, msgKey, Just msgLnkId) <- createLinkQueue g r $ \sId -> QRMessaging $ Just (sId, ld)
+      Resp "8" _ err4 <- signSendRecv r msgKey ("8", msgRId, LSWP msgLnkId (userDataHash ld) Nothing ld1)
+      (err4, ERR AUTH) #== "rejects messaging queue"
+
+testSwapQueueLinkKeys :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLinkKeys =
+  it "swaps short link user data with recipient keys" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      (rPub', rKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          ld1 = (fst ld, EncDataBytes "user data 1")
+          ld2 = (fst ld, EncDataBytes "user data 2")
+      (rId, rKey, _) <- createLinkQueue g r $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+
+      Resp "1" _ OK <- signSendRecv r rKey ("1", rId, LSWP lnkId (userDataHash ld) (Just [C.toPublic rKey, rPub']) ld1)
+      Resp "2" _ err1 <- signSendRecv r rKey ("2", rId, LSET lnkId ld2)
+      (err1, ERR AUTH) #== "rejects LSET on a queue with two keys"
+      Resp "3" _ err2 <- signSendRecv r rKey' ("3", rId, LSET lnkId ld2)
+      (err2, ERR AUTH) #== "rejects LSET with the added key"
+
+      Resp "4" _ OK <- signSendRecv r rKey' ("4", rId, LSWP lnkId (userDataHash ld1) (Just [rPub']) ld2)
+      Resp "5" _ err3 <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld2) Nothing ld1)
+      (err3, ERR AUTH) #== "rejects the removed key"
+      Resp "6" _ (LNK _ ld') <- sendRecv s ("", "6", lnkId, LGET)
+      (ld', ld2) #== "stores data written with the added key"
+
+testConcurrentSwapQueueLink :: SpecWith (ASrvTransport, AStoreType)
+testConcurrentSwapQueueLink =
+  it "accepts one of concurrent swaps from the same data" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r1 r2 -> do
+      g <- C.newRandom
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          ld1 = (fst ld, EncDataBytes "user data 1")
+          ld2 = (fst ld, EncDataBytes "user data 2")
+          ld3 = (fst ld, EncDataBytes "user data 3")
+      (rId, rKey, _) <- createLinkQueue g r1 $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+
+      rs <-
+        concurrently
+          (signSendRecv r1 rKey ("1", rId, LSWP lnkId (userDataHash ld) Nothing ld1))
+          (signSendRecv r2 rKey ("2", rId, LSWP lnkId (userDataHash ld) Nothing ld2))
+      storedLD <- case rs of
+        (Resp "1" _ OK, Resp "2" _ (LCUR ud)) -> ld1 <$ (ud `shouldBe` snd ld1)
+        (Resp "1" _ (LCUR ud), Resp "2" _ OK) -> ld2 <$ (ud `shouldBe` snd ld2)
+        _ -> error $ "expected OK and LCUR, got " <> show rs
+
+      Resp "3" _ OK <- signSendRecv r2 rKey ("3", rId, LSWP lnkId (userDataHash storedLD) Nothing ld3)
+      Resp "4" _ (LNK _ ld') <- sendRecv r1 ("", "4", lnkId, LGET)
+      (ld', ld3) #== "stores data swapped from the current data"
+
+testSwapQueueLinkClient :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLinkClient =
+  it "sends swaps only in v24 sessions, with up to 6 recipient keys" $ \(at, msType) ->
+    withSmpServer (at, msType) $ do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      let srv = SMPServer testHost testPort testKeyHash
+          connect vr = getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ()) >>= either (fail . show) pure
+      c <- connect supportedClientSMPRelayVRange
+      cPrev <- connect $ prevRange supportedClientSMPRelayVRange
+      cLarge <- connect supportedClientSMPRelayVRange
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      fd <- atomically $ C.randomBytes 2048 g
+      let ld = (EncDataBytes fd, EncDataBytes $ B.replicate 13824 'a')
+          ld' = (EncDataBytes fd, EncDataBytes $ B.replicate 13824 'b')
+      otherKeys <- replicateM 5 $ fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+      (rPub7, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Right QIK {rcvId = rId} <- runExceptT $ createSMPQueue c NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing
+      Right () <- runExceptT $ addSMPQueueLink c NRMInteractive rKey rId lnkId ld
+      let keys6 = rPub :| otherKeys
+          keys7 = keys6 <> [rPub7]
+          swap c' keys = runExceptT $ swapSMPQueueLink c' NRMInteractive rKey rId lnkId (userDataHash ld) keys ld'
+          storedLD = fmap snd <$> runExceptT (getSMPQueueLink c NRMInteractive lnkId)
+
+      swap cPrev Nothing `shouldReturn` Left (PCETransportError TEVersion)
+      swap cLarge (Just keys7) `shouldReturn` Left (PCETransportError TELargeMsg)
+      storedLD `shouldReturn` Right ld
+      swap c (Just keys6) `shouldReturn` Right Nothing
+      storedLD `shouldReturn` Right ld'
+
+testSwapQueueLinkStoreLog :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLinkStoreLog =
+  it "restores swapped short link data and recipient keys after restart" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+    (rPub1, rKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (rPub2, rKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+        ld1 = (fst ld, EncDataBytes "user data 1")
+        ld2 = (fst ld, EncDataBytes "user data 2")
+        ld3 = (fst ld, EncDataBytes "user data 3")
+        ld4 = (fst ld, EncDataBytes "user data 4")
+        (cfg', _) = serverStoreLogCfg msType
+    (rId, rKey) <- withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \r -> do
+      (rId, rKey, _) <- createLinkQueue g r $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+      Resp "1" _ OK <- signSendRecv r rKey ("1", rId, LSWP lnkId (userDataHash ld) (Just [C.toPublic rKey, rPub1]) ld1)
+      Resp "2" _ OK <- signSendRecv r rKey1 ("2", rId, LSWP lnkId (userDataHash ld1) (Just [rPub1, rPub2]) ld2)
+      Resp "3" _ OK <- signSendRecv r rKey2 ("3", rId, LSWP lnkId (userDataHash ld2) Nothing ld3)
+      pure (rId, rKey)
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \r -> do
+      Resp "4" _ (LNK _ ld') <- sendRecv r ("", "4", lnkId, LGET)
+      (ld', ld3) #== "restores data of the last swap"
+      Resp "5" _ err1 <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld3) Nothing ld4)
+      (err1, ERR AUTH) #== "restores removed key as removed"
+      Resp "6" _ err2 <- signSendRecv r rKey1 ("6", rId, LSET lnkId ld4)
+      (err2, ERR AUTH) #== "restores two keys"
+      Resp "7" _ OK <- signSendRecv r rKey2 ("7", rId, LSWP lnkId (userDataHash ld3) Nothing ld4)
+      Resp "8" _ (LNK _ ld4') <- sendRecv r ("", "8", lnkId, LGET)
+      (ld4', ld4) #== "swaps restored data"
+
+createLinkQueue :: Transport c => TVar ChaChaDRG -> THandleSMP c 'TClient -> (SenderId -> QueueReqData) -> IO (RecipientId, C.APrivateAuthKey, Maybe LinkId)
+createLinkQueue g r queueReqData = do
+  (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  C.CbNonce corrId <- atomically $ C.randomCbNonce g
+  let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
+  Resp _ NoEntity (IDS QIK {rcvId, linkId}) <-
+    signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just $ queueReqData sId) Nothing))
+  pure (rcvId, rKey, linkId)
+
+userDataHash :: QueueLinkData -> LinkDataHash
+userDataHash = linkDataHash . snd
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
