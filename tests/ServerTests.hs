@@ -1955,8 +1955,8 @@ testSwapQueueLinkStoreLog =
       (ld', ld3) #== "restores data of the last swap"
       Resp "5" _ err1 <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld3) Nothing ld4)
       (err1, ERR AUTH) #== "restores removed key as removed"
-      Resp "6" _ err2 <- signSendRecv r rKey1 ("6", rId, LSET lnkId ld4)
-      (err2, ERR AUTH) #== "restores two keys"
+      Resp "6" _ (LCUR ud) <- signSendRecv r rKey1 ("6", rId, LSWP lnkId (userDataHash ld2) Nothing ld4)
+      (ud, snd ld3) #== "restores the first key"
       Resp "7" _ OK <- signSendRecv r rKey2 ("7", rId, LSWP lnkId (userDataHash ld3) Nothing ld4)
       Resp "8" _ (LNK _ ld4') <- sendRecv r ("", "8", lnkId, LGET)
       (ld4', ld4) #== "swaps restored data"
