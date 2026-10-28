@@ -1910,7 +1910,6 @@ testSwapQueueLinkClient =
           connect vr = getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ()) >>= either (fail . show) pure
       c <- connect supportedClientSMPRelayVRange
       cPrev <- connect $ prevRange supportedClientSMPRelayVRange
-      cLarge <- connect supportedClientSMPRelayVRange
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
@@ -1927,7 +1926,7 @@ testSwapQueueLinkClient =
           storedLD = fmap snd <$> runExceptT (getSMPQueueLink c NRMInteractive lnkId)
 
       swap cPrev Nothing `shouldReturn` Left (PCETransportError TEVersion)
-      swap cLarge (Just keys7) `shouldReturn` Left (PCETransportError TELargeMsg)
+      swap c (Just keys7) `shouldReturn` Left (PCETransportError TELargeMsg)
       storedLD `shouldReturn` Right ld
       swap c (Just keys6) `shouldReturn` Right Nothing
       storedLD `shouldReturn` Right ld'
