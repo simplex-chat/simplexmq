@@ -742,7 +742,7 @@ encFixedData = largeString ; encrypted fixed link data, must be the same as stor
 encUserData = largeString ; new encrypted user data
 ```
 
-The router responds with `ERR AUTH` if the queue is not a contact queue, has no short link, or if the link ID or fixed data differ from the stored ones.
+The router responds with `ERR AUTH` if the queue was not created with `queueReqContact` (contact queues created without queue request data are refused too), has no short link, or if the link ID or fixed data differ from the stored ones.
 
 If the hash of the stored user data differs from `userDataHash`, the router responds with [current link data response](#current-link-data-response) (`LCUR`) with the stored user data, and changes nothing.
 
