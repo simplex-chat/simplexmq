@@ -66,6 +66,8 @@ module Simplex.Messaging.Protocol
     EncFixedDataBytes,
     EncUserDataBytes,
     EncDataBytes (..),
+    LinkDataHash (..),
+    linkDataHash,
     NewNtfCreds (..),
     ServerNtfCreds (..),
     Party (..),
