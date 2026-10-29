@@ -522,9 +522,9 @@ testChangedFwdVersion =
     et <- encrypt $ SMP.encTransmissionNonce v nonce
     _ <- runExceptT' $ forward corrId v et
     runExceptT (forward corrId (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
-    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
-    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion v) =<< encrypt nonce
-    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion v) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion fwdNoncesSMPVersion) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion fwdNoncesSMPVersion) =<< encrypt nonce
+    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion fwdNoncesSMPVersion) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
 
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
