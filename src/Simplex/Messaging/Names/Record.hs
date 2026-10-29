@@ -1,4 +1,6 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -11,6 +13,9 @@ module Simplex.Messaging.Names.Record
     NameResponse (..),
     NameRegistration (..),
     NamePricing (..),
+    NameTerms (..),
+    TermsDoc (..),
+    ZstdTerms (..),
     USDCents (..),
     NameReservedReason (..),
   )
@@ -19,6 +24,7 @@ where
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import Data.ByteString (ByteString)
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
@@ -85,7 +91,11 @@ data NameRegistration
         nameRecord :: NameRecord
       }
   | -- | Held by nobody, and registrable now.
-    NRAvailable {pricing :: NamePricing}
+    NRAvailable
+      { pricing :: NamePricing,
+        -- | absent only from a router before v24
+        nameTerms :: Maybe NameTerms
+      }
   | -- | Held back by the registry, and not for sale at its price.
     NRReserved {reservedReason :: NameReservedReason}
   deriving (Eq, Show)
@@ -100,6 +110,27 @@ data NamePricing = NamePricing
     minLabelLength :: Int
   }
   deriving (Eq, Show)
+
+-- | The terms a buyer of the name accepts, which the name policy keeps.
+data NameTerms
+  = -- | the general terms
+    NTGeneral {termsDoc :: TermsDoc}
+  | -- | a community name's community terms, which include the general ones
+    NTCommunity {termsDoc :: TermsDoc}
+  deriving (Eq, Show)
+
+-- | Terms as the name policy keeps them: a link to one file at one commit, whose keccak256 a buyer accepts.
+data TermsDoc = TermsDoc
+  { -- | ends in #sha256=<hex> of the file
+    termsLink :: Text,
+    -- | the file in one zstd frame, when it fits the answer
+    termsZstd :: Maybe ZstdTerms
+  }
+  deriving (Eq, Show)
+
+newtype ZstdTerms = ZstdTerms ByteString
+  deriving newtype (Eq, Show, StrEncoding)
+  deriving (ToJSON, FromJSON) via (StrJSON "ZstdTerms" ZstdTerms)
 
 -- | Why the registry holds a name back.
 data NameReservedReason
@@ -136,6 +167,10 @@ instance FromJSON NameReservedReason where
   parseJSON = textParseJSON "NameReservedReason"
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
+
+$(JQ.deriveJSON defaultJSON ''TermsDoc)
+
+$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NT") ''NameTerms)
 
 -- taggedObjectJSON, not sumTypeJSON: this JSON is the RNAME payload and the
 -- resolver contract, so it must not vary with the swift build flag.
