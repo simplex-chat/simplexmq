@@ -10,6 +10,7 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
+import CoreTests.EthCryptoTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
@@ -88,6 +89,7 @@ main = do
             describe "Encoding tests" encodingTests
             describe "Version range" versionRangeTests
             describe "Encryption tests" cryptoTests
+            describe "Ethereum crypto tests" ethCryptoTests
             describe "Encrypted files tests" cryptoFileTests
             describe "Message store tests" msgStoreTests
             describe "SOCKS settings tests" socksSettingsTests
