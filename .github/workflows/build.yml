@@ -8,10 +8,17 @@ on:
     tags:
       - "v*"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "hspec match patterns, one per line; / runs all tests, empty runs none"
+        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
 
@@ -24,7 +31,15 @@ jobs:
 
   maybe-release:
     runs-on: ubuntu-latest
+    outputs:
+      reduced: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == true || (github.event_name == 'push' && github.ref_type == 'branch' && github.repository != 'simplex-chat/simplexmq') }}
     steps:
+      - name: Reject a manual run on a tag
+        if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
+        run: |
+          echo "::error::A manual run starts on a branch; to retry a release, re-run the jobs of its tag push."
+          exit 1
+
       - name: Clone project
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/checkout@v3
@@ -66,21 +81,22 @@ jobs:
   build:
     name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
     needs: maybe-release
+    if: needs.maybe-release.outputs.reduced != 'true'
     permissions:
       contents: write
       packages: write
-    env:
+    env: &build-env
       apps: "smp-server xftp-server ntf-server xftp"
-      opt: ${{ github.event_name == 'pull_request' && 'O0' || 'O2' }}
-      ghc_options: ${{ github.event_name == 'pull_request' && '--ghc-options=-O0' || '' }}
+      opt: ${{ github.event_name == 'push' && 'O2' || 'O0' }}
+      ghc_options: ${{ github.event_name != 'push' && '--ghc-options=-O0' || '' }}
       release: ${{ startsWith(github.ref, 'refs/tags/v') }}
       postgres_dist: ${{ startsWith(github.ref, 'refs/tags/v') && 'dist-newstyle' || 'dist-postgres' }}
       branch: ${{ github.base_ref || github.ref_name }}
       cache_o0: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/stable') }}
-      image_cache: ghcr.io/simplex-chat/simplexmq-build-cache:${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}
+      image_cache: ghcr.io/${{ github.repository_owner }}/simplexmq-build-cache:${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}
       source_hashes: dist-newstyle/sources.sha256
     runs-on: ${{ matrix.runner }}
-    services:
+    services: &build-services
       postgres:
         image: postgres:15
         env:
@@ -127,7 +143,7 @@ jobs:
             runner: "ubuntu-24.04-arm"
             ghc: "9.6.3"
             should_run: true
-    steps:
+    steps: &build-steps
       - name: Clone project
         if: matrix.should_run == true
         uses: actions/checkout@v3
@@ -244,6 +260,7 @@ jobs:
         run: scripts/ci/source-timestamps.sh restore ${{ env.source_hashes }}
 
       - name: Build smp-server, xftp-server (postgresql) and tests
+        id: build-postgres
         if: matrix.should_run == true
         shell: docker exec -t builder sh -eu {0}
         run: |
@@ -291,7 +308,7 @@ jobs:
 
       - name: Build everything else (standard)
         id: build-standard
-        if: matrix.should_run == true
+        if: matrix.should_run == true && needs.maybe-release.outputs.reduced != 'true'
         shell: docker exec -t builder sh -eu {0}
         run: |
           cabal build --jobs=$(nproc) ${{ env.ghc_options }}
@@ -394,27 +411,15 @@ jobs:
         shell: bash
         env:
           PGHOST: localhost
-        run: |
-          i=1
-          attempts=1
-          ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) }} && attempts=3
-          while [ "$i" -le "$attempts" ]; do
-            if ./simplexmq-test; then
-              break
-            else
-              echo "Attempt $i failed, retrying..."
-              i=$((i + 1))
-              sleep 1
-            fi
-          done
-          if [ "$i" -gt "$attempts" ]; then
-            echo "All "$attempts" attempts failed."
-            exit 1
-          fi
+          REDUCED: ${{ needs.maybe-release.outputs.reduced }}
+          TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
+          PR_BODY: ${{ github.event.pull_request.draft == true && github.event.pull_request.body || '' }}
+          ATTEMPTS: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) && 3 || 1 }}
+        run: scripts/ci/run-tests.sh ./simplexmq-test
 
       - name: Remove -O2 build directories
         id: remove-o2
-        if: env.cache_o0 == 'true' && !cancelled() && steps.build-standard.outcome == 'success'
+        if: env.cache_o0 == 'true' && !cancelled() && steps.build-postgres.outcome == 'success' && steps.build-standard.outcome != 'failure'
         shell: docker exec -t builder sh -eu {0}
         run: rm -rf dist-newstyle dist-postgres
 
@@ -457,6 +462,27 @@ jobs:
             dist-newstyle
             dist-postgres
           key: ${{ steps.keys.outputs.dist }}-O0-${{ env.branch }}-${{ github.sha }}
+
+  build-reduced:
+    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
+    needs: maybe-release
+    if: needs.maybe-release.outputs.reduced == 'true'
+    permissions:
+      contents: write
+      packages: write
+    env: *build-env
+    runs-on: ${{ matrix.runner }}
+    services: *build-services
+    strategy:
+      matrix:
+        include:
+          - os: 24.04
+            os_underscore: 24_04
+            arch: x86-64
+            runner: "ubuntu-24.04"
+            ghc: "9.6.3"
+            should_run: true
+    steps: *build-steps
 
 # =============================
 #      Resolver test job
