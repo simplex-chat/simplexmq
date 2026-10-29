@@ -116,7 +116,7 @@ data NameTerms
   = -- | the general name terms
     NTName {termsDoc :: TermsDoc}
   | -- | a bona fide community name's community terms, which include the general ones
-    NTBonaFide {termsDoc :: TermsDoc}
+    NTCommunity {termsDoc :: TermsDoc}
   deriving (Eq, Show)
 
 -- | Terms as the name policy keeps them: their text in one zstd frame, whose keccak256 a buyer accepts.
