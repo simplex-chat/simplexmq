@@ -46,7 +46,8 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`.
+returns `502`. A TLD whose controller has a name policy then still answers `502`
+until `docker compose restart resolver` (see Configuring addresses).
 
 ## Verify
 
@@ -357,7 +358,8 @@ from before the enum stores a boolean, whose `true` decodes as 1, which is why
 
 ### Configuring addresses
 
-The resolver reads three contracts, each configured per TLD.
+The resolver reads three contracts, each configured per TLD, and the name
+policy a controller names.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
@@ -371,6 +373,19 @@ held-back name reads as not reserved, and no name can be priced.
 
 All three default to the mainnet `.testing` deployment. `.simplex` is unset
 until it is deployed.
+
+Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
+policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
+answers no `reservedNames` call. The resolver reads each controller's
+`namePolicy()` once at startup, before its workers start, and reads reservations
+from the policy it names. `.testing`'s controller is from before name policies,
+so the read reverts. A read that reverts, answers nothing, names no policy or
+fails with an RPC error is logged as `no_name_policy`, and reservations are read
+from the controller. For a controller that has a name policy, every lookup under
+its TLD then answers 502 until a restart: after an RPC error, or when the node
+has not yet reached the controller or its `setNamePolicy`. A node that
+does not answer stops the resolver, and the container restarts. After the
+controller's owner calls `setNamePolicy`, restart the resolver.
 
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two
@@ -418,13 +433,15 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `listening` | info | started: address, workers, RPC endpoint, registries, trusted proxies |
+| `listening` | info | started: address, workers, RPC endpoint, registries, name policies, trusted proxies |
 | `request` | info | one answered request; `/health` only at debug |
 | `upstream_error` | warn | a read from the node failed; the caller got 502 |
+| `no_name_policy` | warn | at startup, a controller's `namePolicy()` named no policy (see Configuring addresses); its reservations are read from the controller |
 | `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
 | `request_failed` | error | a request failed unexpectedly, with its traceback |
+| `startup_failed` | error | the node did not answer the startup read of the name policies; the container restarts |
 | `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
 | `stopping` | info | stopped by a signal |
 

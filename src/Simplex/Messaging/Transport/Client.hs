@@ -97,7 +97,7 @@ instance StrEncoding TransportHost where
       validIP n = if 0 <= n && n <= 255 then Right $ fromIntegral n else Left "invalid IP address"
       ipv6StrP =
         A.char '[' *> A.takeWhile1 (/= ']') <* A.char ']'
-          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':')
+          <|> A.takeWhile1 (\c -> isHexDigit c || c == ':' || c == '.')
       notOnion s = if ".onion" `B.isSuffixOf` s then Left "invalid onion host" else Right s
 
 instance ToJSON TransportHost where
@@ -312,9 +312,9 @@ validateCertificateChain :: C.KeyHash -> HostName -> ByteString -> X.Certificate
 validateCertificateChain (C.KeyHash kh) host port cc = case chainIdCaCerts cc of
   CCEmpty -> pure [XV.EmptyChain]
   CCSelf _ -> pure [XV.EmptyChain]
-  CCValid {idCert, caCert} -> validate idCert caCert
+  CCValid {idCert} -> validate idCert
   CCLong -> pure [XV.AuthorityTooDeep]
   where
-    validate idCert caCert
-      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate caCert (host, port) cc
+    validate idCert
+      | Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 = x509validate (host, port) cc
       | otherwise = pure [XV.UnknownCA]

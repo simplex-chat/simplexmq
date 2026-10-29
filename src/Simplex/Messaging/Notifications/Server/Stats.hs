@@ -338,8 +338,5 @@ getStatsByServer s = readTVarIO s >>= fmap (StatsByServerData . M.toList) . mapM
 setStatsByServer :: TMap Text (TVar Int) -> StatsByServerData -> IO ()
 setStatsByServer s (StatsByServerData d) = mapM newTVarIO (M.fromList d) >>= atomically . writeTVar s
 
--- double lookup avoids STM transaction with a shared map in most cases
 incServerStat :: Text -> TMap Text (TVar Int) -> IO ()
-incServerStat h s = TM.lookupIO h s >>= atomically . maybe newServerStat (`modifyTVar'` (+ 1))
-  where
-    newServerStat = TM.lookup h s >>= maybe (TM.insertM h (newTVar 1) s) (`modifyTVar'` (+ 1))
+incServerStat h s = TM.lookupOrInsertIO h (newTVar 1) s >>= mapM_ (atomically . (`modifyTVar'` (+ 1)))

@@ -613,16 +613,16 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           }
 
     runClient :: (ServiceName, ATransport 'TClient) -> TransportHost -> PClient v err msg -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-    runClient (port', ATransport t) useHost c = do
+    runClient (port', ATransport t) useHost c = E.mask $ \restore -> do
       cVar <- newEmptyTMVarIO
       let tcConfig = (transportClientConfig networkConfig nm useHost useSNI useALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
-        runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar)
+        restore (runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar))
           `forkFinally` \r ->
             let err = either toNetworkError (const NEFailedError) r
              in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
-      c_ <- netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)
+      c_ <- restore (netTimeoutInt tcpConnectTimeout nm `timeout` atomically (takeTMVar cVar)) `E.onException` killThread tId
       case c_ of
         Just (Right c') -> mkWeakThreadId tId >>= \tId' -> pure $ Right c' {action = Just tId'}
         Just (Left e) -> pure $ Left e
@@ -654,7 +654,13 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             writeTVar (connected c) True
             putTMVar cVar $ Right c'
           raceAny_ ([send c' th, process c', receive c' th] <> [monitor c' | smpPingInterval > 0])
-            `E.finally` disconnected c'
+            `E.finally` (failPendingRequests c >> disconnected c')
+
+    failPendingRequests :: PClient v err msg -> IO ()
+    failPendingRequests PClient {sentCommands} = atomically $ swapTVar sentCommands mempty >>= mapM_ failRequest
+      where
+        failRequest Request {pending, responseVar} =
+          whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -1150,9 +1156,9 @@ connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, t
     hostName = B.unpack $ strEncode $ transportHost' c
     validateRelay :: X.CertificateChain -> X.SignedExact X.PubKey -> ExceptT String IO C.PublicKeyX25519
     validateRelay chain exact = case chainIdCaCerts chain of
-      CCValid {leafCert, idCert, caCert}
+      CCValid {leafCert, idCert}
         | XV.Fingerprint kh == XV.getFingerprint idCert X.HashSHA256 -> do
-            errs <- liftIO $ x509validate caCert (hostName, B.pack relayPort) chain
+            errs <- liftIO $ x509validate (hostName, B.pack relayPort) chain
             unless (null errs) $ throwError "bad certificate"
             serverKey <- liftEither $ C.x509ToPublic' $ X.certPubKey $ X.signedObject $ X.getSigned leafCert
             liftEither $ C.x509ToPublic' =<< C.verifyX509 serverKey exact

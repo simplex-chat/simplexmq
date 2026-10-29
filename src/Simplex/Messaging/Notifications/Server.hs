@@ -495,7 +495,7 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
     >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
   where
     getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
-    getSubscriberVar = atomically . getSessVar subscriberSeq smpServer smpSubscribers =<< getCurrentTime
+    getSubscriberVar = getSessVarIO subscriberSeq smpServer smpSubscribers =<< getCurrentTime
 
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     createSMPSubscriber v =
@@ -603,7 +603,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}
             removeServiceAndAssociations st srv >>= \case
               Right (srvId, updated) -> do
                 logSubStatus srv "removed service association" updated updated
-                void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
+                void $ forkIO $ void $ subscribeSrvSubs ca st batchSize (srv, srvId, Nothing)
               Left e -> logError $ "SMP server update and resubscription error " <> tshow e
       where
         showService srv (ServiceSub serviceId n _) = showServer' srv  <> ", service ID " <> decodeLatin1 (strEncode serviceId) <> ", " <> tshow n <> " subs"

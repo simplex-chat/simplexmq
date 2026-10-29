@@ -14,6 +14,7 @@ module Simplex.Messaging.TMap
     insertM,
     delete,
     lookupInsert,
+    lookupOrInsertIO,
     lookupDelete,
     adjust,
     update,
@@ -76,6 +77,13 @@ delete k m = modifyTVar' m $ M.delete k
 lookupInsert :: Ord k => k -> a -> TMap k a -> STM (Maybe a)
 lookupInsert k v m = stateTVar m $ M.alterF (,Just v) k
 {-# INLINE lookupInsert #-}
+
+-- double lookup avoids STM transaction with a shared map in most cases
+lookupOrInsertIO :: Ord k => k -> STM a -> TMap k a -> IO (Either a a)
+lookupOrInsertIO k new m = lookupIO k m >>= maybe (atomically lookupOrInsert) (pure . Right)
+  where
+    lookupOrInsert = M.lookup k <$> readTVar m >>= maybe (new >>= \v -> Left v <$ insert k v m) (pure . Right)
+{-# INLINE lookupOrInsertIO #-}
 
 lookupDelete :: Ord k => k -> TMap k a -> STM (Maybe a)
 lookupDelete k m = stateTVar m $ M.alterF (,Nothing) k

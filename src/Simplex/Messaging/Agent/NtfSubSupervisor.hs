@@ -323,7 +323,7 @@ runNtfWorker c srv Worker {doWork} =
     incStatByUserId :: NtfServer -> (AgentNtfServerStats -> TVar Int) -> [NtfSubscription] -> AM' ()
     incStatByUserId ntfServer sel ss =
       forM_ (M.assocs userIdsCounts) $ \(userId, count) ->
-        atomically $ incNtfServerStat' c userId ntfServer sel count
+        incNtfServerStat' c userId ntfServer sel count
       where
         userIdsCounts = foldl' (\acc NtfSubscription {userId} -> M.insertWith (+) userId 1 acc) M.empty ss
     -- NSADelete and NSARotate are deprecated, but their processing is kept for legacy db records;
@@ -361,10 +361,10 @@ runNtfWorker c srv Worker {doWork} =
       Just nSubId ->
         lift getNtfToken >>= \case
           Just tkn@NtfToken {ntfServer} -> do
-            atomically $ incNtfServerStat c userId ntfServer ntfDelAttempts
+            incNtfServerStat c userId ntfServer ntfDelAttempts
             tryAllErrors (agentNtfDeleteSubscription c nSubId tkn) >>= \case
               Right _ -> do
-                atomically $ incNtfServerStat c userId ntfServer ntfDeleted
+                incNtfServerStat c userId ntfServer ntfDeleted
                 continue'
               Left e
                 | temporaryOrHostError e -> pure $ Just sub -- don't continue, retry
@@ -425,10 +425,10 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
               rcvNtfKeyPair <- atomically $ C.generateKeyPair g
               pure (EnableQueueNtfReq sub rq authKeyPair rcvNtfKeyPair)
         storeNtfSubCreds :: DB.Connection -> UTCTime -> (EnableQueueNtfReq, (SMP.NotifierId, SMP.RcvNtfPublicDhKey)) -> IO NtfServer
-        storeNtfSubCreds db ts (EnableQueueNtfReq {eqnrNtfSub, eqnrAuthKeyPair = (ntfPublicKey, ntfPrivateKey), eqnrRcvKeyPair = (_, pk)}, (notifierId, srvPubDhKey)) = do
+        storeNtfSubCreds db ts (EnableQueueNtfReq {eqnrNtfSub, eqnrRq, eqnrAuthKeyPair = (ntfPublicKey, ntfPrivateKey), eqnrRcvKeyPair = (_, pk)}, (notifierId, srvPubDhKey)) = do
           let NtfSubscription {ntfServer} = eqnrNtfSub
               rcvNtfDhSecret = C.dh' srvPubDhKey pk
-          setRcvQueueNtfCreds db (ntfSubConnId eqnrNtfSub) $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
+          setRcvQueueNtfCreds db eqnrRq $ Just ClientNtfCreds {ntfPublicKey, ntfPrivateKey, notifierId, rcvNtfDhSecret}
           updateNtfSubscription db eqnrNtfSub {ntfQueueId = Just notifierId, ntfSubStatus = NASKey} (NSANtf NSACreate) ts
           pure ntfServer
     deleteNotifierKeys :: [NtfSubscription] -> AM' [NtfSubscription]
@@ -445,8 +445,8 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
       where
         resetCredsGetQueue :: DB.Connection -> NtfSubscription -> IO (Either AgentErrorType DisableQueueNtfReq)
         resetCredsGetQueue db sub@NtfSubscription {connId} = fmap (first storeError) $ runExceptT $ do
-          liftIO $ setRcvQueueNtfCreds db connId Nothing
           rq <- ExceptT $ getPrimaryRcvQueue db connId
+          liftIO $ setRcvQueueNtfCreds db rq Nothing
           pure (sub, rq)
         deleteSub :: DB.Connection -> RcvQueue -> IO ()
         deleteSub db rq = deleteNtfSubscription db (qConnId rq)

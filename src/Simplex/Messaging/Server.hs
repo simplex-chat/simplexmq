@@ -366,7 +366,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         runDeliverNtfs ms ns' stats
       where
         runDeliverNtfs :: s -> NtfStore -> ServerStats -> IO ()
-        runDeliverNtfs ms (NtfStore ns) stats = do
+        runDeliverNtfs ms ns'@(NtfStore ns) stats = do
           ntfs <- M.assocs <$> readTVarIO ns
           unless (null ntfs) $
             getQueueNtfServices @(StoreQueue s) (queueStore ms) ntfs >>= \case
@@ -378,6 +378,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     cIds <- IS.toList <$> readTVarIO subClients
                     forM_ cIds $ \cId -> getServerClient cId srv >>= mapM_ (deliverQueueNtfs ntfs')
                 atomically $ modifyTVar' ns (`M.withoutKeys` S.fromList (map fst deleted))
+                deleteEmptyNtfs ns' ntfs
           where
             deliverQueueNtfs ntfs' c@Client {ntfSubscriptions} =
               whenM (currentClient readTVarIO c) $ do
@@ -1259,8 +1260,8 @@ tSend th Client {sndActiveAt} ts = do
     void . tPut h $ L.map (\t -> Right (Nothing, encodeTransmission params t)) ts
   atomically . (writeTVar sndActiveAt $!) =<< liftIO getSystemTime
 
-disconnectTransport :: Transport c => THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
-disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
+disconnectTransport :: THandle v c 'TServer -> TVar SystemTime -> TVar SystemTime -> ExpirationConfig -> IO Bool -> IO ()
+disconnectTransport THandle {params = THandleParams {sessionId}} rcvActiveAt sndActiveAt expCfg noSubscriptions = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " disconnectTransport"
   loop
   where
@@ -1270,7 +1271,7 @@ disconnectTransport THandle {connection, params = THandleParams {sessionId}} rcv
     checkExpired = do
       old <- expireBeforeEpoch expCfg
       ts <- max <$> readTVarIO rcvActiveAt <*> readTVarIO sndActiveAt
-      if systemSeconds ts < old then closeConnection connection else loop
+      unless (systemSeconds ts < old) loop
 
 data VerificationResult s = VRVerified (Maybe (StoreQueue s, QueueRec)) | VRFailed ErrorType
 
@@ -1768,20 +1769,14 @@ client
               fmap (either ((,Nothing) . err) id) $ liftIO $ runExceptT $ do
                 msg' <- forM msg_ $ \msg -> liftIO $ do
                   ts <- getSystemSeconds
-                  sub <- maybe (atomically getSub) pure sub_
+                  sub <- maybe getSub pure sub_
                   atomically $ setDelivered sub msg ts
                   unless hasSub $ incStat $ qSub stats
                   pure (NoCorrId, entId, MSG (encryptMsg qr msg))
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
-        getSub :: STM Sub
-        getSub =
-          TM.lookup entId (subscriptions clnt) >>= \case
-            Just sub -> pure sub
-            Nothing -> do
-              sub <- newSubscription NoSub
-              TM.insert entId sub $ subscriptions clnt
-              pure sub
+        getSub :: IO Sub
+        getSub = either id id <$> TM.lookupOrInsertIO entId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeNewQueue :: RecipientId -> QueueRec -> M s ()
         subscribeNewQueue rId QueueRec {rcvServiceId} = do
@@ -1795,10 +1790,13 @@ client
         -- clients that use GET are not added to server subscribers
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
         getMessage q qr = do
-          atomically (TM.lookup entId $ subscriptions clnt) >>= \case
-            Nothing ->
-              atomically newSub >>= (`getMessage_` Nothing)
-            Just s@Sub {subThread} ->
+          -- Here we don't account for this client as subscribed in the server
+          -- and don't notify other subscribed clients.
+          -- This is tracked as "subscription" in the client to prevent these
+          -- clients from being able to subscribe.
+          liftIO (TM.lookupOrInsertIO entId newProhibitedSub $ subscriptions clnt) >>= \case
+            Left s -> getMessage_ s Nothing
+            Right s@Sub {subThread} ->
               case subThread of
                 ProhibitSub ->
                   atomically (swapTVar (delivered s) Nothing)
@@ -1809,15 +1807,6 @@ client
                   incStat $ msgGetProhibited stats
                   pure $ err $ CMD PROHIBITED
           where
-            newSub :: STM Sub
-            newSub = do
-              s <- newProhibitedSub
-              TM.insert entId s $ subscriptions clnt
-              -- Here we don't account for this client as subscribed in the server
-              -- and don't notify other subscribed clients.
-              -- This is tracked as "subscription" in the client to prevent these
-              -- clients from being able to subscribe.
-              pure s
             getMessage_ :: Sub -> Maybe (MsgId, SystemSeconds) -> M s (Transmission BrokerMsg)
             getMessage_ s delivered_ = do
               stats <- asks serverStats
@@ -1897,23 +1886,17 @@ client
               Just _ -> do
                 -- unassociation already done in prepareBatchSubs
                 incSrvStat srvAssocRemoved
-                -- getSubscription may be Just for receiving service, where clientSubs also hold active deliveries for service subscriptions.
-                -- For notification service it can only be Just if storage and session states diverge.
-                r <- atomically $ getSubscription >>= newSub
+                -- getSubscription may find a subscription for receiving service, where clientSubs also hold active deliveries for service subscriptions.
+                -- For notification service it can only find one if storage and session states diverge.
+                r <- getSubscription
                 atomically writeSub
                 pure r
               Nothing -> do
-                r@(hasSub, _) <- atomically $ getSubscription >>= newSub
+                r@(hasSub, _) <- getSubscription
                 unless hasSub $ atomically writeSub
                 pure r
               where
-                getSubscription = TM.lookup entId $ clientSubs clnt
-                newSub = \case
-                  Just sub -> pure (True, Just sub)
-                  Nothing -> do
-                    sub <- mkSub
-                    TM.insert entId sub $ clientSubs clnt
-                    pure (False, Just sub)
+                getSubscription = either ((False,) . Just) ((True,) . Just) <$> TM.lookupOrInsertIO entId mkSub (clientSubs clnt)
 
         subscribeServiceMessages :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceMessages serviceId expected =
@@ -1943,22 +1926,15 @@ client
               Right qMsg_ -> case qMsg_ of
                 Nothing -> pure (qCnt + 1, msgCnt, dupCnt, evts)
                 Just (qr, msg) ->
-                  atomically (getSubscription rId) >>= \case
-                    Nothing -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
-                    Just sub -> do
+                  getSubscription rId >>= \case
+                    -- delivered via the existing subscription, e.g. made by SEND after SUBS
+                    Right _sub -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
+                    Left sub -> do
                       ts <- getSystemSeconds
                       atomically $ setDelivered sub msg ts
                       atomically $ writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]
                       pure (qCnt + 1, msgCnt + 1, dupCnt, evts)
-            getSubscription rId =
-              TM.lookup rId (subscriptions clnt) >>= \case
-                -- If delivery subscription already exists, then there is no need to deliver message.
-                -- It may have been created when the message is sent after service subscription is created.
-                Just _sub -> pure Nothing
-                Nothing -> do
-                  sub <- newSubscription NoSub
-                  TM.insert rId sub $ subscriptions clnt
-                  pure $ Just sub
+            getSubscription rId = TM.lookupOrInsertIO rId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeServiceNotifications :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceNotifications serviceId expected =
@@ -2196,7 +2172,9 @@ client
           let clntTHParams = smpTHParamsSetVersion fwdVersion thParams'
           -- only allowing single forwarded transactions
           t' <- case tParse clntTHParams b of
-            t :| [] -> pure $ tDecodeServer clntTHParams t
+            t@(Right (RawTransmission _ _ _ _ (CorrId tCorrId) _ _)) :| []
+              | tCorrId == C.unCbNonce fwdCorrId -> pure $ tDecodeServer clntTHParams t
+              | otherwise -> throwE CRYPTO
             _ -> throwE BLOCK
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do
