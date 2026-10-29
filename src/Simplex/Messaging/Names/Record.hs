@@ -119,12 +119,13 @@ data NameTerms
     NTCommunity {termsDoc :: TermsDoc}
   deriving (Eq, Show)
 
--- | Terms as the name policy keeps them: their text in one zstd frame, whose keccak256 a buyer accepts.
-data TermsDoc
-  = -- | the frame, when it fits the answer
-    TDZstd {termsZstd :: ZstdTerms}
-  | -- | the 0x hex keccak256 of the frame, when it does not
-    TDHash {termsHash :: Text}
+-- | Terms as the name policy keeps them: a link to one file at one commit, whose keccak256 a buyer accepts.
+data TermsDoc = TermsDoc
+  { -- | ends in #sha256=<hex> of the file
+    termsLink :: Text,
+    -- | the file in one zstd frame, when it fits the answer
+    termsZstd :: Maybe ZstdTerms
+  }
   deriving (Eq, Show)
 
 newtype ZstdTerms = ZstdTerms ByteString
@@ -167,7 +168,7 @@ instance FromJSON NameReservedReason where
 
 $(JQ.deriveJSON defaultJSON ''NamePricing)
 
-$(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "TD") ''TermsDoc)
+$(JQ.deriveJSON defaultJSON ''TermsDoc)
 
 $(JQ.deriveJSON (taggedObjectJSON $ dropPrefix "NT") ''NameTerms)
 
