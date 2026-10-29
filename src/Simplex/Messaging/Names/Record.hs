@@ -113,9 +113,9 @@ data NamePricing = NamePricing
 
 -- | The terms a buyer of the name accepts, which the name policy keeps.
 data NameTerms
-  = -- | the general name terms
-    NTName {termsDoc :: TermsDoc}
-  | -- | a bona fide community name's community terms, which include the general ones
+  = -- | the general terms
+    NTGeneral {termsDoc :: TermsDoc}
+  | -- | a community name's community terms, which include the general ones
     NTCommunity {termsDoc :: TermsDoc}
   deriving (Eq, Show)
 
