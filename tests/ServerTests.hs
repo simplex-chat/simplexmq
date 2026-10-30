@@ -41,6 +41,7 @@ import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
+import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -158,14 +159,11 @@ signSendRecv_ h pk serviceKey_ t = do
   tGetClient h
 
 signSend_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO ()
-signSend_ h pk serviceKey_ t = do
-  Right () <- tPut1 h $ signTransmission h pk serviceKey_ t
+signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  Right () <- tPut1 h (authorize tForAuth, tToSend)
   pure ()
-
-signTransmission :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> SentRawTransmission
-signTransmission THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = (authorize tForAuth, tToSend)
   where
-    TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t'
@@ -694,8 +692,10 @@ testSubSendBlock =
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just (QRMessaging Nothing)) Nothing))
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-          TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
-      [Right (), Right ()] <- tPut h [Right $ signTransmission h rKey Nothing ("2", rId, SUB), Right (Nothing, tToSend)]
+          TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+          TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+      Right subAuth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+      [Right (), Right ()] <- tPut h [Right (subAuth, subT), Right (Nothing, sendT)]
       Resp "" _ (Msg mId msg) <- tGet1 h
       dec mId msg `shouldBe` Right "hello"
       [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient h
