@@ -266,6 +266,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       logStatsStartTime = 0,
       serverStatsLogFile = testPath "smp-server-stats.daily.log",
       serverStatsBackupFile = Nothing,
+      statsSaveInterval = defStatsSaveInterval,
       prometheusInterval = Nothing,
       prometheusMetricsFile = testPrometheusMetricsFile,
       pendingENDInterval = 500000,

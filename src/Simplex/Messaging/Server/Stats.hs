@@ -21,6 +21,12 @@ module Simplex.Messaging.Server.Stats
     getServerStatsData,
     setServerStats,
     newPeriodStats,
+    newPendingPeriodStats,
+    PendingPeriods (..),
+    PendingHashes (..),
+    takePendingHashes,
+    restorePendingHashes,
+    mergePendingHashes,
     newPeriodStatsData,
     getPeriodStatsData,
     setPeriodStats,
@@ -208,8 +214,8 @@ data ServerStatsData = ServerStatsData
   }
   deriving (Show)
 
-newServerStats :: UTCTime -> IO ServerStats
-newServerStats ts = do
+newServerStats :: Bool -> UTCTime -> IO ServerStats
+newServerStats trackPending ts = do
   fromTime <- newIORef ts
   qCreated <- newIORef 0
   qSecured <- newIORef 0
@@ -247,10 +253,10 @@ newServerStats ts = do
   msgGetDuplicate <- newIORef 0
   msgGetProhibited <- newIORef 0
   msgExpired <- newIORef 0
-  activeQueues <- newPeriodStats
+  activeQueues <- newActiveQueues
   msgSentNtf <- newIORef 0
   msgRecvNtf <- newIORef 0
-  activeQueuesNtf <- newPeriodStats
+  activeQueuesNtf <- newActiveQueues
   msgNtfs <- newIORef 0
   msgNtfsB <- newIORef 0
   msgNtfNoSub <- newIORef 0
@@ -341,6 +347,8 @@ newServerStats ts = do
         ntfCount,
         rslvStats
       }
+  where
+    newActiveQueues = if trackPending then newPendingPeriodStats else newPeriodStats
 
 getServerStatsData :: ServerStats -> IO ServerStatsData
 getServerStatsData s = do
@@ -766,15 +774,51 @@ instance StrEncoding ServerStatsData where
 data PeriodStats = PeriodStats
   { day :: IORef IntSet,
     week :: IORef IntSet,
-    month :: IORef IntSet
+    month :: IORef IntSet,
+    pendingPeriods :: Maybe PendingPeriods
   }
 
+-- hashes added and sets reset since the last successful save
+data PendingPeriods = PendingPeriods
+  { pendingDay :: IORef PendingHashes,
+    pendingWeek :: IORef PendingHashes,
+    pendingMonth :: IORef PendingHashes
+  }
+
+data PendingHashes = PendingHashes
+  { pendingReset :: Bool,
+    pendingAdded :: IntSet
+  }
+  deriving (Eq, Show)
+
 newPeriodStats :: IO PeriodStats
-newPeriodStats = do
+newPeriodStats = newPeriodStats_ Nothing
+
+newPendingPeriodStats :: IO PeriodStats
+newPendingPeriodStats = do
+  pendingDay <- newIORef noPendingHashes
+  pendingWeek <- newIORef noPendingHashes
+  pendingMonth <- newIORef noPendingHashes
+  newPeriodStats_ $ Just PendingPeriods {pendingDay, pendingWeek, pendingMonth}
+
+newPeriodStats_ :: Maybe PendingPeriods -> IO PeriodStats
+newPeriodStats_ pendingPeriods = do
   day <- newIORef IS.empty
   week <- newIORef IS.empty
   month <- newIORef IS.empty
-  pure PeriodStats {day, week, month}
+  pure PeriodStats {day, week, month, pendingPeriods}
+
+noPendingHashes :: PendingHashes
+noPendingHashes = PendingHashes {pendingReset = False, pendingAdded = IS.empty}
+
+takePendingHashes :: IORef PendingHashes -> IO PendingHashes
+takePendingHashes ref = atomicModifyIORef' ref (noPendingHashes,)
+
+restorePendingHashes :: IORef PendingHashes -> PendingHashes -> IO ()
+restorePendingHashes ref taken = atomicModifyIORef'_ ref $ mergePendingHashes taken
+
+mergePendingHashes :: PendingHashes -> PendingHashes -> PendingHashes
+mergePendingHashes (PendingHashes r hs) (PendingHashes r' hs') = PendingHashes (r || r') (IS.union hs hs')
 
 data PeriodStatsData = PeriodStatsData
   { _day :: IntSet,
@@ -830,23 +874,29 @@ periodStatCounts ps ts = do
   let d = utctDay ts
       (_, wDay) = mondayStartWeek d
       MonthDay _ mDay = d
-  dayCount <- periodCount 1 $ day ps
-  weekCount <- periodCount wDay $ week ps
-  monthCount <- periodCount mDay $ month ps
+      pending_ = pendingPeriods ps
+  dayCount <- periodCount 1 (day ps) (pendingDay <$> pending_)
+  weekCount <- periodCount wDay (week ps) (pendingWeek <$> pending_)
+  monthCount <- periodCount mDay (month ps) (pendingMonth <$> pending_)
   pure PeriodStatCounts {dayCount, weekCount, monthCount}
   where
-    periodCount :: Int -> IORef IntSet -> IO Text
-    periodCount 1 ref = tshow . IS.size <$> atomicSwapIORef ref IS.empty
-    periodCount _ _ = pure ""
+    periodCount :: Int -> IORef IntSet -> Maybe (IORef PendingHashes) -> IO Text
+    periodCount 1 ref pRef_ = do
+      -- pending is reset before the set, so a hash added concurrently can only be persisted for the new period
+      mapM_ (`atomicWriteIORef` PendingHashes {pendingReset = True, pendingAdded = IS.empty}) pRef_
+      tshow . IS.size <$> atomicSwapIORef ref IS.empty
+    periodCount _ _ _ = pure ""
 
 updatePeriodStats :: PeriodStats -> EntityId -> IO ()
 updatePeriodStats ps (EntityId pId) = do
-  updatePeriod $ day ps
-  updatePeriod $ week ps
-  updatePeriod $ month ps
+  updatePeriod (day ps) (pendingDay <$> pendingPeriods ps)
+  updatePeriod (week ps) (pendingWeek <$> pendingPeriods ps)
+  updatePeriod (month ps) (pendingMonth <$> pendingPeriods ps)
   where
     ph = hash pId
-    updatePeriod ref = unlessM (IS.member ph <$> readIORef ref) $ atomicModifyIORef'_ ref $ IS.insert ph
+    updatePeriod ref pRef_ = unlessM (IS.member ph <$> readIORef ref) $ do
+      atomicModifyIORef'_ ref $ IS.insert ph
+      mapM_ (\pRef -> atomicModifyIORef'_ pRef $ \p -> p {pendingAdded = IS.insert ph $ pendingAdded p}) pRef_
 
 data ProxyStats = ProxyStats
   { pRequests :: IORef Int,

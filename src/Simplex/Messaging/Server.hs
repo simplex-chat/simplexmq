@@ -115,6 +115,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM (withLoadedQueues)
 import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.Stats
+import Simplex.Messaging.Server.StatsStore
 import Simplex.Messaging.Server.StoreLog (foldLogLines)
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
@@ -143,6 +144,7 @@ import GHC.Conc.Sync (threadLabel)
 
 #if defined(dbServerPostgres)
 import Simplex.Messaging.Server.MsgStore.Postgres (getDbMessageStats)
+import qualified Simplex.Messaging.Server.QueueStore.Postgres as PQ
 #endif
 
 -- | Runs an SMP server using passed configuration.
@@ -195,6 +197,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         : map runServer transports
             <> expireMessagesThread_ cfg
             <> serverStatsThread_ cfg
+            <> saveStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
     )
@@ -238,10 +241,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 
     saveServer :: Bool -> M s ()
     saveServer drainMsgs = do
+      -- the database stats store is closed together with the message store
+      saveServerStats
       ms <- asks msgStore_
       liftIO $ saveServerMessages drainMsgs ms >> closeMsgStore (fromMsgStore ms)
       saveServerNtfs
-      saveServerStats
 
     closeServer :: M s ()
     closeServer = do
@@ -513,6 +517,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ _ = []
 
+    saveStatsThread_ :: ServerConfig s -> [M s ()]
+    saveStatsThread_ ServerConfig {serverStatsBackupFile = Just _, statsSaveInterval} = [saveStatsThread statsSaveInterval]
+    saveStatsThread_ _ = []
+
+    saveStatsThread :: Int64 -> M s ()
+    saveStatsThread interval = do
+      labelMyThread "saveStatsThread"
+      lock <- asks $ savingLock . server
+      forever $ do
+        liftIO $ threadDelay' $ 1000000 * interval
+        withLock' lock "saveStats" saveServerStats
+
     logServerStats :: Int64 -> Int64 -> FilePath -> M s ()
     logServerStats startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
@@ -524,9 +540,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       st <- asks msgStore
       EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
         liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
+      lock <- asks $ savingLock . server
+      u <- askUnliftIO
       let interval = 1000000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        withFile statsFilePath AppendMode $ \h -> withLock' lock "logStats" $ liftIO $ do
+          unliftIO u saveServerStats
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
@@ -658,6 +677,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                        <> showServiceStats ntfServices'
                        <> showNameResolverStats rslvStats'
               )
+          unliftIO u saveServerStats
         liftIO $ threadDelay' interval
       where
         showProxyStats ProxyStatsData {_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther} =
@@ -2488,38 +2508,39 @@ restoreServerNtfs =
             ntfErr :: Show e => String -> e -> String
             ntfErr op e = op <> " error (" <> show e <> "): " <> B.unpack (B.take 100 s)
 
-saveServerStats :: M s ()
-saveServerStats =
-  asks (serverStatsBackupFile . config)
-    >>= mapM_ (\f -> asks serverStats >>= liftIO . getServerStatsData >>= liftIO . saveStats f)
+serverStatsStore :: M s (Maybe StatsStore)
+serverStatsStore = do
+  ms <- asks msgStore_
+  fmap (statsStore ms) <$> asks (serverStatsBackupFile . config)
   where
-    saveStats f stats = do
-      logNote $ "saving server stats to file " <> T.pack f
-      B.writeFile f $ strEncode stats
-      logNote "server stats saved"
+    statsStore :: MsgStore s -> FilePath -> StatsStore
+    statsStore = \case
+      StoreMemory _ -> StatsFile
+#if defined(dbServerPostgres)
+      StoreDatabase ms -> StatsDB (PQ.dbStore $ queueStore ms)
+#endif
+
+saveServerStats :: M s ()
+saveServerStats = do
+  ss <- asks serverStats
+  serverStatsStore >>= mapM_ (liftIO . (`saveStats` ss))
 
 restoreServerStats :: forall s. MsgStoreClass s => Maybe MessageStats -> MessageStats -> M s ()
-restoreServerStats msgStats_ ntfStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
+restoreServerStats msgStats_ ntfStats = do
+  s <- asks serverStats
+  serverStatsStore >>= mapM_ (liftIO . tryAny . loadStats >=> restore s)
+  st <- asks msgStore
+  EntityCounts {queueCount} <- liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
+  liftIO $ do
+    writeIORef (qCount s) queueCount
+    writeIORef (msgCount s) $ maybe 0 storedMsgsCount msgStats_
+    writeIORef (ntfCount s) $ storedMsgsCount ntfStats
+    atomicModifyIORef'_ (msgExpired s) (+ maybe 0 expiredMsgsCount msgStats_)
+    atomicModifyIORef'_ (msgNtfExpired s) (+ expiredMsgsCount ntfStats)
   where
-    restoreStats f = whenM (doesFileExist f) $ do
-      logNote $ "restoring server stats from file " <> T.pack f
-      liftIO (strDecode <$> B.readFile f) >>= \case
-        Right d@ServerStatsData {_qCount = statsQCount, _msgCount = statsMsgCount, _ntfCount = statsNtfCount} -> do
-          s <- asks serverStats
-          st <- asks msgStore
-          EntityCounts {queueCount = _qCount} <- liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
-          let _msgCount = maybe statsMsgCount storedMsgsCount msgStats_
-              _ntfCount = storedMsgsCount ntfStats
-              _msgExpired' = _msgExpired d + maybe 0 expiredMsgsCount msgStats_
-              _msgNtfExpired' = _msgNtfExpired d + expiredMsgsCount ntfStats
-          liftIO $ setServerStats s d {_qCount, _msgCount, _ntfCount, _msgExpired = _msgExpired', _msgNtfExpired = _msgNtfExpired'}
-          renameFile f $ f <> ".bak"
-          logNote "server stats restored"
-          compareCounts "Queue" statsQCount _qCount
-          compareCounts "Message" statsMsgCount _msgCount
-          compareCounts "Notification" statsNtfCount _ntfCount
-        Left e -> do
-          logNote $ "error restoring server stats: " <> T.pack e
-          liftIO exitFailure
-    compareCounts name statsCnt storeCnt =
-      when (statsCnt /= storeCnt) $ logWarn $ name <> " count differs: stats: " <> tshow statsCnt <> ", store: " <> tshow storeCnt
+    restore s = \case
+      Right (Just d) -> liftIO (setServerStats s d) >> logNote "server stats restored"
+      Right Nothing -> pure ()
+      Left e -> do
+        logError $ "error restoring server stats: " <> tshow e
+        liftIO exitFailure

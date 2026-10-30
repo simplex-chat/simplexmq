@@ -295,6 +295,7 @@ library
           Simplex.Messaging.Server.QueueStore.STM
           Simplex.Messaging.Server.QueueStore.Types
           Simplex.Messaging.Server.Stats
+          Simplex.Messaging.Server.StatsStore
           Simplex.Messaging.Server.StoreLog
           Simplex.Messaging.Server.StoreLog.ReadWrite
           Simplex.Messaging.Server.StoreLog.Types
@@ -554,6 +555,7 @@ test-suite simplexmq-test
       CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
+      CoreTests.ServerStatsTests
       CoreTests.StoreLogTests
       CoreTests.TSessionSubs
       CoreTests.UtilTests

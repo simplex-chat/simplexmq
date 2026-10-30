@@ -33,7 +33,7 @@ import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
@@ -66,6 +66,8 @@ import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), newMsgStore)
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
+import CoreTests.ServerStatsTests (withStatsDB)
+import Simplex.Messaging.Server.StatsStore (getDBStats)
 #endif
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
@@ -94,6 +96,9 @@ serverTests = do
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
+  describe "Save server stats" $ do
+    testSaveStatsPeriodically
+    testStartupStoreCounts
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
@@ -1098,8 +1103,7 @@ testRestoreMessages =
       pure ()
     rId <- readTVarIO recipientId
     logSize testStoreLogFile `shouldReturn` 2
-    logSize testServerStatsBackupFile `shouldReturn` 101
-    Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
+    stats1 <- readSavedStats msType
     checkStats stats1 [rId] 5 1
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       Just rKey <- readTVarIO recipientKey
@@ -1114,8 +1118,7 @@ testRestoreMessages =
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     -- the last message is not removed because it was not ACK'd
     -- logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 101
-    Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
+    stats2 <- readSavedStats msType
     checkStats stats2 [rId] 5 3
 
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
@@ -1132,11 +1135,10 @@ testRestoreMessages =
       pure ()
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     removeFile testStoreLogFile
-    logSize testServerStatsBackupFile `shouldReturn` 101
-    Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
+    stats3 <- readSavedStats msType
     checkStats stats3 [rId] 5 5
     removeFileIfExists testStoreMsgsFile
-    removeFile testServerStatsBackupFile
+    removeFileIfExists testServerStatsBackupFile
   where
     runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
@@ -1161,6 +1163,76 @@ checkStats s qs sent received = do
   IS.toList _day `shouldBe` map (hash . unEntityId) qs
   IS.toList _week `shouldBe` map (hash . unEntityId) qs
   IS.toList _month `shouldBe` map (hash . unEntityId) qs
+
+readSavedStats :: HasTestEnv => AStoreType -> IO ServerStatsData
+readSavedStats = \case
+  ASType _ SMSMemory -> do
+    logSize testServerStatsBackupFile `shouldReturn` 101
+    either error id . strDecode <$> B.readFile testServerStatsBackupFile
+#if defined(dbServerPostgres)
+  ASType _ SMSPostgres -> withStatsDB $ fmap (fromMaybe $ error "no saved stats") . getDBStats
+#else
+  ASType _ SMSPostgres -> error "compiled without server_postgres flag"
+#endif
+
+testSaveStatsPeriodically :: SpecWith (ASrvTransport, AStoreType)
+testSaveStatsPeriodically =
+  it "should save stats while running and restore them on start" $ \(at@(ATransport t), msType) -> do
+    removeFileIfExists testServerStatsBackupFile
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {serverStatsBackupFile = Just testServerStatsBackupFile, statsSaveInterval = 1}
+    (rId, stats1, snapshot) <- withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      (sId, rId) <- runClient t $ \h -> runClient t $ \rh -> do
+        (sId, rId, _, _) <- createAndSecureQueue rh sPub
+        Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
+        pure (sId, rId)
+      threadDelay 2500000
+      stats1 <- readSavedStats msType
+      snapshot <- case msType of
+        ASType _ SMSMemory -> Just <$> B.readFile testServerStatsBackupFile
+        _ -> pure Nothing
+      runClient t $ \h -> do
+        Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+        pure ()
+      pure (rId, stats1, snapshot)
+    checkStats stats1 [rId] 1 0
+    -- a crash leaves the last periodic save, not the save on shutdown
+    mapM_ (B.writeFile testServerStatsBackupFile) snapshot
+    stats2 <- withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 2500000 >> readSavedStats msType
+    let restoredSent = case msType of
+          ASType _ SMSMemory -> 1
+          _ -> 2
+    checkStats stats2 [rId] restoredSent 0
+    doesFileExist (testServerStatsBackupFile <> ".bak") `shouldReturn` False
+    removeFileIfExists testServerStatsBackupFile
+  where
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+    runClient _ = testSMPClient
+
+testStartupStoreCounts :: SpecWith (ASrvTransport, AStoreType)
+testStartupStoreCounts =
+  it "should count stored queues and messages on start without saved stats" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    let cfg' = cfgMS msType
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runClient t $ \h -> runClient t $ \rh -> do
+      (sId, _, _, _) <- createAndSecureQueue rh sPub
+      Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello 1")
+      Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+      pure ()
+    let cfg2 = updateCfg cfg' $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+    removeFileIfExists testPrometheusMetricsFile
+    metrics <- withSmpServerConfigOn at cfg2 testPort $ \_ -> threadDelay 1500000 >> B.readFile testPrometheusMetricsFile
+    let expected :: [ByteString]
+        expected = case msType of
+          ASType SQSMemory _ -> ["simplex_smp_messages_total 2", "simplex_smp_queues_total1 1"]
+          -- Postgres queue count is a reltuples estimate
+          _ -> ["simplex_smp_messages_total 2"]
+    forM_ expected $ \l -> map (B.unwords . take 2 . B.words) (B.lines metrics) `shouldContain` [l]
+  where
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+    runClient _ = testSMPClient
 
 testRestoreExpireMessages :: SpecWith (ASrvTransport, AStoreType)
 testRestoreExpireMessages =
@@ -1210,7 +1282,7 @@ testRestoreExpireMessages =
     msgs'' <- B.readFile testStoreMsgsFile
     length (B.lines msgs'') `shouldBe` 2
     B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
-    Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
+    ServerStatsData {_msgExpired} <- readSavedStats msType
     _msgExpired `shouldBe` 2
   where
     exportStoreMessages :: HasTestEnv => AStoreType -> IO ()

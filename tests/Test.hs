@@ -13,6 +13,7 @@ import CoreTests.EncodingTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
+import CoreTests.ServerStatsTests
 import CoreTests.StoreLogTests
 import CoreTests.TSessionSubs
 import CoreTests.UtilTests
@@ -90,6 +91,7 @@ main = do
             describe "Encryption tests" cryptoTests
             describe "Encrypted files tests" cryptoFileTests
             describe "Message store tests" msgStoreTests
+            describe "Server stats tests" serverStatsTests
             describe "SOCKS settings tests" socksSettingsTests
             describe "Store log tests" storeLogTests
             describe "XFTP store log tests" fileStoreLogTests
