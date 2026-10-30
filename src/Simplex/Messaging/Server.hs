@@ -746,7 +746,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
     runClient srvCert srvSignKey tp h = do
       ms <- asks msgStore
-      subs <- asks $ subscribers . server
+      srvSubs <- asks $ subscribers . server
       g <- asks random
       idSize <- asks $ queueIdBytes . config
       kh <- asks serverIdentity
@@ -755,7 +755,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let serverInfo = LB.toStrict . J.encode <$> information
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> runClientTransport (processClientSub subs subscriptions serviceSubsCount (Just cancelSub)) th
+        Just (Right th) -> runClientTransport (processClientSub srvSubs subscriptions serviceSubsCount (Just cancelSub)) th
         _ -> pure ()
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
@@ -1466,9 +1466,7 @@ client
         subscribeQueue :: StoreQueue s -> IO (Maybe (RecipientId, Sub))
         subscribeQueue q =
           TM.lookupOrInsertIO rId (newSubscription NoSub) (subscriptions clnt) >>= \case
-            Left sub -> do
-              mask_ $ processSub (Just clnt) (CSClient rId Nothing Nothing, clientId)
-              pure $ Just (rId, sub)
+            Left sub -> Just (rId, sub) <$ mask_ (processSub (Just clnt) (CSClient rId Nothing Nothing, clientId))
             Right _ -> pure Nothing
           where
             rId = recipientId q
