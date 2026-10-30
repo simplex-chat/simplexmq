@@ -200,17 +200,23 @@ instance MsgStoreClass PostgresMsgStore where
   tryPeekMsgs ms qs f =
     uninterruptibleMask_ $
       withDBPriority "tryPeekMsgs" (queueStore_ ms) True $ \db -> do
+        void $ DB.execute_ db "SET LOCAL synchronous_commit TO OFF"
         locked <- DB.query db (queueRecQuery <> " WHERE recipient_id IN ? AND deleted_at IS NULL ORDER BY recipient_id FOR UPDATE") (Only (In rIds))
         msgs <-
           M.fromList . map toRcvMsg <$>
             DB.query
               db
               [sql|
-                SELECT DISTINCT ON (recipient_id)
-                  recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-                FROM messages
-                WHERE recipient_id IN ?
-                ORDER BY recipient_id, message_id ASC
+                SELECT q.recipient_id, m.msg_id, m.msg_ts, m.msg_quota, m.msg_ntf_flag, m.msg_body
+                FROM msg_queues q
+                CROSS JOIN LATERAL (
+                  SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+                  FROM messages
+                  WHERE recipient_id = q.recipient_id
+                  ORDER BY message_id ASC
+                  LIMIT 1
+                ) m
+                WHERE q.recipient_id IN ?
               |]
               (Only (In rIds))
         Right . M.fromList . catMaybes <$> mapM (subscribe msgs . rowToQueueRec) locked
