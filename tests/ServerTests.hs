@@ -33,7 +33,7 @@ import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty)
 import Data.List (isPrefixOf)
-import Data.Maybe (catMaybes, isJust)
+import Data.Maybe (catMaybes)
 import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
@@ -49,7 +49,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
-import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..), QueueInfo (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
@@ -697,26 +696,10 @@ testSubSendBlock =
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
           TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
       [Right (), Right ()] <- tPut h [Right $ signTransmission h rKey Nothing ("2", rId, SUB), Right (Nothing, tToSend)]
-      signSend_ h rKey Nothing ("4", rId, QUE)
-      [mId] <-
-        fmap catMaybes $
-          receiveBlocksInAnyOrder
-            h
-            [ \case
-                [Resp "2" _ (SOK Nothing), Resp "3" _ OK] -> pure $ Just Nothing
-                _ -> pure Nothing,
-              \case
-                [Resp "" _ (Msg mId msg)] -> do
-                  dec mId msg `shouldBe` Right "hello"
-                  pure $ Just $ Just mId
-                _ -> pure Nothing,
-              \case
-                [Resp "4" _ (INFO QueueInfo {qiSub, qiSize})] -> do
-                  (qSubThread <$> qiSub, isJust $ qDelivered =<< qiSub, qiSize) `shouldBe` (Just QNoSub, True, 1)
-                  pure $ Just Nothing
-                _ -> pure Nothing
-            ]
-      Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId)
+      Resp "" _ (Msg mId msg) <- tGet1 h
+      dec mId msg `shouldBe` Right "hello"
+      [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient h
+      Resp "4" _ OK <- signSendRecv h rKey ("4", rId, ACK mId)
       pure ()
 
 testServiceDeliverSubscribe :: SpecWith (ASrvTransport, AStoreType)
@@ -983,17 +966,11 @@ readServiceSubsMetric content =
     [] -> Nothing
 
 receiveInAnyOrder :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> [(CorrId, EntityId, Either ErrorType BrokerMsg) -> IO (Maybe b)] -> IO [b]
-receiveInAnyOrder = receiveInAnyOrder_ . tGet1
-
-receiveBlocksInAnyOrder :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> [NonEmpty (Transmission (Either ErrorType BrokerMsg)) -> IO (Maybe b)] -> IO [b]
-receiveBlocksInAnyOrder = receiveInAnyOrder_ . tGetClient
-
-receiveInAnyOrder_ :: (HasCallStack, Show r) => IO r -> [r -> IO (Maybe b)] -> IO [b]
-receiveInAnyOrder_ getNext = fmap reverse . go []
+receiveInAnyOrder h = fmap reverse . go []
   where
     go rs [] = pure rs
     go rs ps = withFrozenCallStack $ do
-      r <- 5000000 `timeout` getNext >>= maybe (error "inAnyOrder timeout") pure
+      r <- 5000000 `timeout` tGet1 h >>= maybe (error "inAnyOrder timeout") pure
       (r_, ps') <- foldrM (choose r) (Nothing, []) ps
       case r_ of
         Just r' -> go (r' : rs) ps'
