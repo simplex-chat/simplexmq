@@ -27,7 +27,7 @@ Pull requests:
 - D4 is kept with the fix. Before the fix, rows were not locked by SUB batches; with it, the same rows can be locked in opposite orders by the unordered association UPDATE (QPG:397-399) and by a SUB batch (§4 item 1).
 - D8 is kept with the fix. Under the fix, the SUB-batch connection is held longer: for row-lock waits, both statements, the registrations and COMMIT (§4 item 3). `dbPool` is also used by command verification, SEND, ACK and expiry (§4 item 5). Without D8, each `dbPool` holder still holds one connection at a time, since the SUB callback is STM only.
 - The row-lock window is shortened by D9 and D10 (§4 items 3, 4).
-- Only `deliverThread` (S:2129-2142) is changed by D7, and it is unchanged by the fix.
+- Only `deliverIfSame` (S:2138) is changed by D7, and it is unchanged by the fix.
 
 Review tags:
 - `[I<n>]` interleavings review
@@ -223,18 +223,20 @@ subscribeQueue prevs ts q QueueRec {rcvServiceId} msg_ =                        
 
 ### 3.7 Delivery thread state (D7) [I1]
 
-`NoSub` is written in every outcome of `deliverThread` (S:2129-2142):
+`NoSub` is also written when `delivered` is already set (S:2138):
 
 ```haskell
-deliverThread = getSubscribed >>= maybe (atomically $ writeTVar st NoSub) deliverIfSame
+deliverThread = getSubscribed >>= mapM_ deliverIfSame
 deliverIfSame rcv = do
   ts <- getSystemSeconds
-  atomically $ do
-    whenM (sameClient rc rcv) $ readTVar delivered >>= \case
-      Just _ -> pure ()
-      Nothing -> deliver sndQ' s ts
-    writeTVar st NoSub
+  atomically $ whenM (sameClient rc rcv) $ readTVar delivered >>= \case
+    Just _ -> writeTVar st NoSub
+    Nothing -> do
+      deliver sndQ' s ts
+      writeTVar st NoSub
 ```
+
+When another client or no client is registered, the Sub is removed from the client's map (S:323-349, 1109, 2256).
 
 The blocked transaction is re-run after the `delivered` write of a duplicate SUB, and `NoSub` is written in that run. For this reason the SUB-side part of the [I1] correction (state reset and `cancelSub`) is omitted.
 
@@ -263,7 +265,7 @@ D7 with T4 was moved to `ep/smp-delivery-thread-state`, and D9 with D10 to `ep/s
 | S | `sharedSubscribeService` (S:1942-1964) + callers (S:1902, 1940) | −2 +5 |
 | S | `deliverQueueMsg` (S:1922-1936) | −8 +12 |
 | S | `delQueueAndMsgs` (S:2259) | ±1 |
-| S | `deliverThread`, `deliverIfSame` (S:2129-2142), D7 | −3 +6 |
+| S | `deliverIfSame` (S:2138), D7 | ±1 |
 | S | `SubResult` type | +3 |
 | Env | `lookupDeleteSubscribedClient` (Env:389-391) | +1 |
 | MT | `tryPeekMsgs` (MT:59) | ±1 |
