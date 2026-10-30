@@ -2135,7 +2135,7 @@ client
                       ts <- getSystemSeconds
                       atomically $ whenM (sameClient rc rcv) $
                         readTVar delivered >>= \case
-                          Just _ -> pure () -- if a message was already delivered, should not deliver more
+                          Just _ -> writeTVar st NoSub -- if a message was already delivered, should not deliver more
                           Nothing -> do
                             -- a separate thread is needed because it blocks when client sndQ is full.
                             deliver sndQ' s ts
