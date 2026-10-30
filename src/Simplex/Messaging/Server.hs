@@ -1803,7 +1803,7 @@ client
         getSub = either id id <$> TM.lookupOrInsertIO entId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeNewQueue :: RecipientId -> QueueRec -> M s ()
-        subscribeNewQueue rId QueueRec {rcvServiceId} = do
+        subscribeNewQueue rId QueueRec {rcvServiceId} =
           case rcvServiceId of
             Just _ -> do
               atomically $ modifyTVar' (serviceSubsCount clnt) $ addServiceSubs (1, queueIdHash rId)
@@ -1811,7 +1811,7 @@ client
             Nothing -> do
               sub <- atomically $ newSubscription NoSub
               atomically $ TM.insert rId sub $ subscriptions clnt
-              liftIO . mask_ $ processSub (Just clnt) (CSClient rId Nothing Nothing, clientId)
+              liftIO $ processSub (Just clnt) (CSClient rId Nothing Nothing, clientId)
 
         -- clients that use GET are not added to server subscribers
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
