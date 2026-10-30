@@ -34,6 +34,7 @@ Version 21, 2026-07-05
     - [Secure queue by recipient](#secure-queue-by-recipient)
     - [Set queue recipient keys](#set-queue-recipient-keys)
     - [Set short link](#set-short-link)
+    - [Swap short link data](#swap-short-link-data)
     - [Delete short link](#delete-short-link)
     - [Enable notifications command](#enable-notifications-command)
     - [Disable notifications command](#disable-notifications-command)
@@ -57,6 +58,7 @@ Version 21, 2026-07-05
     - [Subscribe to multiple queue notifications](#subscribe-to-multiple-queue-notifications)
   - [Router messages](#router-messages)
     - [Link response](#link-response)
+    - [Current link data response](#current-link-data-response)
     - [Queue subscription response](#queue-subscription-response)
     - [Service subscription response](#service-subscription-response)
     - [All service messages received](#all-service-messages-received)
@@ -86,7 +88,7 @@ It's designed with the focus on communication security and integrity, under the 
 
 It is designed as a low level protocol for other application protocols to solve the problem of secure and private message transmission, making [MITM attack][1] very difficult at any part of the message transmission system.
 
-This document describes SMP protocol version 23. Versions 1-5 are discontinued. The version history:
+This document describes SMP protocol version 24. Versions 1-5 are discontinued. The version history:
 
 - v1: binary protocol encoding
 - v2: message flags (used to control notifications)
@@ -110,6 +112,7 @@ This document describes SMP protocol version 23. Versions 1-5 are discontinued. 
 - v21: server public information in handshake
 - v22: `RNAME` says whether a name can be registered, not only what it resolves to
 - v23: version in nonces of forwarded commands, random nonces for forwarded responses
+- v24: LSWP command to swap short link data and recipient keys (LCUR response); LSET is refused on queues with several recipient keys
 
 ## Introduction
 
@@ -547,12 +550,13 @@ smpCommand = ping / recipientCmd / senderCommand /
              proxyCommand / notifierCommand / linkCommand / routerMsg
 recipientCmd = create / subscribe / subscribeMultiple / rcvSecure / recipientKeys /
                enableNotifications / disableNotifications / getMessage /
-               acknowledge / suspend / delete / getQueueInfo / setShortLink / deleteShortLink
+               acknowledge / suspend / delete / getQueueInfo / setShortLink / swapShortLink /
+               deleteShortLink
 senderCommand = send / sndSecure
 linkCommand = setLinkKey / getLinkData
 proxyCommand = proxySession / proxyForward / relayForward
 notifierCommand = subscribeNotifications / subscribeNotificationsMultiple
-routerMsg = queueIds / linkResponse / serviceOk / serviceOkMultiple /
+routerMsg = queueIds / linkResponse / currentLinkData / serviceOk / serviceOkMultiple /
             message / allReceived / notifierIdResponse / messageNotification /
             proxySessionKey / proxyResponse / relayResponse /
             unsubscribed / serviceUnsubscribed / deleted /
@@ -722,6 +726,27 @@ length2 = 2*2 OCTET ; Word16, network byte order (big-endian)
 ```
 
 The router responds with `OK` response if successful.
+
+From v24 the router responds with `ERR AUTH` when the queue has more than one recipient key: the link data of such a queue can only be changed with `LSWP`.
+
+#### Swap short link data
+
+This command is used by the owners of a contact address short link to replace its user data and, optionally, the queue recipient keys, only when the stored user data has the hash the owner sends (added in v24):
+
+```abnf
+swapShortLink = %s"LSWP " linkId userDataHash optRecipientKeys encFixedData encUserData
+linkId = shortString
+userDataHash = shortString ; SHA-256 hash of the stored encrypted user data (without length prefix)
+optRecipientKeys = %s"0" / (%s"1" recipientKeysList) ; the new recipient keys of the queue
+encFixedData = largeString ; encrypted fixed link data, must be the same as stored
+encUserData = largeString ; new encrypted user data
+```
+
+The router responds with `ERR AUTH` if the queue was not created with `queueReqContact` (contact queues created without queue request data are refused too), has no short link, or if the link ID or fixed data differ from the stored ones.
+
+If the hash of the stored user data differs from `userDataHash`, the router responds with [current link data response](#current-link-data-response) (`LCUR`) with the stored user data, and changes nothing.
+
+Otherwise the router stores the user data and, when present, the recipient keys in one atomic step, and responds with `OK`.
 
 #### Delete short link
 
@@ -1247,6 +1272,15 @@ linkResponse = %s"LNK " senderId encFixedData encUserData
 senderId = shortString ; the sender ID for the queue
 encFixedData = largeString ; encrypted fixed link data
 encUserData = largeString ; encrypted user data
+```
+
+#### Current link data response
+
+Sent in response to `LSWP` command when the hash of the stored user data differs from the hash in the command:
+
+```abnf
+currentLinkData = %s"LCUR " encUserData
+encUserData = largeString ; the stored encrypted user data
 ```
 
 #### Queue subscription response

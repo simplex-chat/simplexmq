@@ -54,6 +54,7 @@ module Simplex.Messaging.Transport
     serverInfoSMPVersion,
     nameAvailSMPVersion,
     fwdNoncesSMPVersion,
+    linkSwapSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -178,6 +179,7 @@ smpBlockSize = 16384
 -- 21 - server public information in handshake (7/5/2026)
 -- 22 - RNAME answers name availability as well as the record (7/25/2026)
 -- 23 - version in forwarded command nonce, random nonce in forwarded responses (10/2/2026)
+-- 24 - LSWP command to swap short link data and recipient keys, LCUR response, LSET refused with many recipient keys (10/28/2026)
 
 data SMPVersion
 
@@ -219,6 +221,9 @@ nameAvailSMPVersion = VersionSMP 22
 fwdNoncesSMPVersion :: VersionSMP
 fwdNoncesSMPVersion = VersionSMP 23
 
+linkSwapSMPVersion :: VersionSMP
+linkSwapSMPVersion = VersionSMP 24
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 15
 
@@ -226,18 +231,15 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 15
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 23
+currentClientSMPRelayVersion = VersionSMP 24
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 23
+currentServerSMPRelayVersion = VersionSMP 24
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
 -- version to prevent client version fingerprinting by the destination relays
--- when clients upgrade at different times. Pinned to the current version (23)
--- for this release because forwarded commands use the nonces from
--- fwdNoncesSMPVersion (23), so the one-version anti-fingerprinting buffer does
--- not apply yet; it reappears once the current version advances past 23.
+-- when clients upgrade at different times.
 proxiedSMPRelayVersion :: VersionSMP
 proxiedSMPRelayVersion = VersionSMP 23
 
@@ -714,9 +716,10 @@ instance Encoding TransportError where
 tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportError ())
 tPutBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} block = do
   block_ <- case encryptBlock of
-    Just TSbChainKeys {sndKey} -> do
-      (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
-      pure $ C.sbEncrypt sk nonce block (blockSize - 16)
+    Just TSbChainKeys {sndKey} ->
+      forM (C.pad block (blockSize - 16)) $ \padded -> do
+        (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
+        pure $ C.sbEncryptNoPad sk nonce padded
     Nothing -> pure $ C.pad block blockSize
   bimapM (const $ pure TELargeMsg) (cPut c) block_
 
