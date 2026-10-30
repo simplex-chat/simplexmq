@@ -18,16 +18,16 @@ INFERENCE marks a statement about PostgreSQL, GHC STM or library semantics whose
 
 Pull requests:
 
-| Branch | Base | Contents |
-|---|---|---|
-| `ep/smp-delivery-thread-state` | master | D7 (§3.7) with T4 |
-| `ep/smp-sub-race` | master | the fix (§3.1-3.6), the move (§3.5 item 1), D4, D8, T1, T2, T5 |
-| `ep/smp-sub-lock-pg` | `ep/smp-sub-race` | D9, D10 |
+| Pull request | Branch | Base | Contents |
+|---|---|---|---|
+| https://github.com/simplex-chat/simplexmq/pull/2006 | `ep/smp-delivery-thread-state` | master | D7 (§3.7) with T4 |
+| https://github.com/simplex-chat/simplexmq/pull/1997 | `ep/smp-sub-race` | master | the fix (§3.1-3.6), the move (§3.5 item 1), D4, D8, T1, T2, T5 |
+| https://github.com/simplex-chat/simplexmq/pull/2007 | `ep/smp-sub-lock-pg` | `ep/smp-sub-race` | D9, D10 |
 
-- D4 stays with the fix. Before the fix, rows were not locked by SUB batches; with it, the unordered association UPDATE (QPG:397-399) and a SUB batch can lock the same rows in opposite orders (§4 item 1).
-- D8 stays with the fix. Under the fix, the SUB-batch connection is held longer: for row-lock waits, both statements, the registrations and COMMIT (§4 item 3). `dbPool` is also used by command verification, SEND, ACK and expiry (§4 item 5). Without D8, every `dbPool` holder still holds one connection at a time: the SUB callback is STM only.
-- D9 and D10 shorten the row-lock window (§4 items 3, 4).
-- D7 changes only `deliverThread` (S:2129-2142), which is unchanged by the fix.
+- D4 is kept with the fix. Before the fix, rows were not locked by SUB batches; with it, the same rows can be locked in opposite orders by the unordered association UPDATE (QPG:397-399) and by a SUB batch (§4 item 1).
+- D8 is kept with the fix. Under the fix, the SUB-batch connection is held longer: for row-lock waits, both statements, the registrations and COMMIT (§4 item 3). `dbPool` is also used by command verification, SEND, ACK and expiry (§4 item 5). Without D8, each `dbPool` holder still holds one connection at a time, since the SUB callback is STM only.
+- The row-lock window is shortened by D9 and D10 (§4 items 3, 4).
+- Only `deliverThread` (S:2129-2142) is changed by D7, and it is unchanged by the fix.
 
 Review tags:
 - `[I<n>]` interleavings review
@@ -246,7 +246,7 @@ Commits:
 3. The fix, with D4, D8, D9, D10.
 4. D7 with T4.
 
-D7 with T4 moved to `ep/smp-delivery-thread-state`, and D9 with D10 to `ep/smp-sub-lock-pg` (section "Pull requests").
+D7 with T4 was moved to `ep/smp-delivery-thread-state`, and D9 with D10 to `ep/smp-sub-lock-pg` (section "Pull requests").
 
 | File | Function | Delta |
 |---|---|---|
