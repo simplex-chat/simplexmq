@@ -24,6 +24,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except (runExceptT)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -41,6 +42,7 @@ import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
+import Simplex.Messaging.Client (pattern NRMInteractive, ProtocolClientError (..), addSMPQueueLink, createSMPQueue, defaultSMPClientConfig, getProtocolClient, getSMPQueueLink)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -109,6 +111,7 @@ serverTests = do
     testInvQueueLinkData
     testContactQueueLinkData
     testDuplicateQueueLinkData
+    testLargeCommand
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
@@ -1788,6 +1791,25 @@ testDuplicateQueueLinkData =
       lnkId2 `shouldBe` lnkId
       victimSId2 `shouldBe` victimSId
       victimLD2 `shouldBe` victimLD
+
+testLargeCommand :: SpecWith (ASrvTransport, AStoreType)
+testLargeCommand =
+  it "refuses a command larger than an encrypted block and keeps the session" $ \(at, msType) ->
+    withSmpServer (at, msType) $ do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      c <- getProtocolClient g NRMInteractive (1, SMPServer testHost testPort testKeyHash, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ()) >>= either (fail . show) pure
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      fd <- atomically $ C.randomBytes 2048 g
+      Right QIK {rcvId = rId} <- runExceptT $ createSMPQueue c NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing
+      let largestUserData = 14165
+          linkData n = (EncDataBytes fd, EncDataBytes $ B.replicate n 'a')
+          setLink n = runExceptT $ addSMPQueueLink c NRMInteractive rKey rId lnkId (linkData n)
+      setLink largestUserData `shouldReturn` Right ()
+      setLink (largestUserData + 1) `shouldReturn` Left (PCETransportError TELargeMsg)
+      (fmap snd <$> runExceptT (getSMPQueueLink c NRMInteractive lnkId)) `shouldReturn` Right (linkData largestUserData)
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="
