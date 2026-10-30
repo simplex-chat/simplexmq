@@ -388,7 +388,7 @@ lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup entId cs $>>= re
 -- lookup and delete currently subscribed client
 lookupDeleteSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
 lookupDeleteSubscribedClient entId (SubscribedClients cs) =
-  TM.lookupDelete entId cs $>>= (`swapTVar` Nothing)
+  TM.lookup entId cs $>>= \cv -> TM.delete entId cs >> swapTVar cv Nothing
 {-# INLINE lookupDeleteSubscribedClient #-}
 
 deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients s -> IO ()

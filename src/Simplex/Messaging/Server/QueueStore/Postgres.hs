@@ -26,10 +26,12 @@ module Simplex.Messaging.Server.QueueStore.Postgres
     foldServiceRecs,
     foldQueueRecs,
     handleDuplicate,
+    queueRecQuery,
     rowToQueueRec,
     withLog_,
     withDB,
     withDB',
+    withDBPriority,
     assertUpdated,
     renderField,
   )
@@ -380,8 +382,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   setQueueServices :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (M.Map RecipientId (Either ErrorType ())))
   setQueueServices _ _ _ [] = pure $ Right M.empty
   setQueueServices st party serviceId qs = E.uninterruptibleMask_ $ runExceptT $ do
-    updated <- S.fromList <$> withDB' "setQueueServices" st (\db ->
-      map fromOnly <$> DB.query db updateQuery (serviceId, In (map recipientId qs)))
+    updated <- S.fromList <$> withDB' "setQueueServices" st (\db -> do
+      _ :: [Only Int] <- DB.query db "SELECT 1 FROM msg_queues WHERE recipient_id IN ? AND deleted_at IS NULL ORDER BY recipient_id FOR UPDATE" (Only rIds)
+      map fromOnly <$> DB.query db updateQuery (serviceId, rIds))
     results <- liftIO $ forM qs $ \sq -> do
       let rId = recipientId sq
       (rId,) <$> if S.member rId updated
@@ -392,6 +395,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         else pure $ Left AUTH
     pure $ M.fromList results
     where
+      rIds = In (map recipientId qs)
       updateQuery = case party of
         SRecipientService ->
           "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"
@@ -634,9 +638,12 @@ assertUpdated = (>>= \n -> when (n == 0) (throwE AUTH))
 withDB' :: Text -> PostgresQueueStore q -> (DB.Connection -> IO a) -> ExceptT ErrorType IO a
 withDB' op st action = withDB op st $ fmap Right . action
 
-withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
-withDB op st action =
-  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+withDB :: Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
+withDB op st = withDBPriority op st False
+
+withDBPriority :: forall a q. Text -> PostgresQueueStore q -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
+withDBPriority op st priority action =
+  ExceptT $ E.try (withTransactionPriority (dbStore st) priority action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)

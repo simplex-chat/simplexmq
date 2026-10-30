@@ -56,7 +56,7 @@ class QueueStoreClass (StoreQueue s) (QueueStore s) => MsgStoreClass s where
   deleteQueueSize :: s -> StoreQueue s -> IO (Either ErrorType (QueueRec, Int))
   writeMsg :: s -> StoreQueue s -> Bool -> Message -> ExceptT ErrorType IO (Maybe (Message, Bool))
   tryPeekMsg :: s -> StoreQueue s -> ExceptT ErrorType IO (Maybe Message)
-  tryPeekMsgs :: s -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId Message)
+  tryPeekMsgs :: s -> [(StoreQueue s, QueueRec)] -> (StoreQueue s -> QueueRec -> QueueRec -> Maybe Message -> STM a) -> ExceptT ErrorType IO (Map RecipientId a)
   tryDelMsg :: s -> StoreQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message)
   -- atomic delete (== read) last and peek next message if available
   tryDelPeekMsg :: s -> StoreQueue s -> MsgId -> ExceptT ErrorType IO (Maybe Message, Maybe Message)

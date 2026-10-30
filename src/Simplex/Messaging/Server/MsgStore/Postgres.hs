@@ -38,6 +38,7 @@ import Data.IORef
 import Data.Int (Int64)
 import Data.List (intersperse)
 import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes)
 import Data.Time.Clock.System (SystemTime (..))
 import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -194,23 +195,29 @@ instance MsgStoreClass PostgresMsgStore where
           |]
           (Only (recipientId' q))
 
-  tryPeekMsgs :: PostgresMsgStore -> [PostgresQueue] -> ExceptT ErrorType IO (M.Map RecipientId Message)
-  tryPeekMsgs _ms [] = pure M.empty
-  tryPeekMsgs ms qs =
+  tryPeekMsgs :: PostgresMsgStore -> [(PostgresQueue, QueueRec)] -> (PostgresQueue -> QueueRec -> QueueRec -> Maybe Message -> STM a) -> ExceptT ErrorType IO (M.Map RecipientId a)
+  tryPeekMsgs _ms [] _ = pure M.empty
+  tryPeekMsgs ms qs f =
     uninterruptibleMask_ $
-      withDB' "tryPeekMsgs" (queueStore_ ms) $ \db ->
-        M.fromList . map toRcvMsg <$>
-          DB.query
-            db
-            [sql|
-              SELECT DISTINCT ON (recipient_id)
-                recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-              FROM messages
-              WHERE recipient_id IN ?
-              ORDER BY recipient_id, message_id ASC
-            |]
-            (Only (In (map recipientId' qs)))
+      withDBPriority "tryPeekMsgs" (queueStore_ ms) True $ \db -> do
+        locked <- DB.query db (queueRecQuery <> " WHERE recipient_id IN ? AND deleted_at IS NULL ORDER BY recipient_id FOR UPDATE") (Only (In rIds))
+        msgs <-
+          M.fromList . map toRcvMsg <$>
+            DB.query
+              db
+              [sql|
+                SELECT DISTINCT ON (recipient_id)
+                  recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+                FROM messages
+                WHERE recipient_id IN ?
+                ORDER BY recipient_id, message_id ASC
+              |]
+              (Only (In rIds))
+        Right . M.fromList . catMaybes <$> mapM (subscribe msgs . rowToQueueRec) locked
     where
+      rIds = map (recipientId' . fst) qs
+      verifiedQs = M.fromList $ map (\vq@(q, _) -> (recipientId' q, vq)) qs
+      subscribe msgs (rId, qr') = forM (M.lookup rId verifiedQs) $ \(q, qr) -> (rId,) <$> atomically (f q qr qr' $ M.lookup rId msgs)
       toRcvMsg (Only rId :. msg) = (rId, toMessage msg)
 
   tryDelMsg :: PostgresMsgStore -> PostgresQueue -> MsgId -> ExceptT ErrorType IO (Maybe Message)
