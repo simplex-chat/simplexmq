@@ -40,20 +40,18 @@ withLock' lock name =
     (atomically $ putTMVar lock name)
     (void . atomically $ takeTMVar lock)
 
-withGetLock :: MonadUnliftIO m => (k -> STM Lock) -> k -> Text -> m a -> m a
+withGetLock :: MonadUnliftIO m => (k -> IO Lock) -> k -> Text -> m a -> m a
 withGetLock getLock key name a =
   E.bracket
-    (atomically $ getPutLock getLock key name)
+    (liftIO $ getPutLock getLock key name)
     (atomically . takeTMVar)
     (const a)
 
-withGetLocks :: MonadUnliftIO m => (k -> STM Lock) -> Set k -> Text -> m a -> m a
+withGetLocks :: MonadUnliftIO m => (k -> IO Lock) -> Set k -> Text -> m a -> m a
 withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
   where
-    holdLocks = forConcurrently (S.toList keys) $ \key -> atomically $ getPutLock getLock key name
+    holdLocks = forConcurrently (S.toList keys) $ \key -> liftIO $ getPutLock getLock key name
     releaseLocks = mapM_ (atomically . takeTMVar)
 
--- getLock and putTMVar can be in one transaction on the assumption that getLock doesn't write in case the lock already exists,
--- and in case it is created and added to some shared resource (we use TMap) it also helps avoid contention for the newly created lock.
-getPutLock :: (k -> STM Lock) -> k -> Text -> STM Lock
-getPutLock getLock key name = getLock key >>= \l -> putTMVar l name $> l
+getPutLock :: (k -> IO Lock) -> k -> Text -> IO Lock
+getPutLock getLock key name = getLock key >>= \l -> atomically (putTMVar l name) $> l

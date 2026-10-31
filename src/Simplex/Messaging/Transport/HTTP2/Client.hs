@@ -140,13 +140,13 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
       pure HClient {connected, disconnected, host, port, config, reqQ}
 
     runClient :: HClient -> IO (Either HTTP2ClientError HTTP2Client)
-    runClient c = do
+    runClient c = E.mask $ \restore -> do
       cVar <- newEmptyTMVarIO
       action <-
-        async $ setup (client c cVar) `E.catch` \e -> do
-          atomically $ putTMVar cVar $ Left $ HCNetworkError $ toNetworkError e
+        async $ restore (setup (client c cVar)) `E.catch` \e -> do
+          void $ atomically $ tryPutTMVar cVar $ Left $ HCNetworkError $ toNetworkError e
           E.throwIO e
-      c_ <- connTimeout config `timeout` atomically (takeTMVar cVar)
+      c_ <- restore (connTimeout config `timeout` atomically (takeTMVar cVar)) `E.onException` cancel action
       case c_ of
         Just (Right c') -> pure $ Right c' {action = Just action}
         Just (Left e) -> pure $ Left e

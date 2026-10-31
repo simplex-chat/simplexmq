@@ -44,6 +44,7 @@ import Control.Monad.Trans.Except
 import Data.ByteString.Builder (Builder)
 import qualified Data.ByteString.Builder as BB
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Bitraversable (bimapM)
 import Data.Either (fromRight)
@@ -558,7 +559,7 @@ queueRecToText (rId, QueueRec {recipientKeys, rcvDhSecret, senderId, senderKey, 
         nullable (notifierKey <$> n),
         nullable (rcvNtfDhSecret <$> n),
         nullable (ntfServiceId =<< n),
-        BB.char7 '"' <> renderField (toField status) <> BB.char7 '"',
+        quotedField (toField status),
         nullable updatedAt,
         nullable linkId_,
         nullable rcvServiceId,
@@ -576,6 +577,13 @@ renderField = \case
   EscapeByteA s -> BB.string7 "\\x" <> BB.byteStringHex s
   EscapeIdentifier s -> BB.byteString s -- Not used in COPY data
   Many as -> mconcat (map renderField as)
+
+quotedField :: Action -> Builder
+quotedField a = BB.char7 '"' <> escapeQuotes (renderField a) <> BB.char7 '"'
+  where
+    escapeQuotes bld =
+      let bs = LB.toStrict $ BB.toLazyByteString bld
+       in BB.byteString $ B.concatMap (\c -> if c == '"' then "\"\"" else B.singleton c) bs
 
 queueDataColumns :: Maybe (LinkId, QueueLinkData) -> (Maybe LinkId, Maybe QueueLinkData)
 queueDataColumns = \case

@@ -420,7 +420,7 @@ subscribeQueuesNtfs = subscribeQueues_
 
 subscribeQueues_ :: ServiceParty p => SMPClientAgent p -> SMPServer -> NonEmpty (QueueId, C.APrivateAuthKey) -> IO ()
 subscribeQueues_ ca srv subs = do
-  atomically $ addPendingSubs ca srv $ L.toList subs
+  addPendingSubs ca srv $ L.toList subs
   runExceptT (getSMPServerClient' ca srv) >>= \case
     Right smp -> smpSubscribeQueues ca smp srv subs
     Left _ -> pure () -- no call to reconnectClient - failing getSMPServerClient' does that
@@ -534,8 +534,10 @@ addActiveSubs :: SMPClientAgent p -> SMPServer -> [(QueueId, (SessionId, C.APriv
 addActiveSubs = addSubsList_ . activeQueueSubs
 {-# INLINE addActiveSubs #-}
 
-addPendingSubs :: SMPClientAgent p -> SMPServer -> [(QueueId, C.APrivateAuthKey)] -> STM ()
-addPendingSubs = addSubsList_ . pendingQueueSubs
+addPendingSubs :: SMPClientAgent p -> SMPServer -> [(QueueId, C.APrivateAuthKey)] -> IO ()
+addPendingSubs ca srv ss = TM.lookupOrInsertIO srv (newTVar ss') (pendingQueueSubs ca) >>= mapM_ (atomically . TM.union ss')
+  where
+    ss' = M.fromList ss
 {-# INLINE addPendingSubs #-}
 
 addSubsList_ :: TMap SMPServer (TMap QueueId s) -> SMPServer -> [(QueueId, s)] -> STM ()

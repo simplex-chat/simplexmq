@@ -242,7 +242,9 @@ import Control.Monad.Except
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.Parser as J
 import qualified Data.Aeson.TH as J
+import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
@@ -1780,7 +1782,7 @@ instance StrEncoding BlockingInfo where
     "reason=" <> strEncode reason <> maybe "" ((",notice=" <>) . LB.toStrict . J.encode) notice
   strP = do
     reason <- "reason=" *> strP
-    notice <- optional $ ",notice=" *> (J.eitherDecodeStrict <$?> A.takeByteString)
+    notice <- optional $ ",notice=" *> (JT.parseEither parseJSON <$?> J.json')
     pure BlockingInfo {reason, notice}
 
 instance Encoding BlockingInfo where

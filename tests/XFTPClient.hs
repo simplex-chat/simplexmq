@@ -24,10 +24,13 @@ import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Crypto.File (CryptoFile)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.Transport.HTTP2 (httpALPN)
+import Simplex.Messaging.Transport (defaultSupportedParams)
+import Simplex.Messaging.Transport.HTTP2 (defaultHTTP2BufferSize, httpALPN)
+import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
 import Simplex.Messaging.Transport.Server
 import System.Directory (createDirectoryIfMissing)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.STM (TMVar, atomically, newEmptyTMVarIO, putTMVar)
 import Util
 #if defined(dbServerPostgres)
 import Control.Monad (void)
@@ -131,6 +134,19 @@ withXFTPServerCfg cfg@XFTPServerConfig {filesPath} =
   serverBracket
     (\started -> createDirectoryIfMissing True filesPath >> runXFTPServerBlocking started cfg)
     (threadDelay 10000)
+
+withStallingXFTPServer :: (HasCallStack, HasTestEnv) => (TMVar () -> TMVar () -> IO a) -> IO a
+withStallingXFTPServer action = do
+  requested <- newEmptyTMVarIO
+  closed <- newEmptyTMVarIO
+  creds <- loadServerCredential xftpCredentials
+  let stall _ _ _ _ _ = atomically (putTMVar requested ()) >> threadDelay maxBound
+  serverBracket
+    (\started -> runHTTP2Server started xftpTestPort defaultHTTP2BufferSize defaultSupportedParams creds Nothing transportConfig Nothing (\_ -> atomically $ putTMVar closed ()) stall)
+    (pure ())
+    (const $ action requested closed)
+  where
+    XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
 
 withXFTPServerThreadOn :: (HasCallStack, HasTestEnv) => (HasCallStack => ThreadId -> IO a) -> IO a
 withXFTPServerThreadOn = withXFTPServerCfg testXFTPServerConfig

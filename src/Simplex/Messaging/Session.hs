@@ -5,6 +5,7 @@
 module Simplex.Messaging.Session
   ( SessionVar (..),
     getSessVar,
+    getSessVarIO,
     removeSessVar,
     withGetSessVar,
     withGetSessVar',
@@ -32,11 +33,18 @@ getSessVar sessSeq sessKey vs sessionVarTs = maybe (Left <$> newSessionVar) (pur
   where
     newSessionVar :: STM (SessionVar a)
     newSessionVar = do
-      sessionVar <- newEmptyTMVar
-      sessionVarId <- stateTVar sessSeq $ \next -> (next, next + 1)
-      let v = SessionVar {sessionVar, sessionVarId, sessionVarTs}
+      v <- createSessionVar sessSeq sessionVarTs
       TM.insert sessKey v vs
       pure v
+
+getSessVarIO :: Ord k => TVar Int -> k -> TMap k (SessionVar a) -> UTCTime -> IO (Either (SessionVar a) (SessionVar a))
+getSessVarIO sessSeq sessKey vs ts = TM.lookupOrInsertIO sessKey (createSessionVar sessSeq ts) vs
+
+createSessionVar :: TVar Int -> UTCTime -> STM (SessionVar a)
+createSessionVar sessSeq sessionVarTs = do
+  sessionVar <- newEmptyTMVar
+  sessionVarId <- stateTVar sessSeq $ \next -> (next, next + 1)
+  pure SessionVar {sessionVar, sessionVarId, sessionVarTs}
 
 removeSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()
 removeSessVar v sessKey vs =
@@ -64,7 +72,7 @@ withGetSessVar' ::
   (SessionVar a -> m b) -> (SessionVar a -> m b) -> m b
 withGetSessVar' sessSeq sessKey vs ts onNew onExisting =
   bracketOnError
-    (liftIO $ atomically $ getSessVar sessSeq sessKey vs ts)
+    (liftIO $ getSessVarIO sessSeq sessKey vs ts)
     (either (liftIO . atomically . dropEmptySessVar) (\_ -> pure ()))
     (either onNew onExisting)
   where
