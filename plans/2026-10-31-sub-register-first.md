@@ -8,7 +8,9 @@
 - The SUB response includes the first message only when no message of the subscription is marked as delivered.
 - Other subscription changes are registered by `serverThread` from `subQ`, as before.
 
-## Before
+## Sequence
+
+SUB of an empty queue and a SEND to it right after the first-message read. Green: added by this change. Red: removed by it.
 
 ```mermaid
 sequenceDiagram
@@ -17,48 +19,32 @@ sequenceDiagram
     participant Q as Message store
     participant T as serverThread
     participant S as Client thread of sender
-    R->>C: SUB q
-    Note over C: signature verified in receive
+    R->>C: SUB q, signature verified in receive
+    rect rgba(0, 160, 0, 0.18)
+        C->>C: added - prepareBatchSubs: Sub of q inserted
+        C->>C: added - processClientSub under mask_: R registered in queueSubscribers, END to the previous subscriber
+    end
     C->>Q: prepareBatchSubs: tryPeekMsgs q
     Q-->>C: empty queue
     S->>Q: SEND m: writeMsg, the queue was empty
-    S->>S: tryDeliverMessage: subscriber of q not found
-    C->>C: subscribeQueueAndDeliver: Sub of q inserted
-    C->>T: CSClient q written to subQ
-    C-->>R: SOK
-    T->>T: updateSubscribers: R registered in queueSubscribers, END to the previous subscriber
-    Note over R,Q: m is returned to R in the response to the next SUB
-```
-
-## After
-
-```mermaid
-sequenceDiagram
-    participant R as Recipient agent
-    participant C as Client thread of R
-    participant Q as Message store
-    participant S as Client thread of sender
-    R->>C: SUB q
-    Note over C: signature verified in receive
-    C->>C: prepareBatchSubs: Sub of q inserted
-    C->>C: processClientSub under mask_: R registered in queueSubscribers, END to the previous subscriber
-    alt m written after the registration, before the read
-        S->>Q: SEND m: writeMsg, the queue was empty
-        S->>S: tryDeliverMessage: R found, no message marked as delivered
-        S-->>R: MSG m, m marked as delivered
-        C->>Q: tryPeekMsgs q
-        Q-->>C: m
-        C->>C: trySetDelivered: m already marked
-        C-->>R: SOK
-    else m written after the read
-        C->>Q: tryPeekMsgs q
-        Q-->>C: empty queue
-        C-->>R: SOK
-        S->>Q: SEND m: writeMsg, the queue was empty
-        S->>S: tryDeliverMessage: R found
-        S-->>R: MSG m
+    rect rgba(220, 0, 0, 0.18)
+        S->>S: removed - tryDeliverMessage: subscriber of q not found, m not pushed
     end
-    Note over R,C: m written before the registration is returned with SOK, as before
+    rect rgba(0, 160, 0, 0.18)
+        S-->>R: added - tryDeliverMessage: R found, MSG m pushed and marked as delivered
+    end
+    rect rgba(220, 0, 0, 0.18)
+        C->>C: removed - subscribeQueueAndDeliver: Sub of q inserted
+        C->>T: removed - CSClient q written to subQ
+        T->>T: removed - updateSubscribers: R registered in queueSubscribers, END to the previous subscriber
+    end
+    C-->>R: SOK
+    rect rgba(220, 0, 0, 0.18)
+        Note over R,Q: removed - m returned to R only in the response to the next SUB
+    end
+    rect rgba(0, 160, 0, 0.18)
+        Note over R,Q: added - when m is written after the registration and before the read, the read returns m, and trySetDelivered omits it from SOK, as m is marked as delivered
+    end
 ```
 
 ## Mechanics
