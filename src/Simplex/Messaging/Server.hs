@@ -1791,12 +1791,13 @@ client
             deliver (hasSub, sub_) = do
               stats <- asks serverStats
               fmap (either ((,Nothing) . err) id) $ liftIO $ runExceptT $ do
-                msg' <- forM msg_ $ \msg -> liftIO $ do
+                msg' <- fmap join $ forM msg_ $ \msg -> liftIO $ do
                   ts <- getSystemSeconds
                   sub <- maybe getSub pure sub_
-                  atomically $ setDelivered sub msg ts
-                  unless hasSub $ incStat $ qSub stats
-                  pure (NoCorrId, entId, MSG (encryptMsg qr msg))
+                  ifM
+                    (atomically $ trySetDelivered sub msg ts)
+                    (Just (NoCorrId, entId, MSG (encryptMsg qr msg)) <$ unless hasSub (incStat $ qSub stats))
+                    (pure Nothing)
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
         getSub :: IO Sub
@@ -2272,6 +2273,9 @@ client
         setDelivered Sub {delivered} msg !ts = do
           let !msgId = messageId msg
           writeTVar delivered $ Just (msgId, ts)
+
+        trySetDelivered :: Sub -> Message -> SystemSeconds -> STM Bool
+        trySetDelivered sub msg ts = readTVar (delivered sub) >>= maybe (True <$ setDelivered sub msg ts) (const $ pure False)
 
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         delQueueAndMsgs (q, QueueRec {rcvServiceId}) = do
