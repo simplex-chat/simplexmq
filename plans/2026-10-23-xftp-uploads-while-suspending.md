@@ -20,6 +20,21 @@ Chat side: https://github.com/evgeny-simplex/simplex-chat/pull/5
   - The actions of "At count 0" are taken only while the agent state is `ASSuspending`.
   - `AONtfNetwork` is suspended at the start; the stages are entered independently of its count.
   - After the timeout, if the agent is still suspending, stage 4 is entered whatever stage is in progress; stage 5 is entered when the count of stage 4 is 0, as in the table.
+
+  ```mermaid
+  stateDiagram-v2
+    [*] --> RcvNetwork: suspendAgent, timeout above 0
+    RcvNetwork --> SndFiles: AORcvNetwork count 0
+    SndFiles --> MsgDelivery: AOSndFiles count 0
+    MsgDelivery --> SndNetwork: AOMsgDelivery count 0
+    SndNetwork --> Database: AOSndNetwork count 0
+    Database --> Suspended: AODatabase count 0, SUSPENDED sent
+    RcvNetwork --> SndNetwork: timeout
+    SndFiles --> SndNetwork: timeout
+    MsgDelivery --> SndNetwork: timeout
+    Suspended --> [*]
+  ```
+
 - Counted files, the set `sndFilesInProgress`:
   - inserted: files started by `xftpStartSendFile'` while the agent state is `ASForeground`;
   - removed:
@@ -58,25 +73,35 @@ add f                          f not in set -> insert f; count + 1
 remove f                       f in set -> delete f; endAgentOperation AOSndFiles
 ```
 
+```mermaid
+flowchart LR
+  start["xftpStartSendFile' in ASForeground"] --> add["add f"]
+  delete["deleteSndFilesInternal, finally"] --> remove["remove f"]
+  ttl["TTL cleanup"] --> remove
+  suspend["suspendAgent start: row absent, deleted or failed"] --> remove
+  close["closeAgentClient"] --> remove
+  remove --> stage["endAgentOperation AOSndFiles"]
+```
+
 ## Mechanics
 
 - `src/Simplex/Messaging/Agent/Client.hs`:
-  - `AgentClient` (:380-381), fields created in `newAgentClient` (:554-555):
+  - `AgentClient` (:379-380), fields created in `newAgentClient` (:550-551):
     - `sndFilesOp :: TVar AgentOpState`;
     - `sndFilesInProgress :: TVar (Set SndFileId)`.
-  - `AgentOperation`: `AOSndFiles` (:480).
+  - `AgentOperation`: `AOSndFiles` (:476).
   - `sndFilesOp` added to:
-    - `agentOpSel` (:487);
-    - `agentOperations` (:493).
-  - `closeAgentClient` (:1028): every counted file removed by `removeSndFileInProgress`.
-  - `endAgentOperation` (:2371-2385): at the end of `AORcvNetwork`, `AOSndFiles` is suspended; at the end of `AOSndFiles`, `suspendMsgDelivery` is called.
-  - `suspendMsgDelivery` (:2387-2390): `AOMsgDelivery` is suspended; `suspendSendingAndDatabase` is called when its count is 0.
+    - `agentOpSel` (:483);
+    - `agentOperations` (:489).
+  - `closeAgentClient` (:1024): every counted file removed by `removeSndFileInProgress`.
+  - `endAgentOperation` (:2363-2377): at the end of `AORcvNetwork`, `AOSndFiles` is suspended; at the end of `AOSndFiles`, `suspendMsgDelivery` is called.
+  - `suspendMsgDelivery` (:2379-2382): `AOMsgDelivery` is suspended; `suspendSendingAndDatabase` is called when its count is 0.
   - new:
-    - `addSndFileInProgress` (:2422-2425);
-    - `removeSndFileInProgress` (:2427-2430);
-    - `removeDeletedOrFailedSndFilesInProgress` (:2432-2442): when the set is not empty and `AODatabase` is begun by `tryBeginAgentOperation`, the counted files missing from `getNotDeletedOrFailedSndFileIds` are removed; on a query error, the error is logged and the set is unchanged;
-    - `tryBeginAgentOperation` (:2453-2454): `beginAgentOperation`, or `False` by `orElse` while the operation is suspended; `True` when begun;
-    - `waitUntilUploadsAllowed` (:2479-2489), with the condition `uploadsAllowed`.
+    - `addSndFileInProgress` (:2414-2417);
+    - `removeSndFileInProgress` (:2419-2422);
+    - `removeDeletedOrFailedSndFilesInProgress` (:2424-2434): when the set is not empty and `AODatabase` is begun by `tryBeginAgentOperation`, the counted files missing from `getNotDeletedOrFailedSndFileIds` are removed; on a query error, the error is logged and the set is unchanged;
+    - `tryBeginAgentOperation` (:2445-2446): `beginAgentOperation`, or `False` by `orElse` while the operation is suspended; `True` when begun;
+    - `waitUntilUploadsAllowed` (:2471-2481), with the condition `uploadsAllowed`.
 - `src/Simplex/Messaging/Agent/Store/AgentStore.hs`, new: `getNotDeletedOrFailedSndFileIds` (:3898-3900), the entity IDs of `snd_files` rows with `deleted = 0` and `failed = 0`.
 - `src/Simplex/Messaging/Agent.hs`:
   - `suspendAgent`:
