@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
@@ -173,7 +174,7 @@ runLocalTCPServer started port server = do
 runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()) -> IO ()
 runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket server =
   E.bracket getSocket (closeServer started clients) $ \sock ->
-    forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
+    interruptibleAccept . forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
       cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId' `seq` (cId', cId')
       closed <- newTVarIO False
       let closeConn _ = do
@@ -182,6 +183,18 @@ runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket serve
             atomically $ modifyTVar' gracefullyClosed (+ 1)
       tId <- mkWeakThreadId =<< server conn `forkFinally` closeConn
       atomically $ unlessM (readTVar closed) $ modifyTVar' clients $ IM.insert cId tId
+
+interruptibleAccept :: IO () -> IO ()
+#if defined(mingw32_HOST_OS)
+-- On Windows accept is a safe foreign call that killThread waits for. The loop runs in its own thread,
+-- so that killThread interrupts the wait here, and closing the socket in the bracket ends accept.
+interruptibleAccept acceptLoop = do
+  result <- newEmptyTMVarIO
+  void $ forkFinally acceptLoop (atomically . putTMVar result)
+  atomically (takeTMVar result) >>= either E.throwIO pure
+#else
+interruptibleAccept = id
+#endif
 
 -- | Recover from errors in `accept` whenever it is safe.
 -- Some errors are safe to ignore, while blindly restaring `accept` may trigger a busy loop.
