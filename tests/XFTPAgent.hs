@@ -821,7 +821,9 @@ testXFTPAgentSuspendQueryError = withGlobalLogging logCfgNoLogs $ do
       xftpSendFile sndr 1 (CF.plain filePath) 1
     closeDBStore $ agentClientStore sndr
     XA.suspendAgent sndr 60000000
-    readTVarIO (XA.sndFilesInProgress sndr) `shouldReturn` S.singleton sfId
+    fIds <- readTVarIO $ XA.sndFilesInProgress sndr
+    XA.foregroundAgent sndr
+    fIds `shouldBe` S.singleton sfId
 
 testXFTPAgentSuspendAgain :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendAgain = withGlobalLogging logCfgNoLogs $ do
