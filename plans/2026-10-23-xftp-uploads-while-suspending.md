@@ -61,36 +61,36 @@ remove f                       f in set -> delete f; endAgentOperation AOSndFile
 ## Mechanics
 
 - `src/Simplex/Messaging/Agent/Client.hs`:
-  - `AgentClient` (:380-381), fields created in `newAgentClient` (:555-556):
+  - `AgentClient` (:380-381), fields created in `newAgentClient` (:554-555):
     - `sndFilesOp :: TVar AgentOpState`;
     - `sndFilesInProgress :: TVar (Set SndFileId)`.
-  - `AgentOperation`: `AOSndFiles` (:481).
+  - `AgentOperation`: `AOSndFiles` (:480).
   - `sndFilesOp` added to:
-    - `agentOpSel` (:488);
-    - `agentOperations` (:494).
-  - `closeAgentClient` (:1029): every counted file removed by `removeSndFileInProgress`.
-  - `endAgentOperation` (:2372-2386): at the end of `AORcvNetwork`, `AOSndFiles` is suspended; at the end of `AOSndFiles`, `suspendMsgDelivery` is called.
-  - `suspendMsgDelivery` (:2388-2391): `AOMsgDelivery` is suspended; `suspendSendingAndDatabase` is called when its count is 0.
+    - `agentOpSel` (:487);
+    - `agentOperations` (:493).
+  - `closeAgentClient` (:1028): every counted file removed by `removeSndFileInProgress`.
+  - `endAgentOperation` (:2371-2385): at the end of `AORcvNetwork`, `AOSndFiles` is suspended; at the end of `AOSndFiles`, `suspendMsgDelivery` is called.
+  - `suspendMsgDelivery` (:2387-2390): `AOMsgDelivery` is suspended; `suspendSendingAndDatabase` is called when its count is 0.
   - new:
-    - `addSndFileInProgress` (:2423-2426);
-    - `removeSndFileInProgress` (:2428-2431);
-    - `removeDeletedOrFailedSndFilesInProgress` (:2433-2443): when the set is not empty and `AODatabase` is begun by `tryBeginAgentOperation`, the counted files missing from `getNotDeletedOrFailedSndFileIds` are removed; on a query error, the error is logged and the set is unchanged;
-    - `tryBeginAgentOperation` (:2454-2455): `beginAgentOperation`, or `False` by `orElse` while the operation is suspended; `True` when begun;
-    - `waitUntilUploadsAllowed` (:2480-2490), with the condition `uploadsAllowed`.
-- `src/Simplex/Messaging/Agent/Store/AgentStore.hs`, new: `getNotDeletedOrFailedSndFileIds` (:3897-3899), the entity IDs of `snd_files` rows with `deleted = 0` and `failed = 0`.
+    - `addSndFileInProgress` (:2422-2425);
+    - `removeSndFileInProgress` (:2427-2430);
+    - `removeDeletedOrFailedSndFilesInProgress` (:2432-2442): when the set is not empty and `AODatabase` is begun by `tryBeginAgentOperation`, the counted files missing from `getNotDeletedOrFailedSndFileIds` are removed; on a query error, the error is logged and the set is unchanged;
+    - `tryBeginAgentOperation` (:2453-2454): `beginAgentOperation`, or `False` by `orElse` while the operation is suspended; `True` when begun;
+    - `waitUntilUploadsAllowed` (:2479-2489), with the condition `uploadsAllowed`.
+- `src/Simplex/Messaging/Agent/Store/AgentStore.hs`, new: `getNotDeletedOrFailedSndFileIds` (:3898-3900), the entity IDs of `snd_files` rows with `deleted = 0` and `failed = 0`.
 - `src/Simplex/Messaging/Agent.hs`:
   - `suspendAgent`:
     - `removeDeletedOrFailedSndFilesInProgress` (:3442), in the branch with a timeout above 0;
     - stages (:3447-3449): `AORcvNetwork`, `AOSndFiles`, then `suspendMsgDelivery`.
   - `deleteSndFilesExpired` (:3548), local to `cleanupManager`: `removeSndFileInProgress`.
 - `src/Simplex/FileTransfer/Agent.hs`:
-  - `xftpStartSendFile'` (:406): `addSndFileInProgress` when `ASForeground`.
+  - `xftpStartSendFile'` (:407): `addSndFileInProgress` when `ASForeground`.
   - `assertUploadsAllowed` in place of `assertAgentForeground`:
-    - `runXFTPSndPrepareWorker` (:423, :486, :506);
-    - `runXFTPSndWorker` (:527, :548, :559).
-  - `uploadFileChunk` (:561): `waitUntilUploadsAllowed` in place of `waitUntilForeground`.
-  - `deleteSndFilesInternal` (:662): `removeSndFileInProgress` in `E.finally`.
-  - `assertUploadsAllowed` (:748-751): `throwWhenInactive`, then `waitUntilUploadsAllowed`.
+    - `runXFTPSndPrepareWorker` (:424, :487, :507);
+    - `runXFTPSndWorker` (:528, :549, :560).
+  - `uploadFileChunk` (:562): `waitUntilUploadsAllowed` in place of `waitUntilForeground`.
+  - `deleteSndFilesInternal` (:663): `removeSndFileInProgress` in `E.finally`.
+  - `assertUploadsAllowed` (:749-752): `throwWhenInactive`, then `waitUntilUploadsAllowed`.
 
 ## Tests
 
@@ -154,15 +154,16 @@ remove f                       f in set -> delete f; endAgentOperation AOSndFile
   - agent store closed: `xftpDeleteSndFileInternal` throws, and the set is empty.
 - "should keep counted files when database query fails at suspension start" (:815):
   - XFTP server down; file of 128 KB started;
-  - agent store closed; suspend timeout 60 s: the set still contains the file.
-- "should wait for counted file again after agent is in foreground" (:826):
+  - agent store closed; suspend timeout 60 s;
+  - the set read after `suspendAgent` still contains the file; `foregroundAgent` before the comparison.
+- "should wait for counted file again after agent is in foreground" (:828):
   - XFTP server down; file of 128 KB started;
   - suspend timeout 0.5 s: `SUSPENDED` within 5 s;
   - `foregroundAgent`; suspend timeout 60 s: `SUSPENDED` absent for 1 s;
   - after `xftpDeleteSndFileInternal`, `SUSPENDED` within 5 s.
 
 `tests/AgentTests/FunctionalAPITests.hs`, "Suspending agent":
-- "should send messages queued after file is sent before agent is suspended" (:3137):
+- "should send messages queued after file is sent before agent is suspended" (:3177):
   - b starts a file, suspend timeout 60 s;
   - once `sndFilesOp` is suspended, the `opSuspended` flags of `rcvNetworkOp`, `sndFilesOp`, `msgDeliveryOp`: `[True, True, False]`;
   - after `SFDONE`, `sendMessage` and `xftpDeleteSndFileInternal`: `[True, True, True]`;
