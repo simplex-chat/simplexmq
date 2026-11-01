@@ -3,7 +3,7 @@
 On iOS, a file sent shortly before the app left the foreground was delivered only after the app was opened again. Once the agent began to suspend, the next chunk was not started, and the result of the chunk in flight was recorded only in foreground.
 While the agent is suspending, it continues the uploads that it started in foreground. Their files are counted by a new operation, `AOSndFiles`, with its own count and set, in a stage between `AORcvNetwork` and `AOMsgDelivery`. The next stage is entered after these files are deleted by the chat, removed by TTL cleanup or `closeAgentClient`, or removed at the start of the suspension when their rows are absent or flagged deleted or failed. At the suspend timeout, the stage of `AOSndNetwork` is entered if the agent is still suspending.
 
-Chat side: https://github.com/evgeny-simplex/simplex-chat/pull/5
+Chat side: https://github.com/simplex-chat/simplex-chat/pull/7966
 
 ## Decisions
 
