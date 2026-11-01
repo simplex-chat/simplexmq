@@ -40,11 +40,11 @@ Chat side: https://github.com/simplex-chat/simplex-chat/pull/7966
   - removed:
     - files deleted by `deleteSndFilesInternal`, after its database work, also when an exception is thrown;
     - files expired by TTL cleanup, before their prefix path and row are deleted;
-    - at the start of a suspension with a timeout above 0, in the thread forked by `suspendAgent` before the timeout delay, while `AODatabase` is not suspended: files whose rows are absent or flagged `deleted = 1` or `failed = 1`, found by one query; the suspended flag of `AODatabase` is checked and the operation is begun in one STM transaction; `suspendAgent` returns before this query;
+    - at the start of a suspension with a timeout above 0, in a thread forked by `suspendAgent`, while `AODatabase` is not suspended: files whose rows are absent or flagged `deleted = 1` or `failed = 1`, found by one query; the suspended flag of `AODatabase` is checked and the operation is begun in one STM transaction; `suspendAgent` returns, and the suspend timeout starts, before this query;
     - every file, by `closeAgentClient`.
   - kept until the chat deletes them: files with complete or error rows; the file descriptions are sent while these files are counted.
   - kept until TTL cleanup, `closeAgentClient` or process exit: counted files completed, or set to an error status, by another process; each suspension in between waits for the suspend timeout.
-  - kept until they are uploaded or removed, at most 1 day after creation (`sndFilesTTL`): counted files that cannot be uploaded, for example offline; each suspension in between waits in the files stage until the suspend timeout.
+  - kept until they are uploaded or removed: counted files that cannot be uploaded, for example offline; TTL cleanup removes such a file at its first pass after `sndFilesTTL` (1 day) from creation, at most `cleanupInterval` (5 min) later; each suspension in between waits in the files stage until the suspend timeout.
 - `deleteSndFilesInternal` is run by `xftpDeleteSndFileInternal`, which is called by the chat after `SFDONE` and `SFERR`.
 - Uncounted files:
   - files resumed at worker start;
@@ -69,7 +69,7 @@ Chat side: https://github.com/simplex-chat/simplex-chat/pull/7966
 xftpStartSendFile' f           ASForeground -> add f
 deleteSndFilesInternal fs      rows deleted or marked deleted; finally: remove each f
 deleteSndFilesExpired f        remove f; prefix path and row deleted
-suspendAgent, timeout > 0      forked thread, before the timeout delay: AODatabase not suspended -> begin AODatabase; remove each f whose row is absent, deleted or failed; end AODatabase
+suspendAgent, timeout > 0      forked thread: AODatabase not suspended -> begin AODatabase; remove each f whose row is absent, deleted or failed; end AODatabase
 closeAgentClient               remove each f
 add f                          f not in set -> insert f; count + 1
 remove f                       f in set -> delete f; endAgentOperation AOSndFiles
@@ -108,7 +108,7 @@ flowchart LR
 - `src/Simplex/Messaging/Agent.hs`:
   - `suspendAgent`:
     - stages (:3446-3448): `AORcvNetwork`, `AOSndFiles`, then `suspendMsgDelivery`;
-    - `removeDeletedOrFailedSndFilesInProgress` (:3451), in the thread forked while the agent is suspending, before `threadDelay`.
+    - `removeDeletedOrFailedSndFilesInProgress` (:3451), in a thread forked while the agent is suspending, separate from the timeout thread (:3452-3457); a removal that ends after the timeout holds the `AODatabase` count until it ends, and `SUSPENDED` is sent then.
   - `deleteSndFilesExpired` (:3548), local to `cleanupManager`: `removeSndFileInProgress`.
 - `src/Simplex/FileTransfer/Agent.hs`:
   - `xftpStartSendFile'` (:407): `addSndFileInProgress` when `ASForeground`.
@@ -123,8 +123,8 @@ flowchart LR
 
 `tests/XFTPAgent.hs`, "agent XFTP API":
 - Helpers:
-  - `withSndFile` (:820): file of 128 KB; agent 1 with the test's configuration; workers started; the file sent to 1 recipient;
-  - `shouldSuspend` (:829): `SUSPENDED` within 5 s; events of the file before it are skipped.
+  - `withSndFile` (:822): file of 128 KB; agent 1 with the test's configuration; workers started; the file sent to 1 recipient;
+  - `shouldSuspend` (:831): `SUSPENDED` within 5 s; events of the file before it are skipped.
 - "should complete sending file while agent is suspending" (:644):
   - suspend timeout 60 s;
   - all `SFPROG` within 30 s, then `SFDONE`;
@@ -161,36 +161,37 @@ flowchart LR
   - suspend timeout 60 s: after 1 s, the set still contains the file.
 - "should not wait for database when suspending" (:731):
   - XFTP server down; `withSndFile`;
-  - while the test holds the agent store connection, `suspendAgent` with timeout 60 s returns within 1 s.
-- "should not wait for file removed by TTL cleanup while agent is suspending" (:737):
+  - while the test holds the agent store connection: `suspendAgent` with timeout 0.5 s returns within 1 s; `AOSndNetwork` is suspended by the timeout within 5 s;
+  - after the test releases the connection, `shouldSuspend`.
+- "should not wait for file removed by TTL cleanup while agent is suspending" (:739):
   - cleanup after 1 s and every 1 s; `sndFilesTTL` 1 s;
   - XFTP server down; `withSndFile`;
   - suspend timeout 60 s: `SUSPENDED` within 10 s, after the cleanup removes the expired file; events of the file before it are skipped.
-- "should not wait for file resumed at worker start" (:744):
+- "should not wait for file resumed at worker start" (:746):
   - XFTP server down; file of 128 KB started by agent 1;
   - agent 2 on the same database resumes it at `xftpStartWorkers`;
   - after 0.5 s, suspend timeout 60 s; `shouldSuspend`.
-- "should stop uploads when sending network is suspended while agent is suspending" (:756):
+- "should stop uploads when sending network is suspended while agent is suspending" (:758):
   - `withSndFile`; `AOSndNetwork` begun by the test;
   - suspend timeout 1 µs: `SFDONE` absent for 3 s;
   - after the test ends `AOSndNetwork`, `shouldSuspend`.
-- "should retry creating file chunks while agent is suspending" (:765):
+- "should retry creating file chunks while agent is suspending" (:767):
   - XFTP server down; `withSndFile`; suspend timeout 60 s;
   - server started after 3 s: `SFDONE` within 30 s;
   - after `xftpDeleteSndFileInternal`, `shouldSuspend`.
-- "should retry uploading file chunks while agent is suspending" (:775):
+- "should retry uploading file chunks while agent is suspending" (:777):
   - file of 17 MB started; the server is stopped after the first `SFPROG`;
   - suspend timeout 60 s; server started after 1 s: `SFDONE` within 30 s;
   - after `xftpDeleteSndFileInternal`, `shouldSuspend`.
-- "should remove counted file when its deletion fails" (:792):
+- "should remove counted file when its deletion fails" (:794):
   - XFTP server down; `withSndFile`;
   - agent store closed: `xftpDeleteSndFileInternal` throws, and the set is empty.
-- "should keep counted files when database query fails at suspension start" (:799):
+- "should keep counted files when database query fails at suspension start" (:801):
   - XFTP server down; `withSndFile`;
   - agent store closed; suspend timeout 60 s;
   - after 1 s, the set still contains the file; `foregroundAgent` before the comparison.
 - The two tests above are excluded from builds with `client_postgres` (`#if !defined(dbPostgres)`, :117-120): a closed PostgreSQL store has no pool connections, and its `withTransaction` waits for one.
-- "should wait for counted file again after agent is in foreground" (:809):
+- "should wait for counted file again after agent is in foreground" (:811):
   - XFTP server down; `withSndFile`;
   - suspend timeout 0.5 s; `shouldSuspend`;
   - `foregroundAgent`; suspend timeout 60 s: `SUSPENDED` absent for 1 s;
