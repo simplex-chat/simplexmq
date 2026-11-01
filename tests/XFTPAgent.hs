@@ -727,12 +727,14 @@ testXFTPAgentSuspendDatabaseSuspended :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendDatabaseSuspended = withGlobalLogging logCfgNoLogs $ do
   filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
   withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    runRight_ $ do
+    sfId <- runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
-      void $ xftpSendFile sndr 1 (CF.plain filePath) 1
+      xftpSendFile sndr 1 (CF.plain filePath) 1
     XA.suspendAgent sndr 0
-    withTransaction (agentClientStore sndr) $ \_ ->
-      timeout 5000000 (XA.suspendAgent sndr 60000000) `shouldReturn` Just ()
+    withTransaction (agentClientStore sndr) (`DB.execute_` "DELETE FROM snd_files")
+    XA.suspendAgent sndr 60000000
+    threadDelay 1000000
+    readTVarIO (XA.sndFilesInProgress sndr) `shouldReturn` S.singleton sfId
 
 testXFTPAgentSuspendExpiredFile :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendExpiredFile = withGlobalLogging logCfgNoLogs $ do
@@ -821,6 +823,7 @@ testXFTPAgentSuspendQueryError = withGlobalLogging logCfgNoLogs $ do
       xftpSendFile sndr 1 (CF.plain filePath) 1
     closeDBStore $ agentClientStore sndr
     XA.suspendAgent sndr 60000000
+    threadDelay 1000000
     fIds <- readTVarIO $ XA.sndFilesInProgress sndr
     XA.foregroundAgent sndr
     fIds `shouldBe` S.singleton sfId

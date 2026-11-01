@@ -3439,7 +3439,6 @@ suspendAgent c 0 = do
   where
     suspend opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = True}
 suspendAgent c@AgentClient {agentState = as} maxDelay = do
-  removeDeletedOrFailedSndFilesInProgress c
   state <-
     atomically $ do
       writeTVar as ASSuspending
@@ -3449,6 +3448,7 @@ suspendAgent c@AgentClient {agentState = as} maxDelay = do
           suspendMsgDelivery c
       readTVar as
   when (state == ASSuspending) . void . forkIO $ do
+    removeDeletedOrFailedSndFilesInProgress c
     threadDelay maxDelay
     -- liftIO $ putStrLn "suspendAgent after timeout"
     atomically . whenSuspending c $ do
