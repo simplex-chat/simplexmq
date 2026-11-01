@@ -3447,13 +3447,14 @@ suspendAgent c@AgentClient {agentState = as} maxDelay = do
         suspendOperation c AOSndFiles $
           suspendMsgDelivery c
       readTVar as
-  when (state == ASSuspending) . void . forkIO $ do
-    removeDeletedOrFailedSndFilesInProgress c
-    threadDelay maxDelay
-    -- liftIO $ putStrLn "suspendAgent after timeout"
-    atomically . whenSuspending c $ do
-      -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
-      suspendSendingAndDatabase c
+  when (state == ASSuspending) $ do
+    void . forkIO $ removeDeletedOrFailedSndFilesInProgress c
+    void . forkIO $ do
+      threadDelay maxDelay
+      -- liftIO $ putStrLn "suspendAgent after timeout"
+      atomically . whenSuspending c $ do
+        -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
+        suspendSendingAndDatabase c
 
 execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)

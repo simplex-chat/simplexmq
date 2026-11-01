@@ -38,7 +38,7 @@ import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpPrepareReceiveFile, xftpPrepareSendFile, xftpReceiveFile, xftpSendDescription, xftpStartReceiveFile, xftpStartSendFile, xftpStartWorkers)
 import qualified Simplex.Messaging.Agent as XA
-import Simplex.Messaging.Agent.Client (AgentOperation (..), ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, beginAgentOperation, endAgentOperation)
+import Simplex.Messaging.Agent.Client (AgentOpState (..), AgentOperation (..), ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, beginAgentOperation, endAgentOperation)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
 import qualified Simplex.Messaging.Agent.Env.SQLite as AEnv
 import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
@@ -730,9 +730,11 @@ testXFTPAgentSuspendDatabaseSuspended = withGlobalLogging logCfgNoLogs $
 
 testXFTPAgentSuspendDatabaseBusy :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendDatabaseBusy = withGlobalLogging logCfgNoLogs $
-  withSndFile agentCfg $ \sndr _ ->
-    withTransaction (agentClientStore sndr) $ \_ ->
-      timeout 1000000 (XA.suspendAgent sndr 60000000) `shouldReturn` Just ()
+  withSndFile agentCfg $ \sndr sfId -> do
+    withTransaction (agentClientStore sndr) $ \_ -> do
+      timeout 1000000 (XA.suspendAgent sndr 500000) `shouldReturn` Just ()
+      timeout 5000000 (atomically $ readTVar (XA.sndNetworkOp sndr) >>= checkSTM . opSuspended) `shouldReturn` Just ()
+    shouldSuspend sndr sfId
 
 testXFTPAgentSuspendExpiredFile :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendExpiredFile = withGlobalLogging logCfgNoLogs $ do
