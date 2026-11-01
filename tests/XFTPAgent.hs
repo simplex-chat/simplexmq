@@ -663,7 +663,8 @@ testXFTPAgentSuspendTimeout = withGlobalLogging logCfgNoLogs $ do
       xftpStartWorkers sndr (Just senderFiles)
       xftpSendFile sndr 1 (CF.plain filePath) 2
     XA.suspendAgent sndr 500000
-    ("", "", SUSPENDED) <- nGet sndr
+    timeout 300000 (nGet sndr) `shouldReturn` Nothing
+    timeout 5000000 (nGet sndr) `shouldReturn` Just ("", "", SUSPENDED)
     withXFTPServerStoreLogOn $ \_ -> do
       timeout 1000000 (sfGet sndr) `shouldReturn` Nothing
       XA.foregroundAgent sndr
