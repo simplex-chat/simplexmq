@@ -113,8 +113,10 @@ xftpAgentTests =
       it "should stop uploads when sending network is suspended while agent is suspending" testXFTPAgentSuspendSndNetworkSuspended
       it "should retry creating file chunks while agent is suspending" $ \_ -> testXFTPAgentSuspendPrepareRetry
       it "should retry uploading file chunks while agent is suspending" $ \_ -> testXFTPAgentSuspendUploadRetry
+#if !defined(dbPostgres)
       it "should remove counted file when its deletion fails" $ \_ -> testXFTPAgentDeleteSndFileError
       it "should keep counted files when database query fails at suspension start" $ \_ -> testXFTPAgentSuspendQueryError
+#endif
       it "should wait for counted file again after agent is in foreground" $ \_ -> testXFTPAgentSuspendAgain
       describe "XFTP server test via agent API" $ do
         it "should pass without basic auth" $ \_ -> testXFTPServerTest Nothing (noAuthSrv testXFTPServer2) `shouldReturn` Right (Just (Right testServerInformation))
