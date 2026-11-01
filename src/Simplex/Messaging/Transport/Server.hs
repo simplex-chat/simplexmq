@@ -211,7 +211,11 @@ safeAccept sock =
     Left e
       | retryAccept -> logWarn err >> safeAccept sock
       | outOfDescriptors -> logError err >> threadDelay 1000000 >> safeAccept sock
-      | otherwise -> logError err >> E.throwIO e
+      | otherwise -> do
+          -- close sets the fd to -1, and on Windows it ends a blocked accept with an error
+          closed <- (< 0) <$> unsafeFdSocket sock
+          unless closed $ logError err
+          E.throwIO e
       where
         retryAccept = maybe False ((`elem` again) . Errno) errno
         again = [eCONNABORTED, eAGAIN, eNETDOWN, ePROTO, eNOPROTOOPT, eHOSTDOWN, eNONET, eHOSTUNREACH, eOPNOTSUPP, eNETUNREACH]
