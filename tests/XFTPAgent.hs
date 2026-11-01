@@ -684,7 +684,7 @@ testXFTPAgentSuspendNewFile = withXFTPServer $ do
     liftIO $ do
       timeout 30000000 (waitSndFileDone sndr sfId1) `shouldReturn` Just ()
       xftpDeleteSndFileInternal sndr sfId1
-      timeout 5000000 (waitSuspended sndr sfId2) `shouldReturn` Just ()
+      shouldSuspend sndr sfId2
 
 testXFTPAgentSuspendDeleteTwice :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
 testXFTPAgentSuspendDeleteTwice = withXFTPServer $ do
@@ -700,39 +700,27 @@ testXFTPAgentSuspendDeleteTwice = withXFTPServer $ do
       xftpDeleteSndFileInternal sndr sfId1
       timeout 30000000 (waitSndFileDone sndr sfId2) `shouldReturn` Just ()
       xftpDeleteSndFileInternal sndr sfId2
-      timeout 5000000 (waitSuspended sndr sfId1) `shouldReturn` Just ()
+      shouldSuspend sndr sfId1
 
 testXFTPAgentSuspendCompleteFile :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
-testXFTPAgentSuspendCompleteFile = withXFTPServer $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight_ $ do
-    xftpStartWorkers sndr (Just senderFiles)
-    sfId <- xftpSendFile sndr 1 (CF.plain filePath) 1
-    liftIO $ do
-      timeout 30000000 (waitSndFileDone sndr sfId) `shouldReturn` Just ()
-      XA.suspendAgent sndr 60000000
-      timeout 300000 (nGet sndr) `shouldReturn` Nothing
-      xftpDeleteSndFileInternal sndr sfId
-      timeout 5000000 (nGet sndr) `shouldReturn` Just ("", "", SUSPENDED)
+testXFTPAgentSuspendCompleteFile = withXFTPServer $
+  withSndFile agentCfg $ \sndr sfId -> do
+    timeout 30000000 (waitSndFileDone sndr sfId) `shouldReturn` Just ()
+    XA.suspendAgent sndr 60000000
+    timeout 300000 (nGet sndr) `shouldReturn` Nothing
+    xftpDeleteSndFileInternal sndr sfId
+    timeout 5000000 (nGet sndr) `shouldReturn` Just ("", "", SUSPENDED)
 
 testXFTPAgentSuspendAfter :: (HasCallStack, HasTestEnv) => (AgentClient -> IO ()) -> IO ()
-testXFTPAgentSuspendAfter action = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+testXFTPAgentSuspendAfter action = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr sfId -> do
     action sndr
     XA.suspendAgent sndr 60000000
-    timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+    shouldSuspend sndr sfId
 
 testXFTPAgentSuspendDatabaseSuspended :: (HasCallStack, HasTestEnv) => IO ()
-testXFTPAgentSuspendDatabaseSuspended = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+testXFTPAgentSuspendDatabaseSuspended = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr sfId -> do
     XA.suspendAgent sndr 0
     withTransaction (agentClientStore sndr) (`DB.execute_` "DELETE FROM snd_files")
     XA.suspendAgent sndr 60000000
@@ -741,12 +729,8 @@ testXFTPAgentSuspendDatabaseSuspended = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentSuspendExpiredFile :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendExpiredFile = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
   let cfg = agentCfg {AEnv.initialCleanupDelay = 1000000, AEnv.cleanupInterval = 1000000, AEnv.sndFilesTTL = 1}
-  withAgent 1 cfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+  withSndFile cfg $ \sndr sfId -> do
     XA.suspendAgent sndr 60000000
     timeout 10000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
 
@@ -760,34 +744,26 @@ testXFTPAgentSuspendResumedFile = withGlobalLogging logCfgNoLogs $ do
     runRight_ $ xftpStartWorkers sndr (Just senderFiles)
     threadDelay 500000
     XA.suspendAgent sndr 60000000
-    timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+    shouldSuspend sndr sfId
 
 testXFTPAgentSuspendSndNetworkSuspended :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
-testXFTPAgentSuspendSndNetworkSuspended = withXFTPServer $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+testXFTPAgentSuspendSndNetworkSuspended = withXFTPServer $
+  withSndFile agentCfg $ \sndr sfId -> do
     atomically $ beginAgentOperation sndr AOSndNetwork
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
     XA.suspendAgent sndr 1
     timeout 3000000 (waitSndFileDone sndr sfId) `shouldReturn` Nothing
     atomically $ endAgentOperation sndr AOSndNetwork
-    timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+    shouldSuspend sndr sfId
 
 testXFTPAgentSuspendPrepareRetry :: (HasCallStack, HasTestEnv) => IO ()
-testXFTPAgentSuspendPrepareRetry = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+testXFTPAgentSuspendPrepareRetry = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr sfId -> do
     XA.suspendAgent sndr 60000000
     threadDelay 3000000
     withXFTPServerStoreLogOn $ \_ -> do
       timeout 30000000 (waitSndFileDone sndr sfId) `shouldReturn` Just ()
       xftpDeleteSndFileInternal sndr sfId
-      timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+      shouldSuspend sndr sfId
 
 testXFTPAgentSuspendUploadRetry :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendUploadRetry = withGlobalLogging logCfgNoLogs $ do
@@ -804,26 +780,18 @@ testXFTPAgentSuspendUploadRetry = withGlobalLogging logCfgNoLogs $ do
     withXFTPServerStoreLogOn $ \_ -> do
       timeout 30000000 (waitSndFileDone sndr sfId) `shouldReturn` Just ()
       xftpDeleteSndFileInternal sndr sfId
-      timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+      shouldSuspend sndr sfId
 
 testXFTPAgentDeleteSndFileError :: (HasCallStack, HasTestEnv) => IO ()
-testXFTPAgentDeleteSndFileError = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+testXFTPAgentDeleteSndFileError = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr sfId -> do
     closeDBStore $ agentClientStore sndr
     tryAny (xftpDeleteSndFileInternal sndr sfId) >>= (`shouldSatisfy` isLeft)
     readTVarIO (XA.sndFilesInProgress sndr) `shouldReturn` S.empty
 
 testXFTPAgentSuspendQueryError :: (HasCallStack, HasTestEnv) => IO ()
-testXFTPAgentSuspendQueryError = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+testXFTPAgentSuspendQueryError = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr sfId -> do
     closeDBStore $ agentClientStore sndr
     XA.suspendAgent sndr 60000000
     threadDelay 1000000
@@ -832,19 +800,27 @@ testXFTPAgentSuspendQueryError = withGlobalLogging logCfgNoLogs $ do
     fIds `shouldBe` S.singleton sfId
 
 testXFTPAgentSuspendAgain :: (HasCallStack, HasTestEnv) => IO ()
-testXFTPAgentSuspendAgain = withGlobalLogging logCfgNoLogs $ do
-  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
-  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
-    sfId <- runRight $ do
-      xftpStartWorkers sndr (Just senderFiles)
-      xftpSendFile sndr 1 (CF.plain filePath) 1
+testXFTPAgentSuspendAgain = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr sfId -> do
     XA.suspendAgent sndr 500000
-    timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+    shouldSuspend sndr sfId
     XA.foregroundAgent sndr
     XA.suspendAgent sndr 60000000
     timeout 1000000 (waitSuspended sndr sfId) `shouldReturn` Nothing
     xftpDeleteSndFileInternal sndr sfId
-    timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
+    shouldSuspend sndr sfId
+
+withSndFile :: (HasCallStack, HasTestEnv) => AgentConfig -> (AgentClient -> SndFileId -> IO ()) -> IO ()
+withSndFile cfg test = do
+  filePath <- createRandomFile_ (kb 128 :: Integer) "testfile"
+  withAgent 1 cfg initAgentServers testDB $ \sndr -> do
+    sfId <- runRight $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      xftpSendFile sndr 1 (CF.plain filePath) 1
+    test sndr sfId
+
+shouldSuspend :: HasCallStack => AgentClient -> SndFileId -> Expectation
+shouldSuspend sndr sfId = timeout 5000000 (waitSuspended sndr sfId) `shouldReturn` Just ()
 
 waitSndFileDone :: AgentClient -> SndFileId -> IO ()
 waitSndFileDone sndr sfId =
