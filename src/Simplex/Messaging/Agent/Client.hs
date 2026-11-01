@@ -2425,13 +2425,14 @@ removeDeletedOrFailedSndFilesInProgress :: AgentClient -> IO ()
 removeDeletedOrFailedSndFilesInProgress c = do
   fIds <- readTVarIO $ sndFilesInProgress c
   unless (S.null fIds) $
-    E.bracket (atomically $ tryBeginAgentOperation c AODatabase) endDatabaseOperation $ \begun ->
-      when begun $
-        E.tryAny (withTransaction (agentClientStore c) getNotDeletedOrFailedSndFileIds) >>= \case
-          Right fIds' -> atomically $ mapM_ (removeSndFileInProgress c) $ fIds `S.difference` S.fromList fIds'
-          Left e -> logError $ "removeDeletedOrFailedSndFilesInProgress error: " <> tshow e
+    E.mask $ \restore ->
+      whenM (atomically $ tryBeginAgentOperation c AODatabase) $
+        restore (removeDeletedOrFailed fIds) `E.finally` atomically (endAgentOperation c AODatabase)
   where
-    endDatabaseOperation begun = when begun $ atomically $ endAgentOperation c AODatabase
+    removeDeletedOrFailed fIds =
+      E.tryAny (withTransaction (agentClientStore c) getNotDeletedOrFailedSndFileIds) >>= \case
+        Right fIds' -> atomically $ mapM_ (removeSndFileInProgress c) $ fIds `S.difference` S.fromList fIds'
+        Left e -> logError $ "removeDeletedOrFailedSndFilesInProgress error: " <> tshow e
 
 beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
 beginAgentOperation c op = do
