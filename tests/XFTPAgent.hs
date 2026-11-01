@@ -108,6 +108,7 @@ xftpAgentTests =
       it "should not wait for file after agent client is closed" $ \_ ->
         testXFTPAgentSuspendAfter $ \sndr -> XA.disconnectAgentClient sndr >> XA.resumeAgentClient sndr
       it "should not access database when suspending while database is suspended" $ \_ -> testXFTPAgentSuspendDatabaseSuspended
+      it "should not wait for database when suspending" $ \_ -> testXFTPAgentSuspendDatabaseBusy
       it "should not wait for file removed by TTL cleanup while agent is suspending" $ \_ -> testXFTPAgentSuspendExpiredFile
       it "should not wait for file resumed at worker start" $ \_ -> testXFTPAgentSuspendResumedFile
       it "should stop uploads when sending network is suspended while agent is suspending" testXFTPAgentSuspendSndNetworkSuspended
@@ -726,6 +727,12 @@ testXFTPAgentSuspendDatabaseSuspended = withGlobalLogging logCfgNoLogs $
     XA.suspendAgent sndr 60000000
     threadDelay 1000000
     readTVarIO (XA.sndFilesInProgress sndr) `shouldReturn` S.singleton sfId
+
+testXFTPAgentSuspendDatabaseBusy :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentSuspendDatabaseBusy = withGlobalLogging logCfgNoLogs $
+  withSndFile agentCfg $ \sndr _ ->
+    withTransaction (agentClientStore sndr) $ \_ ->
+      timeout 1000000 (XA.suspendAgent sndr 60000000) `shouldReturn` Just ()
 
 testXFTPAgentSuspendExpiredFile :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSuspendExpiredFile = withGlobalLogging logCfgNoLogs $ do
