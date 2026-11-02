@@ -42,6 +42,7 @@ Environment:
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
+                         read from the policy its `namePolicy()` names, if any,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
@@ -139,6 +140,10 @@ CONTROLLERS = {
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
+
+# The name policy each TLD's controller names, which holds its reservations in
+# place of the controller; set at startup from `name_policies()`.
+NAME_POLICIES = {}
 
 # `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
 # controller from before the enum stores a bool, whose `true` decodes as 1,
@@ -520,7 +525,27 @@ def reservation_reason(tld: str, token: int) -> int:
     controller = CONTROLLERS.get(tld)
     if not controller:
         return 0
-    return decode_uint(eth_call(*reserved_call(controller, token)))
+    return decode_uint(eth_call(*reserved_call(NAME_POLICIES.get(tld, controller), token)))
+
+
+def name_policies() -> dict:
+    """The name policy of each configured controller that names one. A controller
+    that reverts, answers nothing or names no policy is logged, and its reservations
+    are read from it; an RPC error is taken as a revert. Raises when the node does
+    not answer."""
+    policies = {}
+    for tld, controller in CONTROLLERS.items():
+        if not controller:
+            continue
+        try:
+            policy = decode_address(eth_call(*name_policy_call(controller)))
+            if policy == ZERO_ADDR:
+                raise RuntimeError("namePolicy() is unset")
+        except RuntimeError as e:
+            log_event(logging.WARNING, "no_name_policy", tld=tld, controller=controller, message=str(e), reservations="controller")
+            continue
+        policies[tld] = policy
+    return policies
 
 
 def pricing_params(tld: str):
@@ -786,8 +811,12 @@ def label_call(registrar: str, token: int):
     return registrar, selector("labelOf(uint256)") + encode_uint(token)
 
 
-def reserved_call(controller: str, token: int):
-    return controller, selector("reservedNames(bytes32)") + encode_uint(token)
+def reserved_call(contract: str, token: int):
+    return contract, selector("reservedNames(bytes32)") + encode_uint(token)
+
+
+def name_policy_call(controller: str):
+    return controller, selector("namePolicy()")
 
 
 def prices_call(contract: str):
@@ -830,7 +859,7 @@ def lookup_reads(name: str):
         if len(labels) == 2 and is_encoded_labelhash(labels[0]):
             reads.append(eth_call_read(*label_call(registrar, token)))
         if CONTROLLERS.get(tld):
-            reads.append(eth_call_read(*reserved_call(CONTROLLERS[tld], token)))
+            reads.append(eth_call_read(*reserved_call(NAME_POLICIES.get(tld, CONTROLLERS[tld]), token)))
     registry = REGISTRIES.get(tld)
     if registry:
         node = node_of(name)
@@ -1464,6 +1493,9 @@ def supervise(workers: int):
         stop()
         stop_on(signum, frame)
 
+    # each worker opens its own connections: one shared would mix their replies
+    while not _rpc_pool.empty():
+        _rpc_pool.get_nowait().close()
     # before forking, so a signal during startup cannot orphan the workers
     signal.signal(signal.SIGTERM, stop_and_exit)
     signal.signal(signal.SIGINT, stop_and_exit)
@@ -1488,6 +1520,11 @@ def supervise(workers: int):
 
 def main():
     setup_logging()
+    try:
+        NAME_POLICIES.update(name_policies())
+    except Exception:
+        log_event(logging.ERROR, "startup_failed", exc_info=True)
+        sys.exit(1)
     log_event(
         logging.INFO,
         "listening",
@@ -1496,6 +1533,7 @@ def main():
         workers=WORKERS,
         rpc=public_endpoint(RPC),
         registries=",".join(f"{tld}={addr or '-'}" for tld, addr in REGISTRIES.items()),
+        name_policies=",".join(f"{tld}={NAME_POLICIES.get(tld, '-')}" for tld in CONTROLLERS),
         trusted_proxies=",".join(map(str, TRUSTED_PROXIES)) or None,
     )
     if WORKERS > 1:
