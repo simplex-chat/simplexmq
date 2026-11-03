@@ -1,12 +1,13 @@
-# Subscriber registration before the first-message read
+# Subscription changes processed in the client thread
 
 ## Decisions
 
-- SUB from a client without a service certificate to an active queue not associated with a service: the subscriber is registered in the client thread, before the first message of the queue is read.
-- NEW with subscription from such a client: the subscriber is registered in the client thread.
-- The registration is `processClientSub`, the code of `serverThread` for one subscription change, called under `mask_`.
+- Each subscription change is processed by `processClientSub` under `mask_`, in the client thread of the command.
+- `serverThread` and `subQ` are removed.
+- SUB, from clients with and without a service certificate: the subscriber is registered in `prepareBatchSubs`, after the queue associations and before the first-message read.
+- SUB of a blocked queue, or of a queue with a failed association: the subscriber is registered only by a later successful SUB.
 - The SUB response includes the first message only when no message of the subscription is marked as delivered.
-- Other subscription changes are registered by `serverThread` from `subQ`, as before.
+- SUBS, NSUB, NSUBS, NEW with subscription, NKEY, NDEL, DEL: the change is processed while the command is processed.
 
 ## Sequence
 
@@ -17,11 +18,11 @@ sequenceDiagram
     participant R as Recipient agent
     participant C as Client thread of R
     participant Q as Message store
-    participant T as serverThread
+    participant T as serverThread, removed
     participant S as Client thread of sender
     R->>C: SUB q, signature verified in receive
     rect rgba(0, 160, 0, 0.18)
-        C->>C: added - prepareBatchSubs: Sub of q inserted
+        C->>C: added - prepareBatchSubs, subscribeQueue: Sub of q inserted
         C->>C: added - processClientSub under mask_: R registered in queueSubscribers, END to the previous subscriber
     end
     C->>Q: prepareBatchSubs: tryPeekMsgs q
@@ -50,10 +51,16 @@ sequenceDiagram
 ## Mechanics
 
 - `Server.hs`:
-  - `processClientSub`: the per-change code of `serverThread`, beside it in `smpServer`; `serverThread` calls it for each `subQ` entry.
-  - `runClient`, `runClientTransport`, `client`: `processClientSub` for message subscribers passed to the client thread.
-  - `prepareBatchSubs`: selected SUBs inserted with `TM.lookupOrInsertIO`; `processClientSub` for each inserted subscription, before `tryPeekMsgs`; the inserted subscriptions returned as the fourth map of the batch result.
-  - `subscribeQueueAndDeliver`: an inserted subscription passed to `deliver` as new.
-  - `subscribeNewQueue`: `processClientSub` for a client without a service certificate.
+  - `processClientSub`: top level; the code of `serverThread` for one change of the current client.
+  - `smpServer`: `serverThread` removed.
+  - `client`: `processSub` and `processNtfSub` are `processClientSub` for message and notification subscribers.
+  - `prepareBatchSubs`: queue associations; `subscribeQueue` for each SUB of a queue that is not blocked and has no failed association; `tryPeekMsgs`; the `subscribeQueue` results returned as the fourth map of the batch result.
+  - `subscribeQueue`: the first part of the former `subscribeQueueAndDeliver`.
+  - `deliverSubMsg`: the second part of the former `subscribeQueueAndDeliver`; the `subscribeQueue` result passed to `deliver`.
+  - `sharedSubscribeQueue`: moved from `processCommand` to `client`; `processSub` or `processNtfSub` passed in place of the server subscribers.
+  - `sharedSubscribeService`, `subscribeNewQueue`, `addQueueNotifier_`, `deleteQueueNotifier_`, `delQueueAndMsgs`: `processSub` or `processNtfSub` in place of the `subQ` write.
   - `deliver`, `trySetDelivered`: the first message marked as delivered and included only when no message is marked.
-- `tests/ServerTests.hs`: `SUB and SEND in one block`.
+- `Env/STM.hs`: `subQ` removed from `ServerSubscribers`.
+- `tests/ServerTests.hs`:
+  - `SUB and SEND in one block`
+  - `should deliver message sent in the same block as service SUB`

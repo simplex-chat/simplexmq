@@ -95,6 +95,7 @@ serverTests = do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
     testServiceSubsTotalCount
+    testServiceSubSendBlock
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -1018,6 +1019,31 @@ testServiceSubsTotalCount =
             ]
         threadDelay 1500000
         B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
+
+testServiceSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubSendBlock =
+  it "should deliver message sent in the same block as service SUB" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh@THandle {params} -> do
+        let TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+            TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+        Right subAuth <- pure $ authTransmission (thAuth params) True (Just rKey) Nothing tForAuth
+        [Right (), Right ()] <- tPut sh [Right (subAuth, subT), Right (Nothing, sendT)]
+        Resp "" _ (Msg mId msg) <- tGet1 sh
+        dec mId msg `shouldBe` Right "hello"
+        [Resp "2" _ (SOK (Just serviceId')), Resp "3" _ OK] <- tGetClient sh
+        serviceId' `shouldBe` serviceId
+        Resp "4" _ OK <- signSendRecv sh rKey ("4", rId, ACK mId)
+        pure ()
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
