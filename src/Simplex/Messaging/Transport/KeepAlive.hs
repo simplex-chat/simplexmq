@@ -56,8 +56,6 @@ _TCP_KEEPCNT = 16
 
 #if defined(darwin_HOST_OS)
 foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" _TCP_KEEPIDLE :: CInt
-
-foreign import capi "netinet/tcp.h value TCP_RXT_CONNDROPTIME" _TCP_RXT_CONNDROPTIME :: CInt
 #else
 foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" _TCP_KEEPIDLE :: CInt
 
@@ -71,10 +69,8 @@ foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
 #endif
 
 setSocketUnackedDataTimeout :: Socket -> Int -> IO ()
-#if defined(mingw32_HOST_OS)
+#if defined(mingw32_HOST_OS) || defined(darwin_HOST_OS)
 setSocketUnackedDataTimeout _ _ = pure ()
-#elif defined(darwin_HOST_OS)
-setSocketUnackedDataTimeout sock = setSocketOption sock (SockOpt _SOL_TCP _TCP_RXT_CONNDROPTIME)
 #else
 setSocketUnackedDataTimeout sock seconds = setSocketOption sock (SockOpt _SOL_TCP _TCP_USER_TIMEOUT) (seconds * 1000)
 #endif

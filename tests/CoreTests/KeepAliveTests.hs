@@ -6,6 +6,7 @@ module CoreTests.KeepAliveTests where
 import Control.Exception (bracket, handle)
 import Control.Monad (forever)
 import qualified Data.ByteString.Char8 as B
+import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Foreign.C (CInt)
 import Foreign.C.Error (Errno (..), eTIMEDOUT)
 import GHC.IO.Exception (IOException (..))
@@ -24,7 +25,9 @@ keepAliveTests = linuxOnly $ it "should fail connection with data not accepted b
 
 testUnackedDataTimeout :: IO ()
 testUnackedDataTimeout = do
+  start <- getCurrentTime
   sendToPeerNotReading (Just True) `shouldReturn` Just (Just timedOut)
+  (`diffUTCTime` start) <$> getCurrentTime >>= (`shouldSatisfy` (>= 2))
   sendToPeerNotReading Nothing `shouldReturn` Nothing
   where
     Errno timedOut = eTIMEDOUT
