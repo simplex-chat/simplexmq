@@ -155,7 +155,7 @@ import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (NominalDiffTime, UTCTime (..), diffUTCTime, getCurrentTime)
@@ -453,9 +453,11 @@ defaultNetworkConfig =
 
 transportClientConfig :: NetworkConfig -> NetworkRequestMode -> TransportHost -> Bool -> Maybe [ALPN] -> TransportClientConfig
 transportClientConfig NetworkConfig {socksProxy, socksMode, tcpConnectTimeout, tcpKeepAlive, logTLSErrors} nm host useSNI clientALPN =
-  TransportClientConfig {socksProxy = useSocksProxy socksMode, tcpConnectTimeout = tOut, tcpKeepAlive, logTLSErrors, clientCredentials = Nothing, clientALPN, useSNI}
+  TransportClientConfig {socksProxy = socks, tcpConnectTimeout = tOut, tcpKeepAlive = keepAlive, logTLSErrors, clientCredentials = Nothing, clientALPN, useSNI}
   where
     tOut = netTimeoutInt tcpConnectTimeout nm
+    socks = useSocksProxy socksMode
+    keepAlive = (\ka -> if isJust socks then ka {unackedDataTimeout = Nothing} else ka) <$> tcpKeepAlive
     socksProxy' = (\(SocksProxyWithAuth _ proxy) -> proxy) <$> socksProxy
     useSocksProxy SMAlways = socksProxy'
     useSocksProxy SMOnion = case host of

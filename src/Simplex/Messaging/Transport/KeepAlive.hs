@@ -10,6 +10,7 @@ module Simplex.Messaging.Transport.KeepAlive
     setSocketKeepAlive,
   ) where
 
+import Control.Monad (when)
 import qualified Data.Aeson.TH as J
 import Foreign.C (CInt (..))
 import Network.Socket
@@ -18,7 +19,8 @@ import Simplex.Messaging.Parsers (defaultJSON)
 data KeepAliveOpts = KeepAliveOpts
   { keepIdle :: Int,
     keepIntvl :: Int,
-    keepCnt :: Int
+    keepCnt :: Int,
+    unackedDataTimeout :: Maybe Bool
   }
   deriving (Eq, Show)
 
@@ -27,7 +29,8 @@ defaultKeepAliveOpts =
   KeepAliveOpts
     { keepIdle = 30,
       keepIntvl = 15,
-      keepCnt = 4
+      keepCnt = 4,
+      unackedDataTimeout = Nothing
     }
 
 _SOL_TCP :: CInt
@@ -53,8 +56,12 @@ _TCP_KEEPCNT = 16
 
 #if defined(darwin_HOST_OS)
 foreign import capi "netinet/tcp.h value TCP_KEEPALIVE" _TCP_KEEPIDLE :: CInt
+
+foreign import capi "netinet/tcp.h value TCP_RXT_CONNDROPTIME" _TCP_RXT_CONNDROPTIME :: CInt
 #else
 foreign import capi "netinet/tcp.h value TCP_KEEPIDLE" _TCP_KEEPIDLE :: CInt
+
+foreign import capi "netinet/tcp.h value TCP_USER_TIMEOUT" _TCP_USER_TIMEOUT :: CInt
 #endif
 
 foreign import capi "netinet/tcp.h value TCP_KEEPINTVL" _TCP_KEEPINTVL :: CInt
@@ -63,11 +70,21 @@ foreign import capi "netinet/tcp.h value TCP_KEEPCNT" _TCP_KEEPCNT :: CInt
 
 #endif
 
+setSocketUnackedDataTimeout :: Socket -> Int -> IO ()
+#if defined(mingw32_HOST_OS)
+setSocketUnackedDataTimeout _ _ = pure ()
+#elif defined(darwin_HOST_OS)
+setSocketUnackedDataTimeout sock = setSocketOption sock (SockOpt _SOL_TCP _TCP_RXT_CONNDROPTIME)
+#else
+setSocketUnackedDataTimeout sock seconds = setSocketOption sock (SockOpt _SOL_TCP _TCP_USER_TIMEOUT) (seconds * 1000)
+#endif
+
 setSocketKeepAlive :: Socket -> KeepAliveOpts -> IO ()
-setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl} = do
+setSocketKeepAlive sock KeepAliveOpts {keepCnt, keepIdle, keepIntvl, unackedDataTimeout} = do
   setSocketOption sock KeepAlive 1
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPIDLE) keepIdle
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPINTVL) keepIntvl
   setSocketOption sock (SockOpt _SOL_TCP _TCP_KEEPCNT) keepCnt
+  when (unackedDataTimeout == Just True) $ setSocketUnackedDataTimeout sock $ keepIdle + keepIntvl * keepCnt
 
 $(J.deriveJSON defaultJSON ''KeepAliveOpts)

@@ -15,6 +15,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ErrorType, pattern SMPServer)
 import Simplex.Messaging.Transport.Client
+import Simplex.Messaging.Transport.KeepAlive
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -92,11 +93,20 @@ testSocksMode = do
     transportSocks (Just defaultSocksProxyWithAuth) SMAlways testOnionHost `shouldBe` Just defaultSocksProxy
     transportSocks (Just defaultSocksProxyWithAuth) SMOnion testPublicHost `shouldBe` Nothing
     transportSocks (Just defaultSocksProxyWithAuth) SMOnion testOnionHost `shouldBe` Just defaultSocksProxy
+  it "should remove unackedDataTimeout only if SOCKS proxy is used" $ do
+    transportUnackedTimeout Nothing SMAlways testPublicHost `shouldBe` Just True
+    transportUnackedTimeout (Just defaultSocksProxyWithAuth) SMOnion testPublicHost `shouldBe` Just True
+    transportUnackedTimeout (Just defaultSocksProxyWithAuth) SMAlways testPublicHost `shouldBe` Nothing
+    transportUnackedTimeout (Just defaultSocksProxyWithAuth) SMOnion testOnionHost `shouldBe` Nothing
   where
     transportSocks proxy socksMode = transportSocksCfg defaultNetworkConfig {socksProxy = proxy, socksMode}
     transportSocksCfg cfg host =
       let TransportClientConfig {socksProxy} = transportClientConfig cfg NRMInteractive host False Nothing
        in socksProxy
+    transportUnackedTimeout proxy socksMode host =
+      let keepAlive = Just defaultKeepAliveOpts {unackedDataTimeout = Just True}
+          TransportClientConfig {tcpKeepAlive} = transportClientConfig defaultNetworkConfig {socksProxy = proxy, socksMode, tcpKeepAlive = keepAlive} NRMInteractive host False Nothing
+       in tcpKeepAlive >>= unackedDataTimeout
 
 testIPAddressProtected :: Spec
 testIPAddressProtected = do

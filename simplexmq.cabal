@@ -588,6 +588,7 @@ test-suite simplexmq-test
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.EthCryptoTests
+      CoreTests.KeepAliveTests
       CoreTests.LockTests
       CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
