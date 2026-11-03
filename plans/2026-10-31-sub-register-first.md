@@ -2,19 +2,19 @@
 
 ## Decisions
 
-- Each subscription change is processed by `processClientSub` under `uninterruptibleMask_`, in the client thread of the command.
+- Each subscription change is processed by `processClientSub` under `uninterruptibleMask_`, in the client thread of the connection.
 - `serverThread` and `subQ` are removed.
-- The branch for a disconnected client is removed from `processClientSub`.
+- `processClientSub` omits the branch of `serverThread` for a disconnected client.
 - SUB, from clients with and without a service certificate: the subscriber is registered in `prepareBatchSubs`, after the queue associations and before `tryPeekMsgs`.
 - Duplicate SUB: `delivered` of the subscription is reset in `prepareBatchSubs`, before `tryPeekMsgs`.
 - SUB of a blocked queue, or of a queue with a failed association: the subscriber is registered only by a later successful SUB.
-- The first message of a subscription is marked as delivered once, and it is sent only where it is marked:
-  - in the MSG pushed after SEND
-  - in the SUB response
-  - in the MSG sent by `deliverServiceMessages` after SUBS
-- `qSub` is counted for a new subscription when `tryPeekMsgs` returns a message, except for two SUBs of one queue in one block.
+- The first message of a subscription is marked as delivered once, and it is sent only where it is marked, in one of these:
+  - the MSG pushed after SEND
+  - the SUB response
+  - the MSG sent by `deliverServiceMessages` after SUBS
+- `qSub` is counted for a new subscription when a message is returned by `tryPeekMsgs`, except for two SUBs of one queue in one block.
 - The service counts of a previous service subscriber are decreased for one queue only while it is registered for the service.
-- Changes of these commands are processed while the command is processed:
+- The subscription changes of each of these commands are processed during that command, in the client thread:
   - SUBS
   - NSUB
   - NSUBS
@@ -25,7 +25,7 @@
 
 ## Composition
 
-Processing of one subscription change. Green: added by this change. Red: removed by it.
+Processing of one subscription change. Green: added by this pull request. Red: removed by it.
 
 ```mermaid
 flowchart LR
@@ -33,7 +33,7 @@ flowchart LR
     Q[subQ]
     T[serverThread]
     X[Server clients]
-    P[processClientSub]
+    P[processClientSub<br>under uninterruptibleMask_]
     U[updateSubscribers<br>one STM transaction]
     V[endPreviousSubscriptions<br>later STM transactions]
     R[queueSubscribers<br>serviceSubscribers<br>totalServiceSubs<br>subClients<br>maps and counts of clients]
@@ -44,10 +44,10 @@ flowchart LR
     T -- "removed - client read by getServerClient<br>connected checked" --> X
     T -- "removed - run" --> U
     T -- "removed - run" --> V
-    C -- "added - call under uninterruptibleMask_" --> P
+    C -- "added - processClientSub called" --> P
     P -- "added - run" --> U
     P -- "added - run" --> V
-    U -- "registration<br>entries of the previous subscribers removed or replaced<br>count of the previous service connection swapped to 0" --> R
+    U -- "client registered<br>client added to subClients<br>totalServiceSubs increased<br>entries of the previous subscribers removed or replaced<br>count of the previous service connection swapped to 0<br>client removed from subClients after a deletion without other subscriptions" --> R
     V -- "previous subscriptions removed from client maps<br>counts decreased<br>delivery threads stopped" --> R
     V -- "END<br>ENDS<br>DELD" --> E
     E -- "events read" --> S
@@ -59,9 +59,9 @@ flowchart LR
     linkStyle 5,6,7 stroke:#008800
 ```
 
-## Sequence
+## SUB and SEND
 
-SUB of an empty queue and a SEND to it right after `tryPeekMsgs`. Green: added by this change. Red: removed by it.
+SUB of an empty queue and a SEND to it right after `tryPeekMsgs`. Green: added by this pull request. Red: removed by it.
 
 ```mermaid
 sequenceDiagram
@@ -96,7 +96,60 @@ sequenceDiagram
         Note over R,Q: removed - m returned to R only in the response to the next SUB
     end
     rect rgba(0, 160, 0, 0.18)
-        Note over R,Q: added - when m is written after the registration and before tryPeekMsgs, m is returned by tryPeekMsgs, and m is sent once, pushed or in the SUB response, where it is marked as delivered first
+        Note over R,Q: added - when m is written after the registration and before tryPeekMsgs, m is returned by tryPeekMsgs and is sent once, pushed when it is marked after SEND first, in the SUB response when it is marked for SUB first
+    end
+```
+
+## Duplicate SUB
+
+SUB of a queue that is subscribed in this connection, with message m delivered and not acknowledged. Green: added by this pull request. Red: removed by it.
+
+```mermaid
+sequenceDiagram
+    participant R as Recipient agent
+    participant C as Client thread of R
+    participant Q as Message store
+    R->>C: SUB q
+    rect rgba(0, 160, 0, 0.18)
+        C->>C: added - prepareBatchSubs, subscribeQueue: delivered of q reset
+    end
+    C->>Q: prepareBatchSubs: tryPeekMsgs q
+    Q-->>C: m
+    rect rgba(220, 0, 0, 0.18)
+        C->>C: removed - subscribeQueueAndDeliver: delivered of q reset
+        C->>C: removed - deliver: m marked by setDelivered and included in the SUB response
+    end
+    rect rgba(0, 160, 0, 0.18)
+        C->>C: added - deliver: m included in the SUB response only when it is marked by trySetDelivered
+    end
+    C-->>R: SOK, with MSG m when m is marked for SUB
+```
+
+## SUBS
+
+SUBS of a service connection, and a SEND of m to an empty queue q of the service while its messages are read. Green: added by this pull request. Red: removed by it.
+
+```mermaid
+sequenceDiagram
+    participant C as Client thread of the service connection
+    participant T as serverThread, removed
+    participant F as deliverServiceMessages
+    participant S as Client thread of sender
+    rect rgba(220, 0, 0, 0.18)
+        C->>T: removed - CSService written to subQ, service registered by serverThread
+    end
+    rect rgba(0, 160, 0, 0.18)
+        C->>C: added - processClientSub: service registered
+    end
+    C->>F: deliverServiceMessages forked
+    S->>S: SEND m: writeMsg, the queue was empty
+    F->>F: foldRcvServiceMessages: m of q read, Sub of q inserted
+    S-->>C: tryDeliverMessage: Sub of q found, MSG m pushed and marked as delivered
+    rect rgba(220, 0, 0, 0.18)
+        F-->>C: removed - m marked by setDelivered, MSG m sent again
+    end
+    rect rgba(0, 160, 0, 0.18)
+        F->>F: added - trySetDelivered: m marked already, MSG omitted, counted in rcvServicesSubDuplicate
     end
 ```
 
@@ -125,13 +178,13 @@ sequenceDiagram
   - `client`: `processSub` and `processNtfSub` are `processClientSub` for message and notification subscribers.
   - `prepareBatchSubs`: one `runExceptT` block:
     - queue associations
-    - `subscribeQueue` for each SUB of a queue that is not blocked and has no failed association
+    - `subscribeQueue` for each SUB of a queue that is not blocked, when its association is unchanged or changed successfully
     - `tryPeekMsgs`
     - the `subscribeQueue` results returned as the fourth map of the batch result
   - `subscribeQueue`: the first part of the former `subscribeQueueAndDeliver`.
   - `deliverSubMsg`: the second part of the former `subscribeQueueAndDeliver`; the `subscribeQueue` result passed to `deliver`.
   - `sharedSubscribeQueue`: moved from `processCommand` to `client`; `processSub` or `processNtfSub` passed in place of the server subscribers.
-  - `processSub` or `processNtfSub` in place of the entry written to `subQ`:
+  - `processSub` or `processNtfSub` called with the subscription change where the change was written to `subQ`:
     - `sharedSubscribeService`
     - `subscribeNewQueue`
     - `addQueueNotifier_`
