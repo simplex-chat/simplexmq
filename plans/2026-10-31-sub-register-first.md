@@ -4,13 +4,15 @@
 
 - Each subscription change is processed by `processClientSub` under `uninterruptibleMask_`, in the client thread of the command.
 - `serverThread` and `subQ` are removed.
-- SUB, from clients with and without a service certificate: the subscriber is registered in `prepareBatchSubs`, after the queue associations and before the first-message read.
+- The branch for a disconnected client is removed from `processClientSub`.
+- SUB, from clients with and without a service certificate: the subscriber is registered in `prepareBatchSubs`, after the queue associations and before `tryPeekMsgs`.
+- Duplicate SUB: `delivered` of the subscription is reset in `prepareBatchSubs`, before `tryPeekMsgs`.
 - SUB of a blocked queue, or of a queue with a failed association: the subscriber is registered only by a later successful SUB.
-- The first message of a subscription is marked as delivered once, and is sent by the path that marks it:
-  - the SUB response
-  - the read of SUBS
-  - a SEND push
-- `qSub` is counted for a new subscription when the first-message read returns a message.
+- The first message of a subscription is marked as delivered once, and it is sent only where it is marked:
+  - in the MSG pushed after SEND
+  - in the SUB response
+  - in the MSG sent by `deliverServiceMessages` after SUBS
+- `qSub` is counted for a new subscription when `tryPeekMsgs` returns a message, except for two SUBs of one queue in one block.
 - The service counts of a previous service subscriber are decreased for one queue only while it is registered for the service.
 - Changes of these commands are processed while the command is processed:
   - SUBS
@@ -30,6 +32,7 @@ flowchart LR
     C[Client thread of a connection]
     Q[subQ]
     T[serverThread]
+    X[Server clients]
     P[processClientSub]
     U[updateSubscribers<br>one STM transaction]
     V[endPreviousSubscriptions<br>later STM transactions]
@@ -38,26 +41,27 @@ flowchart LR
     S[sendPendingEvtsThread]
     C -- "removed - change written" --> Q
     Q -- "removed - change read" --> T
+    T -- "removed - client read by getServerClient<br>connected checked" --> X
     T -- "removed - run" --> U
     T -- "removed - run" --> V
     C -- "added - call under uninterruptibleMask_" --> P
     P -- "added - run" --> U
     P -- "added - run" --> V
-    U -- "registration" --> R
-    V -- "previous subscribers removed" --> R
-    V -- "END, ENDS, DELD queued" --> E
+    U -- "registration<br>entries of the previous subscribers removed or replaced<br>count of the previous service connection swapped to 0" --> R
+    V -- "previous subscriptions removed from client maps<br>counts decreased<br>delivery threads stopped" --> R
+    V -- "END<br>ENDS<br>DELD" --> E
     E -- "events read" --> S
     classDef removed fill:#f4cccc,stroke:#cc0000
     classDef added fill:#d9ead3,stroke:#008800
     class Q,T removed
     class P added
-    linkStyle 0,1,2,3 stroke:#cc0000
-    linkStyle 4,5,6 stroke:#008800
+    linkStyle 0,1,2,3,4 stroke:#cc0000
+    linkStyle 5,6,7 stroke:#008800
 ```
 
 ## Sequence
 
-SUB of an empty queue and a SEND to it right after the first-message read. Green: added by this change. Red: removed by it.
+SUB of an empty queue and a SEND to it right after `tryPeekMsgs`. Green: added by this change. Red: removed by it.
 
 ```mermaid
 sequenceDiagram
@@ -69,7 +73,8 @@ sequenceDiagram
     R->>C: SUB q, signature verified in receive
     rect rgba(0, 160, 0, 0.18)
         C->>C: added - prepareBatchSubs, subscribeQueue: Sub of q inserted
-        C->>C: added - processClientSub under uninterruptibleMask_: R registered in queueSubscribers, END to the previous subscriber
+        C->>C: added - updateSubscribers under uninterruptibleMask_: R registered in queueSubscribers
+        C->>C: added - endPreviousSubscriptions: END queued for the previous subscriber
     end
     C->>Q: prepareBatchSubs: tryPeekMsgs q
     Q-->>C: empty queue
@@ -83,20 +88,21 @@ sequenceDiagram
     rect rgba(220, 0, 0, 0.18)
         C->>C: removed - subscribeQueueAndDeliver: Sub of q inserted
         C->>T: removed - CSClient q written to subQ
-        T->>T: removed - updateSubscribers: R registered in queueSubscribers, END to the previous subscriber
+        T->>T: removed - updateSubscribers: R registered in queueSubscribers
+        T->>T: removed - endPreviousSubscriptions: END queued for the previous subscriber
     end
     C-->>R: SOK
     rect rgba(220, 0, 0, 0.18)
         Note over R,Q: removed - m returned to R only in the response to the next SUB
     end
     rect rgba(0, 160, 0, 0.18)
-        Note over R,Q: added - when m is written after the registration and before the read, the read returns m; m is sent once, by the push or in the SUB response, whichever marks it as delivered first
+        Note over R,Q: added - when m is written after the registration and before tryPeekMsgs, m is returned by tryPeekMsgs, and m is sent once, pushed or in the SUB response, where it is marked as delivered first
     end
 ```
 
 ## Service counts
 
-A SUB that removes the association of queue q with service S, and SUBS from a new connection N of S. O is the previous connection of S.
+A SUB by which the association of queue q with service S is removed, and SUBS from a new connection N of S. O is the previous connection of S.
 
 ```mermaid
 sequenceDiagram
@@ -125,14 +131,14 @@ sequenceDiagram
   - `subscribeQueue`: the first part of the former `subscribeQueueAndDeliver`.
   - `deliverSubMsg`: the second part of the former `subscribeQueueAndDeliver`; the `subscribeQueue` result passed to `deliver`.
   - `sharedSubscribeQueue`: moved from `processCommand` to `client`; `processSub` or `processNtfSub` passed in place of the server subscribers.
-  - `processSub` or `processNtfSub` in place of the `subQ` write:
+  - `processSub` or `processNtfSub` in place of the entry written to `subQ`:
     - `sharedSubscribeService`
     - `subscribeNewQueue`
     - `addQueueNotifier_`
     - `deleteQueueNotifier_`
     - `delQueueAndMsgs`
-  - `deliver`: `qSub` counted before the mark; the first message included only when `trySetDelivered` marks it.
-  - `deliverServiceMessages`: MSG sent only when `trySetDelivered` marks the message.
+  - `deliver`: `qSub` counted before `trySetDelivered`; the first message included only when it is marked by `trySetDelivered`.
+  - `deliverServiceMessages`: MSG sent only when the message is marked by `trySetDelivered`.
 - `Env/STM.hs`: `subQ` removed from `ServerSubscribers`.
 - `tests/ServerTests.hs`:
   - `should deliver message sent in the same block as SUB`
