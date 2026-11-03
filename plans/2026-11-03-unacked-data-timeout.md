@@ -2,18 +2,20 @@
 
 ## Problem
 
-A client connection to a server that becomes unreachable while data is unacknowledged is reported as failed after about 15 minutes on Linux and Android. Until then, the client sends into the dead connection.
+On Linux and Android, a client connection to a server that becomes unreachable while data is unacknowledged fails only after about 15 minutes. Until then, the client sends into the dead connection.
 
 ## Cause
 
-On Linux, TCP keep-alive probes are not sent while the connection has unacknowledged or unsent data. Such a connection is closed by the OS only after the retransmission limit: `tcp_retries2` = 15, about 15 minutes. macOS and iOS keep-alive closes it after the keep-alive time regardless of unacknowledged data.
+On Linux and Android, TCP keep-alive probes are not sent while the connection has unacknowledged or unsent data. Such a connection is closed only at the retransmission limit (`tcp_retries2` = 15, about 15 minutes). On macOS and iOS, a connection is closed by keep-alive `keepIdle + keepIntvl * keepCnt` after the last received segment, with or without unacknowledged data.
 
 ## Fix
 
 - `KeepAliveOpts.unackedDataTimeout :: Maybe Bool`:
   - `Just True`: on.
   - `Nothing` or `Just False`: off; JSON without the field is parsed as `Nothing`.
-- `setSocketKeepAlive`, option on, Linux and Android: `TCP_USER_TIMEOUT` = `keepIdle + keepIntvl * keepCnt` seconds (90 s with the default keep-alive values). macOS, iOS and Windows: not set.
+- `setSocketKeepAlive`, option on:
+  - Linux and Android: `TCP_USER_TIMEOUT` = `keepIdle + keepIntvl * keepCnt` seconds (90 s with the default keep-alive values).
+  - macOS, iOS and Windows: not set.
 - `transportClientConfig`: `unackedDataTimeout = Nothing` when a SOCKS proxy is used for the host.
 
 ## Scope
