@@ -1180,7 +1180,7 @@ sendOrProxySMPCommand ::
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError a)) ->
   (SMPClient -> ExceptT SMPClientError IO a) ->
   AM (Maybe SMPServer, a)
-sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} proxyKnown connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
+sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} viaProxyForKnown connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
   tSess <- mkTransportSession c userId destSrv connId
   ifM shouldUseProxy (sendViaProxy Nothing tSess) ((Nothing,) <$> sendDirectly tSess)
   where
@@ -1188,10 +1188,10 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} prox
       cfg <- getNetworkConfig c
       case smpProxyMode cfg of
         SPMAlways -> pure True
-        SPMUnknown -> (proxyKnown ||) <$> unknownServer cfg
+        SPMUnknown -> (viaProxyForKnown ||) <$> unknownServer cfg
         SPMUnprotected
           | ipAddressProtected cfg destSrv -> pure False
-          | otherwise -> (proxyKnown ||) <$> unknownServer cfg
+          | otherwise -> (viaProxyForKnown ||) <$> unknownServer cfg
         SPMNever -> pure False
     directAllowed = do
       cfg <- getNetworkConfig c
