@@ -14,7 +14,6 @@ On Linux, TCP keep-alive probes are not sent while the connection has unacknowle
   - `Just True`: on.
   - `Nothing` or `Just False`: off; JSON without the field is parsed as `Nothing`.
 - `setSocketKeepAlive`, option on, Linux and Android: `TCP_USER_TIMEOUT` = `keepIdle + keepIntvl * keepCnt` seconds (90 s with `defaultKeepAliveOpts`). macOS, iOS and Windows: not set.
-
 - `transportClientConfig`: `unackedDataTimeout = Nothing` when a SOCKS proxy is used for the host.
 
 ## Scope
