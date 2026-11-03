@@ -1422,7 +1422,7 @@ client
         pure (msgs, rcvAssocs, ntfAssocs, subs)
       where
         ifNotNull qs f = if null qs then pure M.empty else f qs
-        setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType (M s) (Map RecipientId (Either ErrorType ()))
+        setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType (ReaderT (Env s) IO) (Map RecipientId (Either ErrorType ()))
         setService party sId = ExceptT . liftIO . setQueueServices (queueStore ms) party sId
         subscribable rcvAssocs (q, QueueRec {status}) = case status of
           EntityBlocked _ -> False
