@@ -25,7 +25,6 @@ module Simplex.Messaging.Notifications.Server.Push.APNS
 
 import Control.Exception (Exception, throwIO)
 import Control.Logger.Simple
-import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
@@ -51,7 +50,6 @@ import Data.Int (Int64)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict (Map)
-import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -74,6 +72,7 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.Client
 import Simplex.Messaging.Util (safeDecodeUtf8, tshow)
 import System.Environment (getEnv)
+import System.X509 (getSystemCertificateStore)
 import UnliftIO.STM
 
 data JWTHeader = JWTHeader
@@ -262,15 +261,17 @@ mkApnsJWTToken appTeamId jwtHeader privateKey = do
 
 connectHTTPS2 :: HostName -> APNSPushClientConfig -> TVar (Maybe HTTP2Client) -> IO (Either HTTP2ClientError HTTP2Client)
 connectHTTPS2 apnsHost APNSPushClientConfig {apnsPort, http2cfg, caStoreFile} https2Client = do
-  caStore_ <- XS.readCertificateStore caStoreFile
-  when (isNothing caStore_) $ logError $ "Error loading CertificateStore from " <> T.pack caStoreFile
-  r <- getHTTP2Client apnsHost apnsPort caStore_ http2cfg disconnected
+  caStore <- XS.readCertificateStore caStoreFile >>= maybe systemCAStore pure
+  r <- getHTTP2Client apnsHost apnsPort (Just caStore) http2cfg disconnected
   case r of
     Right client -> atomically . writeTVar https2Client $ Just client
     Left e -> logError $ "Error connecting to APNS: " <> tshow e
   pure r
   where
     disconnected = atomically $ writeTVar https2Client Nothing
+    systemCAStore = do
+      logError $ "Error loading CertificateStore from " <> T.pack caStoreFile
+      getSystemCertificateStore
 
 getApnsHTTP2Client :: APNSPushClient -> IO (Either HTTP2ClientError HTTP2Client)
 getApnsHTTP2Client APNSPushClient {https2Client, apnsHost, apnsCfg} =
