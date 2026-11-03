@@ -166,7 +166,7 @@ type AttachHTTP = Socket -> TLS.Context -> IO ()
 -- actions used in processClientSub to reduce STM transaction scope
 data ClientSubAction
   = CSAEndSub QueueId -- end single direct queue subscription
-  | CSAEndServiceSub QueueId -- end service subscription to one queue
+  | CSAEndServiceSub ServiceId QueueId -- end service subscription to one queue
   | CSADecreaseSubs (Int64, IdsHash) -- reduce service subscriptions when cancelling. Fixed number is used to correctly handle race conditions when service resubscribes
 
 type PrevClientSub s = (Client s, ClientSubAction, (EntityId, BrokerMsg))
@@ -181,7 +181,7 @@ processClientSub ::
   ClientSub ->
   IO ()
 processClientSub ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents} clientSubs clientServiceSubs unsub_ clnt@Client {clientId = clntId} clntSub =
-  mask_ $
+  uninterruptibleMask_ $
     atomically updateSubscribers
       >>= endPreviousSubscriptions
   where
@@ -212,7 +212,7 @@ processClientSub ServerSubscribers {queueSubscribers, serviceSubscribers, totalS
     endQueueSub qId msg = prevSub qId msg (CSAEndSub qId) =<< lookupDeleteSubscribedClient qId queueSubscribers
     endServiceSub :: Maybe ServiceId -> QueueId -> BrokerMsg -> STM [PrevClientSub s]
     endServiceSub Nothing _ _ = pure []
-    endServiceSub (Just serviceId) qId msg = prevSub qId msg (CSAEndServiceSub qId) =<< lookupSubscribedClient serviceId serviceSubscribers
+    endServiceSub (Just serviceId) qId msg = prevSub qId msg (CSAEndServiceSub serviceId qId) =<< lookupSubscribedClient serviceId serviceSubscribers
     prevSub :: QueueId -> BrokerMsg -> ClientSubAction -> Maybe (Client s) -> STM [PrevClientSub s]
     prevSub qId msg action =
       checkAnotherClient $ \c -> pure [(c, action, (qId, msg))]
@@ -234,7 +234,7 @@ processClientSub ServerSubscribers {queueSubscribers, serviceSubscribers, totalS
         CSAEndSub qId -> atomically (endSub c qId) >>= unsubPrev
         -- like endSub, also removes the delivery subscription from the service client's subscriptions map,
         -- otherwise the map retains entries for queues unassociated/deleted while the service stays connected.
-        CSAEndServiceSub qId -> atomically (endServiceQueueSub c qId) >>= unsubPrev
+        CSAEndServiceSub serviceId qId -> atomically (endServiceQueueSub c serviceId qId) >>= unsubPrev
         CSADecreaseSubs changedSubs -> do
           atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
           forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
@@ -243,10 +243,11 @@ processClientSub ServerSubscribers {queueSubscribers, serviceSubscribers, totalS
         unsubPrev s_ = sequence_ (unsub_ <*> s_)
         endSub :: Client s -> QueueId -> STM (Maybe sub)
         endSub c qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs c $>)
-        endServiceQueueSub :: Client s -> QueueId -> STM (Maybe sub)
-        endServiceQueueSub c qId = do
-          modifyTVar' (clientServiceSubs c) decrease
-          modifyTVar' totalServiceSubs decrease
+        endServiceQueueSub :: Client s -> ServiceId -> QueueId -> STM (Maybe sub)
+        endServiceQueueSub c serviceId qId = do
+          whenM (maybe False (sameClientId c) <$> lookupSubscribedClient serviceId serviceSubscribers) $ do
+            modifyTVar' (clientServiceSubs c) decrease
+            modifyTVar' totalServiceSubs decrease
           endSub c qId
           where
             decrease = subtractServiceSubs (1, queueIdHash qId)
@@ -1405,7 +1406,7 @@ client
       NonEmpty (VerifiedTransmission s) ->
       M s (Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType (Bool, Maybe Sub))))
     prepareBatchSubs clntServiceId_ batch = do
-      let (subQueues, rcvAssocQs, ntfAssocQs) = foldr partitionSubs ([], [], []) batch
+      let (subMsgQs, rcvAssocQs, ntfAssocQs) = foldr partitionSubs ([], [], []) batch
           partitionSubs t (msgQs, rcvQs, ntfQs) = case t of
             (Just (q, qr), (_, _, Cmd SRecipient SUB))
               | clntServiceId_ /= rcvServiceId qr -> ((q, qr) : msgQs, q : rcvQs, ntfQs)
@@ -1413,17 +1414,16 @@ client
             (Just (q, qr), (_, _, Cmd SNotifier NSUB))
               | clntServiceId_ /= (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, q : ntfQs)
             _ -> (msgQs, rcvQs, ntfQs)
-      liftIO (runExceptT $ (,) <$> ifNotNull rcvAssocQs (setService SRecipientService clntServiceId_) <*> ifNotNull ntfAssocQs (setService SNotifierService clntServiceId_)) >>= \case
-        Left e -> pure $ Left e
-        Right (rcvAssocs, ntfAssocs) -> do
-          subs <- M.fromList <$> mapM (\(q, qr) -> (recipientId q,) <$> subscribeQueue clntServiceId_ q qr) (filter (subscribable rcvAssocs) subQueues)
-          liftIO $ runExceptT $ do
-            msgs <- ifNotNull (map fst subQueues) $ tryPeekMsgs ms
-            pure (msgs, rcvAssocs, ntfAssocs, subs)
+      runExceptT $ do
+        rcvAssocs <- ifNotNull rcvAssocQs $ setService SRecipientService clntServiceId_
+        ntfAssocs <- ifNotNull ntfAssocQs $ setService SNotifierService clntServiceId_
+        subs <- lift $ M.fromList <$> mapM (\(q, qr) -> (recipientId q,) <$> subscribeQueue clntServiceId_ q qr) (filter (subscribable rcvAssocs) subMsgQs)
+        msgs <- ifNotNull (map fst subMsgQs) $ mapExceptT liftIO . tryPeekMsgs ms
+        pure (msgs, rcvAssocs, ntfAssocs, subs)
       where
         ifNotNull qs f = if null qs then pure M.empty else f qs
-        setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId (Either ErrorType ()))
-        setService party sId = ExceptT . setQueueServices (queueStore ms) party sId
+        setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType (M s) (Map RecipientId (Either ErrorType ()))
+        setService party sId = ExceptT . liftIO . setQueueServices (queueStore ms) party sId
         subscribable rcvAssocs (q, QueueRec {status}) = case status of
           EntityBlocked _ -> False
           _ -> all isRight $ M.lookup (recipientId q) rcvAssocs
@@ -1817,9 +1817,10 @@ client
                 msg' <- fmap join $ forM msg_ $ \msg -> liftIO $ do
                   ts <- getSystemSeconds
                   sub <- maybe getSub pure sub_
+                  unless hasSub $ incStat $ qSub stats
                   ifM
                     (atomically $ trySetDelivered sub msg ts)
-                    (Just (NoCorrId, entId, MSG (encryptMsg qr msg)) <$ unless hasSub (incStat $ qSub stats))
+                    (pure $ Just (NoCorrId, entId, MSG (encryptMsg qr msg)))
                     (pure Nothing)
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
@@ -1927,9 +1928,10 @@ client
                     Right _sub -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
                     Left sub -> do
                       ts <- getSystemSeconds
-                      atomically $ setDelivered sub msg ts
-                      atomically $ writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]
-                      pure (qCnt + 1, msgCnt + 1, dupCnt, evts)
+                      ifM
+                        (atomically $ trySetDelivered sub msg ts)
+                        ((qCnt + 1, msgCnt + 1, dupCnt, evts) <$ atomically (writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]))
+                        (pure (qCnt + 1, msgCnt, dupCnt + 1, evts))
             getSubscription rId = TM.lookupOrInsertIO rId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeServiceNotifications :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
