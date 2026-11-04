@@ -189,9 +189,35 @@ jobs:
         working-directory: scripts/resolver/service
         run: uv run --frozen ruff check .
 
+      - name: Set up Node
+        if: env.resolver == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build SNRC contracts
+        if: env.resolver == 'true'
+        env:
+          SNRC_CONTRACTS: ${{ runner.temp }}/snrc
+          SNRC_CONTRACTS_REPO: https://github.com/brenzi-agent/simplex-namespace-contract
+          SNRC_CONTRACTS_COMMIT: 6db35cddead2330845262baa7d5ddd2e92ce5a63
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+        run: |
+          git clone -q --filter=blob:none "$SNRC_CONTRACTS_REPO" "$SNRC_CONTRACTS"
+          cd "$SNRC_CONTRACTS"
+          git checkout -q "$SNRC_CONTRACTS_COMMIT"
+          git submodule -q update --init --filter=blob:none ens-contracts
+          corepack enable
+          pnpm install --frozen-lockfile
+          cd ens-contracts
+          pnpm install --frozen-lockfile
+          pnpm exec hardhat compile
+
       - name: Test resolver
         if: env.resolver == 'true'
         working-directory: scripts/resolver/service
+        env:
+          SNRC_CONTRACTS: ${{ runner.temp }}/snrc
         run: uv run --frozen pytest -v
 
       - name: Set up Docker Buildx

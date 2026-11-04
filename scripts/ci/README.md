@@ -15,6 +15,10 @@ The ubuntu-24.04 x86-64 entry also lints and tests the resolver (scripts/resolve
 - on a push;
 - on a pull request or a manual run that changes scripts/resolver/service or build.yml. A manual run is compared with its merge base with master.
 
+"Build SNRC contracts" builds the simplex-namespace-contract commit set in the step; test_ground_truth.py deploys it to a Hardhat node, seeds it with scripts/seed-lookup-states.mjs and checks the resolver's answer for each seeded name.
+
+`resolver-mainnet.yml` checks the resolver's answers for known mainnet names daily, on a manual run and on a pull request that changes it. The RPC is the secret `SNRC_MAINNET_RPC`, or a public endpoint without it.
+
 Local run: scripts/resolver/README.md, "Resolver API reference". The reduced build restores the -O0 build caches saved by master pushes; the Docker image cache is tagged by ISO week, so the first run of a week rebuilds the image.
 
 ## Test selection
