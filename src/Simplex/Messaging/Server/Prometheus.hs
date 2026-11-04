@@ -483,7 +483,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
     names =
-      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} = _rslvStats
+      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected} = _rslvStats
        in "# Names\n\
           \# -----\n\
           \\n\
@@ -499,9 +499,13 @@ prometheusMetrics sm rtm ts =
           \# TYPE simplex_smp_names_not_found counter\n\
           \simplex_smp_names_not_found " <> mshow _rslvNotFound <> "\n# rslvNotFound\n\
           \\n\
-          \# HELP simplex_smp_names_resolver_errs Resolver backend errors (HTTP 5xx, transport, decode, or timeout).\n\
+          \# HELP simplex_smp_names_resolver_errs Failures of the resolver or its chain RPC: upstream errors, transport, decode, or timeout.\n\
           \# TYPE simplex_smp_names_resolver_errs counter\n\
           \simplex_smp_names_resolver_errs " <> mshow _rslvResolverErrs <> "\n# rslvResolverErrs\n\
+          \\n\
+          \# HELP simplex_smp_names_rejected Lookups the resolver rejected: TLD not configured, name not fully qualified, label not recorded, or no price oracle.\n\
+          \# TYPE simplex_smp_names_rejected counter\n\
+          \simplex_smp_names_rejected " <> mshow _rslvRejected <> "\n# rslvRejected\n\
           \\n\
           \# HELP simplex_smp_names_disabled RSLV requests rejected because no resolver is configured (names role off).\n\
           \# TYPE simplex_smp_names_disabled counter\n\
