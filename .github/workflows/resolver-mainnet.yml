@@ -1,0 +1,26 @@
+name: resolver mainnet
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/resolver-mainnet.yml
+
+jobs:
+  mainnet:
+    name: "resolver on mainnet"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone project
+        uses: actions/checkout@v3
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Test known names
+        working-directory: scripts/resolver/service
+        env:
+          SNRC_MAINNET_RPC: ${{ secrets.SNRC_MAINNET_RPC || 'https://ethereum-rpc.publicnode.com' }}
+        run: uv run --frozen pytest -v test_ground_truth.py -k MainnetTests
