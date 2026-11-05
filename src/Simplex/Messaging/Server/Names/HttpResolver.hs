@@ -9,8 +9,8 @@
 -- The Python REST resolver (see scripts/resolver/snrc-resolve.py) exposes
 --
 --   GET /v2/resolve/<query> -> 200 with a NameRegistration JSON document, for
---                              all three registration shapes; 400 for unknown
---                              TLDs, 502 for upstream RPC failures
+--                              all three registration shapes; 400 or 502 with
+--                              a fixed `error` code in the body
 --   GET /v1/resolve/<name>  -> 200 with a NameRecord, what relays before SMP
 --                              v22 call as /resolve
 --   GET /health             -> 200 when the resolver process is ready
@@ -34,7 +34,9 @@ module Simplex.Messaging.Server.Names.HttpResolver
 where
 
 import qualified Control.Exception as E
+import Control.Monad ((<=<))
 import qualified Data.Aeson as J
+import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString.Char8 (ByteString)
@@ -79,7 +81,7 @@ data ResolverEnv = ResolverEnv
 
 data ResolverError
   = HttpFailure HttpException
-  | HttpStatusErr Int
+  | HttpStatusErr Int (Maybe Text)
   | BodyTooLarge
   | InvalidJson String
   | ResolverTimeout
@@ -137,7 +139,7 @@ httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} 
   result <- E.try $ withResponse req manager $ \res -> do
     let status = HT.statusCode (responseStatus res)
     if status >= 400
-      then pure (Left (HttpStatusErr status))
+      then Left . HttpStatusErr status . errorCode <$> brReadSome (responseBody res) maxResponseBytes
       else do
         bs <- brReadSome (responseBody res) (maxResponseBytes + 1)
         pure $ if BL.length bs > fromIntegral maxResponseBytes then Left BodyTooLarge else Right bs
@@ -146,3 +148,4 @@ httpGet ResolverEnv {manager, baseUrl, authHdr, timeoutMicro, maxResponseBytes} 
     httpError = \case
       HC.HttpExceptionRequest _ HC.ResponseTimeout -> ResolverTimeout
       e -> HttpFailure e
+    errorCode = JT.parseMaybe (J..: "error") <=< J.decode
