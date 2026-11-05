@@ -45,6 +45,9 @@ WORKDIR /project
 ARG APP
 RUN if [ -z "$APP" ]; then printf "Please spcify \$APP build-arg.\n"; exit 1; fi
 
+# Check that git submodules are checked out
+RUN if [ ! -f cbits/blst/src/server.c ] || [ ! -f cbits/libbbs/src/bbs.c ]; then printf "Git submodules are missing, run: git submodule update --init --recursive\n"; exit 1; fi
+
 # Compile app
 RUN cabal update
 RUN cabal build exe:$APP
