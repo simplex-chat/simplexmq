@@ -9,7 +9,13 @@
 | a push to a draft pull request<br>a manual run (workflow_dispatch)<br>a push to master or stable in a fork | reduced | build-reduced: ubuntu-24.04 x86-64, GHC 9.6.3, at -O0 (-O2 on pushes), without the standard build |
 | a pull request marked ready for review, and later pushes to it<br>a push to master or stable in simplex-chat/simplexmq<br>a push of a v* tag | full | build: 5 entries (GHC 8.10.7 and 9.6.3, x86-64 and aarch64), at -O0 on pull requests and -O2 on pushes |
 
-Both builds also run maybe-release and resolver (python). Tests run on the x86-64 entries. The reduced build restores the -O0 build caches saved by master pushes; the Docker image cache is tagged by ISO week, so the first run of a week rebuilds the image.
+Both builds also run maybe-release. Tests run on the x86-64 entries.
+
+The ubuntu-24.04 x86-64 entry also lints and tests the resolver (scripts/resolver/service, steps "Lint resolver" and "Test resolver"):
+- on a push;
+- on a pull request or a manual run that changes scripts/resolver/service or build.yml. A manual run is compared with its merge base with master.
+
+Local run: scripts/resolver/README.md, "Resolver API reference". The reduced build restores the -O0 build caches saved by master pushes; the Docker image cache is tagged by ISO week, so the first run of a week rebuilds the image.
 
 ## Test selection
 
