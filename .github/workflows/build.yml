@@ -33,12 +33,40 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       reduced: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == true || (github.event_name == 'push' && github.ref_type == 'branch' && github.repository != 'simplex-chat/simplexmq') }}
+      resolver: ${{ steps.changes.outputs.resolver }}
     steps:
       - name: Reject a manual run on a tag
         if: github.event_name == 'workflow_dispatch' && github.ref_type == 'tag'
         run: |
           echo "::error::A manual run starts on a branch; to retry a release, re-run the jobs of its tag push."
           exit 1
+
+      - name: Clone project to check changes
+        if: github.event_name != 'push'
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+
+      - name: Check changes
+        id: changes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              base=HEAD^1
+              ;;
+            workflow_dispatch)
+              base=$(gh api "repos/$GITHUB_REPOSITORY/compare/master...$GITHUB_REF_NAME" --jq .merge_base_commit.sha)
+              git fetch -q --depth=1 origin "$base"
+              ;;
+            *)
+              echo "resolver=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          git diff --quiet "$base" HEAD -- scripts/resolver/service .github/workflows/build.yml || echo "resolver=true" >> "$GITHUB_OUTPUT"
 
       - name: Clone project
         if: startsWith(github.ref, 'refs/tags/v')
@@ -95,6 +123,7 @@ jobs:
       cache_o0: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/stable') }}
       image_cache: ghcr.io/${{ github.repository_owner }}/simplexmq-build-cache:${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}
       source_hashes: dist-newstyle/sources.sha256
+      resolver: ${{ needs.maybe-release.outputs.resolver == 'true' && matrix.os == '24.04' && matrix.arch == 'x86-64' }}
     runs-on: ${{ matrix.runner }}
     services: &build-services
       postgres:
@@ -149,6 +178,47 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: recursive
+
+      - name: Set up uv
+        if: env.resolver == 'true'
+        # uv takes Python from .python-version, the version of the Dockerfile's runtime stage.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Lint resolver
+        if: env.resolver == 'true'
+        working-directory: scripts/resolver/service
+        run: uv run --frozen ruff check .
+
+      - name: Set up Node
+        if: env.resolver == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build SNRC contracts
+        if: env.resolver == 'true'
+        env:
+          SNRC_CONTRACTS: ${{ runner.temp }}/snrc
+          SNRC_CONTRACTS_REPO: https://github.com/brenzi-agent/simplex-namespace-contract
+          SNRC_CONTRACTS_COMMIT: ac7c68789b129de925a876b1eafa320c6a095693
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: 0
+        run: |
+          git clone -q --filter=blob:none "$SNRC_CONTRACTS_REPO" "$SNRC_CONTRACTS"
+          cd "$SNRC_CONTRACTS"
+          git checkout -q "$SNRC_CONTRACTS_COMMIT"
+          git submodule -q update --init --filter=blob:none ens-contracts
+          corepack enable
+          pnpm install --frozen-lockfile
+          cd ens-contracts
+          pnpm install --frozen-lockfile
+          pnpm exec hardhat compile
+
+      - name: Test resolver
+        if: env.resolver == 'true'
+        working-directory: scripts/resolver/service
+        env:
+          SNRC_CONTRACTS: ${{ runner.temp }}/snrc
+        run: uv run --frozen pytest -v
 
       - name: Set up Docker Buildx
         if: matrix.should_run == true
@@ -483,29 +553,3 @@ jobs:
             ghc: "9.6.3"
             should_run: true
     steps: *build-steps
-
-# =============================
-#      Resolver test job
-# =============================
-
-# The SNRC resolver is Python, so this job needs none of the Haskell toolchain
-# above and runs independently of it.
-
-  resolver-test:
-    name: "resolver (python)"
-    runs-on: ubuntu-latest
-    steps:
-      - name: Clone project
-        uses: actions/checkout@v3
-
-      - name: Set up uv
-        # uv takes Python from .python-version, the version of the Dockerfile's runtime stage.
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-
-      - name: Lint
-        working-directory: scripts/resolver/service
-        run: uv run --frozen ruff check .
-
-      - name: Test
-        working-directory: scripts/resolver/service
-        run: uv run --frozen pytest -v

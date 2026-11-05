@@ -129,6 +129,13 @@ uv run pytest
 uv run ruff check .
 ```
 
+`test_ground_truth.py` runs only with its variables set: `SNRC_CONTRACTS`, a simplex-namespace-contract checkout with `ens-contracts` compiled (the CI step "Build SNRC contracts"), and `SNRC_MAINNET_RPC`, a mainnet JSON-RPC endpoint:
+
+```sh
+SNRC_CONTRACTS=../snrc uv run pytest test_ground_truth.py
+SNRC_MAINNET_RPC=https://ethereum-rpc.publicnode.com uv run pytest test_ground_truth.py -k MainnetTests
+```
+
 Dependencies are locked in `uv.lock`; the Docker image installs exactly those.
 
 Three routes, versioned separately from the protocol so each only changes when
