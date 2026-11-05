@@ -1553,7 +1553,7 @@ client
         Nothing -> incStat (rslvDisabled st) $> Nothing
         Just nenv -> pure (Just nenv)
     -- Runs on a forked thread so RSLV does not block other commands;
-    -- concurrency is limited in forkCmd by serverClientConcurrency for direct and serverResolverConcurrency for forwarded RSLV.
+    -- concurrency is limited in forkCmd by serverClientConcurrency for direct and serverResolverConcurrency for forwarded RSLV, and globally in resolveName.
     resolveNameMsg :: VersionSMP -> NamesEnv -> NameQuery -> M s BrokerMsg
     resolveNameMsg v nenv q = do
       st <- asks (rslvStats . serverStats)

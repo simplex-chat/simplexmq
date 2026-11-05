@@ -15,6 +15,7 @@ module Simplex.Messaging.Server.Names
   )
 where
 
+import Control.Concurrent.QSem (QSem, newQSem, signalQSem, waitQSem)
 import qualified Control.Exception as E
 import Control.Logger.Simple (logError)
 import Data.Bifunctor (first)
@@ -38,19 +39,22 @@ data NamesConfig = NamesConfig
   { resolverEndpoint :: String,
     resolverAuth :: Maybe RpcAuth,
     resolverTimeoutMs :: Int,
-    resolverMaxResponseBytes :: Int
+    resolverMaxResponseBytes :: Int,
+    resolverGlobalConcurrency :: Int
   }
   deriving (Show)
 
 data NamesEnv = NamesEnv
   { config :: NamesConfig,
-    resolverEnv :: ResolverEnv
+    resolverEnv :: ResolverEnv,
+    resolverSlots :: QSem
   }
 
 newNamesEnv :: NamesConfig -> IO NamesEnv
 newNamesEnv config = do
-  resolverEnv <- newResolverEnv (resolverEndpoint config) (resolverAuth config) (resolverTimeoutMs config) (resolverMaxResponseBytes config)
-  pure NamesEnv {config, resolverEnv}
+  resolverEnv <- newResolverEnv (resolverEndpoint config) (resolverAuth config) (resolverTimeoutMs config) (resolverMaxResponseBytes config) (resolverGlobalConcurrency config)
+  resolverSlots <- newQSem (resolverGlobalConcurrency config)
+  pure NamesEnv {config, resolverEnv, resolverSlots}
 
 closeNamesEnv :: NamesEnv -> IO ()
 closeNamesEnv NamesEnv {resolverEnv} = closeResolverEnv resolverEnv
@@ -60,8 +64,9 @@ pingEndpoint NamesEnv {resolverEnv, config} =
   fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
 resolveName :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
-resolveName env q = do
-  r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env q))
+resolveName env@NamesEnv {resolverSlots} q = do
+  -- waiting for a slot counts towards the timeout, so lookups do not queue longer than resolverTimeoutMs
+  r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (E.bracket_ (waitQSem resolverSlots) (signalQSem resolverSlots) (fetch env q)))
   case r of
     Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
     Left e
