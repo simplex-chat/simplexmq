@@ -1615,6 +1615,7 @@ client
               _ | isSecuredMsgQueue qr -> pure $ err AUTH
               Just (lnkId', _) | lnkId' /= lnkId -> pure $ err AUTH -- can't change link ID
               _ -> liftIO $ either err (const ok) <$> addQueueLinkData (queueStore ms) q lnkId d
+          LSWP lnkId h ks_ d -> withQueue $ \q qr -> checkMode QMContact qr $ maybe OK LCUR <$$> liftIO (swapQueueLinkData (queueStore ms) q lnkId h ks_ d)
           LDEL ->
             withQueue $ \q qr -> case queueData qr of
               Just _ -> liftIO $ either err (const ok) <$> deleteQueueLinkData (queueStore ms) q

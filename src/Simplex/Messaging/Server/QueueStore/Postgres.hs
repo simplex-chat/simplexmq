@@ -217,7 +217,31 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
         withLog "addQueueLinkData" st $ \s -> logCreateLink s rId lnkId d
       -- the sender key condition is checked in SQL because without cache each command reads its own copy of the queue record
-      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR queue_mode = ?)"
+      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR queue_mode = ?) AND get_byte(recipient_keys, 0) = 1"
+
+  swapQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> LinkDataHash -> Maybe (NonEmpty RcvPublicAuthKey) -> QueueLinkData -> IO (Either ErrorType (Maybe EncUserDataBytes))
+  swapQueueLinkData st sq lnkId h rKeys_ d =
+    withQueueRec sq $ \q ->
+      withDB "swapQueueLinkData" st swap >>= \case
+        Just ud -> pure $ Just ud
+        Nothing -> do
+          let !q' = q {recipientKeys = fromMaybe (recipientKeys q) rKeys_, queueData = Just (lnkId, d)}
+          atomically $ writeTVar (queueRec sq) $ Just q'
+          withLog "swapQueueLinkData" st $ \s -> logSwapLink s rId lnkId d rKeys_
+          pure Nothing
+    where
+      rId = recipientId sq
+      swap db =
+        firstRow id AUTH (DB.query db "SELECT link_id, fixed_data, user_data FROM msg_queues WHERE recipient_id = ? AND deleted_at IS NULL FOR UPDATE" (Only rId))
+          $>>= \case
+            (Just lnkId', Just fd', Just ud')
+              | lnkId' /= lnkId || fd' /= fst d -> pure $ Left AUTH
+              | linkDataHash ud' /= h -> pure $ Right $ Just ud'
+              | otherwise -> Right Nothing <$ updateLink db
+            _ -> pure $ Left AUTH
+      updateLink db = case rKeys_ of
+        Just rKeys -> DB.execute db "UPDATE msg_queues SET user_data = ?, recipient_keys = ? WHERE recipient_id = ?" (snd d, rKeys, rId)
+        Nothing -> DB.execute db "UPDATE msg_queues SET user_data = ? WHERE recipient_id = ?" (snd d, rId)
 
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =

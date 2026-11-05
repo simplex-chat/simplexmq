@@ -77,6 +77,8 @@ smpProxyTests = do
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
+    it "relay refuses forwarded short link data swap" $ \_ ->
+      testForwardedSwapQueueLink
   describe "deliver message via SMP proxy" $ do
     let srv1, srv2 :: HasTestEnv => SMPServer
         srv1 = SMPServer testHost testPort testKeyHash
@@ -483,9 +485,9 @@ testChangedFwdVersion =
     et <- encrypt $ SMP.encTransmissionNonce v nonce
     _ <- runExceptT' $ forward corrId v et
     runExceptT (forward corrId (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
-    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
-    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion v) =<< encrypt nonce
-    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion v) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion fwdNoncesSMPVersion) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion fwdNoncesSMPVersion) =<< encrypt nonce
+    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion fwdNoncesSMPVersion) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
 
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
@@ -511,6 +513,26 @@ testForwardedAuthErrorDelay =
       (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
       sendTime `shouldSatisfy` (>= 0.5)
       getLinkTime `shouldSatisfy` (>= 0.5)
+
+testForwardedSwapQueueLink :: HasTestEnv => IO ()
+testForwardedSwapQueueLink =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ -> do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (2, testSMPServer2, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      lnkId <- SMP.EntityId <$> atomically (C.randomBytes 24 g)
+      let ld = (SMP.EncDataBytes "fixed data", SMP.EncDataBytes "user data")
+          ld' = (fst ld, SMP.EncDataBytes "new user data")
+      SMP.QIK {rcvId} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing
+      runExceptT' $ addSMPQueueLink rc NRMInteractive rKey rcvId lnkId ld
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      runExceptT (proxySMPCommand pc NRMInteractive sess (Just rKey) rcvId (SMP.LSWP lnkId (SMP.linkDataHash $ snd ld) Nothing ld'))
+        `shouldReturn` Left (PCEProtocolError $ SMP.CMD SMP.PROHIBITED)
+      (snd <$> runExceptT' (getSMPQueueLink rc NRMInteractive lnkId)) `shouldReturn` ld
 
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,
