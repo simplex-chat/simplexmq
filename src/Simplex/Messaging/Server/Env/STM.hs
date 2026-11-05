@@ -78,10 +78,12 @@ module Simplex.Messaging.Server.Env.STM
 where
 
 import Control.Concurrent (ThreadId)
+import Control.Concurrent.STM.TSem (TSem, newTSem)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
+import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -264,6 +266,7 @@ data Env s = Env
     msgStore_ :: MsgStore s,
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
+    serviceIdSalt :: ByteString,
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
     serverStats :: ServerStats,
@@ -429,10 +432,12 @@ data Client s = Client
     ntfServiceSubscribed :: TVar Bool,
     serviceSubsCount :: TVar (Int64, IdsHash), -- only one service can be subscribed, based on its certificate, this is subscription count
     ntfServiceSubsCount :: TVar (Int64, IdsHash), -- only one service can be subscribed, based on its certificate, this is subscription count
+    newServiceRec :: Maybe ServiceRec,
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
+    authDelaySlots :: TSem,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     clientTHParams :: THandleParams SMPVersion 'TServer,
@@ -494,8 +499,8 @@ newServerSubscribers = do
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
-newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client s)
-newClient clientId qSize clientTHParams createdAt = do
+newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> Maybe ServiceRec -> SystemTime -> IO (Client s)
+newClient clientId qSize clientTHParams newServiceRec createdAt = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   serviceSubscribed <- newTVarIO False
@@ -506,6 +511,7 @@ newClient clientId qSize clientTHParams createdAt = do
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
+  authDelaySlots <- atomically $ newTSem $ toInteger qSize
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
   connected <- newTVarIO True
@@ -520,10 +526,12 @@ newClient clientId qSize clientTHParams createdAt = do
         ntfServiceSubscribed,
         serviceSubsCount,
         ntfServiceSubsCount,
+        newServiceRec,
         rcvQ,
         sndQ,
         msgQ,
         procThreads,
+        authDelaySlots,
         endThreads,
         endThreadSeq,
         clientTHParams,
@@ -566,6 +574,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
 #endif
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
+  serviceIdSalt <- atomically $ C.randomBytes 32 random
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
   mapM_ checkHTTPSCredentials httpServerCreds
@@ -595,6 +604,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         msgStore_,
         ntfStore,
         random,
+        serviceIdSalt,
         tlsServerCreds,
         httpServerCreds,
         serverStats,
