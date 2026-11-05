@@ -10,6 +10,7 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
+import CoreTests.KeepAliveTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
@@ -92,6 +93,7 @@ main = do
             describe "Encrypted files tests" cryptoFileTests
             describe "Message store tests" msgStoreTests
             describe "SOCKS settings tests" socksSettingsTests
+            describe "TCP keep-alive tests" keepAliveTests
             describe "Store log tests" storeLogTests
             describe "XFTP store log tests" fileStoreLogTests
             fileExpirationTests
