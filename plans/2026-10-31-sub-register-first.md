@@ -4,7 +4,7 @@
 
 - Each subscription change is processed by `processClientSub` under `uninterruptibleMask_`, in the client thread of the connection.
 - `serverThread` and `subQ` are removed.
-- The branch of `serverThread` for a disconnected client is omitted from `processClientSub`.
+- `processClientSub` takes the place of `serverThread` in `smpServer`; its branch for a disconnected client is kept.
 - SUB, from clients with and without a service certificate: the subscriber is registered in `prepareBatchSubs`, after the queue associations and before `tryPeekMsgs`, except for a service client when the queue is associated with its service and the connection has a service count, as on master.
 - Duplicate SUB: `delivered` of the subscription is reset in `prepareBatchSubs`, before `tryPeekMsgs`.
 - SUB of a blocked queue, or of a queue with a failed association: the subscriber is registered only by a later successful SUB.
@@ -45,7 +45,7 @@ flowchart LR
     S[sendPendingEvtsThread]
     C -- "removed - change written" --> Q
     Q -- "removed - change read" --> T
-    T -- "removed - client read by getServerClient<br>connected checked" --> X
+    T -- "removed - client read by getServerClient" --> X
     T -- "removed - run" --> U
     T -- "removed - run" --> V
     C -- "added - processClientSub called" --> P
@@ -207,11 +207,11 @@ sequenceDiagram
 ## Mechanics
 
 - `Server.hs`:
-  - `processClientSub`: top level; the registration code of `serverThread`, for the client of the calling thread, under `uninterruptibleMask_`.
+  - `processClientSub`: `serverThread` in its place, for one change of the client of the calling thread, under `uninterruptibleMask_`.
   - `CSAEndServiceSub`: the service ID added.
   - `endServiceQueueSub`: the counts decreased only while the previous client is registered for the service.
-  - `smpServer`: `serverThread` removed.
-  - `client`: `processSub` and `processNtfSub` are `processClientSub` for message and notification subscribers.
+  - `smpServer`: the two `serverThread` threads removed.
+  - `runClient`: `processClientSub` for message and notification subscribers passed through `runClientTransport` to `client`, as `processSub` and `processNtfSub`.
   - `prepareBatchSubs`: one `runExceptT` block:
     - queue associations
     - `subscribeQueue` for each SUB of a queue that is not blocked, when its association is unchanged or changed successfully
