@@ -211,7 +211,8 @@ sequenceDiagram
   - `CSAEndServiceSub`: the service ID added.
   - `endServiceQueueSub`: the counts decreased only while the previous client is registered for the service.
   - `smpServer`: the two `serverThread` threads removed.
-  - `runClient`: `processClientSub` for message and notification subscribers passed through `runClientTransport` to `client`, as `processSub` and `processNtfSub`.
+  - `runClient`: `processSubs`, the pair of `processClientSub` for message and notification subscribers, passed through `runClientTransport` to `client`.
+  - `client`: `processSub` and `processNtfSub` from the pair.
   - `prepareBatchSubs`: one `runExceptT` block:
     - queue associations
     - `subscribeQueue` for each SUB of a queue that is not blocked, when its association is unchanged or changed successfully
@@ -220,7 +221,7 @@ sequenceDiagram
   - `subscribeQueue`: the first part of the former `subscribeQueueAndDeliver`.
   - `deliverSubMsg`: the second part of the former `subscribeQueueAndDeliver`; the `subscribeQueue` result passed to `deliver`.
   - `sharedSubscribeQueue`: moved from `processCommand` to `client`; the service ID of the client and the queue ID added as parameters; `processSub` or `processNtfSub` passed in place of the server subscribers.
-  - `processSub` or `processNtfSub` called with the subscription change where the change was written to `subQ`:
+  - `processSub` or `processNtfSub` called with the client and the subscription change where the change was written to `subQ`:
     - `sharedSubscribeService`
     - `subscribeNewQueue`
     - `addQueueNotifier_`
