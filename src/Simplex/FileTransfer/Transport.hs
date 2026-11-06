@@ -37,6 +37,7 @@ module Simplex.FileTransfer.Transport
   )
 where
 
+import Control.Applicative ((<|>))
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -171,7 +172,7 @@ instance Encoding XFTPServerHandshake where
     (xftpVersionRange, sessionId, authPubKey) <- smpP
     -- decode the (length-prefixed) signature bytes deterministically: empty bytes decode to Nothing.
     -- (Must not use `optional`, which would backtrack and leave the bytes for the parsers that follow.)
-    webIdentityProof <- C.decodeSignature <$?> smpP
+    webIdentityProof <- (Nothing <$ A.endOfInput) <|> (C.decodeSignature <$?> smpP)
     serverInfoBytes <- ifHasServerInfo (maxVersion xftpVersionRange) (unLarge <$$> smpP) (pure Nothing)
     Tail _compat <- smpP
     pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof, serverInfoBytes}
