@@ -16,12 +16,14 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
+import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
@@ -85,7 +87,7 @@ xftpServerTests = do
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
-      it "should decode handshake of servers before v6.5.0" testOldServerHandshake
+      it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -444,9 +446,11 @@ testOldServerHandshake _ = do
   (k, _) :: C.KeyPairX25519 <- atomically . C.generateKeyPair =<< C.newRandom
   let vr = mkVersionRange (VersionXFTP 1) (VersionXFTP 3)
       key = CertChainPubKey chain (C.signX509 signKey $ C.publicToX509 k)
-  shs <- either (error . show) pure $ C.unPad =<< C.pad (smpEncode (vr, "session" :: ByteString, key)) xftpBlockSize
-  XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, serverInfoBytes} <- either error pure $ smpDecode shs
+      decode :: ByteString -> Either String XFTPServerHandshake
+      decode sig = smpDecode =<< first show (C.unPad =<< C.pad (smpEncode (vr, "session" :: ByteString, key) <> sig) xftpBlockSize)
+  XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, serverInfoBytes} <- either error pure $ decode ""
   (xftpVersionRange, sessionId, authPubKey, serverInfoBytes) `shouldBe` (vr, "session", key, Nothing)
+  isLeft (decode $ smpEncode ("invalid" :: ByteString)) `shouldBe` True
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
 

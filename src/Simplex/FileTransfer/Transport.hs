@@ -172,7 +172,7 @@ instance Encoding XFTPServerHandshake where
     (xftpVersionRange, sessionId, authPubKey) <- smpP
     -- decode the (length-prefixed) signature bytes deterministically: empty bytes decode to Nothing.
     -- (Must not use `optional`, which would backtrack and leave the bytes for the parsers that follow.)
-    webIdentityProof <- (Nothing <$ A.endOfInput) <|> (C.decodeSignature <$?> smpP)
+    webIdentityProof <- (C.decodeSignature <$?> smpP) <|> (Nothing <$ A.endOfInput)
     serverInfoBytes <- ifHasServerInfo (maxVersion xftpVersionRange) (unLarge <$$> smpP) (pure Nothing)
     Tail _compat <- smpP
     pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof, serverInfoBytes}
