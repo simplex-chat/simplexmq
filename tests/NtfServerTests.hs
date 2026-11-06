@@ -23,6 +23,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isJust)
 import Data.Text.Encoding (encodeUtf8)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
@@ -40,6 +41,7 @@ import ServerTests
     pattern Resp,
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
+import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -67,6 +69,9 @@ ntfServerTests ps@(t, _) = do
     it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
   describe "APNS client" $ do
     it "should validate APNS server certificate" testApnsServerCertificate
+  describe "APNS push delivery" $ do
+    it "resumes sending notifications after the push provider is unreachable" $ testPushWorkerResumesAfterOutage t
+    it "does not connect to the push provider when the key file is not configured" testNoConnectWithoutKeyFile
   describe "Database pool" $ do
     it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
@@ -114,6 +119,37 @@ testApnsServerCertificate = withAPNSMockServer $ \_ -> do
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
     certError s (e :: IOError) = s `isInfixOf` show e
+
+testPushWorkerResumesAfterOutage :: HasTestEnv => ASrvTransport -> Expectation
+testPushWorkerResumesAfterOutage (ATransport (t :: TProxy c 'TServer)) = do
+  g <- C.newRandom
+  (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  let tkn = DeviceToken PPApnsTest "abcd"
+      newTkn = NewNtfTkn tkn tknPub dhPub
+  withNtfServerCfg ntfCfg $ \_ ->
+    testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
+      RespNtf "1" NoEntity (NRTknId _ _) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW newTkn)
+      threadDelay 1000000
+      withAPNSMockServer $ \apns -> do
+        RespNtf "2" NoEntity (NRTknId _ _) <- signSendRecvNtf nh tknKey ("2", NoEntity, TNEW newTkn)
+        delivered <- timeout 5000000 $ getMockNotification apns tkn
+        delivered `shouldSatisfy` isJust
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
+    ntfCfg =
+      ntfServerCfg
+        { transports = [(ntfTestPort, ATransport t, False)],
+          apnsConfig = apnsConfig {reconnectInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
+        }
+
+testNoConnectWithoutKeyFile :: HasTestEnv => Expectation
+testNoConnectWithoutKeyFile =
+  createAPNSPushClient "localhost" apnsCfgMissingKey `shouldThrow` keyFileError
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
+    apnsCfgMissingKey = apnsConfig {authKeyFileEnv = "APNS_KEY_FILE_MISSING"}
+    keyFileError (e :: IOError) = "APNS_KEY_FILE_MISSING" `isInfixOf` show e
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
