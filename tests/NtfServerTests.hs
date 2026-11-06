@@ -134,7 +134,7 @@ testPushWorkerResumesAfterOutage (ATransport (t :: TProxy c 'TServer)) = do
       withAPNSMockServer $ \apns -> do
         RespNtf "2" NoEntity (NRTknId _ _) <- signSendRecvNtf nh tknKey ("2", NoEntity, TNEW newTkn)
         delivered <- timeout 5000000 $ getMockNotification apns tkn
-        delivered `shouldSatisfy` isJust
+        isJust delivered `shouldBe` True
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
     ntfCfg =
