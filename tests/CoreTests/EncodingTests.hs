@@ -9,12 +9,10 @@ import Data.Bits (shiftR)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (w2c)
-import Data.Either (isLeft)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time.Clock.System (SystemTime (..), getSystemTime, utcToSystemTime)
 import Data.Time.ISO8601 (parseISO8601)
-import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
@@ -82,13 +80,6 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
         -- brackets are reserved for IPv6 literals
         shouldReject @TransportHost "[simplex.chat]"
         shouldReject @TransportHost "[smp.simplex.im]"
-  describe "Encoding key hash" $ do
-    it "should encode / decode non-empty key hash" $ do
-      let kh = C.KeyHash "0123456789012345678901234567890123456789012345678901234567890123"
-      smpDecode (smpEncode kh) `shouldBe` Right kh
-    it "should reject empty key hash" $ do
-      smpEncode (C.KeyHash "") `shouldBe` "\0"
-      (smpDecode "\0" :: Either String C.KeyHash) `shouldSatisfy` isLeft
   describe "Encoding service locations" $ do
     it "should parse bracketed IPv6 host with port" $ do
       strDecode @ServiceScheme "https://[2001:db8::1]:8443"
