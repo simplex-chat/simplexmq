@@ -56,6 +56,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isHexDigit)
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -219,7 +220,16 @@ instance StrEncoding AFileDescription where
   strEncode (AFD fd) = strEncode fd
   strDecode s
     | B.elem '*' s = Left "YAML aliases are not allowed"
+    | hasLongNumber s = Left "number too long in file description"
     | otherwise = decodeFileDescription =<< first show (Y.decodeEither' s)
+    where
+      hasLongNumber = go (0 :: Int)
+        where
+          go n bs = case B.uncons bs of
+            Just (c, bs')
+              | isHexDigit c -> n >= 64 || go (n + 1) bs'
+              | otherwise -> go 0 bs'
+            Nothing -> False
   strP = strDecode <$?> A.takeByteString
 
 validateFileDescription :: FileDescription p -> Either String (ValidFileDescription p)
