@@ -2844,7 +2844,7 @@ ackMessage' c cmdId_ connId msgId rcptInfo_ = do
       SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
       ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
       NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
-  forM_ rqMsg $ \(rq, srvMsgId) -> do
+  forM_ (rqMsg :: Maybe (RcvQueue, SMP.MsgId)) $ \(rq, srvMsgId) -> do
     recordAck <- ackQueueMessage c rq srvMsgId
     t_ <- withConnLock c connId "ackMessage" $ do
       t_ <- recordAck
@@ -3000,7 +3000,7 @@ suspendConnection' c nm connId = do
       ContactConnection _ rq -> pure [rq]
       SndConnection _ _ -> throwE $ CONN SIMPLEX "suspendConnection"
       NewConnection _ -> throwE $ CMD PROHIBITED "suspendConnection"
-  mapM_ (suspendQueue c nm) rqs
+  mapM_ (suspendQueue c nm) (rqs :: [RcvQueue])
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 -- unlike deleteConnectionAsync, this function does not mark connection as deleted in case of deletion failure
