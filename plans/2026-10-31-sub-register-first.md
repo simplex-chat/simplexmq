@@ -25,6 +25,7 @@
   - NKEY
   - NDEL
   - DEL
+- The SMP server design diagram and its README section are removed.
 
 ## Composition
 
@@ -228,8 +229,11 @@ sequenceDiagram
   - `deliver`: `qSub` counted before `trySetDelivered`; the first message included only when it is marked by `trySetDelivered`.
   - `deliverServiceMessages`: MSG sent only when the message is marked by `trySetDelivered`.
 - `Env/STM.hs`: `subQ` removed from `ServerSubscribers`.
+- `README.md`: the section "SMP server design" removed.
+- `design/server.gv`, `design/server.svg`: removed.
 - `tests/ServerTests.hs`:
   - `should deliver message sent in the same block as SUB`
+  - `should deliver message sent in the same block as SUB to the new connection`
   - `should deliver message once for two SUBs in the same block`
   - `should deliver message sent in the same block as service SUB`
   - `should deliver message after SUB while delivery waits for full send queue`: the message recorded before or after SOK.
