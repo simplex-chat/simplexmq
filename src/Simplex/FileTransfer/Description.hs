@@ -63,7 +63,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.String
 import Data.Text (Text)
 import Data.Text.Encoding (encodeUtf8)
@@ -233,12 +233,13 @@ instance StrEncoding AFileDescription where
   strP = strDecode <$?> A.takeByteString
 
 validateFileDescription :: FileDescription p -> Either String (ValidFileDescription p)
-validateFileDescription fd@FileDescription {size, chunks}
+validateFileDescription fd@FileDescription {size, chunks, redirect}
   | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
   | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
   | any incorrectChunkSize chunks = Left "incorrect chunk size"
   | any (> 16) replicaCounts = Left "too many chunk replicas"
   | sum replicaCounts > 131072 = Left "too many file replicas"
+  | isJust redirect && unFileSize size > fromIntegral chunkSize3 = Left "redirect file description is too large"
   | otherwise = Right $ ValidFD fd
   where
     chunkNos = map (\FileChunk {chunkNo} -> chunkNo) chunks

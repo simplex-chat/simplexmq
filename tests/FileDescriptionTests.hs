@@ -10,7 +10,7 @@ import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isRight)
 import qualified Data.Yaml as Y
-import Simplex.FileTransfer.Chunks (chunkSize3, serverChunkSizes)
+import Simplex.FileTransfer.Chunks (chunkSize0, chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
@@ -31,7 +31,7 @@ fileDescriptionTests = do
     it "reject file description with YAML aliases" testRejectYAMLAliases
     it "reject file description with a long number" testRejectLongNumber
     it "accept file description with a number at the length limit" testAcceptMaxNumber
-    it "limit chunk sizes and replicas per chunk and per file" testFileDescriptionLimits
+    it "limit chunk sizes, replicas and redirect description size" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
@@ -200,6 +200,8 @@ testFileDescriptionLimits = do
   validateFileDescription (descriptionOf serverChunkSizes 1) `shouldSatisfy` isRight
   validateFileDescription (descriptionOf [chunkSize3, mb 2] 1) `shouldBe` Left "incorrect chunk size"
   validateFileDescription (descriptionOf [chunkSize3, mb 8] 1) `shouldBe` Left "incorrect chunk size"
+  validateFileDescription (redirectDesc [chunkSize3]) `shouldSatisfy` isRight
+  validateFileDescription (redirectDesc [chunkSize3, chunkSize0]) `shouldBe` Left "redirect file description is too large"
   where
     FileDescription {chunks = fixtureChunks} = fileDesc
     fixtureReplicas = concatMap (\FileChunk {replicas} -> replicas) fixtureChunks
@@ -216,6 +218,7 @@ testFileDescriptionLimits = do
         }
       where
         chunk chunkNo sz = FileChunk {chunkNo, chunkSize = FileSize sz, digest = FileDigest "ghi", replicas = take n $ cycle fixtureReplicas}
+    redirectDesc sizes = (descriptionOf sizes 1 :: FileDescription 'FRecipient) {redirect = Just RedirectFileInfo {size = FileSize 1024, digest = FileDigest "abc"}}
 
 testSerializeFileDescription :: HasTestEnv => IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
