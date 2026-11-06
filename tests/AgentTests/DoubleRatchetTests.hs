@@ -20,7 +20,6 @@ import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
-import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
@@ -651,13 +650,13 @@ decryptV70 st@(_, Ratchet {rcAD = Str ad, rcRcv, rcNHKr}, smks) msg = do
   let hks = maybe [] (\RcvRatchet {rcHKr} -> [rcHKr]) rcRcv <> [rcNHKr] <> M.keys smks
   forM_ hks $ \hk -> do
     hdr_ <- runExceptT $ C.decryptAEAD hk iv ad body tag
-    forM_ hdr_ $ \hdr -> A.parseOnly (msgHeaderV70P @a v) hdr `shouldBe` A.parseOnly smpP hdr
+    forM_ hdr_ $ \hdr -> msgHeaderV70 @a v hdr `shouldBe` ((\(h, Tail _) -> h) <$> smpDecode hdr)
   decrypt_ st msg
 
-msgHeaderV70P :: AlgorithmI a => VersionE2E -> A.Parser (MsgHeader a)
-msgHeaderV70P v
-  | v >= VersionE2E 3 = smpP
-  | otherwise = (\(msgMaxVersion, msgDHRs, msgPN, msgNs) -> MsgHeader {msgMaxVersion, msgDHRs, msgKEM = Nothing, msgPN, msgNs}) <$> smpP
+msgHeaderV70 :: AlgorithmI a => VersionE2E -> ByteString -> Either String (MsgHeader a)
+msgHeaderV70 v hdr
+  | v >= VersionE2E 3 = (\(h, Tail _) -> h) <$> smpDecode hdr
+  | otherwise = (\(msgMaxVersion, msgDHRs, msgPN, msgNs, Tail _) -> MsgHeader {msgMaxVersion, msgDHRs, msgKEM = Nothing, msgPN, msgNs}) <$> smpDecode hdr
 
 encryptV710 :: forall a. AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
 encryptV710 (_, rc@Ratchet {rcVersion = RatchetVersions {current}}, _) msg = runExceptT $ do
