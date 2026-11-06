@@ -227,7 +227,7 @@ instance StrEncoding AFileDescription where
         where
           go n bs = case B.uncons bs of
             Just (c, bs')
-              | isHexDigit c -> n + 1 > 64 || go (n + 1) bs'
+              | isHexDigit c -> n >= 64 || go (n + 1) bs'
               | otherwise -> go 0 bs'
             Nothing -> False
   strP = strDecode <$?> A.takeByteString
