@@ -29,6 +29,7 @@ import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Util (liftEitherWith)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import UnliftIO
 import UnliftIO.Directory (removeFile)
 
@@ -116,4 +117,4 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
         A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
 
 readChunks :: [FilePath] -> IO LB.ByteString
-readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
+readChunks = fmap LB.concat . mapM (unsafeInterleaveIO . LB.readFile)

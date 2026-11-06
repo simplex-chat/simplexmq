@@ -280,7 +280,8 @@ retryOnError name loop done e = do
 rcvWorkerInternalError :: AgentClient -> DBRcvFileId -> RcvFileId -> Maybe RcvFileId -> Maybe FilePath -> AgentErrorType -> AM ()
 rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ tmpPath err = do
   liftIO $ throwWhenInactive c
-  lift $ forM_ tmpPath (removePath <=< toFSFilePath)
+  flip catchAllErrors (\e -> logError $ "XFTP rcv worker error: " <> tshow e) $
+    lift $ forM_ tmpPath (removePath <=< toFSFilePath)
   withStore' c $ \db -> updateRcvFileError db rcvFileId (show err)
   notify c (fromMaybe rcvFileEntityId redirectEntityId_) (RFERR err)
 

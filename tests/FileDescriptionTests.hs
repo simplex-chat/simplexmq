@@ -8,13 +8,16 @@ module FileDescriptionTests where
 
 import Control.Exception (bracket_)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks (chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
+import Simplex.FileTransfer.Crypto (readChunks)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
@@ -31,6 +34,7 @@ fileDescriptionTests = do
     it "reject file description with YAML aliases" testRejectYAMLAliases
     it "limit chunk sizes and replicas per chunk and per file" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
+    it "read chunk files one at a time" testReadChunksLazy
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
@@ -219,6 +223,17 @@ testFileDescriptionURIExtras = do
   vfd <- either fail pure $ validateFileDescription fileDesc
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
+
+testReadChunksLazy :: HasTestEnv => IO ()
+testReadChunksLazy = do
+  let path1 = testPath "chunk1"
+      path2 = testPath "chunk2"
+      chunk1 = B.replicate 100000 'a'
+      chunk2 = B.replicate 100000 'b'
+  B.writeFile path1 chunk1
+  lazyChunks <- readChunks [path1, path2]
+  B.writeFile path2 chunk2
+  LC.sha512Hash lazyChunks `shouldBe` LC.sha512Hash (LB.fromStrict chunk1 <> LB.fromStrict chunk2)
 
 withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =
