@@ -7,13 +7,14 @@
 module FileDescriptionTests where
 
 import Control.Exception (bracket_)
+import Control.Monad (zipWithM_)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks (chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
-import Simplex.FileTransfer.Crypto (readChunks)
+import Simplex.FileTransfer.Crypto (sha512HashChunks)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
@@ -34,7 +35,7 @@ fileDescriptionTests = do
     it "reject file description with YAML aliases" testRejectYAMLAliases
     it "limit chunk sizes and replicas per chunk and per file" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
-    it "read chunk files one at a time" testReadChunksLazy
+    it "hash chunk files one at a time" testHashChunks
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
@@ -224,16 +225,14 @@ testFileDescriptionURIExtras = do
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
 
-testReadChunksLazy :: HasTestEnv => IO ()
-testReadChunksLazy = do
-  let path1 = testPath "chunk1"
-      path2 = testPath "chunk2"
-      chunk1 = B.replicate 100000 'a'
-      chunk2 = B.replicate 100000 'b'
-  B.writeFile path1 chunk1
-  lazyChunks <- readChunks [path1, path2]
-  B.writeFile path2 chunk2
-  LC.sha512Hash lazyChunks `shouldBe` LC.sha512Hash (LB.fromStrict chunk1 <> LB.fromStrict chunk2)
+testHashChunks :: HasTestEnv => IO ()
+testHashChunks = do
+  let sizes = [0, 65535, 65536, 100000, 200000]
+      paths = map (testPath . ("chunk" <>) . show) [1 .. length sizes]
+      chunks = zipWith B.replicate sizes ['a' ..]
+  zipWithM_ B.writeFile paths chunks
+  digest <- sha512HashChunks paths
+  digest `shouldBe` LC.sha512Hash (LB.fromStrict $ B.concat chunks)
 
 withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =

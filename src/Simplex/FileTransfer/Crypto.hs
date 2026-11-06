@@ -7,12 +7,14 @@
 module Simplex.FileTransfer.Crypto
   ( encryptFile,
     decryptChunks,
-    readChunks,
+    sha512HashChunks,
   ) where
 
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
+import Crypto.Hash (Context, hashFinalize, hashInit, hashUpdate)
+import Crypto.Hash.Algorithms (SHA512)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
@@ -29,7 +31,6 @@ import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Util (liftEitherWith)
-import System.IO.Unsafe (unsafeInterleaveIO)
 import UnliftIO
 import UnliftIO.Directory (removeFile)
 
@@ -116,5 +117,10 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
         A.Partial _ -> throwE $ FTCEInvalidHeader "incomplete"
         A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
 
-readChunks :: [FilePath] -> IO LB.ByteString
-readChunks = fmap LB.concat . mapM (unsafeInterleaveIO . LB.readFile)
+sha512HashChunks :: [FilePath] -> IO ByteString
+sha512HashChunks = fmap (BA.convert . hashFinalize) . foldM hashChunk (hashInit :: Context SHA512)
+  where
+    hashChunk ctx path = withFile path ReadMode $ hashHandle ctx
+    hashHandle !ctx h = do
+      s <- B.hGet h 65536
+      if B.null s then pure ctx else hashHandle (hashUpdate ctx s) h

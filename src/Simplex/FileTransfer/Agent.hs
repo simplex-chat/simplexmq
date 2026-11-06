@@ -308,7 +308,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
       chunkPaths <- getChunkPaths chunks
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwE $ XFTP "" XFTP.SIZE
-      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
+      encDigest <- liftIO $ sha512HashChunks chunkPaths
       when (FileDigest encDigest /= digest) $ throwE $ XFTP "" XFTP.DIGEST
       let destFile = CryptoFile fsSavePath cfArgs
       void $ liftError (FILE . FILE_IO . show) $ decryptChunks encSize chunkPaths key nonce $ \_ -> pure destFile
