@@ -91,6 +91,7 @@ serverTests = do
     describe "Concurrent sending and delivery" testConcurrentSendDelivery
     describe "SUB while delivery waits" testSubPendingDelivery
     describe "SUB and SEND in one block" testSubSendBlock
+    describe "switch subscription with SUB and SEND in one block" testSwitchSubSendBlock
     describe "two SUBs in one block" testSubTwiceBlock
   describe "Service message subscriptions" $ do
     testServiceDeliverSubscribe
@@ -765,6 +766,27 @@ testSubSendBlock =
       dec mId msg `shouldBe` Right "hello"
       [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient h
       Resp "4" _ OK <- signSendRecv h rKey ("4", rId, ACK mId)
+      pure ()
+
+testSwitchSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testSwitchSubSendBlock =
+  it "should deliver message sent in the same block as SUB to the new connection" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \rh1 rh2@THandle {params} -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("1", NoEntity, New rPub dhPub)
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+          TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+          TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+      Right subAuth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+      [Right (), Right ()] <- tPut rh2 [Right (subAuth, subT), Right (Nothing, sendT)]
+      Resp "" _ end <- tGet1 rh1
+      end `shouldBe` END
+      Resp "" _ (Msg mId msg) <- tGet1 rh2
+      dec mId msg `shouldBe` Right "hello"
+      [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient rh2
+      Resp "4" _ OK <- signSendRecv rh2 rKey ("4", rId, ACK mId)
       pure ()
 
 testSubTwiceBlock :: SpecWith (ASrvTransport, AStoreType)
