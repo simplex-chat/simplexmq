@@ -1234,15 +1234,15 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
       createNewConn db g cData SCMInvitation
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> Maybe CR.InitialKeys -> AM (ConnShortLink c)
-setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ =
-  withConnLock c connId "setConnShortLink" $ do
+setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ = do
+  (rq, lnkId, sl, d) <- withConnLock c connId "setConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
-    (rq, lnkId, sl, d) <- case (conn, cMode, userLinkData) of
+    case (conn, cMode, userLinkData) of
       (ContactConnection cData rq, SCMContact, d@UserContactLinkData {}) -> prepareContactLinkData cData rq d
       (RcvConnection _ rq, SCMInvitation, d@UserInvLinkData {}) -> prepareInvLinkData rq d
       _ -> throwE $ CMD PROHIBITED "setConnShortLink: invalid connection or mode"
-    addQueueLink c nm rq lnkId d
-    pure sl
+  addQueueLink c nm rq lnkId d
+  pure sl
   where
     prepareContactLinkData :: ConnData -> RcvQueue -> UserConnLinkData 'CMContact -> AM (RcvQueue, SMP.LinkId, ConnShortLink 'CMContact, QueueLinkData)
     prepareContactLinkData ConnData {} rq@RcvQueue {shortLink} (UserContactLinkData ucd) = do
@@ -1301,13 +1301,14 @@ prepareConnShortLink' c connId clientData =
       _ -> throwE $ CMD PROHIBITED "prepareConnShortLink: not contact address"
 
 deleteConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> AM ()
-deleteConnShortLink' c nm connId cMode =
-  withConnLock c connId "deleteConnShortLink" $ do
+deleteConnShortLink' c nm connId cMode = do
+  rq <- withConnLock c connId "deleteConnShortLink" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     case (conn, cMode) of
-      (ContactConnection _ rq, SCMContact) -> deleteQueueLink c nm rq
-      (RcvConnection _ rq, SCMInvitation) -> deleteQueueLink c nm rq
+      (ContactConnection _ rq, SCMContact) -> pure rq
+      (RcvConnection _ rq, SCMInvitation) -> pure rq
       _ -> throwE $ CMD PROHIBITED "deleteConnShortLink: not contact address"
+  deleteQueueLink c nm rq
 
 getConnLinkPrivKey' :: AgentClient -> ConnId -> AM (Maybe C.PrivateKeyEd25519)
 getConnLinkPrivKey' c connId = do
@@ -2303,12 +2304,14 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         DEL -> withServer' . tryAtomicCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
-          tryAtomicCommand $ withConnLockNotify c connId "ICAckDel" $ do
-            t_ <- ack srv rId srvMsgId
-            withStore' c (\db -> deleteMsg db connId msgId >> deleteCommand db cmdId)
-            pure t_
+          tryAtomicCommand $ do
+            recordAck <- ack srv rId srvMsgId
+            withConnLockNotify c connId "ICAckDel" $ do
+              t_ <- recordAck
+              withStore' c (\db -> deleteMsg db connId msgId >> deleteCommand db cmdId)
+              pure t_
         ICAck rId srvMsgId -> withServer $ \srv ->
-          tryCommand $ withConnLockNotify c connId "ICAck" $ ack srv rId srvMsgId
+          tryCommand $ ack srv rId srvMsgId >>= withConnLockNotify c connId "ICAck"
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableWithLock "ICAllowSecure" $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2342,10 +2345,11 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             _ -> throwE $ INTERNAL "ICReplyDel: incorrect connection type"
         -- ICDeleteConn is no longer used, but it can be present in old client databases
         ICDeleteConn -> withStore' c (`deleteCommand` cmdId)
-        ICDeleteRcvQueue rId -> withServer $ \srv -> tryAtomicWithLock "ICDeleteRcvQueue" $ do
+        ICDeleteRcvQueue rId -> withServer $ \srv -> tryAtomicCommand $ do
           rq <- withStore c (\db -> getDeletedRcvQueue db connId srv rId)
           maxErrs <- asks $ deleteErrorCount . config
-          tryAllErrors (deleteQueue c NRMBackground rq) >>= \case
+          deleted <- tryAllErrors (deleteQueue c NRMBackground rq)
+          withConnLock c connId "ICDeleteRcvQueue" $ case deleted of
             Left e | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> do
               withStore' c (`incRcvDeleteErrors` rq)
               throwE e
@@ -2421,7 +2425,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
           ack srv rId srvMsgId =
             withStore' c (\db -> getRcvQueue db connId srv rId) >>= \case
               Right rq -> ackQueueMessage c rq srvMsgId
-              Left SEConnNotFound -> pure Nothing
+              Left SEConnNotFound -> pure (pure Nothing)
               Left e -> throwE $ storeError e
           secure :: RcvQueue -> SMP.SndPublicAuthKey -> AM ()
           secure rq@RcvQueue {server} senderKey = do
@@ -2831,29 +2835,34 @@ withConnLockNotify c connId name action = do
   forM_ t_ $ atomically . writeTBQueue (subQ c)
 
 ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c cmdId_ connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection {} -> do
-      t_ <- ack
-      sendRcpt conn
+ackMessage' c cmdId_ connId msgId rcptInfo_ = do
+  rqMsg <- withConnLock c connId "ackMessage" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    case conn of
+      DuplexConnection {} -> Just <$> markUserAck
+      RcvConnection {} -> Just <$> markUserAck
+      SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
+      ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
+      NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
+  forM_ rqMsg $ \(rq, srvMsgId) -> do
+    recordAck <- ackQueueMessage c rq srvMsgId
+    t_ <- withConnLock c connId "ackMessage" $ do
+      t_ <- recordAck
+      SomeConn _ conn <- withStore c (`getConn` connId)
+      forM_ (duplexConn conn) sendRcpt
       del
       pure t_
-    RcvConnection {} -> do
-      t_ <- ack
-      del
-      pure t_
-    SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
-    ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
-    NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
+    forM_ t_ $ atomically . writeTBQueue (subQ c)
   where
-    ack :: AM (Maybe ATransmission)
-    ack = do
-      -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
-      (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
-      ackQueueMessage c rq srvMsgId
+    -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
+    markUserAck :: AM (RcvQueue, SMP.MsgId)
+    markUserAck = withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
     del :: AM ()
     del = withStore' c $ \db -> deleteMsg db connId (InternalId msgId) >> mapM_ (deleteCommand db) cmdId_
+    duplexConn :: Connection cType -> Maybe (Connection 'CDuplex)
+    duplexConn = \case
+      conn@DuplexConnection {} -> Just conn
+      _ -> Nothing
     sendRcpt :: Connection 'CDuplex -> AM ()
     sendRcpt (DuplexConnection cData _ sqs) = do
       msg@RcvMsg {msgType, msgReceipt} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
@@ -2957,12 +2966,12 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
       | otherwise -> throwE $ CMD PROHIBITED "synchronizeRatchet: not allowed"
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
-ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (Maybe ATransmission)
+ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (AM (Maybe ATransmission))
 ackQueueMessage c rq@RcvQueue {userId, connId, server, rcvSwchStatus} srvMsgId = do
   incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
-    Right drained -> sendMsgNtf ackMsgs $ drained && rcvSwchStatus == Just RSReceivedQEND
-    Left (SMP _ SMP.NO_MSG) -> sendMsgNtf ackNoMsgErrs False
+    Right drained -> pure $ sendMsgNtf ackMsgs $ drained && rcvSwchStatus == Just RSReceivedQEND
+    Left (SMP _ SMP.NO_MSG) -> pure $ sendMsgNtf ackNoMsgErrs False
     Left e -> do
       unless (temporaryOrHostError e) $ incSMPServerStat c userId server ackOtherErrs
       throwE e
@@ -2982,14 +2991,16 @@ deleteRcvQueueAsync c rq@RcvQueue {connId, server, rcvId} = do
 
 -- | Suspend SMP agent connection (OFF command) in Reader monad
 suspendConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ()
-suspendConnection' c nm connId = withConnLock c connId "suspendConnection" $ do
-  SomeConn _ conn <- withStore c (`getConn` connId)
-  case conn of
-    DuplexConnection _ rqs _ -> mapM_ (suspendQueue c nm) rqs
-    RcvConnection _ rq -> suspendQueue c nm rq
-    ContactConnection _ rq -> suspendQueue c nm rq
-    SndConnection _ _ -> throwE $ CONN SIMPLEX "suspendConnection"
-    NewConnection _ -> throwE $ CMD PROHIBITED "suspendConnection"
+suspendConnection' c nm connId = do
+  rqs <- withConnLock c connId "suspendConnection" $ do
+    SomeConn _ conn <- withStore c (`getConn` connId)
+    case conn of
+      DuplexConnection _ rqs _ -> pure $ L.toList rqs
+      RcvConnection _ rq -> pure [rq]
+      ContactConnection _ rq -> pure [rq]
+      SndConnection _ _ -> throwE $ CONN SIMPLEX "suspendConnection"
+      NewConnection _ -> throwE $ CMD PROHIBITED "suspendConnection"
+  mapM_ (suspendQueue c nm) rqs
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
 -- unlike deleteConnectionAsync, this function does not mark connection as deleted in case of deletion failure
