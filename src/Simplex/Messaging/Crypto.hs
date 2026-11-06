@@ -1009,7 +1009,11 @@ newtype KeyHash = KeyHash {unKeyHash :: ByteString} deriving (Eq, Ord, Show)
 
 instance Encoding KeyHash where
   smpEncode = smpEncode . unKeyHash
-  smpP = KeyHash <$> smpP
+  smpP = nonEmptyKeyHash <$?> smpP
+    where
+      nonEmptyKeyHash s
+        | B.null s = Left "empty key hash"
+        | otherwise = Right (KeyHash s)
 
 instance StrEncoding KeyHash where
   strEncode = strEncode . unKeyHash
