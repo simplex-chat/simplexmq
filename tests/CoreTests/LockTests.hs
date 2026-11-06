@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module CoreTests.LockTests where
 
 import Control.Concurrent (threadDelay)
