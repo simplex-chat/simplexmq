@@ -47,7 +47,10 @@ withGetLock getLock key name a =
     (const a)
 
 withGetLocks :: MonadUnliftIO m => (k -> IO Lock) -> Set k -> Text -> m a -> m a
-withGetLocks getLock keys name a = foldr (\k -> withGetLock getLock k name) a (S.toList keys)
+withGetLocks getLock keys name a = go (S.toList keys)
+  where
+    go [] = a
+    go (k : ks) = withGetLock getLock k name (go ks)
 
 getPutLock :: (k -> IO Lock) -> k -> Text -> IO Lock
 getPutLock getLock key name = getLock key >>= \l -> atomically (putTMVar l name) $> l
