@@ -29,6 +29,8 @@ fileDescriptionTests = do
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
     it "reject file description with YAML aliases" testRejectYAMLAliases
+    it "reject file description with a long number" testRejectLongNumber
+    it "accept file description with a number at the length limit" testAcceptMaxNumber
     it "limit chunk sizes and replicas per chunk and per file" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
     describe "file description URIs" $ do
@@ -169,6 +171,20 @@ testRejectYAMLAliases = do
   let (header, groups) = B.breakSubstring "- chunks:" yaml
       aliased = header <> "- &g\n  " <> B.drop 2 groups <> "- *g\n" <> sizeLine
   (strDecode aliased :: Either String (FileDescription 'FRecipient)) `shouldBe` Left "YAML aliases are not allowed"
+
+testRejectLongNumber :: IO ()
+testRejectLongNumber = do
+  fd <- B.readFile fileDescPath
+  let withLongNumber = fd <> "x: " <> B.replicate 65 '7' <> "\n"
+  (strDecode withLongNumber :: Either String (FileDescription 'FRecipient))
+    `shouldBe` Left "number too long in file description"
+
+testAcceptMaxNumber :: IO ()
+testAcceptMaxNumber = do
+  fd <- B.readFile fileDescPath
+  let withMaxNumber = fd <> "x: " <> B.replicate 64 '7' <> "\n"
+  (strDecode withMaxNumber :: Either String (FileDescription 'FRecipient))
+    `shouldSatisfy` isRight
 
 testFileDescriptionLimits :: IO ()
 testFileDescriptionLimits = do
