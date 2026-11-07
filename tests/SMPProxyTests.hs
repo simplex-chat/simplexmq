@@ -598,6 +598,8 @@ testClosedClientCommandsFail =
     atomically $ takeTMVar closed
     Just rs <- timeout 1000000 $ sendProtocolCommands c NRMBackground $ L.fromList $ replicate 300 (NoEntity, Nothing, SMP.Cmd SMP.SIdleClient SMP.PING)
     forM_ rs $ \(Response _ r) -> r `shouldBe` Left (PCENetworkError SMP.NEFailedError)
+    pClientSentCommandsCount c `shouldReturn` 0
+    atomically (lengthTBQueue $ pClientSndQ c) `shouldReturn` 0
 
 testLateResponseCommandReleased :: HasTestEnv => IO ()
 testLateResponseCommandReleased =
