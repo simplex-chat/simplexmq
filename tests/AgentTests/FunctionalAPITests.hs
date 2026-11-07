@@ -4413,7 +4413,8 @@ testServerInformation =
       complaintsContacts = Nothing,
       hosting = Nothing,
       hostingType = Nothing,
-      serverCountry = Nothing
+      serverCountry = Nothing,
+      clientSupport = Nothing
     }
 
 testConnectionVerifyCodes :: (HasCallStack, HasTestEnv) => IO ()

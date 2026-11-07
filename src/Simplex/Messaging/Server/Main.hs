@@ -56,6 +56,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
+import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (ConnectionLink (..), ConnectionMode (..), connReqUriP')
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
@@ -690,9 +691,18 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
           adminContacts = iniContacts "admin_simplex" "admin_email" "admin_pgp" "admin_pgp_fingerprint",
           complaintsContacts = iniContacts "complaints_simplex" "complaints_email" "complaints_pgp" "complaints_pgp_fingerprint",
           hosting = iniEntity "hosting" "hosting_country",
-          hostingType = either error id <$!> strDecodeIni "INFORMATION" "hosting_type" ini
+          hostingType = either error id <$!> strDecodeIni "INFORMATION" "hosting_type" ini,
+          clientSupport = iniClientSupport
         }
     infoValue name = eitherToMaybe $ lookupValue "INFORMATION" name ini
+    iniClientSupport =
+      let minClientVersion = MinClientVersion <$> (either error id <$!> strDecodeIni "INFORMATION" "client_min_version" ini) <*> (dateValue <$!> infoValue "client_min_version_date")
+          stableRelease = infoValue "client_stable_release"
+          betaRelease = infoValue "client_beta_release"
+       in case (minClientVersion, stableRelease, betaRelease) of
+            (Nothing, Nothing, Nothing) -> Nothing
+            _ -> Just ClientSupport {minClientVersion, stableRelease, betaRelease}
+    dateValue = fromMaybe (error "Use YYYY-MM-DD for client_min_version_date") . iso8601ParseM . T.unpack
     iniEntity nameField countryField =
       (\name -> Entity {name, country = countryValue countryField})
         <$!> infoValue nameField
@@ -947,7 +957,8 @@ cliCommandP cfgPath logPath iniFile =
                   complaintsContacts = Nothing,
                   hosting = fst hosting_,
                   hostingType,
-                  serverCountry
+                  serverCountry,
+                  clientSupport = Nothing
                 },
             operatorCountry = snd operator_,
             hostingCountry = snd hosting_,
