@@ -143,7 +143,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, (<$$>))
+import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, stateTVar', (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -715,7 +715,7 @@ tPutBlock :: Transport c => THandle v c p -> ByteString -> IO (Either TransportE
 tPutBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlock}} block = do
   block_ <- case encryptBlock of
     Just TSbChainKeys {sndKey} -> do
-      (sk, nonce) <- atomically $ stateTVar sndKey C.sbcHkdf
+      (sk, nonce) <- atomically $ stateTVar' sndKey C.sbcHkdf
       pure $ C.sbEncrypt sk nonce block (blockSize - 16)
     Nothing -> pure $ C.pad block blockSize
   bimapM (const $ pure TELargeMsg) (cPut c) block_
@@ -729,7 +729,7 @@ tGetBlock THandle {connection = c, params = THandleParams {blockSize, encryptBlo
       first (const TELargeMsg) <$>
         case encryptBlock of
           Just TSbChainKeys {rcvKey} -> do
-            (sk, nonce) <- atomically $ stateTVar rcvKey C.sbcHkdf
+            (sk, nonce) <- atomically $ stateTVar' rcvKey C.sbcHkdf
             pure $ C.sbDecrypt sk nonce msg
           Nothing -> pure $ C.unPad msg
     else ioe_EOF

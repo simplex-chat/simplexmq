@@ -51,7 +51,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (catchAll_, labelMyThread, tshow, unlessM)
+import Simplex.Messaging.Util (catchAll_, labelMyThread, stateTVar', tshow, unlessM)
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -175,7 +175,7 @@ runTCPServerSocket :: SocketState -> TMVar Bool -> IO Socket -> (Socket -> IO ()
 runTCPServerSocket (accepted, gracefullyClosed, clients) started getSocket server =
   E.bracket getSocket (closeServer started clients) $ \sock ->
     forever . E.bracketOnError (safeAccept sock) (close . fst) $ \(conn, _peer) -> do
-      cId <- atomically $ stateTVar accepted $ \cId -> let cId' = cId + 1 in cId' `seq` (cId', cId')
+      cId <- atomically $ stateTVar' accepted $ \cId -> let cId' = cId + 1 in (cId', cId')
       closed <- newTVarIO False
       let closeConn _ = do
             atomically $ writeTVar closed True >> modifyTVar' clients (IM.delete cId)
