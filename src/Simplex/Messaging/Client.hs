@@ -1384,10 +1384,11 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            nonBlockingWriteTBQueue sndQ (Just r, s)
-            response <$> getResponse c nm tOut r
+            sent <- atomically $ tryWriteTBQueue sndQ (Just r, s)
+            response <$> if sent then getResp else withAsync (atomically $ writeTBQueue sndQ (Just r, s)) (const getResp)
         where
           s = tEncodeBatch1 serviceAuth t
+          getResp = getResponse c nm tOut r
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
