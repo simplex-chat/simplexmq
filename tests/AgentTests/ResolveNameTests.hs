@@ -49,15 +49,15 @@ withDirectResolver (st, body) k =
     withSmpServerConfigOn (transport @TLS) (withNames port memCfg) testPort $ \_ ->
       withAgent 1 agentCfg (oneSrv (nameSrvCfg testSMPServer)) testDB k
 
-withProxyAndResolver :: HasTestEnv => (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
-withProxyAndResolver (st, body) k =
+withProxyAndResolver :: HasTestEnv => SMPProxyMode -> (Status, LB.ByteString) -> (AgentClient -> IO a) -> IO a
+withProxyAndResolver proxyMode (st, body) k =
   NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
     withSmpServerConfigOn (transport @TLS) memProxyCfg testPort $ \_ ->
       withSmpServerConfigOn (transport @TLS) (withNames port memCfg2) testPort2 $ \_ ->
         withAgent 1 agentCfg proxyServers testDB k
   where
     -- only testSMPServer2 (the resolver) has the names role; testSMPServer is the proxy
-    proxyServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = [(1, [proxySrvCfg testSMPServer, nameSrvCfg testSMPServer2])]}
+    proxyServers = (initAgentServersProxy_ proxyMode SPFProhibit) {smp = [(1, [proxySrvCfg testSMPServer, nameSrvCfg testSMPServer2])]}
 
 withNoResolver :: HasTestEnv => (AgentClient -> IO a) -> IO a
 withNoResolver k =
@@ -72,7 +72,10 @@ resolveNameTests = do
   describe "direct path (SPMNever)" $
     it "a resolver error propagates as SMP host (NAME RESOLVER)" testDirectResolverErr
   describe "proxy path (SPMAlways)" $
-    it "a resolver error propagates via proxy as SMP <proxyHost> (NAME RESOLVER)" testProxyResolverErr
+    it "a resolver error propagates via proxy as SMP <proxyHost> (NAME RESOLVER)" $ testProxyResolverErr SPMAlways
+  describe "proxy path to known names server" $ do
+    it "should use proxy with SPMUnknown" $ testProxyResolverErr SPMUnknown
+    it "should use proxy with SPMUnprotected" $ testProxyResolverErr SPMUnprotected
   describe "TLDTesting path" $
     it "NAME RESOLVER for TLDTesting too" testTestingTldResolverErr
   describe "TLDWeb path" $
@@ -106,9 +109,9 @@ testDirectResolverErr =
       Left (SMP _ (SMP.NAME (SMP.RESOLVER _))) -> pure ()
       _ -> expectationFailure $ "expected Left (SMP _ (NAME (RESOLVER _))), got: " <> show r
 
-testProxyResolverErr :: (HasCallStack, HasTestEnv) => IO ()
-testProxyResolverErr =
-  withProxyAndResolver (status404, "{}") $ \c -> do
+testProxyResolverErr :: (HasCallStack, HasTestEnv) => SMPProxyMode -> IO ()
+testProxyResolverErr proxyMode =
+  withProxyAndResolver proxyMode (status404, "{}") $ \c -> do
     r <- runExceptT $ resolveSimplexName c NRMInteractive 1 (SimplexDomain TLDSimplex "alice" [])
     case r of
       Left (SMP host (SMP.NAME (SMP.RESOLVER _))) | testPort `isInfixOf` host -> pure ()

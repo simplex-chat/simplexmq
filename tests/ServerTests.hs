@@ -31,9 +31,9 @@ import qualified Data.ByteString.Char8 as B
 import Data.Foldable (foldrM)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isPrefixOf)
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, isJust)
 import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
@@ -49,6 +49,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
+import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..), QueueInfo (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
@@ -87,6 +88,7 @@ serverTests = do
     describe "GET & SUB commands" testGetSubCommands
     describe "Exceeding queue quota" testExceedQueueQuota
     describe "Concurrent sending and delivery" testConcurrentSendDelivery
+    describe "SUB while delivery waits" testSubPendingDelivery
   describe "Service message subscriptions" $ do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
@@ -680,6 +682,67 @@ testConcurrentSendDelivery =
         isMsg1or2 mId2 msg2
         Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, ACK mId2)
         pure ()
+
+testSubPendingDelivery :: SpecWith (ASrvTransport, AStoreType)
+testSubPendingDelivery =
+  it "should deliver message after SUB while delivery waits for full send queue" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \rh@THandle {params} sh -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      let newQueue h = do
+            Resp "" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("", NoEntity, New rPub dhPub)
+            pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv)
+      (rId, sId, dec) <- newQueue rh
+      fillers <- replicateM 4 $ (\(fId, fsId, _) -> (fId, fsId)) <$> newQueue rh
+      (_, probeSId, _) <- newQueue sh
+      C.CbNonce corrId <- atomically $ C.randomCbNonce g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let linkData = (EncDataBytes "", EncDataBytes $ B.replicate 13000 '-')
+          qrd = QRContact $ Just (lnkId, (EntityId $ B.take 24 $ C.sha3_384 corrId, linkData))
+      Resp _ NoEntity (IDS _) <- signSendRecv sh rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just qrd) Nothing))
+      let TransmissionForAuth {tToSend = lget} = encodeTransmissionForAuth params (CorrId "", lnkId, LGET)
+          TransmissionForAuth {tToSend = probe} = encodeTransmissionForAuth params (CorrId "p", probeSId, _SEND "probe")
+      void $ tPut rh $ Right (Nothing, lget) :| replicate 1019 (Right (Nothing, lget))
+      Right () <- tPut1 rh (Nothing, probe)
+      Just (Resp "" _ (Msg _ _)) <- 5000000 `timeout` tGet1 sh
+      forM_ fillers $ \(_, fsId) -> do
+        Resp "f" _ OK <- sendRecv sh ("", "f", fsId, _SEND "filler")
+        pure ()
+      Resp "1" _ OK <- sendRecv sh ("", "1", sId, _SEND "hello")
+      signSend_ rh rKey Nothing ("2", rId, SUB)
+      threadDelay 500000
+      let drain st@(n, _, mId_) = case mId_ of
+            Just mId | n == length fillers -> pure mId
+            _ -> 5000000 `timeout` tGetClient rh >>= maybe (error "drain timeout") (foldM received st) >>= drain
+          received st@(n, subscribed, mId_) = \case
+            Resp "" _ (LNK _ _) -> pure st
+            Resp "p" _ OK -> pure st
+            Resp "2" _ (SOK Nothing) -> pure (n, True, mId_)
+            Resp "" rId' (Msg mId msg)
+              | rId' == rId -> do
+                  dec mId msg `shouldBe` Right "hello"
+                  pure (n, subscribed, if subscribed then Just mId else mId_)
+              | rId' `elem` map fst fillers -> pure (n + 1, subscribed, mId_)
+            r -> error $ "unexpected event: " <> show r
+      mId <- drain (0 :: Int, False, Nothing)
+      Resp "3" _ OK <- signSendRecv rh rKey ("3", rId, ACK mId)
+      Resp "4" _ OK <- sendRecv sh ("", "4", sId, _SEND "hello 2")
+      signSend_ rh rKey Nothing ("5", rId, QUE)
+      void $
+        receiveInAnyOrder
+          rh
+          [ \case
+              Resp "" _ (Msg mId2 msg2) -> do
+                dec mId2 msg2 `shouldBe` Right "hello 2"
+                pure $ Just ()
+              _ -> pure Nothing,
+            \case
+              Resp "5" _ (INFO QueueInfo {qiSub, qiSize}) -> do
+                (qSubThread <$> qiSub, isJust $ qDelivered =<< qiSub, qiSize) `shouldBe` (Just QNoSub, True, 1)
+                pure $ Just ()
+              _ -> pure Nothing
+          ]
 
 testServiceDeliverSubscribe :: SpecWith (ASrvTransport, AStoreType)
 testServiceDeliverSubscribe =

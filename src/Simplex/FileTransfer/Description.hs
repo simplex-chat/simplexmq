@@ -56,6 +56,7 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
+import Data.Char (isHexDigit)
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -219,19 +220,30 @@ instance StrEncoding AFileDescription where
   strEncode (AFD fd) = strEncode fd
   strDecode s
     | B.elem '*' s = Left "YAML aliases are not allowed"
+    | hasLongNumber s = Left "number too long in file description"
     | otherwise = decodeFileDescription =<< first show (Y.decodeEither' s)
+    where
+      hasLongNumber = go (0 :: Int)
+        where
+          go n bs = case B.uncons bs of
+            Just (c, bs')
+              | isHexDigit c -> n >= 64 || go (n + 1) bs'
+              | otherwise -> go 0 bs'
+            Nothing -> False
   strP = strDecode <$?> A.takeByteString
 
 validateFileDescription :: FileDescription p -> Either String (ValidFileDescription p)
 validateFileDescription fd@FileDescription {size, chunks}
   | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
   | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
+  | any incorrectChunkSize chunks = Left "incorrect chunk size"
   | any (> 16) replicaCounts = Left "too many chunk replicas"
   | sum replicaCounts > 131072 = Left "too many file replicas"
   | otherwise = Right $ ValidFD fd
   where
     chunkNos = map (\FileChunk {chunkNo} -> chunkNo) chunks
     chunksSize = foldl' (\(s :: Int64) FileChunk {chunkSize} -> s + fromIntegral (unFileSize chunkSize)) 0
+    incorrectChunkSize FileChunk {chunkSize} = unFileSize chunkSize `notElem` serverChunkSizes
     replicaCounts = map (\FileChunk {replicas} -> length replicas) chunks
 
 sharedDescriptionHash :: FileDescription p -> ByteString

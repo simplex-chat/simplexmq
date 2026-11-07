@@ -9,12 +9,14 @@ module CoreTests.CryptoTests (cryptoTests) where
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
 import Control.Exception (bracket, evaluate)
+import Control.Monad (forM_)
 import Control.Monad.Except
 import Crypto.Error (throwCryptoError)
 import Crypto.Number.Serialize.LE (i2ospOf_)
 import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.Aeson as J
+import Data.Bits (xor)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isLeft, isRight)
@@ -451,9 +453,11 @@ testBBSTamperedProof = do
   Right sig <- bbsSign sk bbsHeader bbsMessages
   let ph = BBSPresHeader "test-nonce-2"
   Right (BBSProof proofBs) <- bbsProofGen pk sig bbsHeader ph bbsDisclosedIdxs bbsMessages
-  let tampered = BBSProof $ B.take 10 proofBs <> "\xff" <> B.drop 11 proofBs
-  result <- bbsProofVerify pk tampered bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
-  result `shouldBe` False
+  forM_ [10, 58, 106, 175, 207, 239, 271, 303] $ \i -> do
+    let flipped = B.singleton $ toEnum $ fromEnum (B.index proofBs i) `xor` 1
+        tampered = BBSProof $ B.take i proofBs <> flipped <> B.drop (i + 1) proofBs
+    result <- bbsProofVerify pk tampered bbsHeader ph bbsDisclosedIdxs 3 bbsDisclosedMsgs
+    result `shouldBe` False
 
 testBBSWrongMessage :: IO ()
 testBBSWrongMessage = do
