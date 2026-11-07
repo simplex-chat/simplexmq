@@ -432,6 +432,7 @@ data Client s = Client
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    delayedQ :: TBQueue (Int64, (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg])),
     procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
@@ -505,6 +506,7 @@ newClient clientId qSize clientTHParams createdAt = do
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
+  delayedQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
@@ -523,6 +525,7 @@ newClient clientId qSize clientTHParams createdAt = do
         rcvQ,
         sndQ,
         msgQ,
+        delayedQ,
         procThreads,
         endThreads,
         endThreadSeq,
