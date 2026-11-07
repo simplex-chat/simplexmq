@@ -156,6 +156,10 @@ smpProxyTests = do
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
+        it "sends directly to preset relay below version 23" $ twoServersPrevRelay $
+          agentViaProxyPrevRelay [testSMPServer2] Nothing
+        it "sends via proxy to other relay below version 23" $ twoServersPrevRelay $
+          agentViaProxyPrevRelay [] (Just testSMPServer)
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
@@ -447,6 +451,17 @@ agentViaProxyRetryNoSession = do
   where
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
+
+agentViaProxyPrevRelay :: HasTestEnv => [SMPServer] -> Maybe SMPServer -> IO ()
+agentViaProxyPrevRelay presetServers proxySrv_ =
+  withAgent 1 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB $ \alice ->
+    withAgent 2 agentCfg bobServers testDB2 $ \bob -> runRight_ $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      2 <- sendMessage bob aliceId noMsgFlags "hello"
+      get bob ##> ("", aliceId, A.SENT 2 proxySrv_)
+      get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+  where
+    bobServers = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers [testSMPServer], presetServers}
 
 testNoProxy :: HasTestEnv => AStoreType -> IO ()
 testNoProxy msType = do
