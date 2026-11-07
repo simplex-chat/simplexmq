@@ -73,6 +73,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultNameResolverConcurrency,
     defaultForwardWorkers,
     defaultMaxClientCmdWait,
+    defaultMaxFwdCorrIds,
     defaultAuthErrorDelayMs,
     readWriteQueueStore,
     noPostgresExitStr,
@@ -88,6 +89,7 @@ import Control.Monad
 import Control.Monad.Reader (ReaderT)
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
+import Data.ByteString.Short (ShortByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -98,6 +100,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
+import Data.Set (Set)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
@@ -208,6 +211,7 @@ data ServerConfig s = ServerConfig
     serverResolverConcurrency :: Int,
     serverForwardWorkers :: Int,
     maxClientCmdWait :: Int,
+    maxFwdCorrIds :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
     -- | server public information
@@ -267,6 +271,9 @@ defaultForwardWorkers = 8
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds
+
+defaultMaxFwdCorrIds :: Int
+defaultMaxFwdCorrIds = 65536
 
 defaultAuthErrorDelayMs :: Int64
 defaultAuthErrorDelayMs = 50
@@ -457,6 +464,7 @@ data Client s = Client
     fwdWorkers :: TVar (IntMap (TBQueue (M s ()))),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
+    fwdCorrIds :: TVar (Set ShortByteString),
     clientTHParams :: THandleParams SMPVersion 'TServer,
     connected :: TVar Bool,
     createdAt :: SystemTime,
@@ -531,6 +539,7 @@ newClient clientId qSize clientTHParams createdAt closeTransport = do
   fwdWorkers <- newTVarIO IM.empty
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
+  fwdCorrIds <- newTVarIO mempty
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
   sndActiveAt <- newTVarIO createdAt
@@ -550,6 +559,7 @@ newClient clientId qSize clientTHParams createdAt closeTransport = do
         fwdWorkers,
         endThreads,
         endThreadSeq,
+        fwdCorrIds,
         clientTHParams,
         connected,
         createdAt,

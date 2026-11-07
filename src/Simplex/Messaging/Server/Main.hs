@@ -539,6 +539,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               serverResolverConcurrency = readIniDefault defaultNameResolverConcurrency "NAMES" "resolver_concurrency" ini,
               serverForwardWorkers = readIniDefault defaultForwardWorkers "PROXY" "forward_workers" ini,
               maxClientCmdWait = defaultMaxClientCmdWait,
+              maxFwdCorrIds = defaultMaxFwdCorrIds,
               namesConfig = readNamesConfig ini,
               information = serverPublicInfo ini,
               startOptions
