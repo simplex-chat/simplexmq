@@ -158,7 +158,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -483,6 +483,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport 'TClient),
     -- | network configuration
     networkConfig :: NetworkConfig,
+    sentCommandsTTL :: NominalDiffTime,
     clientALPN :: Maybe [ALPN],
     serviceCredentials :: Maybe ServiceCredentials,
     -- | client-server protocol version range
@@ -503,6 +504,7 @@ defaultClientConfig clientALPN useSNI serverVRange =
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
+      sentCommandsTTL = 15 * 60,
       clientALPN,
       serviceCredentials = Nothing,
       serverVRange,
@@ -582,7 +584,7 @@ type SMPTransportSession = TransportSession BrokerMsg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, proxiedRelayVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, sentCommandsTTL, clientALPN, serviceCredentials, serverVRange, proxiedRelayVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -690,7 +692,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         loop delay = do
           threadDelay' delay
           ts <- getCurrentTime
-          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> diffUTCTime ts createdAt < recoverWindow
+          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> diffUTCTime ts createdAt < sentCommandsTTL
           diff <- diffUTCTime ts <$> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
