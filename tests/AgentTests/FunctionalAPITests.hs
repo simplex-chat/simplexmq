@@ -4936,7 +4936,8 @@ testServerInformation =
       complaintsContacts = Nothing,
       hosting = Nothing,
       hostingType = Nothing,
-      serverCountry = Nothing
+      serverCountry = Nothing,
+      clientSupport = Nothing
     }
 
 testClientSupport :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
