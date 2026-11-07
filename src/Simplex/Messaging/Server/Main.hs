@@ -524,6 +524,8 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                               }
                         },
                     ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini,
+                    maxConnectingClients = Just $ readIniDefault defaultProxyConnectConcurrency "PROXY" "connect_concurrency" ini,
+                    sessionPerConnectedServer = True,
                     msgQSize = Nothing, -- to prevent accumulation of late responses, and deadlocks in SMP proxy
                     persistErrorInterval = 30 -- seconds
                   },

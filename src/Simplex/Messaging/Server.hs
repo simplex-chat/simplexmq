@@ -95,7 +95,7 @@ import Network.Socket (ServiceName, Socket, socketToHandle)
 import qualified Network.TLS as TLS
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Lock
-import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, clientHandlers, forwardSMPTransmission, netTimeoutInt, smpProxyError, temporaryClientError)
+import Simplex.Messaging.Client (NetworkConfig (..), NetworkRequestMode (..), ProtocolClient (thParams), ProtocolClientConfig (..), ProtocolClientError (..), SMPClient, SMPClientError, chooseTransportHost, clientHandlers, forwardSMPTransmission, netTimeoutInt, smpProxyError, temporaryClientError)
 import Simplex.Messaging.Client.Agent (OwnServer, SMPClientAgent (..), SMPClientAgentConfig (..), SMPClientAgentEvent (..), closeSMPClientAgent, getSMPServerClient'', isOwnServer, lookupSMPServerClient, getConnectedSMPServerClient)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -1456,12 +1456,17 @@ client
             pure $ allowSMPProxy && maybe True ((== auth) . Just) newQueueBasicAuth
           getRelay = do
             ProxyAgent {smpAgent = a} <- asks proxyAgent
-            liftIO (getConnectedSMPServerClient a srv) >>= \case
-              Just r -> Just <$> proxyServerResponse a r
-              Nothing ->
-                forkProxiedCmd $
-                  liftIO (runExceptT (getSMPServerClient'' a srv) `E.catches` clientHandlers)
-                    >>= proxyServerResponse a
+            let ProtocolClientConfig {networkConfig, defaultTransport} = smpCfg $ agentCfg a
+                relaySrv h = srv {host = [h], port = if null (port srv) then fst defaultTransport else port srv}
+            case relaySrv <$> chooseTransportHost networkConfig (host srv) of
+              Left e -> Just <$> proxyServerResponse a (Left e)
+              Right srv' ->
+                liftIO (getConnectedSMPServerClient a srv') >>= \case
+                  Just r -> Just <$> proxyServerResponse a r
+                  Nothing ->
+                    forkProxiedCmd $
+                      liftIO (runExceptT (getSMPServerClient'' a srv') `E.catches` clientHandlers)
+                        >>= proxyServerResponse a
           proxyServerResponse :: SMPClientAgent 'Sender -> Either SMPClientError (OwnServer, SMPClient) -> M s BrokerMsg
           proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats

@@ -339,7 +339,12 @@ proxyCfgMS msType =
     let smpAgentCfg' = smpAgentCfg cfg'
      in cfg'
           { allowSMPProxy = True,
-            smpAgentCfg = smpAgentCfg' {smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange}}
+            smpAgentCfg =
+              smpAgentCfg'
+                { smpCfg = (smpCfg smpAgentCfg') {agreeSecret = True, proxyServer = True, serverVRange = supportedProxyClientSMPRelayVRange},
+                  maxConnectingClients = Just defaultProxyConnectConcurrency,
+                  sessionPerConnectedServer = True
+                }
           }
 
 proxyCfgS2 :: HasTestEnv => AServerConfig
