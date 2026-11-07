@@ -34,6 +34,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Client.Agent as CA
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR

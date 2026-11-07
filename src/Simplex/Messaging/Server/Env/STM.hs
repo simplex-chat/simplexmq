@@ -69,6 +69,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultNtfExpiration,
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
+    defaultProxyConnectConcurrency,
     defaultNameResolverConcurrency,
     defaultForwardWorkers,
     defaultMaxClientCmdWait,
@@ -254,6 +255,9 @@ defaultInactiveClientExpiration =
 
 defaultProxyClientConcurrency :: Int
 defaultProxyClientConcurrency = 500
+
+defaultProxyConnectConcurrency :: Int
+defaultProxyConnectConcurrency = 1000
 
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 5000
