@@ -458,7 +458,7 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
-  workerId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
+  workerId <- stateTVar' (workerSeq c) $ \next -> (next, next + 1)
   doWork <- newTMVar () -- new worker is created  with "some work to do" (indicated by () in TMVar)
   action <- newTMVar Nothing
   restarts <- newTVar $ RestartCount 0 0
@@ -1068,7 +1068,7 @@ reconnectSMPServer c userId srv = do
 
 closeUserXFTPClients :: AgentClient -> UserId -> IO ()
 closeUserXFTPClients c userId = do
-  vs <- atomically $ stateTVar (xftpClients c) $ \cs ->
+  vs <- atomically $ stateTVar' (xftpClients c) $ \cs ->
     let (userCs, cs') = M.partitionWithKey (\(userId', _, _) _ -> userId == userId') cs
      in (M.elems userCs, cs')
   mapM_ (forkIO . closeClient_ c) vs
@@ -2390,7 +2390,7 @@ suspendSendingAndDatabase c =
 
 suspendOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
 suspendOperation c op endedAction = do
-  n <- stateTVar (agentOpSel op c) $ \s -> (opsInProgress s, s {opSuspended = True})
+  n <- stateTVar' (agentOpSel op c) $ \s -> (opsInProgress s, s {opSuspended = True})
   -- unsafeIOToSTM $ putStrLn $ "suspendOperation_ " <> show op <> " " <> show n
   when (n == 0) $ whenSuspending c endedAction
 
@@ -2402,7 +2402,7 @@ notifySuspended c = do
 
 endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
 endOperation c op endedAction = do
-  (suspended, n) <- stateTVar (agentOpSel op c) $ \s ->
+  (suspended, n) <- stateTVar' (agentOpSel op c) $ \s ->
     let n = max 0 (opsInProgress s - 1)
      in ((opSuspended s, n), s {opsInProgress = n})
   -- unsafeIOToSTM $ putStrLn $ "endOperation: " <> show op <> " " <> show suspended <> " " <> show n
@@ -2414,12 +2414,12 @@ whenSuspending c = whenM ((== ASSuspending) <$> readTVar (agentState c))
 
 addSndFileInProgress :: AgentClient -> SndFileId -> STM ()
 addSndFileInProgress c fId = do
-  added <- stateTVar (sndFilesInProgress c) $ \fs -> (S.notMember fId fs, S.insert fId fs)
+  added <- stateTVar' (sndFilesInProgress c) $ \fs -> (S.notMember fId fs, S.insert fId fs)
   when added $ modifyTVar' (sndFilesOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
 
 removeSndFileInProgress :: AgentClient -> SndFileId -> STM ()
 removeSndFileInProgress c fId = do
-  removed <- stateTVar (sndFilesInProgress c) $ \fs -> (S.member fId fs, S.delete fId fs)
+  removed <- stateTVar' (sndFilesInProgress c) $ \fs -> (S.member fId fs, S.delete fId fs)
   when removed $ endAgentOperation c AOSndFiles
 
 removeDeletedOrFailedSndFilesInProgress :: AgentClient -> IO ()
@@ -2551,7 +2551,7 @@ pickServer = \case
   (_, srv) :| [] -> pure srv
   servers -> do
     gen <- asks randomServer
-    atomically $ snd . (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+    atomically $ snd . (servers L.!!) <$> stateTVar' gen (randomR (0, L.length servers - 1))
 
 getNextServer ::
   (ProtocolTypeI p, UserProtocol p) =>
