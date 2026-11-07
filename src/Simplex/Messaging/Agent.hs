@@ -3444,15 +3444,17 @@ suspendAgent c@AgentClient {agentState = as} maxDelay = do
       writeTVar as ASSuspending
       suspendOperation c AONtfNetwork $ pure ()
       suspendOperation c AORcvNetwork $
-        suspendOperation c AOMsgDelivery $
-          suspendSendingAndDatabase c
+        suspendOperation c AOSndFiles $
+          suspendMsgDelivery c
       readTVar as
-  when (state == ASSuspending) . void . forkIO $ do
-    threadDelay maxDelay
-    -- liftIO $ putStrLn "suspendAgent after timeout"
-    atomically . whenSuspending c $ do
-      -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
-      suspendSendingAndDatabase c
+  when (state == ASSuspending) $ do
+    void . forkIO $ removeDeletedOrFailedSndFilesInProgress c
+    void . forkIO $ do
+      threadDelay maxDelay
+      -- liftIO $ putStrLn "suspendAgent after timeout"
+      atomically . whenSuspending c $ do
+        -- unsafeIOToSTM $ putStrLn $ "in timeout: suspendSendingAndDatabase"
+        suspendSendingAndDatabase c
 
 execAgentStoreSQL :: AgentClient -> Text -> AE [Text]
 execAgentStoreSQL c sql = withAgentEnv c $ withStore' c (`execSQL` sql)
@@ -3544,6 +3546,7 @@ cleanupManager c@AgentClient {subQ} = do
       sndFilesTTL <- asks $ sndFilesTTL . config
       sndExpired <- withStore' c (`getSndFilesExpired` sndFilesTTL)
       forM_ sndExpired $ \(dbId, entId, p) -> flip catchAllErrors (notify entId . SFERR) $ do
+        atomically $ removeSndFileInProgress c entId
         lift . forM_ p $ removePath <=< toFSFilePath
         withStore' c (`deleteSndFile'` dbId)
     deleteSndFilesDeleted = do

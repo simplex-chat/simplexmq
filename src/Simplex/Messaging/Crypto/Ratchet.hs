@@ -99,6 +99,7 @@ import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Aeson as J
 import qualified Data.Aeson.TH as JQ
+import Data.Attoparsec.ByteString (Parser, peekWord8')
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
@@ -735,11 +736,17 @@ instance AlgorithmI a => Encoding (MsgHeader a) where
     (msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs) <- smpP
     pure MsgHeader {msgMaxVersion, msgDHRs, msgKEM, msgPN, msgNs}
 
+legacyMsgHeaderP :: AlgorithmI a => Parser (MsgHeader a)
+legacyMsgHeaderP = do
+  (msgMaxVersion, msgDHRs, msgPN, msgNs) <- smpP
+  pure MsgHeader {msgMaxVersion, msgDHRs, msgKEM = Nothing, msgPN, msgNs}
+
 data EncMessageHeader = EncMessageHeader
   { ehVersion :: VersionE2E, -- this is current ratchet version
     ehIV :: IV,
     ehAuthTag :: AuthTag,
-    ehBody :: ByteString
+    ehBody :: ByteString,
+    ehLegacy :: Bool
   }
 
 -- this encoding depends on version in EncMessageHeader because it is "current" ratchet version
@@ -747,8 +754,14 @@ instance Encoding EncMessageHeader where
   smpEncode EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody} =
     smpEncode (ehVersion, ehIV, ehAuthTag, Large ehBody)
   smpP = do
-    (ehVersion, ehIV, ehAuthTag, Large ehBody) <- smpP
-    pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody}
+    (ehVersion, ehIV, ehAuthTag) <- smpP
+    (ehLegacy, ehBody) <- versionedLengthP
+    pure EncMessageHeader {ehVersion, ehIV, ehAuthTag, ehBody, ehLegacy}
+
+versionedLengthP :: Parser (Bool, ByteString)
+versionedLengthP = do
+  len1 <- peekWord8'
+  if len1 < 32 then (False,) . unLarge <$> smpP else (True,) <$> smpP
 
 -- the header is length-prefixed to parse it as string and use as part of associated data for authenticated encryption
 data EncRatchetMessage = EncRatchetMessage
@@ -761,7 +774,8 @@ instance Encoding EncRatchetMessage where
   smpEncode EncRatchetMessage {emHeader, emBody, emAuthTag} =
     smpEncode (Large emHeader, emAuthTag, Tail emBody)
   smpP = do
-    (Large emHeader, emAuthTag, Tail emBody) <- smpP
+    (_, emHeader) <- versionedLengthP
+    (emAuthTag, Tail emBody) <- smpP
     pure EncRatchetMessage {emHeader, emBody, emAuthTag}
 
 newtype PQEncryption = PQEncryption {enablePQ :: Bool}
@@ -882,7 +896,7 @@ rcEncryptHeader Ratchet {rcSnd = Nothing} _ _ = throwE CERatchetState
 rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, rcKEM, rcNs, rcPN, rcAD = Str rcAD, rcSupportKEM, rcEnableKEM, rcVersion} pqEnc_ supportedE2EVersion = do
   -- state.CKs, mk = KDF_CK(state.CKs)
   let (ck', mk, iv, ehIV) = chainKdf rcCKs
-      v = current rcVersion
+      v = max minSupportedE2EEncryptVersion $ current rcVersion
       -- PQ encryption can be enabled or disabled
       rcEnableKEM' = fromMaybe rcEnableKEM pqEnc_
       -- support for PQ encryption (and therefore large headers/small envelopes) can only be enabled, it cannot be disabled
@@ -895,7 +909,7 @@ rcEncryptHeader rc@Ratchet {rcSnd = Just sr@SndRatchet {rcCKs, rcHKs}, rcDHRs, r
   -- enc_header = HENCRYPT(state.HKs, header)
   (ehAuthTag, ehBody) <- encryptAEAD rcHKs ehIV (paddedHeaderLen rcSupportKEM') rcAD (msgHeader maxSupported')
   -- return enc_header
-  let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV}
+  let emHeader = smpEncode EncMessageHeader {ehVersion = v, ehBody, ehAuthTag, ehIV, ehLegacy = False}
       msgEncryptKey =
         MsgEncryptKey
           { msgRcVersion = v,
@@ -1127,9 +1141,9 @@ rcDecrypt g rc@Ratchet {rcRcv, rcAD = Str rcAD, rcVersion} rcMKSkipped msg' = do
         e -> throwE e
     -- header = HDECRYPT(state.NHKr, enc_header)
     decryptNextHeader hdr = (AdvanceRatchet,) <$> decryptHeader (rcNHKr rc) hdr
-    decryptHeader k EncMessageHeader {ehBody, ehAuthTag, ehIV} = do
+    decryptHeader k EncMessageHeader {ehBody, ehAuthTag, ehIV, ehLegacy} = do
       header <- decryptAEAD k ehIV rcAD ehBody ehAuthTag `catchE` \_ -> throwE CERatchetHeader
-      parseE' CryptoHeaderError smpP header
+      parseE' CryptoHeaderError (if ehLegacy then legacyMsgHeaderP else smpP) header
     decryptMessage :: MessageKey -> EncRatchetMessage -> ExceptT CryptoError IO (Either CryptoError ByteString)
     decryptMessage (MessageKey mk iv) EncRatchetMessage {emHeader, emBody, emAuthTag} =
       -- DECRYPT(mk, cipher-text, CONCAT(AD, enc_header))

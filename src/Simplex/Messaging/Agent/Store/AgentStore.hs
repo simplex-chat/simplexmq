@@ -262,6 +262,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getCleanupSndFilesPrefixPaths,
     getCleanupSndFilesDeleted,
     getSndFilesExpired,
+    getNotDeletedOrFailedSndFileIds,
     createDeletedSndChunkReplica,
     getNextDeletedSndChunkReplica,
     updateDeletedSndChunkReplicaDelay,
@@ -3893,6 +3894,10 @@ getSndFilesExpired db ttl = do
       WHERE created_at < ?
     |]
     (Only cutoffTs)
+
+getNotDeletedOrFailedSndFileIds :: DB.Connection -> IO [SndFileId]
+getNotDeletedOrFailedSndFileIds db =
+  map fromOnly <$> DB.query_ db "SELECT snd_file_entity_id FROM snd_files WHERE deleted = 0 AND failed = 0"
 
 createDeletedSndChunkReplica :: DB.Connection -> UserId -> FileChunkReplica -> FileDigest -> IO ()
 createDeletedSndChunkReplica db userId FileChunkReplica {server, replicaId, replicaKey} chunkDigest = do

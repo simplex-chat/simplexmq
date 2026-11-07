@@ -28,6 +28,7 @@ module Simplex.Messaging.Transport.Server
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
+    validateClientCertificate,
   )
 where
 

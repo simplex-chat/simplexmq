@@ -432,7 +432,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 srvChunks $ mapM $ runExceptT . downloadFileChunk g a encPath size downloadedChunks)
       mapM_ throwE errs
       let chunkPaths = map snd $ sortOn fst rs
-      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
+      encDigest <- liftIO $ sha512HashChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwE $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwE $ CLIError "File size mismatch"
