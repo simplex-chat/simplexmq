@@ -239,8 +239,8 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, conne
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
-    newSMPClient v = withConnectSlot $ \slot -> do
-      r <- if slot then connectClient ca srv v `E.catches` clientHandlers else pure $ Left PCEResponseTimeout
+    newSMPClient v = withConnectSlot $ \slot -> E.mask $ \restore -> do
+      r <- if slot then restore (connectClient ca srv v) `E.catches` clientHandlers else pure $ Left PCEResponseTimeout
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
@@ -261,8 +261,8 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, conne
             else do
               ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
-              void . forkIO $ threadDelay' (diffToMicroseconds ei) `E.finally` atomically (removeSessVar v srv smpClients >> modifyTVar' persistedErrors (subtract 1))
-          reconnectClient ca srv
+              void . forkIO $ restore (threadDelay' $ diffToMicroseconds ei) `E.finally` atomically (removeSessVar v srv smpClients >> modifyTVar' persistedErrors (subtract 1))
+          restore $ reconnectClient ca srv
           pure $ Left e
       where
         sharedSession :: SMPClient -> (OwnServer, SMPClient) -> STM (Maybe (OwnServer, SMPClient))
