@@ -35,6 +35,7 @@ module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     SMPVersion,
     VersionSMP,
+    pattern VersionSMP,
     VersionRangeSMP,
     THandleSMP,
     alpnSupportedSMPHandshakes,

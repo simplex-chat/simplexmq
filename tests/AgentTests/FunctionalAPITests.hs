@@ -87,6 +87,7 @@ import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import qualified Data.Text.IO as T
+import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Tuple (swap)
@@ -119,11 +120,11 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
+import Simplex.Messaging.Server.Information (ClientSupport (..), MinClientVersion (..), ServerPublicInfo (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentClientSMPRelayVersion, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds, unlessM)
 import Simplex.Messaging.Version (VersionRange (..))
@@ -687,6 +688,9 @@ functionalAPITests ps = do
       it "should pass with correct password" $ testSMPServerConnectionTest ps auth (srv auth) `shouldReturn` Right (Just (Right testServerInformation))
       it "should fail without password" $ testSMPServerConnectionTest ps auth (srv Nothing) `shouldReturn` Left authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest ps auth (srv $ Just "wrong") `shouldReturn` Left authErr
+  describe "Client support from preset servers" $ do
+    it "should notify about unsupported version and app releases" $ testClientSupport ps
+    it "should not notify about supported version or servers that are not preset" $ testClientSupportNoEvent ps
   describe "getConnectionVerifyCodes" $
     it "should return the same codes for both peers" $
       withSmpServer ps testConnectionVerifyCodes
