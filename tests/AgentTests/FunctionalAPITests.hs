@@ -100,7 +100,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig, defaultSMPClientConfig, getProtocolClient, sendSMPMessage)
+import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), NetworkTimeout (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig, defaultSMPClientConfig, getProtocolClient, sendSMPMessage)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
@@ -566,6 +566,8 @@ functionalAPITests ps = do
       testFastSwitchDrainOldQueue ps
     it "should drain the old queue after QEND on the new queue and restart" $
       testFastSwitchDrainOldQueueRestart ps
+    it "should receive messages while the server of the new queue does not respond" $
+      testFastSwitchStallingNewServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -3928,6 +3930,33 @@ testFastSwitchDrainOldQueueRestart ps =
       withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
         subscribeConnection a bId
         drainOldQueue a bId b aId
+
+testFastSwitchStallingNewServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchStallingNewServer ps@(t, ASType qsType _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
+      (aId, bId, aId', bId') <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
+        (aId, bId) <- makeConnection a b
+        (aId', bId') <- makeConnection a b
+        pure (aId, bId, aId', bId')
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> runRight_ $ do
+        _ <- switchConnectionAsync b "" aId
+        phaseRcv b aId SPStarted [Just RSSendingQADD, Nothing]
+      withStallingServerOn testPort2 $
+        withAgent 1 agentCfg aServers testDB $ \a -> runRight_ $ do
+          void $ subscribeConnections a [bId, bId']
+          void $ sendMessage b aId SMP.noMsgFlags "hello"
+          void $ sendMessage b aId' SMP.noMsgFlags "hello too"
+          liftIO $ timeout 5_000000 (receiveMsgs a [(bId, "hello"), (bId', "hello too")]) `shouldReturn` Just ()
+  where
+    aServers = initAgentServers {netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 15_000000 15_000000}}
+    receiveMsgs :: AgentClient -> [(ConnId, MsgBody)] -> IO ()
+    receiveMsgs _ [] = pure ()
+    receiveMsgs c msgs =
+      pGet c >>= \case
+        (_, cId, AEvt SAEConn (MSG _ _ body)) -> receiveMsgs c $ filter (/= (cId, body)) msgs
+        _ -> receiveMsgs c msgs
 
 endSwitchOnNewQueue :: (HasCallStack, HasTestEnv) => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
 endSwitchOnNewQueue a b = do
