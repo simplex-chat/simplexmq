@@ -82,6 +82,7 @@ import qualified Data.Set as S
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import qualified Data.Text.IO as T
+import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Type.Equality (testEquality, (:~:) (Refl))
@@ -113,11 +114,11 @@ import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
-import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
+import Simplex.Messaging.Server.Information (ClientSupport (..), MinClientVersion (..), ServerPublicInfo (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentClientSMPRelayVersion, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import Simplex.Messaging.Util (bshow, diffToMicroseconds)
 import Simplex.Messaging.Version (VersionRange (..))
@@ -621,6 +622,9 @@ functionalAPITests ps = do
       it "should pass with correct password" $ testSMPServerConnectionTest ps auth (srv auth) `shouldReturn` Right (Just (Right testServerInformation))
       it "should fail without password" $ testSMPServerConnectionTest ps auth (srv Nothing) `shouldReturn` Left authErr
       it "should fail with incorrect password" $ testSMPServerConnectionTest ps auth (srv $ Just "wrong") `shouldReturn` Left authErr
+  describe "Client support from preset servers" $ do
+    it "should notify about unsupported version and app releases" $ testClientSupport ps
+    it "should not notify about supported version or servers that are not preset" $ testClientSupportNoEvent ps
   describe "getConnectionVerifyCodes" $
     it "should return the same codes for both peers" $
       withSmpServer ps testConnectionVerifyCodes
@@ -4416,6 +4420,43 @@ testServerInformation =
       serverCountry = Nothing,
       clientSupport = Nothing
     }
+
+testClientSupport :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
+testClientSupport ps =
+  withClientSupportServers ps cs1 cs2 $
+    withAgent 1 agentCfg initAgentServers {presetServers = [testSMPServer, testSMPServer2]} testDB $ \alice ->
+      withAgent 2 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB2 $ \bob -> runRight_ $ do
+        (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing IKPQOn False SMSubscribe
+        nGet alice ##> ("", "", CLIENT_SUPPORT cs1)
+        (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+        _ <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+        ("", _, CONF confId _ "bob's connInfo") <- get alice
+        allowConnection alice bobId confId "alice's connInfo"
+        nGet alice ##> ("", "", CLIENT_SUPPORT cs1 {stableRelease = Just "7.2.0"})
+        get alice ##> ("", bobId, CON)
+        get bob ##> ("", aliceId, INFO "alice's connInfo")
+        get bob ##> ("", aliceId, CON)
+  where
+    Version v = min currentClientSMPRelayVersion currentServerSMPRelayVersion
+    cs1 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v + 1, fromDate = fromGregorian 2027 5 1}, stableRelease = Nothing, betaRelease = Nothing}
+    cs2 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v + 2, fromDate = fromGregorian 2027 9 1}, stableRelease = Just "7.2.0", betaRelease = Nothing}
+
+testClientSupportNoEvent :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
+testClientSupportNoEvent ps =
+  withClientSupportServers ps cs1 cs2 $
+    withAgent 1 agentCfg initAgentServers {presetServers = [testSMPServer]} testDB $ \alice ->
+      withAgent 2 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB2 $ \bob ->
+        runRight_ . void $ makeConnection alice bob
+  where
+    Version v = min currentClientSMPRelayVersion currentServerSMPRelayVersion
+    cs1 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v, fromDate = fromGregorian 2027 5 1}, stableRelease = Nothing, betaRelease = Nothing}
+    cs2 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v + 1, fromDate = fromGregorian 2027 5 1}, stableRelease = Just "7.2.0", betaRelease = Nothing}
+
+withClientSupportServers :: HasTestEnv => (ASrvTransport, AStoreType) -> ClientSupport -> ClientSupport -> IO a -> IO a
+withClientSupportServers (t, msType@(ASType qs _)) cs1 cs2 =
+  withSmpServerConfigOn t (withClientSupport cs1 $ cfgMS msType) testPort . const . withSmpServerConfigOn t (withClientSupport cs2 $ cfgS2QS qs) testPort2 . const
+  where
+    withClientSupport cs cfg' = updateCfg cfg' $ \cfg_ -> cfg_ {information = Just testServerInformation {clientSupport = Just cs}}
 
 testConnectionVerifyCodes :: (HasCallStack, HasTestEnv) => IO ()
 testConnectionVerifyCodes =
