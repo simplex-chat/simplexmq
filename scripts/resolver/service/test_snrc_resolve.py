@@ -838,6 +838,8 @@ class RegistrationV2Tests(unittest.TestCase):
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
+    FORMER_OWNER = "0x5a0e1c2b3d4f5e6a7b8c9d0e1f2a3b4c5d6e7f80"
+    SUBNAMES = "0x3d749792ea31a74fca465f361659dc112a31fb70"
 
     GRACE = 90 * 86400
     BASE = 200
@@ -881,13 +883,16 @@ class RegistrationV2Tests(unittest.TestCase):
         return ("0x" + snrc.encode_uint(0x20) + snrc.encode_uint(len(value))
                 + (value + b"\x00" * pad).hex())
 
-    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None):
+    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None, holder=None, subname_holder=None):
         """The registry answers a zero resolver, so name_record returns the
         empty record a registered name still has. `label` is what the registrar
         recorded for the 2LD; b"" means it recorded none. `owner` is the owner of
         the queried node; ZERO_ADDR means that node was never created."""
         oracle = self.ORACLE if oracle is None else oracle
         owner = self.OWNER if owner is None else owner
+        holder = owner if holder is None else holder
+        subname_holder = snrc.ZERO_ADDR if subname_holder is None else subname_holder
+        parent = snrc.namehash("acme.testing").hex()
 
         def eth_call(to, data):
             if data.startswith(snrc.selector("labelOf(uint256)")):
@@ -907,7 +912,11 @@ class RegistrationV2Tests(unittest.TestCase):
             if data.startswith(snrc.selector("resolver(bytes32)")):
                 return "0x" + snrc.encode_uint(0)
             if data.startswith(snrc.selector("owner(bytes32)")):
-                return "0x" + snrc.encode_uint(int(owner, 16))
+                return "0x" + snrc.encode_uint(int(holder if data.endswith(parent) else owner, 16))
+            if data.startswith(snrc.selector("subnameHook()")):
+                return "0x" + snrc.encode_uint(int(self.SUBNAMES, 16))
+            if data.startswith(snrc.selector("ownerOf(uint256)")):
+                return "0x" + snrc.encode_uint(int(subname_holder, 16))
             return self.fail("unexpected call " + data[:10])
 
         return eth_call
@@ -1037,6 +1046,27 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "available")
 
+    def test_a_subname_the_subname_registrar_holds_for_the_holder_is_registered(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "registered")
+
+    def test_a_subname_the_subname_registrar_no_longer_holds_is_not_registered(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_a_subnode_a_former_holder_owns_is_not_registered(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.FORMER_OWNER, holder=self.OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_v1_does_not_resolve_a_subnode_a_former_holder_owns(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.FORMER_OWNER, holder=self.OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "unregistered")
+
     def test_a_2ld_is_not_subject_to_the_owner_check(self):
         """Only a subname can be absent under a registered parent."""
         snrc.eth_call = self._chain(self.now + 3600, owner=snrc.ZERO_ADDR)
@@ -1141,6 +1171,7 @@ class FakeChain:
     REGISTRY = "0x58fc46996d975c57883564648bda5206d1a0102b"
     REGISTRAR = "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a"
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
+    NAME_POLICY = "0x4b7e0c1a9d2f3e5b6c8a7d9e0f1b2c3d4e5f6a7b"
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
     RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
@@ -1275,7 +1306,7 @@ class FakeNodeTestCase(unittest.TestCase):
 
     def setUp(self):
         self.node = FakeNode()
-        self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS)
+        self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
         snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
@@ -1286,7 +1317,7 @@ class FakeNodeTestCase(unittest.TestCase):
 
     def tearDown(self):
         self._drain_pool()
-        snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS = self._saved
+        snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES = self._saved
         self.node.stop()
 
     def _drain_pool(self):
@@ -1398,6 +1429,12 @@ class BatchedReadsTests(FakeNodeTestCase):
     def test_v1_answers_the_same(self):
         self.assert_same_answer(snrc.resolve, "acme.testing", 2)
 
+    def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
+        snrc.NAME_POLICIES = {"testing": FakeChain.NAME_POLICY}
+        self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("free"))] = "0x" + snrc.encode_uint(1)
+        status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
+        self.assertEqual(body["registration"], {"type": "reserved", "reservedReason": "internal"})
+
     def test_without_multicall_a_round_is_still_one_batch(self):
         self.node.multicall = False
         with self.assertLogs("snrc_resolve", "WARNING") as logs:
@@ -1434,6 +1471,37 @@ class BatchedReadsTests(FakeNodeTestCase):
     def test_outside_a_request_nothing_is_prefetched(self):
         _, trips = self.requests_made(lambda: snrc.prefetch(snrc.lookup_reads("acme.testing")))
         self.assertEqual(trips, 0)
+
+
+class NamePoliciesTests(FakeNodeTestCase):
+    def test_a_controller_naming_a_policy_is_mapped_to_it(self):
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
+        self.assertEqual(snrc.name_policies(), {"testing": FakeChain.NAME_POLICY})
+
+    def test_a_controller_from_before_name_policies_keeps_the_reservations_and_is_logged(self):
+        with self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assertEqual(snrc.name_policies(), {})
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
+
+    def test_an_unconfigured_controller_is_not_read(self):
+        snrc.CONTROLLERS = {"simplex": ""}
+        self.assertEqual(self.requests_made(snrc.name_policies), ({}, 0))
+
+    def test_an_address_without_a_contract_is_read_as_no_policy(self):
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x"
+        with self.assertLogs("snrc_resolve", "WARNING"):
+            self.assertEqual(snrc.name_policies(), {})
+
+    def test_a_controller_naming_no_policy_is_left_out_and_logged(self):
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(0)
+        with self.assertLogs("snrc_resolve", "WARNING"):
+            self.assertEqual(snrc.name_policies(), {})
+
+    def test_a_node_that_does_not_answer_stops_the_read(self):
+        self.node.status = 502
+        with self.assertRaises(HTTPError):
+            snrc.name_policies()
 
 
 class Aggregate3Tests(unittest.TestCase):
@@ -1705,6 +1773,17 @@ class KeepAliveTests(unittest.TestCase):
             self.assertEqual(sock.recv(1), b"")
 
 
+class StartupTests(unittest.TestCase):
+    def test_a_node_that_does_not_answer_stops_the_service(self):
+        node = FakeNode()
+        self.addCleanup(node.stop)
+        node.status = 502
+        env = dict(os.environ, SNRC_RPC=node.url, SNRC_WORKERS="1")
+        service = subprocess.run([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True, timeout=10)
+        self.assertEqual(service.returncode, 1)
+        self.assertRegex(service.stderr, r"ERROR startup_failed")
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")
 class WorkerProcessesTests(unittest.TestCase):
     """Workers share the port, and the service stops as a whole, so the
@@ -1715,6 +1794,8 @@ class WorkerProcessesTests(unittest.TestCase):
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             self.port = s.getsockname()[1]
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
+        self.node.chain.answers[snrc.reserved_call(FakeChain.NAME_POLICY, snrc.label_token("acme"))] = "0x" + snrc.encode_uint(2)
         env = dict(os.environ, SNRC_RPC=self.node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(self.port), SNRC_WORKERS="2",
                    SNRC_REGISTRY_TESTING=FakeChain.REGISTRY, SNRC_REGISTRAR_TESTING=FakeChain.REGISTRAR, SNRC_CONTROLLER_TESTING=FakeChain.CONTROLLER)
         self.service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
@@ -1766,6 +1847,11 @@ class WorkerProcessesTests(unittest.TestCase):
         for _ in range(20):
             with urlopen(f"http://127.0.0.1:{self.port}/v2/resolve/acme.testing", timeout=5) as res:
                 self.assertEqual(json.loads(res.read())["registration"]["type"], "registered")
+
+    def test_workers_read_reservations_from_the_policy_on_their_own_connections(self):
+        with urlopen(f"http://127.0.0.1:{self.port}/v2/resolve/acme.testing", timeout=5) as res:
+            self.assertEqual(json.loads(res.read())["registration"]["reservedReason_"], "trademark")
+        self.assertEqual(self.node.connections, 2)
 
     def test_stopping_the_service_stops_every_worker(self):
         self.service.send_signal(signal.SIGTERM)

@@ -2137,7 +2137,7 @@ tsDescriptionTests = describe "protocol/description" $ do
             <> "fd.redirect === null ? 'null' : 'redirect'"
             <> "].join(',');"
             <> jsOut "new TextEncoder().encode(r)"
-      tsResult `shouldBe` "recipient,27262976,8388608,4,2,2097152,null"
+      tsResult `shouldBe` "recipient,13631488,4194304,4,2,1048576,null"
 
     it "encode with redirect round-trips" $ do
       tsResult <-

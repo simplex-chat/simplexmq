@@ -300,8 +300,8 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ clientCredsSen
     }
   where
     p = B.pack port
-    onServerCert _ _ _ cc = do
-      errs <- maybe def (\ca -> validateCertificateChain ca host p cc) cafp_
+    onServerCert caStore cache serviceID cc = do
+      errs <- maybe (XV.validateDefault caStore cache serviceID cc) (\ca -> validateCertificateChain ca host p cc) cafp_
       atomically $ putTMVar serverCerts $ if null errs then Just cc else Nothing
       pure errs
     onCertRequest = case clientCreds_ of

@@ -677,7 +677,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue q)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
-  case ntf of
+  r <- tryAny $ case ntf of
     PNVerification _ ->
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
@@ -700,6 +700,9 @@ runPushWorker s srvHost_ isOwn q = forever $ do
         Right () -> do
           incNtfStatT t ntfDelivered
           when isOwn $ liftIO $ mapM_ (`incServerStat` ntfDeliveredOwn stats) srvHost_
+  case r of
+    Right () -> pure ()
+    Left e -> logError $ "push notification error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action

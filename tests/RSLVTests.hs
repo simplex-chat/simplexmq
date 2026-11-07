@@ -191,7 +191,7 @@ testRslvAvailable =
     testSMPClient @TLS $ \h -> do
       (corrId, _entId, resp) <- sendRslv h "na01" (domain "ghost.simplex")
       corrId `shouldBe` CorrId "na01"
-      resp `shouldBe` Right (RNAME (resolved (NRAvailable testPricing)))
+      resp `shouldBe` Right (RNAME (resolved (NRAvailable testPricing Nothing)))
 
 testRslvReserved :: HasTestEnv => IO ()
 testRslvReserved =

@@ -10,6 +10,7 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
+import CoreTests.LockTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
@@ -72,6 +73,7 @@ main = do
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
     setEnv "APNS_KEY_FILE" "./tests/fixtures/AuthKey_H82WD9K9AQ.p8"
+    setEnv "SYSTEM_CERTIFICATE_PATH" "./tests/fixtures/ca.crt"
     hspecInTmpDir
 #if defined(dbPostgres)
       . aroundAll_ (postgressBracket testDBConnectInfo)
@@ -139,7 +141,9 @@ main = do
           describe "XRCP" remoteControlTests
           describe "Web" webTests
         sequential $ do
-          describe "Core tests" $ describe "Retry interval tests" retryIntervalTests
+          describe "Core tests" $ do
+            describe "Retry interval tests" retryIntervalTests
+            describe "Lock tests" lockTests
 #if defined(dbServerPostgres)
           describe "SMP server via TLS, postgres-only message store" $
             before (pure (transport @TLS, ASType SQSPostgres SMSPostgres)) $ describe "Timing of AUTH error" testTiming
