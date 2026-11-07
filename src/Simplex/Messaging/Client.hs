@@ -1381,8 +1381,12 @@ sendProtocolCommand c nm = sendProtocolCommand_ c nm Nothing Nothing
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ, sentCommands}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
-  ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
+sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ, sentCommands, msgQ}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
+  ExceptT $
+    E.bracketOnError
+      (mkTransmission_ c nonce_ (entId, pKey, cmd))
+      (\(_, Request {corrId}) -> when (isNothing msgQ) $ atomically $ TM.delete corrId sentCommands)
+      (uncurry sendRecv)
   where
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t_ r@Request {corrId} = case t_ of
