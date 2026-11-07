@@ -68,6 +68,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
     defaultMaxClientCmdWait,
+    defaultMaxFwdCorrIds,
     defaultAuthErrorDelayMs,
     readWriteQueueStore,
     noPostgresExitStr,
@@ -82,6 +83,7 @@ import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
+import Data.ByteString.Short (ShortByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -92,6 +94,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
+import Data.Set (Set)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
@@ -198,6 +201,7 @@ data ServerConfig s = ServerConfig
     -- requests), so bounding them by the per-client limit would throttle unduly.
     serverResolverConcurrency :: Int,
     maxClientCmdWait :: Int,
+    maxFwdCorrIds :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
     -- | server public information
@@ -248,6 +252,9 @@ defaultNameResolverConcurrency = 5000
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds
+
+defaultMaxFwdCorrIds :: Int
+defaultMaxFwdCorrIds = 65536
 
 defaultAuthErrorDelayMs :: Int64
 defaultAuthErrorDelayMs = 50
@@ -435,6 +442,7 @@ data Client s = Client
     procThreads :: TVar Int,
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
+    fwdCorrIds :: TVar (Set ShortByteString),
     clientTHParams :: THandleParams SMPVersion 'TServer,
     connected :: TVar Bool,
     createdAt :: SystemTime,
@@ -508,6 +516,7 @@ newClient clientId qSize clientTHParams createdAt = do
   procThreads <- newTVarIO 0
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
+  fwdCorrIds <- newTVarIO mempty
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
   sndActiveAt <- newTVarIO createdAt
@@ -526,6 +535,7 @@ newClient clientId qSize clientTHParams createdAt = do
         procThreads,
         endThreads,
         endThreadSeq,
+        fwdCorrIds,
         clientTHParams,
         connected,
         createdAt,

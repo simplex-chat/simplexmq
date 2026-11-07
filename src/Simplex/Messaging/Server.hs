@@ -59,6 +59,7 @@ import qualified Data.ByteString.Builder as BLD
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import qualified Data.ByteString.Short as SBS
 import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
 import Data.Either (fromRight, partitionEithers)
@@ -1409,7 +1410,7 @@ client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
 client
   Server {subscribers, ntfSubscribers}
   ms
-  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, fwdCorrIds} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -2175,6 +2176,12 @@ client
               | tCorrId == C.unCbNonce fwdCorrId -> pure $ tDecodeServer clntTHParams t
               | otherwise -> throwE CRYPTO
             _ -> throwE BLOCK
+          when (fwdVersion < fwdNoncesSMPVersion) $ do
+            let fwdId = SBS.toShort $ C.unCbNonce fwdCorrId
+            (used, recorded) <- atomically $ stateTVar fwdCorrIds $ \ids -> ((S.member fwdId ids, S.size ids), S.insert fwdId ids)
+            when used $ throwE CRYPTO
+            maxIds <- asks $ maxFwdCorrIds . config
+            when (recorded >= maxIds) $ throwIO $ userError "too many forwarded commands below version 23"
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do
                 r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of

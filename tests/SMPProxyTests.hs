@@ -73,6 +73,10 @@ smpProxyTests = do
     xit "batching proxy requests" todo
     it "relay rejects forwarded command with changed version" $ \_ ->
       testChangedFwdVersion
+    it "relay rejects repeated forwarded command below version 23" $ \_ ->
+      testRepeatedFwdCommand
+    it "relay closes connection after limit of forwarded commands below version 23" $ \_ ->
+      testFwdCorrIdsLimit
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
@@ -486,6 +490,43 @@ testChangedFwdVersion =
     runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
     (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion v) =<< encrypt nonce
     runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion v) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+
+testRepeatedFwdCommand :: HasTestEnv => IO ()
+testRepeatedFwdCommand =
+  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    forward <- newForwardedPing rc
+    let v = prevVersion fwdNoncesSMPVersion
+    Right (Just _, _) <- forward fwdNoncesSMPVersion
+    Right (Just _, _) <- forward fwdNoncesSMPVersion
+    Right (Nothing, _) <- forward v
+    forward v `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    forward (prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+
+testFwdCorrIdsLimit :: HasTestEnv => IO ()
+testFwdCorrIdsLimit =
+  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {maxFwdCorrIds = 2}) testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    let v = prevVersion fwdNoncesSMPVersion
+        forwardNew = newForwardedPing rc >>= \forward -> forward v
+    Right _ <- forwardNew
+    Right _ <- forwardNew
+    forwardNew `shouldReturn` Left (PCENetworkError SMP.NEFailedError)
+
+newForwardedPing :: SMPClient -> IO (VersionSMP -> IO (Either SMPClientError (Maybe C.CbNonce, SMP.EncResponse)))
+newForwardedPing rc = do
+  g <- C.newRandom
+  THAuthClient {peerServerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams rc
+  (cmdPubKey, cmdPrivKey) <- atomically $ C.generateKeyPair g
+  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+  let t = SMP.tEncodeBatch1 False (Nothing, SMP.encodeTransmission (thParams rc) (SMP.CorrId corrId, SMP.NoEntity, SMP.Cmd SMP.SIdleClient SMP.PING))
+  pure $ \v -> do
+    et <- either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) (SMP.encTransmissionNonce v nonce) t SMP.paddedProxiedTLength
+    runExceptT $ forwardSMPTransmission rc (either error id $ C.corrCbNonce corrId) v cmdPubKey et
 
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
