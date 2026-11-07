@@ -261,7 +261,8 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, conne
             else do
               ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
-              void . forkIO $ restore (threadDelay' $ diffToMicroseconds ei) `E.finally` atomically (removeSessVar v srv smpClients >> modifyTVar' persistedErrors (subtract 1))
+              let removeError = atomically $ removeSessVar v srv smpClients >> modifyTVar' persistedErrors (subtract 1)
+              void (forkIO $ restore (threadDelay' $ diffToMicroseconds ei) `E.finally` removeError) `E.onException` removeError
           restore $ reconnectClient ca srv
           pure $ Left e
       where
