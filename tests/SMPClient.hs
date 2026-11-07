@@ -368,13 +368,7 @@ proxyCfgShortPingInterval =
     let aCfg = smpAgentCfg cfg'
         cCfg = smpCfg aCfg
      in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {smpPingInterval = 1_000000}}}}
-proxyCfgForwardTimeout :: HasTestEnv => AServerConfig
-proxyCfgForwardTimeout =
-  updateCfg proxyCfg $ \cfg' ->
-    let aCfg = smpAgentCfg cfg'
-        cCfg = smpCfg aCfg
-        nt = NetworkTimeout {backgroundTimeout = 1, interactiveTimeout = 1}
-     in cfg' {smpAgentCfg = aCfg {smpCfg = cCfg {networkConfig = (networkConfig cCfg) {tcpTimeout = nt}}}}
+
 
 proxyCfgVPrev :: HasTestEnv => AStoreType -> AServerConfig
 proxyCfgVPrev msType =
