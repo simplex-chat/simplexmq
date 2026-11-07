@@ -1,7 +1,7 @@
 cabal-version: 3.0
 
 name:           simplexmq
-version:        7.1.0.16
+version:        7.1.0.17
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -552,6 +552,7 @@ test-suite simplexmq-test
       CoreTests.CryptoFileTests
       CoreTests.CryptoTests
       CoreTests.EncodingTests
+      CoreTests.LockTests
       CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
