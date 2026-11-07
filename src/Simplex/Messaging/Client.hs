@@ -119,7 +119,9 @@ module Simplex.Messaging.Client
     PCTransmission,
     mkTransmission,
     authTransmission,
+    pClientSndQ,
     smpClientStub,
+    sendProtocolCommand_,
 
     -- * For debugging
     TBQueueInfo (..),
@@ -253,6 +255,9 @@ smpClientStub g sessionId thVersion thAuth = do
               msgQ = Nothing
             }
       }
+
+pClientSndQ :: ProtocolClient v err msg -> TBQueue (Maybe (Request err msg), ByteString)
+pClientSndQ ProtocolClient {client_ = PClient {sndQ}} = sndQ
 
 type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 
