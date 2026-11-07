@@ -230,11 +230,11 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
           let !owned = isOwnServer ca srv
               !c = (owned, smp)
-          atomically $ do
-            putTMVar (sessionVar v) (Right c)
-            TM.insert (sessionId $ thParams smp) c smpSessions
-          notify ca $ CAConnected srv $ smpClientServiceId smp
-          pure $ Right c
+          atomically (sharedSession smp c) >>= \case
+            Just c0 -> Right c0 <$ E.uninterruptibleMask_ (closeProtocolClient smp)
+            Nothing -> do
+              notify ca $ CAConnected srv $ smpClientServiceId smp
+              pure $ Right c
         Left e -> do
           let ei = persistErrorInterval agentCfg
           if ei == 0

@@ -81,6 +81,15 @@ smpProxyTests = do
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
+  describe "relay sessions" $ do
+    it "uses one session for addresses of one relay" $ \_ ->
+      testRelaySessionPerServer
+    it "refuses a new relay session when connections are at the limit" $ \_ ->
+      testRelayConnectLimit
+    it "removes connection errors after the interval, above the limit at once" $ \_ ->
+      testPersistedErrorsLimit
+    it "refuses a connection at the limit without keeping its error" $ \_ ->
+      testConnectLimitRefusal
   describe "proxy requests" $ do
     describe "bad relay URIs" $ do
       it "relay without key hash" testRelayWithoutKeyHash
@@ -727,6 +736,66 @@ testAgentClientReconnectAfterCancel =
         { smp = userServers [testSMPServer2],
           netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 4000000 4000000}
         }
+
+testRelaySessionPerServer :: HasTestEnv => IO ()
+testRelaySessionPerServer =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+      sessId <- withRelay $ \_ -> relaySessionId th
+      threadDelay 100000
+      sessId' <- withRelay $ \_ -> relaySessionId th
+      sessId' `shouldNotBe` sessId
+  where
+    withRelay = withSmpServerConfigOn (transport @TLS) cfgS2 testPort2
+    relaySessionId th = do
+      sessId : sessIds <- forM relayServers $ \srv -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY srv Nothing)
+        pure sessId
+      sessIds `shouldBe` [sessId, sessId, sessId]
+      pure sessId
+    relayServers = map (\h -> SMPServer h testPort2 testKeyHash) ["127.0.0.1", "127.0.0.2", "::ffff:127.0.0.1", "127.0.0.1,unused.example"]
+
+testRelayConnectLimit :: HasTestEnv => IO ()
+testRelayConnectLimit =
+  withSmpServerConfigOn (transport @TLS) proxyCfgConnectLimit testPort $ \_ ->
+    withStallingServerOn' testPort2 $ \accepted _ ->
+      withAsync requestRelaySession $ \_ -> do
+        atomically $ takeTMVar accepted
+        testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+          (t, (_, _, reply)) <- responseTime $ sendRecv th (Nothing, "1", NoEntity, SMP.PRXY (SMPServer testHost2 testPort2 "1234") Nothing)
+          reply `shouldBe` Right (SMP.ERR $ SMP.PROXY $ SMP.BROKER SMP.TIMEOUT)
+          t `shouldSatisfy` (< 1)
+  where
+    proxyCfgConnectLimit = updateCfg proxyCfgShortTimeout $ \cfg' -> cfg' {smpAgentCfg = (smpAgentCfg cfg') {CA.maxConnectingClients = Just 1}}
+
+testPersistedErrorsLimit :: HasTestEnv => IO ()
+testPersistedErrorsLimit = do
+  g <- C.newRandom
+  a@CA.SMPClientAgent {CA.smpClients, CA.persistedErrors} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.persistErrorInterval = 1, CA.maxPersistedErrors = 2} Nothing g
+  forM_ ([testSMPServer, testSMPServer2, SMPServer testHost testPort2 testKeyHash] :: [SMPServer]) $ \srv ->
+    runExceptT (CA.getSMPServerClient'' a srv) >>= \case
+      Left _ -> pure ()
+      Right _ -> expectationFailure "connected to a server that is not running"
+  length <$> readTVarIO smpClients `shouldReturn` 2
+  readTVarIO persistedErrors `shouldReturn` 2
+  threadDelay 1500000
+  length <$> readTVarIO smpClients `shouldReturn` 0
+  readTVarIO persistedErrors `shouldReturn` 0
+  CA.closeSMPClientAgent a
+
+testConnectLimitRefusal :: HasTestEnv => IO ()
+testConnectLimitRefusal = do
+  g <- C.newRandom
+  a@CA.SMPClientAgent {CA.smpClients, CA.connectingClients} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.maxConnectingClients = Just 0} Nothing g
+  runExceptT (CA.getSMPServerClient'' a testSMPServer) >>= \case
+    Left e -> e `shouldBe` PCEResponseTimeout
+    Right _ -> expectationFailure "connected above the connection limit"
+  length <$> readTVarIO smpClients `shouldReturn` 0
+  readTVarIO connectingClients `shouldReturn` 0
+  CA.closeSMPClientAgent a
+
+todo :: AStoreType -> IO ()
+todo _ = fail "TODO"
 
 runExceptT' :: Exception e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either throwIO pure
