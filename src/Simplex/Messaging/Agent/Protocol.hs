@@ -1789,12 +1789,12 @@ instance Encoding AConnShortLink where
   smpP =
     smpP >>= \case
       CMInvitation -> do
-        (srv, lnkId, k) <- smpP
-        pure $ ACSL SCMInvitation $ CSLInvitation SLSServer srv lnkId (LinkKey k)
+        ((hs, p, kh), lnkId, k) <- smpP
+        pure $ ACSL SCMInvitation $ CSLInvitation SLSServer (SMPServer hs p kh) lnkId (LinkKey k)
       CMContact -> do
         ct <- ctTypeP =<< A.anyChar
-        (srv, k) <- smpP
-        pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
+        ((hs, p, kh), k) <- smpP
+        pure $ ACSL SCMContact $ CSLContact SLSServer ct (SMPServer hs p kh) (LinkKey k)
 
 ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case

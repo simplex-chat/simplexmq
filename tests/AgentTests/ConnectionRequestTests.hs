@@ -316,6 +316,12 @@ connectionRequestTests =
       smpEncodingTest (aBinaryConnReq contactAddress2queuesNew)
       smpEncodingTest (aBinaryConnReq contactAddressV6)
       smpEncodingTest (aBinaryConnReq contactAddressClientData)
+    it "should parse server without key hash only in short links as binary" $ do
+      let addr = queueAddr {smpServer = shortSrv}
+      smpDecode @SMPQueueUri (smpEncode $ SMPQueueUri supportedSMPClientVRange addr) `shouldSatisfy` isLeft
+      smpDecode @SMPQueueInfo (smpEncode $ SMPQueueInfo (VersionSMPC 1) addr) `shouldSatisfy` isLeft
+      smpEncodingTest $ ACSL SCMContact $ CSLContact SLSServer CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
+      smpEncodingTest $ ACSL SCMInvitation $ CSLInvitation SLSServer shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef")
     it "should serialize / parse short links" $ do
       CSLContact SLSServer CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
       CSLContact SLSServer CCTGroup srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/g#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"

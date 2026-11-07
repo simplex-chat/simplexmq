@@ -384,13 +384,9 @@ data SMPQueueNtf = SMPQueueNtf
 instance Encoding SMPQueueNtf where
   smpEncode SMPQueueNtf {smpServer, notifierId} = smpEncode (smpServer, notifierId)
   smpP = do
-    smpServer <- updateSMPServerHosts <$> (requireKeyHash <$?> smpP)
+    smpServer <- updateSMPServerHosts <$> smpP
     notifierId <- smpP
     pure SMPQueueNtf {smpServer, notifierId}
-    where
-      requireKeyHash srv
-        | B.null (C.unKeyHash (keyHash srv)) = Left "SMP server without key hash"
-        | otherwise = Right srv
 
 instance StrEncoding SMPQueueNtf where
   strEncode SMPQueueNtf {smpServer, notifierId} = strEncode smpServer <> "/" <> strEncode notifierId

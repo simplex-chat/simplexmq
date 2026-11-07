@@ -1317,7 +1317,7 @@ instance ProtocolTypeI p => IsString (ProtocolServer p) where
 instance ProtocolTypeI p => Encoding (ProtocolServer p) where
   smpEncode ProtocolServer {host, port, keyHash} =
     smpEncode (host, port, keyHash)
-  smpP = do
+  smpP = requireKeyHash <$?> do
     (host, port, keyHash) <- smpP
     pure ProtocolServer {scheme = protocolTypeI @p, host, port, keyHash}
 
@@ -1335,6 +1335,11 @@ instance ProtocolTypeI p => ToJSON (ProtocolServer p) where
 
 instance ProtocolTypeI p => FromJSON (ProtocolServer p) where
   parseJSON = strParseJSON "ProtocolServer"
+
+requireKeyHash :: ProtocolServer p -> Either String (ProtocolServer p)
+requireKeyHash srv@ProtocolServer {keyHash}
+  | B.null (C.unKeyHash keyHash) = Left "server without key hash"
+  | otherwise = Right srv
 
 newtype BasicAuth = BasicAuth {unBasicAuth :: ByteString}
   deriving (Ord, Show)
@@ -1402,7 +1407,7 @@ legacyEncodeServer ProtocolServer {host, port, keyHash} =
   smpEncode (L.head host, port, keyHash)
 
 legacyServerP :: forall p. ProtocolTypeI p => Parser (ProtocolServer p)
-legacyServerP = do
+legacyServerP = requireKeyHash <$?> do
   (h, port, keyHash) <- smpP
   pure ProtocolServer {scheme = protocolTypeI @p, host = [h], port, keyHash}
 
