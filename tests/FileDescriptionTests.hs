@@ -7,14 +7,18 @@
 module FileDescriptionTests where
 
 import Control.Exception (bracket_)
+import Control.Monad (zipWithM_)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks (chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
+import Simplex.FileTransfer.Crypto (sha512HashChunks)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
@@ -33,6 +37,7 @@ fileDescriptionTests = do
     it "accept file description with a number at the length limit" testAcceptMaxNumber
     it "limit chunk sizes and replicas per chunk and per file" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
+    it "hash chunk files one at a time" testHashChunks
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
@@ -235,6 +240,15 @@ testFileDescriptionURIExtras = do
   vfd <- either fail pure $ validateFileDescription fileDesc
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
+
+testHashChunks :: HasTestEnv => IO ()
+testHashChunks = do
+  let sizes = [0, 65535, 65536, 100000, 200000]
+      paths = map (testPath . ("chunk" <>) . show) [1 .. length sizes]
+      chunks = zipWith B.replicate sizes ['a' ..]
+  zipWithM_ B.writeFile paths chunks
+  digest <- sha512HashChunks paths
+  digest `shouldBe` LC.sha512Hash (LB.fromStrict $ B.concat chunks)
 
 withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =

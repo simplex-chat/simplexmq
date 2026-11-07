@@ -58,7 +58,7 @@ import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Util (tshow)
-import System.Directory (doesDirectoryExist, doesFileExist, getFileSize, listDirectory, removeFile)
+import System.Directory (Permissions (writable), doesDirectoryExist, doesFileExist, getFileSize, getPermissions, listDirectory, removeFile, setPermissions)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
@@ -86,6 +86,7 @@ xftpAgentTests =
       describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
+      it "should report permanent error even when rcv tmp path cannot be removed" $ \_ -> testXFTPAgentReceiveCleanupError
       it "should resume sending file after restart" $ \_ -> testXFTPAgentSendRestore
       xit'' "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
       it "should delete sent file on server" testXFTPAgentDelete
@@ -558,6 +559,43 @@ testXFTPAgentReceiveCleanup = withGlobalLogging logCfgNoLogs $ do
 
   -- tmp path should be removed after permanent error
   doesDirectoryExist tmpPath `shouldReturn` False
+
+testXFTPAgentReceiveCleanupError :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentReceiveCleanupError = withGlobalLogging logCfgNoLogs $ do
+  filePath <- createRandomFile
+
+  rfd <- withXFTPServerStoreLogOn $ \_ ->
+    withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
+      (_, _, rfd, _) <- testSend sndr filePath
+      pure rfd
+
+  rfId <- withAgent 2 agentCfg initAgentServers testDB2 $ \rcp -> runRight $ do
+    xftpStartWorkers rcp (Just recipientFiles)
+    rfId <- xftpReceiveFile rcp 1 rfd Nothing True
+    liftIO $ timeout 300000 (get rcp) `shouldReturn` Nothing
+    pure rfId
+
+  [prefixDir] <- listDirectory recipientFiles
+  let prefixPath = recipientFiles </> prefixDir
+      tmpPath = prefixPath </> "xftp.encrypted"
+  doesDirectoryExist tmpPath `shouldReturn` True
+
+  perms <- getPermissions prefixPath
+  setPermissions prefixPath perms {writable = False}
+  let probe = prefixPath </> ".probe"
+  removalBlocked <- (writeFile probe "" >> removeFile probe >> pure False) `catchAny` \_ -> pure True
+  if not removalBlocked
+    then setPermissions prefixPath perms >> pendingWith "root may remove files from a read-only directory"
+    else do
+      ( withXFTPServerThreadOn $ \_ ->
+          withAgent 3 agentCfg initAgentServers testDB2 $ \rcp' -> do
+            runRight_ $ xftpStartWorkers rcp' (Just recipientFiles)
+            ("", rfId', RFERR (XFTP srv AUTH)) <- rfGet rcp'
+            rfId' `shouldBe` rfId
+            srv `shouldBe` testXFTPServerStr
+        )
+        `finally` setPermissions prefixPath perms
+      doesDirectoryExist tmpPath `shouldReturn` True
 
 testXFTPAgentSendRestore :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
