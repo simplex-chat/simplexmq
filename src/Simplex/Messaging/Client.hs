@@ -1380,24 +1380,31 @@ sendProtocolCommand c nm = sendProtocolCommand_ c nm Nothing Nothing
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ, sentCommands, msgQ}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
-  ExceptT $
-    E.bracketOnError
-      (mkTransmission_ c nonce_ (entId, pKey, cmd))
-      (\(_, Request {corrId}) -> when (isNothing msgQ) $ atomically $ TM.delete corrId sentCommands)
-      (uncurry sendRecv)
+sendProtocolCommand_ c@ProtocolClient {thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
+  ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
   where
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
-    sendRecv t_ r@Request {corrId} = case t_ of
-      Left e -> notSent e
+    sendRecv t_ r = case t_ of
+      Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> response <$> sendBlock c [r] (Just r, s) (getResponse c nm tOut r)
         where
           s = tEncodeBatch1 serviceAuth t
-          getResp = getResponse c nm tOut r
-      where
-        notSent e = Left (PCETransportError e) <$ atomically (TM.delete corrId sentCommands)
+
+sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
+sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses =
+  E.bracketOnError
+    (atomically $ ifM (readTVar connected) (mapM_ addRequest rs) (mapM_ failRequest rs) >> tryWriteTBQueue sndQ t)
+    (\_ -> when (isNothing msgQ) $ atomically $ mapM_ removeRequest rs)
+    (\sent -> if sent then getResponses else withAsync (atomically $ writeTBQueue sndQ t) (const getResponses))
+  where
+    addRequest r@Request {corrId} = TM.insert corrId r sentCommands
+    removeRequest Request {corrId} = TM.delete corrId sentCommands
+
+failRequest :: Request err msg -> STM ()
+failRequest Request {pending, responseVar} =
+  whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
 sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
 sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses = do
