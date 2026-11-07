@@ -1818,23 +1818,6 @@ client
         suspendQueue_ :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         suspendQueue_ (q, _) = liftIO $ either err (const ok) <$> suspendQueue (queueStore ms) q
 
-        -- subscribeQueue :: Maybe ServiceId -> StoreQueue s -> QueueRec -> M s (Either ErrorType (Bool, Maybe Sub))
-        -- subscribeQueue clntServiceId q QueueRec {rcvServiceId} =
-        --   liftIO (TM.lookupIO rId $ subscriptions clnt) >>= \case
-        --     Nothing -> Right <$> sharedSubscribeQueue clntServiceId rId q rcvServiceId processSub subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
-        --     Just s@Sub {subThread} -> do
-        --       stats <- asks serverStats
-        --       case subThread of
-        --         ProhibitSub -> do
-        --           -- cannot use SUB in the same connection where GET was used
-        --           incStat $ qSubProhibited stats
-        --           pure $ Left $ CMD PROHIBITED
-        --         _ -> do
-        --           incStat $ qSubDuplicate stats
-        --           Right (True, Just s) <$ atomically (writeTVar (delivered s) Nothing)
-        --   where
-        --     rId = recipientId q
-
         deliverSubMsg :: Maybe Message -> Maybe (Either ErrorType (Bool, Maybe Sub)) -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
         deliverSubMsg msg_ r_ _ qr = case r_ of
           Just (Right r) -> deliver r
@@ -1925,60 +1908,6 @@ client
           when (isNothing clntServiceId) $
             asks serverStats >>= incStat . (if hasSub then ntfSubDuplicate else ntfSub)
           pure $ SOK clntServiceId
-
-        -- sharedSubscribeQueue ::
-        --   Maybe ServiceId ->
-        --   QueueId ->
-        --   StoreQueue s ->
-        --   Maybe ServiceId ->
-        --   (Client s -> ClientSub -> IO ()) ->
-        --   (Client s -> TMap QueueId sub) ->
-        --   (Client s -> TVar (Int64, IdsHash)) ->
-        --   STM sub ->
-        --   (ServerStats -> ServiceStats) ->
-        --   M s (Bool, Maybe sub)
-        -- sharedSubscribeQueue clntServiceId entId q queueServiceId processSub' clientSubs clientServiceSubs mkSub servicesSel = do
-        --   stats <- asks serverStats
-        --   let incSrvStat sel = incStat $ sel $ servicesSel stats
-        --       writeSub = processSub' clnt $ CSClient entId queueServiceId clntServiceId
-        --   liftIO $ case clntServiceId of
-        --     Just serviceId
-        --       | queueServiceId == Just serviceId -> do
-        --           -- duplicate queue-service association - can only happen in case of response error/timeout
-        --           hasSub <- atomically $ ifM hasServiceSub (pure True) (False <$ incServiceQueueSubs)
-        --           unless hasSub $ do
-        --             writeSub
-        --             incSrvStat srvSubCount
-        --             incSrvStat srvSubQueues
-        --           incSrvStat srvAssocDuplicate
-        --           pure (hasSub, Nothing)
-        --       | otherwise -> do
-        --           -- association already done in prepareBatchSubs
-        --           hasSub <- atomically $ (<$ incServiceQueueSubs) =<< hasServiceSub
-        --           writeSub
-        --           unless hasSub $ incSrvStat srvSubCount
-        --           incSrvStat srvSubQueues
-        --           incSrvStat $ maybe srvAssocNew (const srvAssocUpdated) queueServiceId
-        --           pure (hasSub, Nothing)
-        --       where
-        --         hasServiceSub = ((0 /=) . fst) <$> readTVar (clientServiceSubs clnt)
-        --         -- This function is used when queue association with the service is created.
-        --         incServiceQueueSubs = modifyTVar' (clientServiceSubs clnt) $ addServiceSubs (1, queueIdHash (recipientId q)) -- service count and IDS hash
-        --     Nothing -> case queueServiceId of
-        --       Just _ -> do
-        --         -- unassociation already done in prepareBatchSubs
-        --         incSrvStat srvAssocRemoved
-        --         -- getSubscription may find a subscription for receiving service, where clientSubs also hold active deliveries for service subscriptions.
-        --         -- For notification service it can only find one if storage and session states diverge.
-        --         r <- getSubscription
-        --         writeSub
-        --         pure r
-        --       Nothing -> do
-        --         r@(hasSub, _) <- getSubscription
-        --         unless hasSub writeSub
-        --         pure r
-        --       where
-        --         getSubscription = either ((False,) . Just) ((True,) . Just) <$> TM.lookupOrInsertIO entId mkSub (clientSubs clnt)
 
         subscribeServiceMessages :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceMessages serviceId expected =
