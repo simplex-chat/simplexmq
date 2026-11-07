@@ -1396,6 +1396,7 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ, sentCommands, ms
         | otherwise -> response <$> sendBlock c [r] (Just r, s) (getResponse c nm tOut r)
         where
           s = tEncodeBatch1 serviceAuth t
+          getResp = getResponse c nm tOut r
       where
         notSent e = Left (PCETransportError e) <$ atomically (TM.delete corrId sentCommands)
 
