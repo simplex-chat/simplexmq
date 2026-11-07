@@ -121,6 +121,7 @@ module Simplex.Messaging.Client
     mkTransmission,
     authTransmission,
     smpClientStub,
+    sendProtocolCommand_,
 
     -- * For debugging
     TBQueueInfo (..),
