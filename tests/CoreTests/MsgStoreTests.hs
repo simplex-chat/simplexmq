@@ -272,8 +272,8 @@ testRemovedNotifier ms = do
     rcvSrvId <- ExceptT $ getCreateService @(StoreQueue s) st rcvSr {serviceRole = SRMessaging}
     void $ ExceptT $ addQueueNotifier st q nc
     [q1, q2, q3, q4] <- replicateM 4 $ ExceptT $ getQueue ms SRecipient rId
-    void $ ExceptT $ setQueueServices st SNotifierService (Just serviceId) $ M.singleton nId q
-    void $ ExceptT $ setQueueServices st SRecipientService (Just rcvSrvId) $ M.singleton rId q
+    ExceptT $ setQueueService st q SNotifierService (Just serviceId)
+    ExceptT $ setQueueService st q SRecipientService (Just rcvSrvId)
     liftIO $ removed (addQueueNotifier st q1 nc {notifierId = nId'}) `shouldReturn` Right (Just (nId, Just serviceId))
     liftIO $ removed (deleteQueueNotifier st q2) `shouldReturn` Right (Just (nId', Nothing))
     liftIO $ removed (deleteQueueNotifier st q3) `shouldReturn` Right Nothing
