@@ -248,6 +248,28 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
               void (forkIO $ restore (threadDelay' $ diffToMicroseconds ei) `E.finally` removeError) `E.onException` removeError
           restore $ reconnectClient ca srv
           pure $ Left e
+      where
+        sharedSession :: SMPClient -> (OwnServer, SMPClient) -> STM (Maybe (OwnServer, SMPClient))
+        sharedSession smp c =
+          (pure connectedServerSessions $>>= TM.lookup (connectedServer smp) $>>= (`TM.lookup` smpSessions)) >>= \case
+            Just c0 -> Just c0 <$ putTMVar (sessionVar v) (Right c0)
+            Nothing -> do
+              putTMVar (sessionVar v) (Right c)
+              whenM (activeClientSession ca smp srv) $ do
+                TM.insert sessId c smpSessions
+                forM_ connectedServerSessions $ TM.insert (connectedServer smp) sessId
+              pure Nothing
+          where
+            sessId = sessionId $ thParams smp
+
+    withConnectSlot :: (Bool -> IO a) -> IO a
+    withConnectSlot =
+      E.bracket
+        (atomically $ takeSlot connectingClients $ fromMaybe maxBound $ maxConnectingClients agentCfg)
+        (`when` atomically (modifyTVar' connectingClients (subtract 1)))
+
+    takeSlot :: TVar Int -> Int -> STM Bool
+    takeSlot slots limit = stateTVar' slots $ \n -> if n < limit then (True, n + 1) else (False, n)
 
 isOwnServer :: SMPClientAgent p -> SMPServer -> OwnServer
 isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
