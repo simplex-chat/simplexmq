@@ -414,13 +414,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           let snIds' = foldl' (\m (sId, nId) -> M.alter (Just . maybe (S.singleton nId) (S.insert nId)) sId m) M.empty snIds
            in foldr addService ([], ntfs) (M.assocs snIds')
     where
-      addService ::
-        (Maybe ServiceId, S.Set NotifierId) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)])
-      addService (serviceId, snIds) (ssNtfs, ntfs') =
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-         in ((serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf nsIds ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
+        Just serviceId -> (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
+        Nothing -> (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =

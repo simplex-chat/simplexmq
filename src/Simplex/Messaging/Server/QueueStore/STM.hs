@@ -357,10 +357,12 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         ssNtfs' = (Nothing, ntfs') : ssNtfs
     pure $ Right (ssNtfs', deleteNtfs)
     where
-      addService (ssNtfs, ntfs') (serviceId, s) = do
-        (snIds, _) <- readTVarIO $ serviceNtfQueues s
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-        pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf ns qs ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
+        Just q -> do
+          qr <- readTVarIO (queueRec q)
+          let serviceId = qr >>= notifier >>= ntfServiceId
+          pure (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
+        Nothing -> pure (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
