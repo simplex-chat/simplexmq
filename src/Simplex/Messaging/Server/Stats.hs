@@ -130,6 +130,10 @@ data ServerStats = ServerStats
     pMsgFwds :: ProxyStats,
     pMsgFwdsOwn :: ProxyStats,
     pMsgFwdsRecv :: IORef Int,
+    pMsgFwdsBelow23 :: IORef Int,
+    pMsgFwdsFrom23 :: IORef Int,
+    pMsgFwdsRecvBelow23 :: IORef Int,
+    pMsgFwdsRecvFrom23 :: IORef Int,
     rcvServices :: ServiceStats,
     ntfServices :: ServiceStats,
     rcvServicesSubMsg :: IORef Int,
@@ -201,6 +205,10 @@ data ServerStatsData = ServerStatsData
     _pMsgFwds :: ProxyStatsData,
     _pMsgFwdsOwn :: ProxyStatsData,
     _pMsgFwdsRecv :: Int,
+    _pMsgFwdsBelow23 :: Int,
+    _pMsgFwdsFrom23 :: Int,
+    _pMsgFwdsRecvBelow23 :: Int,
+    _pMsgFwdsRecvFrom23 :: Int,
     _ntfServices :: ServiceStatsData,
     _rcvServices :: ServiceStatsData,
     _rcvServicesSubMsg :: Int,
@@ -273,6 +281,10 @@ newServerStats trackPending ts = do
   pMsgFwds <- newProxyStats
   pMsgFwdsOwn <- newProxyStats
   pMsgFwdsRecv <- newIORef 0
+  pMsgFwdsBelow23 <- newIORef 0
+  pMsgFwdsFrom23 <- newIORef 0
+  pMsgFwdsRecvBelow23 <- newIORef 0
+  pMsgFwdsRecvFrom23 <- newIORef 0
   rcvServices <- newServiceStats
   ntfServices <- newServiceStats
   rcvServicesSubMsg <- newIORef 0
@@ -342,6 +354,10 @@ newServerStats trackPending ts = do
         pMsgFwds,
         pMsgFwdsOwn,
         pMsgFwdsRecv,
+        pMsgFwdsBelow23,
+        pMsgFwdsFrom23,
+        pMsgFwdsRecvBelow23,
+        pMsgFwdsRecvFrom23,
         rcvServices,
         ntfServices,
         rcvServicesSubMsg,
@@ -415,6 +431,10 @@ getServerStatsData s = do
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
   _pMsgFwdsOwn <- getProxyStatsData $ pMsgFwdsOwn s
   _pMsgFwdsRecv <- readIORef $ pMsgFwdsRecv s
+  _pMsgFwdsBelow23 <- readIORef $ pMsgFwdsBelow23 s
+  _pMsgFwdsFrom23 <- readIORef $ pMsgFwdsFrom23 s
+  _pMsgFwdsRecvBelow23 <- readIORef $ pMsgFwdsRecvBelow23 s
+  _pMsgFwdsRecvFrom23 <- readIORef $ pMsgFwdsRecvFrom23 s
   _rcvServices <- getServiceStatsData $ rcvServices s
   _ntfServices <- getServiceStatsData $ ntfServices s
   _rcvServicesSubMsg <- readIORef $ rcvServicesSubMsg s
@@ -484,6 +504,10 @@ getServerStatsData s = do
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
+        _pMsgFwdsBelow23,
+        _pMsgFwdsFrom23,
+        _pMsgFwdsRecvBelow23,
+        _pMsgFwdsRecvFrom23,
         _rcvServices,
         _ntfServices,
         _rcvServicesSubMsg,
@@ -556,6 +580,10 @@ setServerStats s d = do
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
   setProxyStats (pMsgFwdsOwn s) $! _pMsgFwdsOwn d
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
+  writeIORef (pMsgFwdsBelow23 s) $! _pMsgFwdsBelow23 d
+  writeIORef (pMsgFwdsFrom23 s) $! _pMsgFwdsFrom23 d
+  writeIORef (pMsgFwdsRecvBelow23 s) $! _pMsgFwdsRecvBelow23 d
+  writeIORef (pMsgFwdsRecvFrom23 s) $! _pMsgFwdsRecvFrom23 d
   setServiceStats (rcvServices s) $! _rcvServices d
   setServiceStats (ntfServices s) $! _ntfServices d
   writeIORef (rcvServicesSubMsg s) $! _rcvServicesSubMsg d
@@ -633,6 +661,10 @@ instance StrEncoding ServerStatsData where
         "pMsgFwdsOwn:",
         strEncode (_pMsgFwdsOwn d),
         "pMsgFwdsRecv=" <> strEncode (_pMsgFwdsRecv d),
+        "pMsgFwdsBelow23=" <> strEncode (_pMsgFwdsBelow23 d),
+        "pMsgFwdsFrom23=" <> strEncode (_pMsgFwdsFrom23 d),
+        "pMsgFwdsRecvBelow23=" <> strEncode (_pMsgFwdsRecvBelow23 d),
+        "pMsgFwdsRecvFrom23=" <> strEncode (_pMsgFwdsRecvFrom23 d),
         "rcvServices:",
         strEncode (_rcvServices d),
         "ntfServices:",
@@ -707,6 +739,10 @@ instance StrEncoding ServerStatsData where
     _pMsgFwds <- proxyStatsP "pMsgFwds:"
     _pMsgFwdsOwn <- proxyStatsP "pMsgFwdsOwn:"
     _pMsgFwdsRecv <- opt "pMsgFwdsRecv="
+    _pMsgFwdsBelow23 <- opt "pMsgFwdsBelow23="
+    _pMsgFwdsFrom23 <- opt "pMsgFwdsFrom23="
+    _pMsgFwdsRecvBelow23 <- opt "pMsgFwdsRecvBelow23="
+    _pMsgFwdsRecvFrom23 <- opt "pMsgFwdsRecvFrom23="
     _rcvServices <- serviceStatsP "rcvServices:"
     _ntfServices <- serviceStatsP "ntfServices:"
     _rslvStats <-
@@ -766,6 +802,10 @@ instance StrEncoding ServerStatsData where
           _pMsgFwds,
           _pMsgFwdsOwn,
           _pMsgFwdsRecv,
+          _pMsgFwdsBelow23,
+          _pMsgFwdsFrom23,
+          _pMsgFwdsRecvBelow23,
+          _pMsgFwdsRecvFrom23,
           _rcvServices,
           _ntfServices,
           _rcvServicesSubMsg = 0,

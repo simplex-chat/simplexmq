@@ -38,10 +38,12 @@ import qualified Simplex.Messaging.Client.Agent as CA
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import Simplex.Messaging.Encoding.String (strDecode)
 import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, QueueReqData (..), RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
+import Simplex.Messaging.Server.Stats (ServerStatsData (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
@@ -105,6 +107,8 @@ smpProxyTests = do
       testRepeatedFwdCommand
     it "relay closes connection after limit of forwarded commands below version 23" $ \_ ->
       testFwdCorrIdsLimit
+    it "proxy and relay count forwarded commands by version" $ \_ ->
+      testFwdVersionStats
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
@@ -556,6 +560,31 @@ testFwdCorrIdsLimit =
     Right _ <- forwardNew
     Right _ <- forwardNew
     forwardNew `shouldReturn` Left (PCENetworkError SMP.NEFailedError)
+
+testFwdVersionStats :: HasTestEnv => IO ()
+testFwdVersionStats = do
+  withSmpServerConfigOn (transport @TLS) statsCfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer Nothing
+    forM_ [fwdNoncesSMPVersion, fwdNoncesSMPVersion, prevVersion fwdNoncesSMPVersion] $ \v ->
+      runExceptT (proxySMPMessage pc NRMInteractive sess {prVersion = v} Nothing (SMP.EntityId "1234") noMsgFlags "hello") `shouldReturn` Left (PCEProtocolError SMP.AUTH)
+    threadDelay 1500000
+    ms <- map B.words . B.lines <$> B.readFile testPrometheusMetricsFile
+    let metric name = [v | n : v : _ <- ms, n == name]
+    map
+      metric
+      [ "simplex_smp_relay_messages_requests_version{version=\"below_23\"}",
+        "simplex_smp_relay_messages_requests_version{version=\"from_23\"}",
+        "simplex_smp_relay_messages_received_version{version=\"below_23\"}",
+        "simplex_smp_relay_messages_received_version{version=\"from_23\"}"
+      ]
+      `shouldBe` [["1"], ["2"], ["1"], ["2"]]
+  Right ServerStatsData {_pMsgFwdsBelow23, _pMsgFwdsFrom23, _pMsgFwdsRecvBelow23, _pMsgFwdsRecvFrom23} <- strDecode <$> B.readFile testServerStatsBackupFile
+  (_pMsgFwdsBelow23, _pMsgFwdsFrom23, _pMsgFwdsRecvBelow23, _pMsgFwdsRecvFrom23) `shouldBe` (1, 2, 1, 2)
+  where
+    statsCfg = updateCfg proxyCfg $ \cfg_ -> cfg_ {serverStatsBackupFile = Just testServerStatsBackupFile, prometheusInterval = Just 1}
 
 newForwardedPing :: SMPClient -> IO (VersionSMP -> IO (Either SMPClientError (Maybe C.CbNonce, SMP.EncResponse)))
 newForwardedPing rc = do
