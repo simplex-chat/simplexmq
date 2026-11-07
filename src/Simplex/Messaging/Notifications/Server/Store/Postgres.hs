@@ -31,7 +31,6 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     getUsedSMPServers,
     getNtfServiceCredentials,
     setNtfServiceCredentials,
-    updateNtfServiceId,
     getServerNtfSubscriptions,
     findNtfSubscription,
     getNtfSubscription,
@@ -88,7 +87,6 @@ import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..))
 import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store.Migrations
@@ -105,6 +103,7 @@ import Text.Hex (decodeHex)
 #if !defined(dbPostgres)
 import qualified Data.X509 as X
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (eitherToMaybe)
 #endif
@@ -315,44 +314,6 @@ setNtfServiceCredentials db srvId (kh, (cert, pk)) =
       WHERE smp_server_id = ?
     |]
     (kh, cert, pk, srvId)
-
-updateNtfServiceId :: DB.Connection -> SMPServer -> Maybe ServiceId -> IO ()
-updateNtfServiceId db srv newServiceId_ = do
-  maybeFirstRow id (getSMPServiceForUpdate_ db srv) >>= mapM_ updateService
-  where
-    updateService (srvId, currServiceId_) = unless (currServiceId_ == newServiceId_) $ do
-      when (isJust currServiceId_) $ do
-        void $ removeServiceAssociation_ db srvId
-        logError $ "STORE: service ID for " <> enc (host srv) <> toServiceId <> ", removed sub associations"
-      void $ case newServiceId_ of
-        Just newServiceId ->
-          DB.execute
-            db
-            [sql|
-              UPDATE smp_servers
-              SET ntf_service_id = ?,
-                  smp_notifier_count = 0,
-                  smp_notifier_ids_hash = DEFAULT
-              WHERE smp_server_id = ?
-            |]
-            (newServiceId, srvId)
-        Nothing ->
-          DB.execute
-            db
-            [sql|
-              UPDATE smp_servers
-              SET ntf_service_id = NULL,
-                  ntf_service_cert = NULL,
-                  ntf_service_cert_hash = NULL,
-                  ntf_service_priv_key = NULL,
-                  smp_notifier_count = 0,
-                  smp_notifier_ids_hash = DEFAULT
-              WHERE smp_server_id = ?
-            |]
-            (Only srvId)
-    toServiceId = maybe " removed" ((" changed to " <>) . enc) newServiceId_
-    enc :: StrEncoding a => a -> Text
-    enc = decodeLatin1 . strEncode
 
 getServerNtfSubscriptions :: NtfPostgresStore -> Int64 -> Maybe NtfSubscriptionId -> Int -> IO (Either ErrorType [ServerNtfSub])
 getServerNtfSubscriptions st srvId afterSubId_ count =

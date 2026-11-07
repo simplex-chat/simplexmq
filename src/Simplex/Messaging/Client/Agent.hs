@@ -194,8 +194,7 @@ newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize
       }
 
 data DBService = DBService
-  { getCredentials :: SMPServer -> IO (Either SMPClientError ServiceCredentials),
-    updateServiceId :: SMPServer -> Maybe ServiceId -> IO (Either SMPClientError ())
+  { getCredentials :: SMPServer -> IO (Either SMPClientError ServiceCredentials)
   }
 
 -- | Get or create SMP client for SMPServer
@@ -258,10 +257,7 @@ connectClient :: SMPClientAgent p -> SMPServer -> SMPClientVar -> IO (Either SMP
 connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, msgQ, randomDrg, startedAt} srv v = case dbService of
   Just dbs -> runExceptT $ do
     creds <- ExceptT $ getCredentials dbs srv
-    smp <- ExceptT $ getClient cfg {serviceCredentials = Just creds}
-    whenM (atomically $ activeClientSession ca smp srv) $
-      ExceptT $ updateServiceId dbs srv $ smpClientServiceId smp
-    pure smp
+    ExceptT $ getClient cfg {serviceCredentials = Just creds}
   Nothing -> getClient cfg
   where
     cfg = smpCfg agentCfg
