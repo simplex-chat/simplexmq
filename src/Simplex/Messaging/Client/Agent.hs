@@ -238,8 +238,8 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, conne
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
-    newSMPClient v = withConnectSlot $ \slot -> do
-      r <- if slot then connectClient ca srv v `E.catches` clientHandlers else pure $ Left PCEResponseTimeout
+    newSMPClient v = withConnectSlot $ \slot -> E.mask $ \restore -> do
+      r <- if slot then restore (connectClient ca srv v) `E.catches` clientHandlers else pure $ Left PCEResponseTimeout
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
