@@ -286,6 +286,14 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         mapM_ (removeNotifier st) $ notifier q
         pure q
 
+  getServiceId :: STMQueueStore q -> SMPServiceRole -> CertFingerprint -> IO (Either ErrorType (Maybe ServiceId))
+  getServiceId st serviceRole fp =
+    traverse checkRole <$> (TM.lookupIO fp (serviceCerts st) $>>= (`TM.lookupIO` services st))
+    where
+      checkRole STMService {serviceRec = ServiceRec {serviceId, serviceRole = role}}
+        | role == serviceRole = Right serviceId
+        | otherwise = Left SERVICE
+
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
   getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
     TM.lookupIO fp serviceCerts
@@ -363,7 +371,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
     TM.lookupIO serviceId (services st) >>=
-      maybe (pure $ Left AUTH) (fmap (Right . first (fromIntegral . S.size)) . readTVarIO . serviceSel)
+      maybe (pure $ Right (0, mempty)) (fmap (Right . first (fromIntegral . S.size)) . readTVarIO . serviceSel)
     where
       serviceSel :: STMService -> TVar (Set QueueId, IdsHash)
       serviceSel = case party of
