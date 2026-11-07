@@ -258,12 +258,13 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
   addQueueNotifier :: PostgresQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NtfCreds))
   addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId, notifierKey, rcvNtfDhSecret} =
     withQueueRec sq $ \q -> do
-      assertUpdated $ withDB "addQueueNotifier" st $ \db ->
-        E.try (update db) >>= bimapM handleDuplicate pure
+      nc_ <- withDB "addQueueNotifier" st $ \db ->
+        getQueueRecForUpdate db rId $>>= \QueueRec {notifier} ->
+          E.try (update db) >>= bimapM handleDuplicate (\_ -> pure notifier)
       let !q' = q {notifier = Just ntfCreds}
       atomically $ writeTVar (queueRec sq) $ Just q'
       withLog "addQueueNotifier" st $ \s -> logAddNotifier s rId ntfCreds
-      pure $ notifier q
+      pure nc_
     where
       rId = recipientId sq
       update db =
@@ -278,12 +279,12 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   deleteQueueNotifier :: PostgresQueueStore q -> q -> IO (Either ErrorType (Maybe NtfCreds))
   deleteQueueNotifier st sq =
-    withQueueRec sq $ \q ->
-      forM (notifier q) $ \nc -> do
-        assertUpdated $ withDB' "deleteQueueNotifier" st update
-        atomically $ writeTVar (queueRec sq) $ Just q {notifier = Nothing}
-        withLog "deleteQueueNotifier" st (`logDeleteNotifier` rId)
-        pure nc
+    withQueueRec sq $ \q -> do
+      nc_ <- withDB "deleteQueueNotifier" st $ \db ->
+        getQueueRecForUpdate db rId $>>= \QueueRec {notifier} -> Right notifier <$ forM_ notifier (\_ -> update db)
+      atomically $ writeTVar (queueRec sq) $ Just q {notifier = Nothing}
+      forM_ nc_ $ \_ -> withLog "deleteQueueNotifier" st (`logDeleteNotifier` rId)
+      pure nc_
     where
       rId = recipientId sq
       update db =
@@ -328,10 +329,10 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
 
   deleteStoreQueue :: PostgresQueueStore q -> q -> IO (Either ErrorType QueueRec)
   deleteStoreQueue st sq = E.uninterruptibleMask_ $ runExceptT $ do
-    q <- ExceptT $ readQueueRecIO qr
     RoundedSystemTime ts <- liftIO getSystemDate
-    assertUpdated $ withDB' "deleteStoreQueue" st $ \db ->
-      DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (ts, rId)
+    q <- withDB "deleteStoreQueue" st $ \db ->
+      getQueueRecForUpdate db rId $>>= \q ->
+        Right q <$ DB.execute db "UPDATE msg_queues SET deleted_at = ? WHERE recipient_id = ? AND deleted_at IS NULL" (ts, rId)
     atomically $ writeTVar qr Nothing
     withLog "deleteStoreQueue" st (`logDeleteQueue` rId)
     pure q
@@ -526,6 +527,11 @@ foldQueueRecs_ foldRecs tty st f = do
   pure r
   where
     progress i = "Processed: " <> show i <> " records"
+
+getQueueRecForUpdate :: DB.Connection -> RecipientId -> IO (Either ErrorType QueueRec)
+getQueueRecForUpdate db rId =
+  firstRow (snd . rowToQueueRec) AUTH $
+    DB.query db (queueRecQuery <> " WHERE recipient_id = ? AND deleted_at IS NULL FOR UPDATE") (Only rId)
 
 queueRecQuery :: Query
 queueRecQuery =

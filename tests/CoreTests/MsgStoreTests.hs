@@ -78,6 +78,7 @@ msgStoreTests = do
       it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
       it "should return the previous notifier service and not change a replaced notifier" $ withMsgStore cfg testSetNotifierService
+      it "should return the current notifier and services of the replaced notifier and deleted queue" $ withMsgStore cfg testRemovedNotifier
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
@@ -254,6 +255,29 @@ testSetNotifierService ms = do
     (_, QueueRec {notifier}) <- ExceptT $ getQueueRec ms SNotifier nId'
     liftIO $ (ntfServiceId <$> notifier) `shouldBe` Just Nothing
     void $ ExceptT $ deleteQueue ms q
+
+testRemovedNotifier :: forall s. MsgStoreClass s => s -> IO ()
+testRemovedNotifier ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  nc@NtfCreds {notifierId = nId} <- testNtfCreds g
+  sr <- newTestServiceRec g
+  rcvSr <- newTestServiceRec g
+  let st = queueStore ms
+      nId' = EntityId "mnop"
+      removed = fmap $ fmap $ fmap $ \NtfCreds {notifierId, ntfServiceId} -> (notifierId, ntfServiceId)
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    serviceId <- ExceptT $ getCreateService @(StoreQueue s) st sr
+    rcvSrvId <- ExceptT $ getCreateService @(StoreQueue s) st rcvSr {serviceRole = SRMessaging}
+    void $ ExceptT $ addQueueNotifier st q nc
+    [q1, q2, q3, q4] <- replicateM 4 $ ExceptT $ getQueue ms SRecipient rId
+    void $ ExceptT $ setQueueServices st SNotifierService (Just serviceId) $ M.singleton nId q
+    void $ ExceptT $ setQueueServices st SRecipientService (Just rcvSrvId) $ M.singleton rId q
+    liftIO $ removed (addQueueNotifier st q1 nc {notifierId = nId'}) `shouldReturn` Right (Just (nId, Just serviceId))
+    liftIO $ removed (deleteQueueNotifier st q2) `shouldReturn` Right (Just (nId', Nothing))
+    liftIO $ removed (deleteQueueNotifier st q3) `shouldReturn` Right Nothing
+    liftIO $ fmap (fmap $ \QueueRec {notifier, rcvServiceId} -> (notifierId <$> notifier, rcvServiceId)) (deleteQueue ms q4) `shouldReturn` Right (Nothing, Just rcvSrvId)
 
 testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
 testLinkDataSecuredQueue ms = do

@@ -2251,9 +2251,9 @@ client
           writeTVar delivered $ Just (msgId, ts)
 
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
-        delQueueAndMsgs (q, QueueRec {rcvServiceId}) = do
+        delQueueAndMsgs (q, _) = do
           liftIO (deleteQueue ms q) >>= \case
-            Right qr -> do
+            Right qr@QueueRec {rcvServiceId} -> do
               -- Possibly, the same should be done if the queue is suspended, but currently we do not use it
               -- queue is usually deleted by the same client that is currently subscribed,
               -- we delete subscription here, so the client with no subscriptions can be disconnected.
