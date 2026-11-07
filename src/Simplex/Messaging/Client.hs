@@ -35,7 +35,6 @@ module Simplex.Messaging.Client
     ProxiedRelay (..),
     getProtocolClient,
     closeProtocolClient,
-    pClientSentCommandsCount,
     protocolClientServer,
     protocolClientServer',
     transportHost',
@@ -121,6 +120,7 @@ module Simplex.Messaging.Client
     mkTransmission,
     authTransmission,
     pClientSndQ,
+    pClientSentCommandsCount,
     smpClientStub,
     sendProtocolCommand_,
 

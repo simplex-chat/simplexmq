@@ -47,8 +47,10 @@ batchingTests = do
     it "should break on large message" testClientBatchWithLargeMessage
   describe "tDecodeServer" $
     it "should copy IDs out of received block" testDecodeServerCopiesIds
-  describe "sendProtocolCommand_" $
+  describe "sendProtocolCommand_" $ do
     it "should not queue command after timeout or cancellation" testCommandNotQueuedAfterEnd
+    it "should not keep timed out command" testTimedOutCommandNotKept
+    it "should not keep command of cancelled thread" testCancelledCommandNotKept
 
 testBatchSubscriptions :: IO ()
 testBatchSubscriptions = do
@@ -203,6 +205,22 @@ testCommandNotQueuedAfterEnd = do
   replicateM_ 2 $ atomically $ readTBQueue sndQ
   threadDelay 100000
   atomically (lengthTBQueue sndQ) `shouldReturn` 98
+
+testTimedOutCommandNotKept :: IO ()
+testTimedOutCommandNotKept = do
+  c <- testClientStub
+  runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) Nothing NoEntity (Cmd SIdleClient PING))
+    `shouldReturn` Left PCEResponseTimeout
+  pClientSentCommandsCount c `shouldReturn` 0
+
+testCancelledCommandNotKept :: IO ()
+testCancelledCommandNotKept = do
+  c <- testClientStub
+  a <- async $ runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (Cmd SIdleClient PING)
+  threadDelay 100000
+  pClientSentCommandsCount c `shouldReturn` 1
+  cancel a
+  pClientSentCommandsCount c `shouldReturn` 0
 
 sharesBuffer :: ByteString -> ByteString -> IO Bool
 sharesBuffer block s =
