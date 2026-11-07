@@ -735,7 +735,13 @@ newRandom :: IO (TVar ChaChaDRG)
 newRandom = newTVarIO =<< drgNew
 
 newRandomDRG :: TVar ChaChaDRG -> STM (TVar ChaChaDRG)
-newRandomDRG g = newTVar =<< stateTVar g (`withDRG` drgNew)
+newRandomDRG g = newTVar =<< stateDRG g (`withDRG` drgNew)
+
+stateDRG :: TVar ChaChaDRG -> (ChaChaDRG -> (a, ChaChaDRG)) -> STM a
+stateDRG gVar f = do
+  (a, g) <- f <$> readTVar gVar
+  g `seq` writeTVar gVar g
+  pure a
 
 generateAKeyPair :: AlgorithmI a => SAlgorithm a -> TVar ChaChaDRG -> STM AKeyPair
 generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair g
@@ -753,7 +759,7 @@ generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaCh
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
 
 generateKeyPair :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (KeyPair a)
-generateKeyPair g = stateTVar g (`withDRG` generateKeyPair_)
+generateKeyPair g = stateDRG g (`withDRG` generateKeyPair_)
 
 generateKeyPair_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (KeyPair a)
 generateKeyPair_ = do
@@ -761,7 +767,7 @@ generateKeyPair_ = do
   pure (toPublic pk, pk)
 
 generatePrivateKey :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (PrivateKey a)
-generatePrivateKey g = stateTVar g (`withDRG` generatePrivateKey_)
+generatePrivateKey g = stateDRG g (`withDRG` generatePrivateKey_)
 
 generatePrivateKey_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (PrivateKey a)
 generatePrivateKey_ = case sAlgorithm @a of
@@ -1436,7 +1442,7 @@ randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+randomBytes n gVar = stateDRG gVar $ randomBytesGenerate n
 
 reverseNonce :: CbNonceI n => n -> CbNonce
 reverseNonce = CryptoBoxNonce . B.reverse . unCbNonce
