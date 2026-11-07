@@ -137,6 +137,7 @@ module Simplex.Messaging.Agent.Client
     waitForWork,
     hasWorkToDo,
     hasWorkToDo',
+    noWorkToDo,
     withWork,
     withWork_,
     withWorkItems,

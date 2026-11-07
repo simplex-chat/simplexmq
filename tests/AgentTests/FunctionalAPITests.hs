@@ -576,6 +576,10 @@ functionalAPITests ps = do
       testFastSwitchStallingNewServer ps
     it "should delete the new queue when the switch is aborted while the queue is created" $
       testSwitchChangedWhileNewQueue abortConnectionSwitch "switchConnection: aborted" ps
+    it "should delete the new queue when ratchet synchronization starts while the queue is created" $
+      testSwitchChangedWhileNewQueue (\c connId -> synchronizeRatchet c connId PQSupportOn True) "switchConnection: send prohibited" ps
+    it "should secure the new queue and complete the switch after ratchet synchronization" $
+      testFastSwitchRatchetSyncWhileSecuring ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -4006,19 +4010,18 @@ testFastSwitchStallingNewServer ps@(t, ASType qsType _) =
 testSwitchChangedWhileNewQueue :: (HasCallStack, HasTestEnv) => (AgentClient -> ConnId -> AE ConnectionStats) -> String -> (ASrvTransport, AStoreType) -> IO ()
 testSwitchChangedWhileNewQueue changeSwitch err ps@(t, _) =
   withSmpServer ps $
-    withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
-        (aId, _) <- runRight $ makeConnection a b
-        setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
-        withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
-          withGatedServerOn testPort2 testPort3 $ \accepted opened ->
-            withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
-              timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
-              void . runRight $ changeSwitch b aId
-              atomically $ putTMVar opened ()
-              timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED err)
-              runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
-              waitQueueDeleted testStoreLogFile2
+    withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+          withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
+            timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+            void . runRight $ changeSwitch b aId
+            atomically $ putTMVar opened ()
+            timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED err)
+            runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
+            waitQueueDeleted testStoreLogFile2
 
 waitQueueDeleted :: HasCallStack => FilePath -> IO ()
 waitQueueDeleted storeLogFile = go (50 :: Int)
@@ -4031,6 +4034,29 @@ waitQueueDeleted storeLogFile = go (50 :: Int)
           | n > 0 -> threadDelay 100000 >> go (n - 1)
           | otherwise -> expectationFailure $ "the created queue was not deleted: " <> show counts
     count tag = length . filter (tag `B.isPrefixOf`)
+
+testFastSwitchRatchetSyncWhileSecuring :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchRatchetSyncWhileSecuring ps@(t, ASType qsType _) = withSmpServer ps $ do
+  a <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  (aId, bId) <- withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight $ makeConnection a b
+  setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
+  withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> runRight_ $ do
+    _ <- switchConnectionAsync a "" bId
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+  withAgent 3 agentCfg initAgentServers testDB2 $ \b -> do
+    runRight_ $ do
+      subscribeConnection b aId
+      phaseSnd b aId SPStarted [Just SSSecuringQueue, Nothing]
+    disposeAgentClient a
+    ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet b aId PQSupportOn True
+    ratchetSyncState `shouldBe` RSStarted
+    withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
+      threadDelay 3000000
+      withAgent 4 agentCfg initAgentServers testDB $ \a' -> do
+        runRight_ $ subscribeConnection a' bId
+        concurrently_
+          (timeout 20_000000 (runRight_ $ drainSwitchCompleted a' bId QDRcv) `shouldReturn` Just ())
+          (timeout 20_000000 (runRight_ $ drainSwitchCompleted b aId QDSnd) `shouldReturn` Just ())
 
 endSwitchOnNewQueue :: (HasCallStack, HasTestEnv) => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
 endSwitchOnNewQueue a b = do

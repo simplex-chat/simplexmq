@@ -2381,7 +2381,10 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               case find (sameQueue (srv, rId)) rqs of
                 Just rq'@RcvQueue {status, dbReplaceQueueId = Just replaceQId} ->
                   case find ((replaceQId ==) . dbQId) rqs of
-                    Just rq1 -> if status /= Confirmed then Nothing <$ withStore' c (`deleteCommand` cmdId) else Just <$> a cData rqs sqs rq' rq1
+                    Just rq1
+                      | status /= Confirmed -> Nothing <$ withStore' c (`deleteCommand` cmdId)
+                      | ratchetSyncSendProhibited cData -> Nothing <$ postponeCommand
+                      | otherwise -> Just <$> a cData rqs sqs rq' rq1
                     _ -> Nothing <$ internalErr "ICQSecure: no switching queue found"
                 _ -> Nothing <$ internalErr "ICQSecure: queue address not found in connection"
         ICQSndSecure sId ->
@@ -2409,13 +2412,14 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             withSecuringQueues srv a = withDuplexConn $ \cData rqs sqs ->
               case findQ (srv, sId) sqs of
                 Nothing -> Nothing <$ internalErr "ICQSndSecure: queue address not found in connection"
-                Just sq'@SndQueue {dbReplaceQueueId} ->
-                  case dbReplaceQueueId >>= \replaceQId -> find ((replaceQId ==) . dbQId) sqs of
-                    Just oldSq -> Just <$> a cData rqs sqs sq' oldSq
-                    Nothing -> do
-                      forM_ (find (\q -> sndSwchStatus q == Just SSSendingQEND) sqs) $ \oldSq ->
-                        void $ enqueueMessages c cData [oldSq, sq'] SMP.noMsgFlags $ QEND [qAddress oldSq]
-                      pure Nothing
+                Just sq'@SndQueue {dbReplaceQueueId}
+                  | ratchetSyncSendProhibited cData -> Nothing <$ postponeCommand
+                  | otherwise -> case dbReplaceQueueId >>= \replaceQId -> find ((replaceQId ==) . dbQId) sqs of
+                      Just oldSq -> Just <$> a cData rqs sqs sq' oldSq
+                      Nothing -> do
+                        forM_ (find (\q -> sndSwchStatus q == Just SSSendingQEND) sqs) $ \oldSq ->
+                          void $ enqueueMessages c cData [oldSq, sq'] SMP.noMsgFlags $ QEND [qAddress oldSq]
+                        pure Nothing
         ICQDelete rId -> do
           withServer $ \srv -> tryAtomicCommand $ do
             rq_ <- withConnLock c connId "ICQDelete" . withRemovedQueue srv $ \_ rq' _ _ -> pure rq'
@@ -2487,6 +2491,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             Right CCDeleted -> pure ()
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
+        postponeCommand = do
+          liftIO $ noWorkToDo doWork
+          otherCmds <- withStore c $ \db -> runExceptT $ do
+            liftIO $ deleteCommand db cmdId
+            pending <- liftIO $ either (const True) isJust <$> getPendingServerCommand db connId server_
+            pending <$ ExceptT (createCommand db corrId connId server_ command)
+          when otherCmds . atomically $ hasWorkToDo' doWork
         notify :: forall e. AEntityI e => AEvent e -> AM ()
         notify cmd =
           let t = (corrId, connId, AEvt (sAEntity @e) cmd)
@@ -2931,6 +2942,9 @@ switchDuplexConnection c nm cmdId_ (DuplexConnection ConnData {connId, userId} r
       SomeConn _ (DuplexConnection cData rqs' sqs') | Just rq1 <- findQ (qAddress rq) rqs' -> do
         rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq' SMSubscribe
         when (rcvSwchStatus rq1 /= Just RSSwitchStarted) $ deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: aborted")
+        when (ratchetSyncSendProhibited cData) $ do
+          void $ withStore' c $ \db -> setRcvSwitchStatus db rq1 Nothing
+          deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: send prohibited")
         lift $ addNewQueueSubscription c rq'' tSess sessId serviceId_
         void . enqueueMessages c cData sqs' SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
         rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 (Just RSSendingQADD) <* mapM_ (deleteCommand db) cmdId_
@@ -3796,6 +3810,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                     cStats <- connectionStats c conn''
                                     notify $ RSYNC RSOk Nothing cStats
                                     withStore' c $ \db -> setConnRatchetSync db connId RSOk
+                                    lift . mapM_ (mapM_ (getAsyncCmdWorker True c connId) . snd) =<< withStore' c (`getPendingCommandServers` [connId])
                                     pure conn''
                                 | otherwise = pure conn'
                           Right Nothing -> prohibited "msg: bad agent msg" >> ack
