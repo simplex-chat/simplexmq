@@ -544,7 +544,7 @@ testFwdVersionStats = do
     ts <- getCurrentTime
     pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
     sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer Nothing
-    forM_ [fwdNoncesSMPVersion, fwdNoncesSMPVersion, prevVersion fwdNoncesSMPVersion] $ \v ->
+    forM_ ([fwdNoncesSMPVersion, fwdNoncesSMPVersion, prevVersion fwdNoncesSMPVersion] :: [VersionSMP]) $ \v ->
       runExceptT (proxySMPMessage pc NRMInteractive sess {prVersion = v} Nothing (SMP.EntityId "1234") noMsgFlags "hello") `shouldReturn` Left (PCEProtocolError SMP.AUTH)
     threadDelay 1500000
     ms <- map B.words . B.lines <$> B.readFile testPrometheusMetricsFile
