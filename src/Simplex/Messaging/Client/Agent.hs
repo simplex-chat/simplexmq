@@ -286,7 +286,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, conne
         (`when` atomically (modifyTVar' connectingClients (subtract 1)))
 
     takeSlot :: TVar Int -> Int -> STM Bool
-    takeSlot slots limit = stateTVar slots $ \n -> if n < limit then (True, n + 1) else (False, n)
+    takeSlot slots limit = stateTVar' slots $ \n -> if n < limit then (True, n + 1) else (False, n)
 
 isOwnServer :: SMPClientAgent p -> SMPServer -> OwnServer
 isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
