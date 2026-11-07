@@ -185,8 +185,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     stopServer s
     liftIO $ exitSuccess
   raceAny_
-    ( serverThread "server subscribers" s subscribers subscriptions serviceSubsCount (Just cancelSub)
-        : serverThread "server ntfSubscribers" s ntfSubscribers ntfSubscriptions ntfServiceSubsCount Nothing
+    ( serverThread "server subscribers" s subscribers subscriptions serviceSubscribed serviceSubsCount (Just cancelSub)
+        : serverThread "server ntfSubscribers" s ntfSubscribers ntfSubscriptions ntfServiceSubscribed ntfServiceSubsCount Nothing
         : deliverNtfsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
@@ -253,10 +253,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       Server s ->
       (Server s -> ServerSubscribers s) ->
       (Client s -> TMap QueueId sub) ->
+      (Client s -> TVar Bool) ->
       (Client s -> TVar (Int64, IdsHash)) ->
       Maybe (sub -> IO ()) ->
       M s ()
-    serverThread label srv srvSubscribers clientSubs clientServiceSubs unsub_ = do
+    serverThread label srv srvSubscribers clientSubs clientServiceSubscribed clientServiceSubs unsub_ = do
       labelMyThread label
       liftIO . forever $ do
         -- Reading clients outside of `updateSubscribers` transaction to avoid transaction re-evaluation on each new connected client.
@@ -318,6 +319,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             cancelServiceSubs :: ServiceId -> Maybe (Client s) -> STM [PrevClientSub s]
             cancelServiceSubs serviceId =
               checkAnotherClient $ \c -> do
+                writeTVar (clientServiceSubscribed c) False
                 changedSubs@(n, idsHash) <- swapTVar (clientServiceSubs c) (0, mempty)
                 pure [(c, CSADecreaseSubs changedSubs, (serviceId, ENDS n idsHash))]
             checkAnotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]

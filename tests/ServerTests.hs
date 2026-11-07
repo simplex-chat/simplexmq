@@ -101,6 +101,7 @@ serverTests = do
     testServiceDowngradeConnected
     testServiceSubsReplacesConnection
     testServiceRepeatedSUB
+    testServiceSubsReturnsToConnection
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -1218,6 +1219,48 @@ testServiceRepeatedSUB =
               ]
           Resp "" _ (ENDS n idsHash'') <- tGet1 sh1
           (n, idsHash'') `shouldBe` (1, idsHash)
+
+testServiceSubsReturnsToConnection :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsReturnsToConnection =
+  it "should move the service subscription back to the replaced connection when it subscribes again" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
+      let idsHash = queueIdsHash [rId]
+          subscribeService sh corrId = do
+            signSend_ sh aServicePK Nothing (corrId, serviceId, SUBS 1 idsHash)
+            void $
+              receiveInAnyOrder
+                sh
+                [ \case
+                    Resp corrId' serviceId' (SOKS n idsHash') | corrId' == CorrId corrId -> do
+                      (serviceId', n, idsHash') `shouldBe` (serviceId, 1, idsHash)
+                      pure $ Just ()
+                    _ -> pure Nothing,
+                  \case
+                    Resp "" NoEntity ALLS -> pure $ Just ()
+                    _ -> pure Nothing
+                ]
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1 -> do
+        subscribeService sh1 "2"
+        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
+          subscribeService sh2 "3"
+          Resp "" _ (ENDS 1 _) <- tGet1 sh1
+          subscribeService sh1 "4"
+          Resp "" _ (ENDS 1 _) <- tGet1 sh2
+          Resp "5" _ OK <- sendRecv h ("", "5", sId, _SEND "hello")
+          Resp "" _ (Msg mId msg) <- tGet1 sh1
+          dec mId msg `shouldBe` Right "hello"
+          Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg sh2
+          pure ()
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
