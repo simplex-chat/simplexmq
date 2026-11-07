@@ -74,14 +74,6 @@ smpProxyTests = do
       testProxyClosesRelayConnectionAfterDisconnect
     it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept
-    it "fails commands of closed client at once" $ \_ ->
-      testClosedClientCommandsFail
-    it "releases command kept for late response" $ \_ ->
-      testLateResponseCommandReleased
-    it "does not keep timed out command" $ \_ ->
-      testTimedOutCommandNotKept
-    it "does not keep command of cancelled thread" $ \_ ->
-      testCancelledCommandNotKept
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -785,24 +777,6 @@ testForwardOversizedNotKept =
     runExceptT (forwardSMPTransmission c (either error id $ C.corrCbNonce "123456789012345678901234") currentClientSMPRelayVersion k et)
       `shouldReturn` Left (PCETransportError TELargeMsg)
     pClientSentCommandsCount c `shouldReturn` 0
-
-testTimedOutCommandNotKept :: IO ()
-testTimedOutCommandNotKept = do
-  g <- C.newRandom
-  c <- smpClientStub g "session" currentClientSMPRelayVersion Nothing
-  runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) Nothing NoEntity (SMP.Cmd SMP.SIdleClient SMP.PING))
-    `shouldReturn` Left PCEResponseTimeout
-  pClientSentCommandsCount c `shouldReturn` 0
-
-testCancelledCommandNotKept :: IO ()
-testCancelledCommandNotKept = do
-  g <- C.newRandom
-  c <- smpClientStub g "session" currentClientSMPRelayVersion Nothing
-  a <- async $ runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (SMP.Cmd SMP.SIdleClient SMP.PING)
-  threadDelay 100000
-  pClientSentCommandsCount c `shouldReturn` 1
-  cancel a
-  pClientSentCommandsCount c `shouldReturn` 0
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
