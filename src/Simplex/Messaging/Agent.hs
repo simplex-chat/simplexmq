@@ -354,11 +354,13 @@ disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAge
 
 -- only used in the tests
 disposeAgentClient :: AgentClient -> IO ()
-disposeAgentClient c@AgentClient {acThread, agentEnv = Env {store}} = do
+disposeAgentClient c@AgentClient {acThread, connLockViolations, agentEnv = Env {store}} = do
   t_ <- atomically (swapTVar acThread Nothing) $>>= (liftIO . deRefWeak)
   disconnectAgentClient c
   mapM_ killThread t_
   liftIO $ closeDBStore store
+  violations <- readTVarIO connLockViolations
+  unless (null violations) $ E.throwIO $ INTERNAL $ "server requests in connection locks " <> show violations
 
 resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True

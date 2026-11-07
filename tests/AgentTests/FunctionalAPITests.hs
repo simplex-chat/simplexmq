@@ -627,6 +627,9 @@ functionalAPITests ps = do
   describe "getConnectionVerifyCodes" $
     it "should return the same codes for both peers" $
       withSmpServer ps testConnectionVerifyCodes
+  describe "Connection locks" $
+    it "should prohibit server requests in connection lock" $
+      withSmpServer ps testServerRequestInConnLock
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
@@ -4469,6 +4472,16 @@ testConnectionVerifyCodes =
       DB.execute_ db "UPDATE ratchets SET ratchet_state = NULL"
     codes1'' <- getConnectionVerifyCodes a bId
     liftIO $ codes1'' `shouldBe` codes1
+
+testServerRequestInConnLock :: (HasCallStack, HasTestEnv) => IO ()
+testServerRequestInConnLock =
+  withAgentClients2 $ \a b -> do
+    (_, bId) <- runRight $ makeConnection a b
+    let queueInfo = getConnectionQueueInfo a NRMInteractive bId
+    Left (A.INTERNAL e) <- runExceptT . withAgentEnv a . withConnLock a bId "test" . ExceptT . liftIO $ runExceptT queueInfo
+    e `shouldBe` "server request in connection lock test"
+    atomically (swapTVar (connLockViolations a) []) `shouldReturn` ["test"]
+    runRight_ $ void queueInfo
 
 testDeliveryReceipts :: (HasCallStack, HasTestEnv) => IO ()
 testDeliveryReceipts =

@@ -171,6 +171,7 @@ data AgentConfig = AgentConfig
     logStatsInterval :: Int64,
     cleanupStepInterval :: Int,
     maxWorkerRestartsPerMin :: Int,
+    prohibitRequestsInConnLock :: Bool,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
@@ -251,6 +252,7 @@ defaultAgentConfig =
       logStatsInterval = 10 * 1000000, -- 10 seconds
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
+      prohibitRequestsInConnLock = False,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
