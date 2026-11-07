@@ -391,7 +391,7 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     proxySessTs :: TVar UTCTime,
-    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody)),
+    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody), TVar Bool),
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
     ntfServersStats :: TMap (UserId, NtfServer) AgentNtfServerStats,

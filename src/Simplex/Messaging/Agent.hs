@@ -1849,15 +1849,16 @@ serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) timeout_ doSend = do
   expiresAt <- addUTCTime reqTimeout <$> liftIO getCurrentTime
   (connId, _) <- newConnToJoin c userId "" False (Just expiresAt) cReqUri PQSupportOn
   var <- atomically newEmptyTMVar
-  atomically $ TM.insert connId var (serviceRequests c)
+  joining <- newTVarIO False
+  atomically $ TM.insert connId (var, joining) (serviceRequests c)
   r <- tryAllErrors $ do
     doSend connId
     liftIO $ do
       expired <- registerDelay $ round (reqTimeout * 1000000)
       atomically $ takeTMVar var `orElse` (readTVar expired >>= \e -> if e then pure (Left $ AGENT $ A_SERVICE ASETimeout) else retry)
   withConnLock c connId "serviceRequest_" $ do
-    atomically $ TM.delete connId (serviceRequests c)
-    deleteConnectionAsync' c True connId
+    stillJoining <- atomically $ TM.delete connId (serviceRequests c) >> readTVar joining
+    unless stillJoining $ deleteConnectionAsync' c True connId
   liftEither $ join r
 
 syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
@@ -2285,16 +2286,17 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRServiceReq cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _) pqEnc signKey_) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv ->
-            atomically (TM.lookup connId (serviceRequests c)) >>= \case
+            atomically (TM.lookup connId (serviceRequests c) >>= mapM (\r@(_, joining) -> r <$ writeTVar joining True)) >>= \case
               Nothing -> pure ()
-              Just v -> do
+              Just (v, joining) -> do
                 let mkInner replyQInfo binding = AgentServiceRequest (replyQInfo :| []) (signServiceReq (C.unStored <$> signKey_) binding connInfo) connInfo
                 void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv mkInner)
-                  `catchAllErrors` \e ->
+                  `catchAllErrors` (\e ->
                     whenM (atomically $ TM.member connId (serviceRequests c)) $
                       if temporaryOrHostError e
                         then throwE e
-                        else atomically $ void $ tryPutTMVar v $ Left e -- will not overwrite existing result
+                        else atomically $ void $ tryPutTMVar v $ Left e) -- will not overwrite existing result
+                  `allFinally` withConnLock c connId "JOIN service request" (unlessM (atomically $ writeTVar joining False >> TM.member connId (serviceRequests c)) $ deleteConnectionAsync' c True connId)
         LET confId ownCInfo -> withServer' . tryAtomicCommand $ allowConnection' c (Just cmdId) connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryAtomicCommand $ ackMessage' c (Just cmdId) connId msgId rcptInfo_ >> notify OK
         SWCH ->
@@ -4023,7 +4025,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                       where
                         dispatchServiceReply result = do
                           found <- atomically $ TM.lookup connId (serviceRequests c) >>= \case
-                            Just var -> tryPutTMVar var result
+                            Just (var, _) -> tryPutTMVar var result
                             Nothing -> pure False
                           unless found $ notify $ ERR $ AGENT $ A_SERVICE ASENoPendingRequest
                         processConf rc' connInfo senderConf = do

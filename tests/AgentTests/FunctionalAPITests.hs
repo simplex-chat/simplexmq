@@ -403,6 +403,8 @@ functionalAPITests ps = do
       testServiceRequestResilient ps
     it "should expire the service request while the server of the service does not respond" $
       testServiceRequestStallingServer ps
+    it "should delete the reply queue when the service request expires while the queue is created" $
+      testServiceRequestExpiringReplyQueue ps
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
@@ -1568,6 +1570,22 @@ testServiceRequestStallingServer ps@(t, ASType qsType _) =
         withTransaction (store $ agentEnv client) getConnIds `shouldReturn` []
   where
     serviceServers = initAgentServers {smp = userServers [testSMPServer2]}
+
+testServiceRequestExpiringReplyQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testServiceRequestExpiringReplyQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \service -> do
+      (_, CCLink connReq _) <- runRight $ A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+          withAgent 1 agentCfg clientServers testDB $ \client ->
+            withAsync (runExceptT $ sendServiceRequestAsync client 1 connReq (Just 1) Nothing "service request") $ \req -> do
+              timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+              timeout 5_000000 (wait req) `shouldReturn` Just (Left $ AGENT $ A_SERVICE ASETimeout)
+              atomically $ putTMVar opened ()
+              waitQueueDeleted testStoreLogFile2
+  where
+    clientServers = initAgentServersLongConnect {smp = userServers [testSMPServer2]}
 
 testUpdateConnectionUserId :: (HasCallStack, HasTestEnv) => IO ()
 testUpdateConnectionUserId =
