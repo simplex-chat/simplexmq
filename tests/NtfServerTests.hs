@@ -421,11 +421,16 @@ testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = d
           pure (sId, subIds)
         st <- newNtfDbStore ntfTestDBCfg
         Right 1 <- withDB' "test" st $ \db -> PSQL.execute_ db "UPDATE smp_servers SET ntf_service_cert = NULL, ntf_service_cert_hash = NULL, ntf_service_priv_key = NULL"
+        let checkNotificationAfterRestart = withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+              Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND' "hello")
+              APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <- getMockNotification apns $ DeviceToken PPApnsTest "abcd"
+              waitActive subIds
+            getServiceId = withDB' "test" st $ \db -> PSQL.query_ db "SELECT ntf_service_id FROM smp_servers"
+        checkNotificationAfterRestart
+        Right [PSQL.Only (Just (newServiceId :: ServiceId))] <- getServiceId
+        checkNotificationAfterRestart
+        getServiceId `shouldReturn` Right [PSQL.Only (Just newServiceId)]
         closeNtfDbStore st
-        withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
-          Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND' "hello")
-          APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <- getMockNotification apns $ DeviceToken PPApnsTest "abcd"
-          waitActive subIds
 
 type CreateQueueFunc =
   forall c.

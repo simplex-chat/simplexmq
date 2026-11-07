@@ -650,9 +650,6 @@ removeServiceAndAssociations st srv = do
         [sql|
           UPDATE smp_servers
           SET ntf_service_id = NULL,
-              ntf_service_cert = NULL,
-              ntf_service_cert_hash = NULL,
-              ntf_service_priv_key = NULL,
               smp_notifier_count = 0,
               smp_notifier_ids_hash = DEFAULT
           WHERE smp_server_id = ?
