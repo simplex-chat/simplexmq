@@ -25,6 +25,8 @@ import Data.ByteString.Char8 (ByteString)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Data.X509 as X
+import qualified Data.X509.Validation as XV
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
@@ -35,8 +37,11 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.SystemTime (getSystemDate)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Transport (SMPServiceRole (..))
+import Simplex.Messaging.Transport.Credentials (genCredentials)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -145,6 +150,20 @@ testNtfCreds g = do
         notifierKey,
         rcvNtfDhSecret = C.dh' k pk,
         ntfServiceId = Nothing
+      }
+
+newTestServiceRec :: TVar ChaChaDRG -> IO ServiceRec
+newTestServiceRec g = do
+  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
+  (_, cert) <- genCredentials g Nothing (0, 2400) "ntf.example.com"
+  serviceCreatedAt <- getSystemDate
+  pure
+    ServiceRec
+      { serviceId,
+        serviceRole = SRNotifier,
+        serviceCert  = X.CertificateChain [cert],
+        serviceCertHash = XV.getFingerprint cert X.HashSHA256,
+        serviceCreatedAt
       }
 
 testGetQueue :: MsgStoreClass s => s -> IO ()

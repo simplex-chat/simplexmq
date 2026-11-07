@@ -12,13 +12,10 @@ module CoreTests.StoreLogTests where
 import Control.Concurrent.STM
 import Control.Monad
 import CoreTests.MsgStoreTests
-import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString.Char8 as B
 import Data.Either (partitionEithers)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import qualified Data.X509 as X
-import qualified Data.X509.Validation as XV
 import SMPClient
 import Simplex.FileTransfer.Protocol (FileInfo (..))
 import Simplex.FileTransfer.Server.Store (FileRec (..), FileRecipient (..), FileStoreClass (..), RoundedFileTime, STMFileStore (..))
@@ -36,7 +33,6 @@ import Simplex.Messaging.Server.QueueStore.Types
 import Simplex.Messaging.Server.StoreLog
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Transport.Credentials (genCredentials)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import Util
@@ -150,20 +146,6 @@ storeLogTests =
             state = M.fromList [(rId, qr {recipientKeys = newKeys})]
           }
       ]
-
-newTestServiceRec :: TVar ChaChaDRG -> IO ServiceRec
-newTestServiceRec g = do
-  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
-  (_, cert) <- genCredentials g Nothing (0, 2400) "ntf.example.com"
-  serviceCreatedAt <- getSystemDate
-  pure
-    ServiceRec
-      { serviceId,
-        serviceRole = SRNotifier,
-        serviceCert  = X.CertificateChain [cert],
-        serviceCertHash = XV.getFingerprint cert X.HashSHA256,
-        serviceCreatedAt
-      }
 
 testSMPStoreLog :: String -> [SMPStoreLogTestCase] -> Spec
 testSMPStoreLog testSuite tests =
