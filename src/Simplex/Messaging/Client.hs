@@ -1418,7 +1418,6 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, se
       Just r' -> writeTVar timeoutErrorCount 0 $> r'
       Nothing -> do
         modifyTVar' timeoutErrorCount (+ 1)
-        -- a late response is delivered to msgQ, without msgQ it is only logged
         when (isNothing msgQ) $ TM.delete corrId sentCommands
         pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
