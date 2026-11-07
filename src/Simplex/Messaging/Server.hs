@@ -1067,7 +1067,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   nextClientId <- asks clientSeq
-  clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
+  clientId <- atomically $ stateTVar' nextClientId $ \next -> (next, next + 1)
   c <- liftIO $ newClient clientId q thParams ts
   runClientThreads c `finally` clientDisconnected c
   where
@@ -1402,7 +1402,7 @@ dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 forkClient :: MonadUnliftIO m => Client s -> String -> m () -> m ()
 forkClient Client {endThreads, endThreadSeq} label action = do
-  tId <- atomically $ stateTVar endThreadSeq $ \next -> (next, next + 1)
+  tId <- atomically $ stateTVar' endThreadSeq $ \next -> (next, next + 1)
   t <- forkIO $ do
     labelMyThread label
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)

@@ -48,7 +48,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (anyM, ifM, tshow, ($>>), ($>>=), (<$$), (<$$>))
+import Simplex.Messaging.Util (anyM, ifM, stateTVar', tshow, ($>>), ($>>=), (<$$), (<$$>))
 import System.IO
 import UnliftIO.STM
 
@@ -390,7 +390,7 @@ withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a
 
 setStatus :: TVar (Maybe QueueRec) -> ServerEntityStatus -> IO (Either ErrorType ())
 setStatus qr status =
-  atomically $ stateTVar qr $ \case
+  atomically $ stateTVar' qr $ \case
     Just q -> (Right (), Just q {status})
     Nothing -> (Left AUTH, Nothing)
 

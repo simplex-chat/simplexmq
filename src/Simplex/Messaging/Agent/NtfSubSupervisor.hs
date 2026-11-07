@@ -53,7 +53,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (catchAllErrors, catchAllErrors', diffToMicroseconds, threadDelay', tryAllErrors, tshow, whenM)
+import Simplex.Messaging.Util (catchAllErrors, catchAllErrors', diffToMicroseconds, stateTVar', threadDelay', tryAllErrors, tshow, whenM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -596,5 +596,5 @@ getNtfServer c = do
     [srv] -> pure $ Just srv
     servers -> do
       gen <- asks randomServer
-      atomically . stateTVar gen $
+      atomically . stateTVar' gen $
         first (Just . (servers !!)) . randomR (0, length servers - 1)

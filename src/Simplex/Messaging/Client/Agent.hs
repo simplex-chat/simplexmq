@@ -82,7 +82,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, diffToMicroseconds, ifM, safeDecodeUtf8, threadDelay', toChunks, tshow, whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (catchAll_, diffToMicroseconds, ifM, safeDecodeUtf8, stateTVar', threadDelay', toChunks, tshow, whenM, ($>>=), (<$$>))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.STM
@@ -330,7 +330,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
         sessId = sessionId $ thParams smp
         updateServiceSub sVar = do -- (sub, sessId')
           -- We don't change active subscription in case session ID is different from disconnected client
-          serviceSub_ <- stateTVar sVar $ \case
+          serviceSub_ <- stateTVar' sVar $ \case
             Just (serviceSub, sessId') | sessId == sessId' -> (Just serviceSub, Nothing)
             s -> (Nothing, s)
           -- We don't reset pending subscription to Nothing here to avoid any race conditions
@@ -340,7 +340,7 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
         updateQueueSubs qVar = do
           -- removing subscriptions that have matching sessionId to disconnected client
           -- and keep the other ones (they can be made by the new client)
-          subs <- M.map snd <$> stateTVar qVar (M.partition ((sessId ==) . fst))
+          subs <- M.map snd <$> stateTVar' qVar (M.partition ((sessId ==) . fst))
           if M.null subs
             then pure Nothing
             else Just subs <$ addSubs_ (pendingQueueSubs ca) srv subs
