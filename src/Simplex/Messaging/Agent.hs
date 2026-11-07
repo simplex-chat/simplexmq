@@ -1731,7 +1731,7 @@ allowConnection' c cmdId_ connId confId ownConnInfo = withConnLock c connId "all
 
 -- | Accept contact (ACPT command) in Reader monad
 acceptContact' :: AgentClient -> NetworkRequestMode -> UserId -> ConnId -> Bool -> InvitationId -> ConnInfo -> PQSupport -> SubscriptionMode -> AM SndQueueSecured
-acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode = withConnLock c connId "acceptContact" $ do
+acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode = withInvLock c invId "acceptContact" $ do
   Invitation {connReq} <- withStore c $ \db -> getInvitation db "acceptContact'" invId
   r <- case connReq of
     CRInvitation cReq -> joinConn c nm userId connId enableNtfs cReq ownConnInfo pqSupport subMode
@@ -2283,13 +2283,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         JOIN (JRServiceReq cReq@(CRContactUri ConnReqUriData {crSmpQueues = q :| _} _) pqEnc signKey_) subMode connInfo -> noServer $ do
           triedHosts <- newTVarIO S.empty
           tryCommand . withNextSrv c userId storageSrvs triedHosts [qServer q] $ \srv ->
-            withConnLock c connId "JOIN service request" $
-              atomically (TM.lookup connId (serviceRequests c)) >>= \case
-                Nothing -> pure ()
-                Just v -> do
-                  let mkInner replyQInfo binding = AgentServiceRequest (replyQInfo :| []) (signServiceReq (C.unStored <$> signKey_) binding connInfo) connInfo
-                  void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv mkInner)
-                    `catchAllErrors` \e ->
+            atomically (TM.lookup connId (serviceRequests c)) >>= \case
+              Nothing -> pure ()
+              Just v -> do
+                let mkInner replyQInfo binding = AgentServiceRequest (replyQInfo :| []) (signServiceReq (C.unStored <$> signKey_) binding connInfo) connInfo
+                void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv mkInner)
+                  `catchAllErrors` \e ->
+                    withConnLock c connId "JOIN service request" . whenM (atomically $ TM.member connId (serviceRequests c)) $
                       if temporaryOrHostError e
                         then throwE e
                         else atomically $ void $ tryPutTMVar v $ Left e -- will not overwrite existing result
