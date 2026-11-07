@@ -283,7 +283,7 @@ smpRouter = hosts port keyHash
 hosts = length 1*host
 host = shortString
 port = shortString
-keyHash = shortString
+keyHash = length 1*OCTET
 senderId = shortString
 
 clientVRange = version version
@@ -506,7 +506,7 @@ smpServer = hosts port serverKeyHash
 hosts = length 1*host
 host = shortString ; text-encoded hostname or IP address
 port = shortString ; text-encoded port number
-serverKeyHash = shortString ; CA certificate fingerprint
+serverKeyHash = length 1*OCTET ; CA certificate fingerprint
 senderId = shortString ; queue sender ID
 smpDhPublicKey = length x509encoded ; X25519 DH public key
 queueMode = %s"M" / %s"C" ; messaging or contact (version-dependent trailing field)
@@ -520,8 +520,9 @@ kemCiphertext = largeString ; sntrup761 ciphertext
 
 ; Binary encoding of short link (used in relaysList)
 connShortLink = invShortLink / contactShortLink
-invShortLink = %s"I" smpServer linkId linkKey
-contactShortLink = %s"C" contactConnType smpServer linkKey
+invShortLink = %s"I" shortLinkServer linkId linkKey
+contactShortLink = %s"C" contactConnType shortLinkServer linkKey
+shortLinkServer = hosts port (serverKeyHash / %x00) ; empty key hash for a preset router
 contactConnType = %s"A" / %s"C" / %s"G" / %s"R" ; contact / channel / group / relay
 linkId = shortString
 linkKey = shortString

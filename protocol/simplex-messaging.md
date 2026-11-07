@@ -1102,7 +1102,7 @@ smpRouter = hosts port fingerprint
 hosts = length 1*host
 host = shortString
 port = shortString
-fingerprint = shortString
+fingerprint = length 1*OCTET
 basicAuth = "0" / "1" shortString ; router password
 ```
 
