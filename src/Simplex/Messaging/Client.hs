@@ -526,6 +526,7 @@ data Request err msg = Request
   { corrId :: CorrId,
     entityId :: EntityId,
     command :: ProtoCommand msg,
+    createdAt :: UTCTime,
     pending :: TVar Bool,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
@@ -683,12 +684,14 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       atomically $ writeTVar timeoutErrorCount 0
 
     monitor :: ProtocolClient v err msg -> IO ()
-    monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount}} = loop smpPingInterval
+    monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount, sentCommands}} = loop smpPingInterval
       where
         loop :: Int64 -> IO ()
         loop delay = do
           threadDelay' delay
-          diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastReceived
+          ts <- getCurrentTime
+          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> diffUTCTime ts createdAt < recoverWindow
+          diff <- diffUTCTime ts <$> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
           if remaining > 1_000_000 -- delay pings only for significant time
@@ -1435,6 +1438,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonc
   where
     mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
+      createdAt <- getCurrentTime
       pending <- newTVarIO True
       responseVar <- newEmptyTMVarIO
       let r =
@@ -1442,6 +1446,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonc
               { corrId,
                 entityId,
                 command,
+                createdAt,
                 pending,
                 responseVar
               }
