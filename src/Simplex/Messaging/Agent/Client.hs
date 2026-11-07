@@ -236,6 +236,7 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
@@ -332,7 +333,7 @@ import System.Mem.Weak (Weak, deRefWeak)
 import System.Random (randomR)
 import UnliftIO (QSem, mapConcurrently, newQSem, signalQSem, timeout, waitQSem)
 import UnliftIO.Async (async)
-import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, mkWeakThreadId, myThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
