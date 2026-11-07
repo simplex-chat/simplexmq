@@ -697,7 +697,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       pure ServerMetrics {statsData = d, activeQueueCounts = ps, activeNtfCounts = psNtf, entityCounts, rtsOptions}
 
     getRealTimeMetrics :: Env s -> IO RealTimeMetrics
-    getRealTimeMetrics Env {sockets, msgStore_ = ms, server = srv@Server {subscribers, ntfSubscribers}} = do
+    getRealTimeMetrics Env {sockets, msgStore_ = ms, server = srv@Server {subscribers, ntfSubscribers}, proxyAgent = ProxyAgent {smpAgent = SMPClientAgent {smpSessions, connectingClients, persistedErrors}}} = do
       socketStats <- mapM (traverse getSocketStats) =<< readTVarIO sockets
 #if MIN_VERSION_base(4,18,0)
       threadsCount <- length <$> listThreads
@@ -705,11 +705,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let threadsCount = 0
 #endif
       clientsCount <- IM.size <$> getServerClients srv
+      relaySessionsCount <- M.size <$> readTVarIO smpSessions
+      relayConnectingCount <- readTVarIO connectingClients
+      relayPersistedErrorsCount <- readTVarIO persistedErrors
       (deliveredSubs, deliveredTimes) <- getDeliveredMetrics =<< getSystemSeconds
       smpSubs <- getSubscribersMetrics subscribers
       ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts $ fromMsgStore ms
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, relaySessionsCount, relayConnectingCount, relayPersistedErrorsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
       where
         getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients} = do
           subsCount <- M.size <$> getSubscribedClients queueSubscribers
