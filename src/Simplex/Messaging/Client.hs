@@ -649,8 +649,8 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
-          (connectedHost, connectedPort) <- connectedAddress
-          let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs, connectedServer = srv {host = [connectedHost], port = connectedPort}}
+          connectedServer <- if proxyServer then (\(connectedHost, connectedPort) -> srv {host = [connectedHost], port = connectedPort}) <$> connectedAddress else pure srv
+          let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs, connectedServer}
           atomically $ writeTVar (lastReceived c) sessionTs
           atomically $ do
             writeTVar (connected c) True

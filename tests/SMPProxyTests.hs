@@ -72,6 +72,8 @@ smpProxyTests = do
       testRelayConnectLimit
     it "removes connection errors after the interval, above the limit at once" $ \_ ->
       testPersistedErrorsLimit
+    it "refuses a connection at the limit without keeping its error" $ \_ ->
+      testConnectLimitRefusal
   describe "proxy requests" $ do
     describe "bad relay URIs" $ do
       xit "host not resolved" todo
@@ -637,14 +639,27 @@ testRelayConnectLimit =
 testPersistedErrorsLimit :: HasTestEnv => IO ()
 testPersistedErrorsLimit = do
   g <- C.newRandom
-  a@CA.SMPClientAgent {CA.smpClients} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.persistErrorInterval = 1, CA.maxPersistedErrors = 2} Nothing g
+  a@CA.SMPClientAgent {CA.smpClients, CA.persistedErrors} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.persistErrorInterval = 1, CA.maxPersistedErrors = 2} Nothing g
   forM_ ([testSMPServer, testSMPServer2, SMPServer testHost testPort2 testKeyHash] :: [SMPServer]) $ \srv ->
     runExceptT (CA.getSMPServerClient'' a srv) >>= \case
       Left _ -> pure ()
       Right _ -> expectationFailure "connected to a server that is not running"
   length <$> readTVarIO smpClients `shouldReturn` 2
+  readTVarIO persistedErrors `shouldReturn` 2
   threadDelay 1500000
   length <$> readTVarIO smpClients `shouldReturn` 0
+  readTVarIO persistedErrors `shouldReturn` 0
+  CA.closeSMPClientAgent a
+
+testConnectLimitRefusal :: HasTestEnv => IO ()
+testConnectLimitRefusal = do
+  g <- C.newRandom
+  a@CA.SMPClientAgent {CA.smpClients, CA.connectingClients} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.maxConnectingClients = Just 0} Nothing g
+  runExceptT (CA.getSMPServerClient'' a testSMPServer) >>= \case
+    Left e -> e `shouldBe` PCEResponseTimeout
+    Right _ -> expectationFailure "connected above the connection limit"
+  length <$> readTVarIO smpClients `shouldReturn` 0
+  readTVarIO connectingClients `shouldReturn` 0
   CA.closeSMPClientAgent a
 
 todo :: AStoreType -> IO ()

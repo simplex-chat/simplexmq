@@ -1474,14 +1474,14 @@ client
           proxyServerResponse a smp_ = do
             ServerStats {pRelays, pRelaysOwn} <- asks serverStats
             let inc = mkIncProxyStats pRelays pRelaysOwn
+                own = isOwnServer a srv
             case smp_ of
-              Right (own, smp) -> do
+              Right (_, smp) -> do
                 inc own pRequests
                 case proxyResp smp of
                   r@PKEY {} -> r <$ inc own pSuccesses
                   r -> r <$ inc own pErrorsCompat
               Left e -> do
-                let own = isOwnServer a srv
                 inc own pRequests
                 inc own $ if temporaryClientError e then pErrorsConnect else pErrorsOther
                 logWarn $ "Error connecting: " <> decodeLatin1 (strEncode $ host srv) <> " " <> tshow e

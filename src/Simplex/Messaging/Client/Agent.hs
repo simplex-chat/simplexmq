@@ -247,7 +247,7 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, conne
           let !owned = isOwnServer ca srv
               !c = (owned, smp)
           atomically (sharedSession smp c) >>= \case
-            Just c0 -> Right c0 <$ closeProtocolClient smp
+            Just c0 -> Right c0 <$ E.uninterruptibleMask_ (closeProtocolClient smp)
             Nothing -> do
               notify ca $ CAConnected srv $ smpClientServiceId smp
               pure $ Right c
