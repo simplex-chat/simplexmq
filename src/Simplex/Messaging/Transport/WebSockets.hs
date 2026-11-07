@@ -27,6 +27,7 @@ import Simplex.Messaging.Transport
     STransportPeer (..),
     TransportPeerI (..),
     closeTLS,
+    recvTLS,
     smpBlockSize,
     withTlsUnique,
   )
@@ -106,7 +107,7 @@ makeTLSContextStream cxt =
   S.makeStream readStream writeStream
   where
     readStream :: IO (Maybe ByteString)
-    readStream = (Just <$> T.recvData cxt) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
+    readStream = (Just <$> recvTLS cxt) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
       where
         handleTlsEOF = \case
           T.PostHandshake T.Error_EOF -> pure Nothing
