@@ -2289,7 +2289,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                 let mkInner replyQInfo binding = AgentServiceRequest (replyQInfo :| []) (signServiceReq (C.unStored <$> signKey_) binding connInfo) connInfo
                 void (joinConnSrv' c NRMBackground userId connId False cReq connInfo pqEnc subMode srv mkInner)
                   `catchAllErrors` \e ->
-                    withConnLock c connId "JOIN service request" . whenM (atomically $ TM.member connId (serviceRequests c)) $
+                    whenM (atomically $ TM.member connId (serviceRequests c)) $
                       if temporaryOrHostError e
                         then throwE e
                         else atomically $ void $ tryPutTMVar v $ Left e -- will not overwrite existing result
@@ -2853,33 +2853,28 @@ withConnLockNotify c connId name action = do
 
 ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessage' c cmdId_ connId msgId rcptInfo_ = do
-  rqMsg <- withConnLock c connId "ackMessage" $ do
+  (rq, srvMsgId) <- withConnLock c connId "ackMessage" $ do
     SomeConn _ conn <- withStore c (`getConn` connId)
     case conn of
-      DuplexConnection {} -> Just <$> markUserAck
-      RcvConnection {} -> Just <$> markUserAck
+      DuplexConnection {} -> markUserAck
+      RcvConnection {} -> markUserAck
       SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
       ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
       NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
-  forM_ (rqMsg :: Maybe (RcvQueue, SMP.MsgId)) $ \(rq, srvMsgId) -> do
-    recordAck <- ackQueueMessage c rq srvMsgId
-    t_ <- withConnLock c connId "ackMessage" $ do
-      t_ <- recordAck
-      SomeConn _ conn <- withStore c (`getConn` connId)
-      forM_ (duplexConn conn) sendRcpt
-      del
-      pure t_
-    forM_ t_ $ atomically . writeTBQueue (subQ c)
+  recordAck <- ackQueueMessage c rq srvMsgId
+  withConnLockNotify c connId "ackMessage" $ do
+    t_ <- recordAck
+    withStore c (`getConn` connId) >>= \case
+      SomeConn _ conn@DuplexConnection {} -> sendRcpt conn
+      _ -> pure ()
+    del
+    pure t_
   where
     -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
     markUserAck :: AM (RcvQueue, SMP.MsgId)
     markUserAck = withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
     del :: AM ()
     del = withStore' c $ \db -> deleteMsg db connId (InternalId msgId) >> mapM_ (deleteCommand db) cmdId_
-    duplexConn :: Connection cType -> Maybe (Connection 'CDuplex)
-    duplexConn = \case
-      conn@DuplexConnection {} -> Just conn
-      _ -> Nothing
     sendRcpt :: Connection 'CDuplex -> AM ()
     sendRcpt (DuplexConnection cData _ sqs) = do
       msg@RcvMsg {msgType, msgReceipt} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
