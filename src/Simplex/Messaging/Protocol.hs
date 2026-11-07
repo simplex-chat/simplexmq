@@ -213,6 +213,7 @@ module Simplex.Messaging.Protocol
     sameSrvAddr,
     sameSrvAddr',
     noAuthSrv,
+    requireKeyHash,
     toMsgInfo,
 
     -- * TCP transport functions
