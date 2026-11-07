@@ -43,6 +43,9 @@ data RealTimeMetrics = RealTimeMetrics
   { socketStats :: [(ServiceName, SocketStats)],
     threadsCount :: Int,
     clientsCount :: Int,
+    relaySessionsCount :: Int,
+    relayConnectingCount :: Int,
+    relayPersistedErrorsCount :: Int,
     deliveredSubs :: RTSubscriberMetrics,
     deliveredTimes :: TimeBuckets,
     smpSubs :: RTSubscriberMetrics,
@@ -68,6 +71,9 @@ prometheusMetrics sm rtm ts =
       { socketStats,
         threadsCount,
         clientsCount,
+        relaySessionsCount,
+        relayConnectingCount,
+        relayPersistedErrorsCount,
         deliveredSubs,
         deliveredTimes,
         smpSubs,
@@ -423,6 +429,17 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_relay_messages_received_version counter\n\
       \simplex_smp_relay_messages_received_version{version=\"below_23\"} " <> mshow _pMsgFwdsRecvBelow23 <> "\n# pMsgFwdsRecvBelow23\n\
       \simplex_smp_relay_messages_received_version{version=\"from_23\"} " <> mshow _pMsgFwdsRecvFrom23 <> "\n# pMsgFwdsRecvFrom23\n\
+      \# HELP simplex_smp_relay_sessions_total Relay sessions of SMP proxy.\n\
+      \# TYPE simplex_smp_relay_sessions_total gauge\n\
+      \simplex_smp_relay_sessions_total " <> mshow relaySessionsCount <> "\n# relaySessionsCount\n\
+      \\n\
+      \# HELP simplex_smp_relay_connecting_total Relay connections being established by SMP proxy.\n\
+      \# TYPE simplex_smp_relay_connecting_total gauge\n\
+      \simplex_smp_relay_connecting_total " <> mshow relayConnectingCount <> "\n# relayConnectingCount\n\
+      \\n\
+      \# HELP simplex_smp_relay_persisted_errors_total Relay connection errors persisted by SMP proxy.\n\
+      \# TYPE simplex_smp_relay_persisted_errors_total gauge\n\
+      \simplex_smp_relay_persisted_errors_total " <> mshow relayPersistedErrorsCount <> "\n# relayPersistedErrorsCount\n\
       \\n"
     services =
       "# Services\n\
