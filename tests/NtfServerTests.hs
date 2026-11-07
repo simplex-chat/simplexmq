@@ -78,6 +78,7 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
   describe "Notification server restart" $ testResubscribeAfterRestart ps
+  describe "Notification subscription address" $ testSNEWServerAddress ps
   describe "Notification service" $ do
     it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
 
@@ -376,6 +377,23 @@ testResubscribeAfterRestart (ATransport t, msType) =
           Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <-
             5000000 `timeout` getMockNotification apns (DeviceToken PPApnsTest "abcd")
           pure ()
+
+testSNEWServerAddress :: (ASrvTransport, AStoreType) -> Spec
+testSNEWServerAddress (ATransport t, _msType) =
+  it "should reject a server without key hash or with a null byte in the host" $ do
+    g <- C.newRandom
+    (_nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      ntfTest t $ \nh -> do
+        (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+        let nulHostSrv = SMPServer (THDomainName "\0" :| []) SMP.testPort SMP.testKeyHash
+            emptyKeyHashSrv = SMPServer SMP.testHost SMP.testPort (C.KeyHash "")
+        RespNtf "3" NoEntity (NRErr (CMD SYNTAX)) <-
+          signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf nulHostSrv (EntityId "abcd")) nKey)
+        RespNtf "4" NoEntity (NRErr (CMD SYNTAX)) <-
+          signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf emptyKeyHashSrv (EntityId "abcd")) nKey)
+        pure ()
 
 testResubscribeOnServiceIdChange :: HasTestEnv => (ASrvTransport, AStoreType) -> Expectation
 testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = do
