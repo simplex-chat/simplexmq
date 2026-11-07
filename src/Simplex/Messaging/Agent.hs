@@ -2924,10 +2924,6 @@ ackMessage' c cmdId_ connId msgId rcptInfo_ =
         Left e -> throwE $ storeError e
     del :: AM ()
     del = withStore' c $ \db -> deleteMsg db connId (InternalId msgId) >> mapM_ (deleteCommand db) cmdId_
-    duplexConn :: Connection cType -> Maybe (Connection 'CDuplex)
-    duplexConn = \case
-      conn@DuplexConnection {} -> Just conn
-      _ -> Nothing
     sendRcpt :: Connection 'CDuplex -> AM ()
     sendRcpt (DuplexConnection cData _ sqs) = do
       msg@RcvMsg {msgType, msgReceipt} <- withStore c $ \db -> getRcvMsg db connId $ InternalId msgId
