@@ -4482,6 +4482,9 @@ testServerRequestInConnLock =
     e `shouldBe` "server request in connection lock test"
     atomically (swapTVar (connLockViolations a) []) `shouldReturn` ["test"]
     runRight_ $ void queueInfo
+    rs <- runRight $ withAgentEnv a . withConnLock a bId "batch" . ExceptT . liftIO $ runExceptT (subscribeConnections a [bId])
+    M.lookup bId rs `shouldBe` Just (Left $ A.INTERNAL "server request in connection lock batch")
+    atomically (swapTVar (connLockViolations a) []) `shouldReturn` ["batch"]
 
 testDeliveryReceipts :: (HasCallStack, HasTestEnv) => IO ()
 testDeliveryReceipts =

@@ -1133,10 +1133,14 @@ checkNoConnLock AgentClient {connLockHolders, connLockViolations} = do
   name_ <- liftIO $ TM.lookupIO t connLockHolders
   forM_ name_ $ \name -> do
     let err = "server request in connection lock " <> name
-    ifM
-      (asks $ prohibitRequestsInConnLock . config)
-      (atomically (modifyTVar' connLockViolations (name :)) >> throwE (INTERNAL $ T.unpack err))
-      (logError err)
+    logError err
+    whenM (asks $ prohibitRequestsInConnLock . config) $ do
+      atomically $ modifyTVar' connLockViolations (name :)
+      throwE $ INTERNAL $ T.unpack err
+
+checkBatchOutsideConnLock :: AgentClient -> [q] -> AM' [(q, Either AgentErrorType r)] -> AM' [(q, Either AgentErrorType r)]
+checkBatchOutsideConnLock _ [] batch = batch
+checkBatchOutsideConnLock c qs batch = tryAllErrors' (checkNoConnLock c) >>= either (\e -> pure $ map (,Left e) qs) (const batch)
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do
@@ -1659,7 +1663,7 @@ serverHostError = \case
 -- | Batch by transport session and subscribe queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> Bool -> [RcvQueueSub] -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
 subscribeQueues _ _ [] = pure []
-subscribeQueues c withEvents qs = do
+subscribeQueues c withEvents qs = checkBatchOutsideConnLock c qs $ do
   (errs, qs') <- checkQueues c qs
   atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
   qss <- batchQueues mkSMPTSession qs' <$> getSessionModeIO c
@@ -1857,7 +1861,7 @@ type BatchResponses q e r = NonEmpty (q, Either e r)
 -- Please note: this function does not preserve order of results to be the same as the order of arguments,
 -- it includes arguments in the results instead.
 sendTSessionBatches :: forall q r. ByteString -> (q -> TransportSessionMode -> SMPTransportSession) -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> [q] -> AM' [(q, Either AgentErrorType r)]
-sendTSessionBatches statCmd mkSession action c nm qs = do
+sendTSessionBatches statCmd mkSession action c nm qs = checkBatchOutsideConnLock c qs $ do
   qs' <- batchQueues mkSession qs <$> getSessionModeIO c
   concatMap L.toList <$> mapConcurrently (sendClientBatch statCmd action c nm) qs'
 
