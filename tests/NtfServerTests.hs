@@ -407,18 +407,22 @@ testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = d
       testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
         (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
         RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
-        let checkActive subId = do
+        let checkStatus expected subId = do
               RespNtf "4" _ (NRSub status) <- signSendRecvNtf nh tknKey ("4", subId, SCHK)
-              unless (status == NSActive) $ threadDelay 100000 >> checkActive subId
-            waitActive subIds = timeout 5000000 (mapM_ checkActive subIds) `shouldReturn` Just ()
-        (sId, subIds) <- withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+              unless (status == expected) $ threadDelay 100000 >> checkStatus expected subId
+            waitStatus expected subIds = timeout 5000000 (mapM_ (checkStatus expected) subIds) `shouldReturn` Just ()
+            waitActive = waitStatus NSActive
+        (sId, subIds, endedSubId) <- withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
           ((sId, _, _, _), nId1, _) <- createNtfQueueNKEY h sPub nPub
           (_, nId2, _) <- createNtfQueueNKEY h sPub nPub
-          subIds <- forM [nId1, nId2] $ \nId -> do
+          (_, nId3, _) <- createNtfQueueNKEY h sPub nPub
+          [subId1, subId2, endedSubId] <- forM [nId1, nId2, nId3] $ \nId -> do
             RespNtf "3" NoEntity (NRSubId subId) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
             pure subId
-          waitActive subIds
-          pure (sId, subIds)
+          waitActive [subId1, subId2, endedSubId]
+          Resp "4" _ (SOK Nothing) <- signSendRecv h nKey ("4", nId3, NSUB)
+          waitStatus NSEnd [endedSubId]
+          pure (sId, [subId1, subId2], endedSubId)
         st <- newNtfDbStore ntfTestDBCfg
         Right 1 <- withDB' "test" st $ \db -> PSQL.execute_ db "UPDATE smp_servers SET ntf_service_cert = NULL, ntf_service_cert_hash = NULL, ntf_service_priv_key = NULL"
         let checkNotificationAfterRestart = withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
@@ -430,6 +434,7 @@ testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = d
         Right [PSQL.Only (Just (newServiceId :: ServiceId))] <- getServiceId
         checkNotificationAfterRestart
         getServiceId `shouldReturn` Right [PSQL.Only (Just newServiceId)]
+        RespNtf "5" _ (NRSub NSEnd) <- signSendRecvNtf nh tknKey ("5", endedSubId, SCHK)
         closeNtfDbStore st
 
 type CreateQueueFunc =

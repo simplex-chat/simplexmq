@@ -580,11 +580,11 @@ removeServiceAssociation_ db srvId =
     db
     [sql|
       UPDATE subscriptions s
-      SET status = ?, ntf_service_assoc = FALSE
+      SET status = CASE WHEN s.status IN ? THEN ? ELSE s.status END, ntf_service_assoc = FALSE
       WHERE smp_server_id = ?
-        AND (s.status != ? OR s.ntf_service_assoc != FALSE)
+        AND ((s.status IN ? AND s.status != ?) OR s.ntf_service_assoc != FALSE)
     |]
-    (NSInactive, srvId, NSInactive)
+    (In subscribeNtfStatuses, NSInactive, srvId, In subscribeNtfStatuses, NSInactive)
 
 removeServiceAndAssociations :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
 removeServiceAndAssociations st srv = do
