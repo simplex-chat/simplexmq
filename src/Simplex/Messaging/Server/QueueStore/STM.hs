@@ -352,7 +352,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
     qs <- readTVarIO (queues st)
     Right . first M.assocs <$> foldrM (addNtf ns qs) (M.empty, []) ntfs
     where
-      addNtf ns qs ntf@(nId, _) (ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
+      addNtf ns qs ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
         Just q -> do
           qr <- readTVarIO (queueRec q)
           let serviceId = qr >>= notifier >>= ntfServiceId

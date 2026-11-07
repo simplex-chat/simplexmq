@@ -411,7 +411,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
     let (ssNtfs, deleteNtfs) = foldr (addNtf $ M.fromList nsIds) (M.empty, []) ntfs
     pure (M.assocs ssNtfs, deleteNtfs)
     where
-      addNtf nsIds ntf@(nId, _) (ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
+      addNtf nsIds ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
         Just serviceId -> (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
         Nothing -> (ssNtfs, ntf : deleteNtfs)
 
