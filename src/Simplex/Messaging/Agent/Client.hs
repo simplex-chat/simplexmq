@@ -797,16 +797,16 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains, pr
           >>= mapM_ (notifySub c . CLIENT_SUPPORT)
 
 mergeClientSupport :: VersionSMP -> ClientSupport -> ClientSupport -> (Maybe ClientSupport, ClientSupport)
-mergeClientSupport v ClientSupport {minClientVersion = min_, stableRelease = stable_, betaRelease = beta_} cs@ClientSupport {minClientVersion, stableRelease, betaRelease} =
+mergeClientSupport v new cs =
   (cs' <$ guard (cs' /= cs), cs')
   where
     cs' =
       ClientSupport
-        { minClientVersion = case (minClientVersion, mfilter unsupported min_) of
+        { minClientVersion = case (minClientVersion cs, mfilter unsupported $ minClientVersion new) of
             (Just m, Just m') | fromDate m <= fromDate m' -> Just m
             (m_, m_') -> m_' <|> m_,
-          stableRelease = stable_ <|> stableRelease,
-          betaRelease = beta_ <|> betaRelease
+          stableRelease = stableRelease new <|> stableRelease cs,
+          betaRelease = betaRelease new <|> betaRelease cs
         }
     unsupported MinClientVersion {protocolVersion} = VersionSMP protocolVersion > v
 

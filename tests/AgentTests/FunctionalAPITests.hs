@@ -4424,7 +4424,7 @@ testServerInformation =
 testClientSupport :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
 testClientSupport ps =
   withClientSupportServers ps cs1 cs2 $
-    withAgent 1 agentCfg initAgentServers {presetServers = [testSMPServer, testSMPServer2]} testDB $ \alice ->
+    withAgent 1 agentCfg initAgentServers {smp = userServers [testSMPServer], presetServers = [testSMPServer, testSMPServer2]} testDB $ \alice ->
       withAgent 2 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB2 $ \bob -> runRight_ $ do
         (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing IKPQOn False SMSubscribe
         nGet alice ##> ("", "", CLIENT_SUPPORT cs1)
@@ -4444,7 +4444,7 @@ testClientSupport ps =
 testClientSupportNoEvent :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
 testClientSupportNoEvent ps =
   withClientSupportServers ps cs1 cs2 $
-    withAgent 1 agentCfg initAgentServers {presetServers = [testSMPServer]} testDB $ \alice ->
+    withAgent 1 agentCfg initAgentServers {smp = userServers [testSMPServer], presetServers = [testSMPServer]} testDB $ \alice ->
       withAgent 2 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB2 $ \bob ->
         runRight_ . void $ makeConnection alice bob
   where
