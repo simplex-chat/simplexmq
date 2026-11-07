@@ -163,7 +163,7 @@ availabilitySpec = do
     answers heldBackBody . resolved $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
   it "an unregistered name answers with the price" $
-    answers availableBody (resolved NRAvailable {pricing = testPricing})
+    answers availableBody (resolved NRAvailable {pricing = testPricing, nameTerms = Nothing})
   it "reserved carries the reason and no price" $
     answers reservedBody (resolved $ NRReserved NRRTrademark)
   -- losing the reservation would offer a name that cannot be registered
@@ -175,7 +175,7 @@ availabilitySpec = do
       (\a -> J.eitherDecodeStrict (LB.toStrict (J.encode a)) `shouldBe` Right a)
       [ registeredAlice,
         NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord},
-        NRAvailable {pricing = testPricing},
+        NRAvailable {pricing = testPricing, nameTerms = Nothing},
         NRReserved NRRInternal,
         NRReserved NRRTrademark,
         NRReserved NRRCommunity,

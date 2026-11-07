@@ -838,6 +838,8 @@ class RegistrationV2Tests(unittest.TestCase):
     CONTROLLER = "0x281ca41311c2aa808c917c4674639d7567b75714"
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
+    FORMER_OWNER = "0x5a0e1c2b3d4f5e6a7b8c9d0e1f2a3b4c5d6e7f80"
+    SUBNAMES = "0x3d749792ea31a74fca465f361659dc112a31fb70"
 
     GRACE = 90 * 86400
     BASE = 200
@@ -881,13 +883,16 @@ class RegistrationV2Tests(unittest.TestCase):
         return ("0x" + snrc.encode_uint(0x20) + snrc.encode_uint(len(value))
                 + (value + b"\x00" * pad).hex())
 
-    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None):
+    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None, holder=None, subname_holder=None):
         """The registry answers a zero resolver, so name_record returns the
         empty record a registered name still has. `label` is what the registrar
         recorded for the 2LD; b"" means it recorded none. `owner` is the owner of
         the queried node; ZERO_ADDR means that node was never created."""
         oracle = self.ORACLE if oracle is None else oracle
         owner = self.OWNER if owner is None else owner
+        holder = owner if holder is None else holder
+        subname_holder = snrc.ZERO_ADDR if subname_holder is None else subname_holder
+        parent = snrc.namehash("acme.testing").hex()
 
         def eth_call(to, data):
             if data.startswith(snrc.selector("labelOf(uint256)")):
@@ -907,7 +912,11 @@ class RegistrationV2Tests(unittest.TestCase):
             if data.startswith(snrc.selector("resolver(bytes32)")):
                 return "0x" + snrc.encode_uint(0)
             if data.startswith(snrc.selector("owner(bytes32)")):
-                return "0x" + snrc.encode_uint(int(owner, 16))
+                return "0x" + snrc.encode_uint(int(holder if data.endswith(parent) else owner, 16))
+            if data.startswith(snrc.selector("subnameHook()")):
+                return "0x" + snrc.encode_uint(int(self.SUBNAMES, 16))
+            if data.startswith(snrc.selector("ownerOf(uint256)")):
+                return "0x" + snrc.encode_uint(int(subname_holder, 16))
             return self.fail("unexpected call " + data[:10])
 
         return eth_call
@@ -1036,6 +1045,27 @@ class RegistrationV2Tests(unittest.TestCase):
         status, body = registration("sub.acme.testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "available")
+
+    def test_a_subname_the_subname_registrar_holds_for_the_holder_is_registered(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "registered")
+
+    def test_a_subname_the_subname_registrar_no_longer_holds_is_not_registered(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_a_subnode_a_former_holder_owns_is_not_registered(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.FORMER_OWNER, holder=self.OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_v1_does_not_resolve_a_subnode_a_former_holder_owns(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.FORMER_OWNER, holder=self.OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "unregistered")
 
     def test_a_2ld_is_not_subject_to_the_owner_check(self):
         """Only a subname can be absent under a registered parent."""

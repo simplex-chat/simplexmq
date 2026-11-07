@@ -1,7 +1,7 @@
 cabal-version: 3.0
 
 name:           simplexmq
-version:        7.1.0.15
+version:        7.1.0.17
 synopsis:       SimpleXMQ message broker
 description:    This package includes <./docs/Simplex-Messaging-Server.html server>,
                 <./docs/Simplex-Messaging-Client.html client> and
@@ -405,6 +405,7 @@ library
   if !flag(client_library)
     build-depends:
         case-insensitive ==1.2.*
+      , crypton-x509-system ==1.6.*
       , hashable ==1.4.*
       , http-client >=0.7 && <0.8
       , http-client-tls >=0.3 && <0.4

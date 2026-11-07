@@ -839,6 +839,14 @@ def owner_call(registry: str, node: bytes):
     return registry, selector("owner(bytes32)") + node.hex()
 
 
+def subname_hook_call(registrar: str):
+    return registrar, selector("subnameHook()")
+
+
+def subname_owner_call(subnames: str, node: bytes):
+    return subnames, selector("ownerOf(uint256)") + node.hex()
+
+
 def text_call(resolver: str, node: bytes, key: str):
     return resolver, encode_text_call(node, key)
 
@@ -858,12 +866,16 @@ def lookup_reads(name: str):
         reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
         if len(labels) == 2 and is_encoded_labelhash(labels[0]):
             reads.append(eth_call_read(*label_call(registrar, token)))
+        if len(labels) > 2:
+            reads.append(eth_call_read(*subname_hook_call(registrar)))
         if CONTROLLERS.get(tld):
             reads.append(eth_call_read(*reserved_call(NAME_POLICIES.get(tld, CONTROLLERS[tld]), token)))
     registry = REGISTRIES.get(tld)
     if registry:
         node = node_of(name)
         reads += [eth_call_read(*resolver_call(registry, node)), eth_call_read(*owner_call(registry, node))]
+        if len(labels) > 2:
+            reads.append(eth_call_read(*owner_call(registry, namehash(".".join(labels[-2:])))))
     return reads
 
 
@@ -1132,6 +1144,25 @@ def name_record(name: str):
     return rec
 
 
+def subname_holder(name: str) -> str:
+    labels = name.split(".")
+    tld = labels[-1]
+    registry, registrar = REGISTRIES[tld], REGISTRARS.get(tld)
+    node = node_of(name)
+    owner = decode_address(eth_call(*owner_call(registry, node)))
+    holder = decode_address(eth_call(*owner_call(registry, namehash(".".join(labels[-2:])))))
+    if owner in (ZERO_ADDR, holder):
+        return owner
+    if not registrar:
+        return ZERO_ADDR
+    try:
+        if owner != decode_address(eth_call(*subname_hook_call(registrar))):
+            return ZERO_ADDR
+        return decode_address(eth_call(*subname_owner_call(owner, node)))
+    except RuntimeError:
+        return ZERO_ADDR
+
+
 def name_response(reg, registration_body):
     """The SMP protocol's NameResponse: the registration and the block read at."""
     return 200, {"lastBlockTs": reg["lastBlockTs"], "registration": registration_body}
@@ -1152,9 +1183,9 @@ def registration(name: str):
         # hashed query the registrar cannot name is refused rather than answered
         if rec["name"] is None:
             return 502, {"name": name, "error": "labelNotRecorded"}
-        # a subname inherits the 2LD's status, so only its node's owner says
-        # whether anyone created it
-        if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
+        # a subname inherits the 2LD's status, so only its holder says whether
+        # it exists
+        if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
             # name_status reads pricing only when the name was already
             # unregistered, so read it here
             status = "unregistered"
@@ -1217,19 +1248,19 @@ def resolve(name: str):
         return (404 if reg["status"] == "unregistered" else 410), body
 
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
+    if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
+        return 404, {
+            "name": name,
+            **reg,
+            "status": "unregistered",
+            "error": "unregistered",
+            "message": "nobody holds this subname",
+        }
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
-        # answerable. For a subname, no owner means nobody created it.
+        # answerable.
         owner = decode_address(eth_call(*owner_call(registry, node)))
-        if len(name.split(".")) > 2 and owner == ZERO_ADDR:
-            return 404, {
-                "name": name,
-                **reg,
-                "status": "unregistered",
-                "error": "unregistered",
-                "message": "this subname has never been created",
-            }
         return 200, {
             "name": canonical_name(name) or name,
             "nickname": "",

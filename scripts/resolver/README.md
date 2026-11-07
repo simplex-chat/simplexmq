@@ -173,7 +173,10 @@ label, so a hashed query cannot be answered with a name. See
 [Querying by labelhash](#querying-by-labelhash).
 
 A subname reports the expiry and grace of the 2LD above it, since that is what
-bounds its lifetime. A subname nobody created reports as not registered.
+bounds its lifetime. A subname is answered only while it is held: owned in the
+registry by the 2LD's holder, or by the subname registrar that the registrar's
+`subnameHook()` names, while its `ownerOf` names a holder. Any other subname,
+created or not, reports as not registered.
 
 ### v1: `/resolve/<name>`
 
@@ -233,7 +236,8 @@ expiry is what separates *never registered* from *registered and since
 released*.
 
 A subname reports the status of the 2LD above it, which is only as good as the
-name it sits under. A subname nobody created answers 404 `unregistered`.
+name it sits under. A subname that is not held, as v2 defines it, answers 404
+`unregistered`.
 
 #### v1 errors
 
@@ -358,16 +362,18 @@ from before the enum stores a boolean, whose `true` decodes as 1, which is why
 
 ### Configuring addresses
 
-The resolver reads three contracts, each configured per TLD, and the name
-policy a controller names.
+The resolver reads three contracts, each configured per TLD, the name policy a
+controller names, and the subname registrar a registrar names.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
 is where every expiry field comes from, and `labelOf`, which is how a hashed
 query is answered with a name. A name registered without recording its label
 cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
-the client will reject. With no registrar for a TLD, `/resolve` still works and
-reports `"status": "unknown"`. The **controller** holds
+the client will reject. Its `subnameHook()` names the subname registrar, whose
+`ownerOf` says who holds a subname it owns. With no registrar for a TLD,
+`/resolve` still works and reports `"status": "unknown"`, and only subnames the
+2LD's holder owns in the registry are answered. The **controller** holds
 `reservedNames`, which is where `reasonCode` comes from. With no controller a
 held-back name reads as not reserved, and no name can be priced.
 
@@ -403,7 +409,8 @@ as env vars when you run the script directly.
 
 A lookup reads the chain in at most three rounds: the name's status and
 registry entries, then its record from its resolver, then prices for a name
-that is free. The node runs the calls of a JSON-RPC batch one after another,
+that is free. A subname owned by the subname registrar takes one more round, for
+its holder. The node runs the calls of a JSON-RPC batch one after another,
 so the contract reads of a round go to the chain as one `eth_call` to
 [Multicall3](https://github.com/mds1/multicall). A node that is slow for a
 moment therefore delays a lookup a few times, not once per read. Connections to
