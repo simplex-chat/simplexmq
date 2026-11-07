@@ -77,6 +77,7 @@ msgStoreTests = do
     someMsgStoreTests cfg = do
       it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
+      it "should return the previous notifier service and not change a replaced notifier" $ withMsgStore cfg testSetNotifierService
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
@@ -229,6 +230,30 @@ testWriteAckMessages ms = do
     (Msg "message 3", Nothing) <- tryDelPeekMsg ms q2 mId3
     void $ ExceptT $ deleteQueue ms q1
     void $ ExceptT $ deleteQueue ms q2
+
+testSetNotifierService :: forall s. MsgStoreClass s => s -> IO ()
+testSetNotifierService ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  nc@NtfCreds {notifierId = nId} <- testNtfCreds g
+  sr <- newTestServiceRec g
+  let st = queueStore ms
+      nId' = EntityId "mnop"
+      setService nq serviceId_ = setQueueServices st SNotifierService serviceId_ $ M.singleton nId nq
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    serviceId <- ExceptT $ getCreateService @(StoreQueue s) st sr
+    void $ ExceptT $ addQueueNotifier st q nc
+    nq <- ExceptT $ getQueue ms SNotifier nId
+    liftIO $ setService nq (Just serviceId) `shouldReturn` Right (M.singleton nId $ Right Nothing)
+    staleNq <- ExceptT $ getQueue ms SNotifier nId
+    liftIO $ setService nq Nothing `shouldReturn` Right (M.singleton nId $ Right $ Just serviceId)
+    liftIO $ setService staleNq Nothing `shouldReturn` Right (M.singleton nId $ Right Nothing)
+    void $ ExceptT $ addQueueNotifier st q nc {notifierId = nId'}
+    liftIO $ setService nq (Just serviceId) `shouldReturn` Right (M.singleton nId $ Left AUTH)
+    (_, QueueRec {notifier}) <- ExceptT $ getQueueRec ms SNotifier nId'
+    liftIO $ (ntfServiceId <$> notifier) `shouldBe` Just Nothing
+    void $ ExceptT $ deleteQueue ms q
 
 testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
 testLinkDataSecuredQueue ms = do

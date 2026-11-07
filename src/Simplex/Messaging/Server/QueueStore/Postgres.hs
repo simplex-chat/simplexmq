@@ -377,26 +377,45 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ writeTVar (queueRec sq) $ Just q'
         withLog "setQueueService" st $ \sl -> logQueueService sl rId party serviceId
 
-  setQueueServices :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (M.Map RecipientId (Either ErrorType ())))
-  setQueueServices _ _ _ [] = pure $ Right M.empty
-  setQueueServices st party serviceId qs = E.uninterruptibleMask_ $ runExceptT $ do
-    updated <- S.fromList <$> withDB' "setQueueServices" st (\db ->
-      map fromOnly <$> DB.query db updateQuery (serviceId, In (map recipientId qs)))
-    results <- liftIO $ forM qs $ \sq -> do
-      let rId = recipientId sq
-      (rId,) <$> if S.member rId updated
-        then readQueueRecIO (queueRec sq) $>>= \q -> do
-          atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
-          withLog "setQueueServices" st $ \sl -> logQueueService sl rId party serviceId
-          pure $ Right ()
-        else pure $ Left AUTH
-    pure $ M.fromList results
+  setQueueServices :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> Maybe ServiceId -> M.Map QueueId q -> IO (Either ErrorType (M.Map QueueId (Either ErrorType (Maybe ServiceId))))
+  setQueueServices st party serviceId qs
+    | M.null qs = pure $ Right M.empty
+    | otherwise = E.uninterruptibleMask_ $ runExceptT $ do
+        prevSrvIds <- M.fromList <$> withDB' "setQueueServices" st (\db ->
+          DB.query db updateQuery (serviceId, In (M.keys qs)))
+        liftIO $ M.traverseWithKey (setQueue prevSrvIds) qs
     where
+      setQueue prevSrvIds qId sq = case M.lookup qId prevSrvIds of
+        Just prevSrvId -> readQueueRecIO (queueRec sq) $>>= \q -> do
+          atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
+          withLog "setQueueServices" st $ \sl -> logQueueService sl (recipientId sq) party serviceId
+          pure $ Right prevSrvId
+        Nothing -> pure $ Left AUTH
       updateQuery = case party of
         SRecipientService ->
-          "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"
+          [sql|
+            UPDATE msg_queues q
+            SET rcv_service_id = ?
+            FROM (
+              SELECT recipient_id, rcv_service_id FROM msg_queues
+              WHERE recipient_id IN ? AND deleted_at IS NULL
+              FOR UPDATE
+            ) prev
+            WHERE q.recipient_id = prev.recipient_id
+            RETURNING prev.recipient_id, prev.rcv_service_id
+          |]
         SNotifierService ->
-          "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id IN ? AND notifier_id IS NOT NULL AND deleted_at IS NULL RETURNING recipient_id"
+          [sql|
+            UPDATE msg_queues q
+            SET ntf_service_id = ?
+            FROM (
+              SELECT recipient_id, notifier_id, ntf_service_id FROM msg_queues
+              WHERE notifier_id IN ? AND deleted_at IS NULL
+              FOR UPDATE
+            ) prev
+            WHERE q.recipient_id = prev.recipient_id
+            RETURNING prev.notifier_id, prev.ntf_service_id
+          |]
       updateRec q = case party of
         SRecipientService -> q {rcvServiceId = serviceId}
         SNotifierService -> case notifier q of
