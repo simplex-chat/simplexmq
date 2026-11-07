@@ -244,7 +244,9 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
             else do
               ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
-          reconnectClient ca srv
+              let removeError = atomically $ removeSessVar v srv smpClients >> modifyTVar' persistedErrors (subtract 1)
+              void (forkIO $ restore (threadDelay' $ diffToMicroseconds ei) `E.finally` removeError) `E.onException` removeError
+          restore $ reconnectClient ca srv
           pure $ Left e
 
 isOwnServer :: SMPClientAgent p -> SMPServer -> OwnServer
