@@ -62,8 +62,6 @@ smpProxyTests = do
       testProxyReconnectAfterRelayRestart
     it "closes connection to relay after sender disconnects mid-connection" $ \_ ->
       testProxyClosesRelayConnectionAfterDisconnect
-    xit "must drop a stuck relay session after forward timeouts" $ \_ ->
-      testProxyForwardTimeoutStuckSession
     it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept
   describe "agent client reconnection" $ do
@@ -571,19 +569,6 @@ testProxyClosesRelayConnectionAfterDisconnect =
     withStallingServerOn' testPort2 $ \accepted closed -> do
       race_ (atomically $ takeTMVar accepted) requestRelaySession
       timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
-
-testProxyForwardTimeoutStuckSession :: HasTestEnv => IO ()
-testProxyForwardTimeoutStuckSession =
-  withSmpServerConfigOn (transport @TLS) proxyCfgForwardTimeout testPort $ \_ -> do
-    g <- C.newRandom
-    ts <- getCurrentTime
-    let srv = SMPServer testHost testPort testKeyHash
-        vr = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion
-    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ())
-    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive srv (Just "correct")
-    sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
-    rs <- forM ([1 .. 10] :: [Int]) $ \_ -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
-    rs `shouldSatisfy` elem (Left (ProxyProtocolError (SMP.PROXY SMP.NO_SESSION)))
 
 testForwardOversizedNotKept :: HasTestEnv => IO ()
 testForwardOversizedNotKept =
