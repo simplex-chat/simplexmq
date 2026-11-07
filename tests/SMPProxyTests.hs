@@ -64,6 +64,8 @@ smpProxyTests = do
       testProxyClosesRelayConnectionAfterDisconnect
     it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept
+    it "fails commands of closed client at once" $ \_ ->
+      testClosedClientCommandsFail
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -582,6 +584,18 @@ testForwardOversizedNotKept =
     runExceptT (forwardSMPTransmission c (either error id $ C.corrCbNonce "123456789012345678901234") currentClientSMPRelayVersion k et)
       `shouldReturn` Left (PCETransportError TELargeMsg)
     pClientSentCommandsCount c `shouldReturn` 0
+
+testClosedClientCommandsFail :: HasTestEnv => IO ()
+testClosedClientCommandsFail =
+  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    closed <- newEmptyTMVarIO
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> atomically $ putTMVar closed ())
+    closeProtocolClient c
+    atomically $ takeTMVar closed
+    Just rs <- timeout 1000000 $ sendProtocolCommands c NRMBackground $ L.fromList $ replicate 300 (NoEntity, Nothing, SMP.Cmd SMP.SIdleClient SMP.PING)
+    forM_ rs $ \(Response _ r) -> r `shouldBe` Left (PCENetworkError SMP.NEFailedError)
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
