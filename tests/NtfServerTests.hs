@@ -78,7 +78,7 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
   describe "Notification server restart" $ testResubscribeAfterRestart ps
-  describe "Notification subscription address" $ testSNEWRejectsNonStorableServer ps
+  describe "Notification subscription address" $ testSNEWServerAddress ps
   describe "Notification service" $ do
     it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
 
@@ -378,9 +378,9 @@ testResubscribeAfterRestart (ATransport t, msType) =
             5000000 `timeout` getMockNotification apns (DeviceToken PPApnsTest "abcd")
           pure ()
 
-testSNEWRejectsNonStorableServer :: (ASrvTransport, AStoreType) -> Spec
-testSNEWRejectsNonStorableServer (ATransport t, _msType) =
-  it "should reject a subscription to a server address the store cannot read back" $ do
+testSNEWServerAddress :: (ASrvTransport, AStoreType) -> Spec
+testSNEWServerAddress (ATransport t, _msType) =
+  it "should reject a server without key hash or with a null byte in the host" $ do
     g <- C.newRandom
     (_nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     withAPNSMockServer $ \apns ->
