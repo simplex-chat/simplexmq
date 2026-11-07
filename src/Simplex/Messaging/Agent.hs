@@ -2929,8 +2929,8 @@ switchDuplexConnection c nm cmdId_ (DuplexConnection ConnData {connId, userId} r
   withConnLock c connId "switchConnection" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs' sqs') | Just rq1 <- findQ (qAddress rq) rqs' -> do
-        checkRQSwchStatus rq1 RSSwitchStarted
         rq'' <- withStore c $ \db -> addConnRcvQueue db connId rq' SMSubscribe
+        when (rcvSwchStatus rq1 /= Just RSSwitchStarted) $ deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: aborted")
         lift $ addNewQueueSubscription c rq'' tSess sessId serviceId_
         void . enqueueMessages c cData sqs' SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
         rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 (Just RSSendingQADD) <* mapM_ (deleteCommand db) cmdId_

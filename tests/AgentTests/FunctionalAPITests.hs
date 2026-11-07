@@ -574,6 +574,8 @@ functionalAPITests ps = do
       testFastSwitchDrainOldQueueRestart ps
     it "should receive messages while the server of the new queue does not respond" $
       testFastSwitchStallingNewServer ps
+    it "should delete the new queue when the switch is aborted while the queue is created" $
+      testSwitchChangedWhileNewQueue abortConnectionSwitch "switchConnection: aborted" ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -4000,6 +4002,35 @@ testFastSwitchStallingNewServer ps@(t, ASType qsType _) =
       pGet c >>= \case
         (_, cId, AEvt SAEConn (MSG _ _ body)) -> receiveMsgs c $ filter (/= (cId, body)) msgs
         _ -> receiveMsgs c msgs
+
+testSwitchChangedWhileNewQueue :: (HasCallStack, HasTestEnv) => (AgentClient -> ConnId -> AE ConnectionStats) -> String -> (ASrvTransport, AStoreType) -> IO ()
+testSwitchChangedWhileNewQueue changeSwitch err ps@(t, _) =
+  withSmpServer ps $
+    withAgent 1 agentCfg initAgentServers testDB $ \a ->
+      withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
+        (aId, _) <- runRight $ makeConnection a b
+        setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+        withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+          withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+            withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
+              timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+              void . runRight $ changeSwitch b aId
+              atomically $ putTMVar opened ()
+              timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED err)
+              runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
+              waitQueueDeleted testStoreLogFile2
+
+waitQueueDeleted :: HasCallStack => FilePath -> IO ()
+waitQueueDeleted storeLogFile = go (50 :: Int)
+  where
+    go n = do
+      records <- B.lines <$> B.readFile storeLogFile
+      case (count "CREATE " records, count "DELETE " records) of
+        (1, 1) -> pure ()
+        counts
+          | n > 0 -> threadDelay 100000 >> go (n - 1)
+          | otherwise -> expectationFailure $ "the created queue was not deleted: " <> show counts
+    count tag = length . filter (tag `B.isPrefixOf`)
 
 endSwitchOnNewQueue :: (HasCallStack, HasTestEnv) => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
 endSwitchOnNewQueue a b = do

@@ -23,7 +23,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket
-import Network.Socket.ByteString (recv)
+import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
@@ -44,6 +44,7 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (race_)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar, tryPutTMVar)
@@ -79,6 +80,9 @@ testPort = testServerPort 1
 
 testPort2 :: HasTestEnv => ServiceName
 testPort2 = testServerPort 2
+
+testPort3 :: HasTestEnv => ServiceName
+testPort3 = testServerPort 8
 
 ntfTestPort :: HasTestEnv => ServiceName
 ntfTestPort = testServerPort 3
@@ -434,6 +438,22 @@ withStallingServerOn' port action = do
         void $ atomically $ tryPutTMVar closed ())
     (pure ())
     (const $ action accepted closed)
+
+withGatedServerOn :: HasCallStack => ServiceName -> ServiceName -> (TMVar () -> TMVar () -> IO a) -> IO a
+withGatedServerOn port srvPort action = do
+  accepted <- newEmptyTMVarIO
+  opened <- newEmptyTMVarIO
+  let forward from to = recv from 4096 >>= \s -> unless (B.null s) $ sendAll to s >> forward from to
+  serverBracket
+    (\started -> runLocalTCPServer started port $ \sock -> do
+        void $ atomically $ tryPutTMVar accepted ()
+        atomically $ readTMVar opened
+        addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just srvPort)
+        E.bracket (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)) close $ \srvSock -> do
+          connect srvSock $ addrAddress addr
+          race_ (forward sock srvSock) (forward srvSock sock))
+    (pure ())
+    (const $ action accepted opened)
 
 withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const
