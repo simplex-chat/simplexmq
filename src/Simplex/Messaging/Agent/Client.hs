@@ -796,7 +796,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
   where
     connectClient :: SMPClientVar -> AM SMPConnectedClient
     connectClient v' = do
-      cfg <- lift $ getClientConfig c smpCfg
+      cfg@ProtocolClientConfig {serverVRange} <- lift $ getClientConfig c smpCfg
       g <- asks random
       service <- getServiceCredentials c userId srv
       let cfg' = cfg {serviceCredentials = fst <$> service}
@@ -806,6 +806,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
         ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
+      when (isPresetServer srv presetServers) $ updateClientSupport (maxVersion serverVRange) smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
     updateClientService service smp = case (service, smpClientServiceId smp) of
       (Just (_, serviceId_), Just serviceId) -> withStore' c $ \db -> do
@@ -814,6 +815,24 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
       (Nothing, Just _) -> logError "server returned serviceId without service credentials in request"
       (Nothing, Nothing) -> pure ()
+    updateClientSupport clientVersion smp =
+      forM_ (clientSupport =<< eitherToMaybe =<< serverInfo (thParams smp)) $ \cs ->
+        atomically (stateTVar (presetClientSupport c) $ mergeClientSupport clientVersion cs)
+          >>= mapM_ (notifySub c . CLIENT_SUPPORT)
+
+mergeClientSupport :: VersionSMP -> ClientSupport -> ClientSupport -> (Maybe ClientSupport, ClientSupport)
+mergeClientSupport v new cs =
+  (cs' <$ guard (cs' /= cs), cs')
+  where
+    cs' =
+      ClientSupport
+        { minClientVersion = case (minClientVersion cs, mfilter unsupported $ minClientVersion new) of
+            (Just m, Just m') | fromDate m <= fromDate m' -> Just m
+            (m_, m_') -> m_' <|> m_,
+          stableRelease = stableRelease new <|> stableRelease cs,
+          betaRelease = betaRelease new <|> betaRelease cs
+        }
+    unsupported MinClientVersion {protocolVersion} = VersionSMP protocolVersion > v
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
 smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, cId) env v prs client = do
