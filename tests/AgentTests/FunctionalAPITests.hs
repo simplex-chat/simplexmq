@@ -1018,10 +1018,14 @@ testAgentClient3 =
     2 <- sendMessage a cId SMP.noMsgFlags "c4"
     3 <- sendMessage a bId SMP.noMsgFlags "b5"
     3 <- sendMessage a cId SMP.noMsgFlags "c5"
-    get a =##> \case ("", connId, SENT 2) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 2) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 3) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 3) -> connId == bId || connId == cId; _ -> False
+    liftIO $
+      getInAnyOrder
+        a
+        [ \case ("", connId, AEvt SAEConn (SENT 2)) -> connId == bId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 2)) -> connId == cId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 3)) -> connId == bId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 3)) -> connId == cId; _ -> False
+        ]
     get b =##> \case ("", connId, Msg "b4") -> connId == aIdForB; _ -> False
     ackMessage b aIdForB 2 Nothing
     get b =##> \case ("", connId, Msg "b5") -> connId == aIdForB; _ -> False
