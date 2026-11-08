@@ -1433,6 +1433,7 @@ client
     prepareBatchSubs clntServiceId_ batch = do
       let (subMsgQs, rcvAssocQs, ntfAssocQs) = foldr partitionSubs ([], M.empty, M.empty) batch
           partitionSubs t (msgQs, rcvQs, ntfQs) = case t of
+            (Just (_, QueueRec {status = EntityBlocked _}), (_, _, Cmd SRecipient SUB)) -> (msgQs, rcvQs, ntfQs)
             (Just (q, qr), (_, entId, Cmd SRecipient SUB))
               | clntServiceId_ /= rcvServiceId qr -> (q : msgQs, M.insert entId q rcvQs, ntfQs)
               | otherwise -> (q : msgQs, rcvQs, ntfQs)

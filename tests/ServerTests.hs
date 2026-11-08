@@ -102,6 +102,7 @@ serverTests = do
     testServiceSubsReplacesConnection
     testServiceRepeatedSUB
     testServiceSubsReturnsToConnection
+    testServiceSubBlockedQueue
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -1205,20 +1206,9 @@ testServiceRepeatedSUB =
         Resp "" rId' END <- tGet1 h
         rId' `shouldBe` rId
         runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
-          let idsHash = queueIdsHash [rId]
-          signSend_ sh2 aServicePK Nothing ("3", serviceId, SUBS 1 idsHash)
-          void $
-            receiveInAnyOrder
-              sh2
-              [ \case
-                  Resp "3" _ (SOKS 1 idsHash') -> Just () <$ (idsHash' `shouldBe` idsHash)
-                  _ -> pure Nothing,
-                \case
-                  Resp "" NoEntity ALLS -> pure $ Just ()
-                  _ -> pure Nothing
-              ]
-          Resp "" _ (ENDS n idsHash'') <- tGet1 sh1
-          (n, idsHash'') `shouldBe` (1, idsHash)
+          subscribeServiceQueues sh2 aServicePK "3" serviceId [rId]
+          Resp "" _ (ENDS n idsHash) <- tGet1 sh1
+          (n, idsHash) `shouldBe` (1, queueIdsHash [rId])
 
 testServiceSubsReturnsToConnection :: SpecWith (ASrvTransport, AStoreType)
 testServiceSubsReturnsToConnection =
@@ -1234,21 +1224,7 @@ testServiceSubsReturnsToConnection =
       (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
         Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
         pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
-      let idsHash = queueIdsHash [rId]
-          subscribeService sh corrId = do
-            signSend_ sh aServicePK Nothing (corrId, serviceId, SUBS 1 idsHash)
-            void $
-              receiveInAnyOrder
-                sh
-                [ \case
-                    Resp corrId' serviceId' (SOKS n idsHash') | corrId' == CorrId corrId -> do
-                      (serviceId', n, idsHash') `shouldBe` (serviceId, 1, idsHash)
-                      pure $ Just ()
-                    _ -> pure Nothing,
-                  \case
-                    Resp "" NoEntity ALLS -> pure $ Just ()
-                    _ -> pure Nothing
-                ]
+      let subscribeService sh corrId = subscribeServiceQueues sh aServicePK corrId serviceId [rId]
       runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1 -> do
         subscribeService sh1 "2"
         runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
@@ -1261,6 +1237,46 @@ testServiceSubsReturnsToConnection =
           dec mId msg `shouldBe` Right "hello"
           Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg sh2
           pure ()
+
+testServiceSubBlockedQueue :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubBlockedQueue =
+  it "should keep the service subscription to a blocked queue when another connection subscribes it" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+        cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+        info = BlockingInfo BRContent Nothing
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1 -> do
+        Resp "1" NoEntity (Ids_ rId sId _ serviceId) <- serviceSignSendRecv sh1 rKey servicePK ("1", NoEntity, New rPub dhPub)
+        [_, blocked] <- controlPortCommands cpPort ["auth admin", "block " <> B.unpack (strEncode sId) <> " " <> B.unpack (strEncode info)]
+        blocked `shouldStartWith` "ok, queue blocked"
+        Resp "2" _ (ERR (BLOCKED _)) <- signSendRecv h rKey ("2", rId, SUB)
+        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
+          subscribeServiceQueues sh2 aServicePK "3" serviceId [rId]
+          Resp "" _ (ENDS n idsHash) <- tGet1 sh1
+          (n, idsHash) `shouldBe` (1, queueIdsHash [rId])
+
+subscribeServiceQueues :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> C.APrivateAuthKey -> ByteString -> ServiceId -> [RecipientId] -> IO ()
+subscribeServiceQueues sh servicePK corrId serviceId rIds = do
+  let n = fromIntegral $ length rIds
+      idsHash = queueIdsHash rIds
+  signSend_ sh servicePK Nothing (corrId, serviceId, SUBS n idsHash)
+  void $
+    receiveInAnyOrder
+      sh
+      [ \case
+          Resp corrId' serviceId' (SOKS n' idsHash') | corrId' == CorrId corrId -> Just () <$ ((serviceId', n', idsHash') `shouldBe` (serviceId, n, idsHash))
+          _ -> pure Nothing,
+        \case
+          Resp "" NoEntity ALLS -> pure $ Just ()
+          _ -> pure Nothing
+      ]
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
