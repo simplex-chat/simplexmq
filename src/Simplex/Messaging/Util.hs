@@ -44,6 +44,7 @@ module Simplex.Messaging.Util
     tryAllOwnErrors',
     catchAllOwnErrors,
     catchAllOwnErrors',
+    forceDecoded,
     eitherToMaybe,
     listToEither,
     firstRow,
@@ -342,6 +343,9 @@ catchAllOwnErrors action handler = tryAllOwnErrors action >>= either handler pur
 catchAllOwnErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> m a) -> m a
 catchAllOwnErrors' action handler = tryAllOwnErrors' action >>= either handler pure
 {-# INLINE catchAllOwnErrors' #-}
+
+forceDecoded :: (a -> Int) -> Either String a -> Either String a
+forceDecoded force r = either (Left . show) (const r) $ pureTry $ either length force r
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
