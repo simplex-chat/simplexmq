@@ -2302,10 +2302,18 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         ACK msgId rcptInfo_ -> withServer' . tryAtomicCommand $ ackMessage' c (Just cmdId) connId msgId rcptInfo_ >> notify OK
         SWCH ->
           noServer . tryAtomicCommand $
-            withConnLock c connId "switchConnection" (withStore c (`getConn` connId)) >>= \case
+            withConnLock c connId "switchConnection" getConnToSwitch >>= \case
               SomeConn _ conn@(DuplexConnection _ (replaced :| _rqs) _) ->
                 switchDuplexConnection c NRMBackground (Just cmdId) conn replaced >>= notify . SWITCH QDRcv SPStarted
               _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
+          where
+            getConnToSwitch =
+              withStore c (`getConn` connId) >>= \case
+                SomeConn _ (DuplexConnection cData (rq :| _) _)
+                  | ratchetSyncSendProhibited cData -> do
+                      when (rcvSwchStatus rq == Just RSSwitchStarted) . void . withStore' c $ \db -> setRcvSwitchStatus db rq Nothing
+                      throwE $ CMD PROHIBITED "switchConnection: send prohibited"
+                conn -> pure conn
         DEL -> withServer' . tryAtomicCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
