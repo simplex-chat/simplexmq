@@ -306,11 +306,11 @@ testCancelBeforeStoreLogWrite ms = do
   g <- C.newRandom
   (rId, qr) <- testNewQueueRec g QMMessaging
   Right q <- addQueue ms rId qr
-  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl -> do
-    sl' <- newTVarIO $ Just sl
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl ->
     testCancelledInside $ \waitCancel -> do
-      slAfterCancel <- unsafeInterleaveIO $ waitCancel $> sl'
-      deleteStoreQueue (queueStore ms) {storeLog = slAfterCancel} q
+      slAfterCancel <- unsafeInterleaveIO $ waitCancel $> Just sl
+      sl' <- newTVarIO slAfterCancel
+      deleteStoreQueue (queueStore ms) {storeLog = sl'} q
   B.readFile testStoreLogFile `shouldReturn` strEncode (DeleteQueue rId) <> "\n"
 
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
