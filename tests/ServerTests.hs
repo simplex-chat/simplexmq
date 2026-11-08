@@ -103,6 +103,7 @@ serverTests = do
     testServiceRepeatedSUB
     testServiceSubsReturnsToConnection
     testServiceSubBlockedQueue
+    testServiceDeletesOtherServiceQueue
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -1261,6 +1262,32 @@ testServiceSubBlockedQueue =
           subscribeServiceQueues sh2 aServicePK "3" serviceId [rId]
           Resp "" _ (ENDS n idsHash) <- tGet1 sh1
           (n, idsHash) `shouldBe` (1, queueIdsHash [rId])
+
+testServiceDeletesOtherServiceQueue :: SpecWith (ASrvTransport, AStoreType)
+testServiceDeletesOtherServiceQueue =
+  it "should keep the subscription count of a service connection that deletes a queue of another service" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    credsA <- genCredentials g Nothing (0, 2400) "localhost"
+    credsB <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_, tlsCredA) = tlsCredentials [credsA]
+        (_, tlsCredB) = tlsCredentials [credsB]
+    serviceKeysA@(_, servicePKA) <- atomically $ C.generateKeyPair g
+    serviceKeysB@(_, servicePKB) <- atomically $ C.generateKeyPair g
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> do
+      (rPubA, rKeyA) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rPubB, rKeyB) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      runSMPServiceClient t (tlsCredA, serviceKeysA) $ \shA -> do
+        Resp "1" NoEntity (Ids_ rIdA _ _ _) <- serviceSignSendRecv shA rKeyA servicePKA ("1", NoEntity, New rPubA dhPub)
+        runSMPServiceClient t (tlsCredB, serviceKeysB) $ \shB -> do
+          Resp "2" NoEntity (Ids_ rIdB _ _ serviceIdB) <- serviceSignSendRecv shB rKeyB servicePKB ("2", NoEntity, New rPubB dhPub)
+          Resp "3" _ OK <- signSendRecv shB rKeyA ("3", rIdA, DEL)
+          Resp "" rIdA' DELD <- tGet1 shA
+          rIdA' `shouldBe` rIdA
+          runSMPServiceClient t (tlsCredB, serviceKeysB) $ \shB' -> do
+            subscribeServiceQueues shB' (C.APrivateAuthKey C.SEd25519 servicePKB) "4" serviceIdB [rIdB]
+            Resp "" _ (ENDS n idsHash) <- tGet1 shB
+            (n, idsHash) `shouldBe` (1, queueIdsHash [rIdB])
 
 subscribeServiceQueues :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> C.APrivateAuthKey -> ByteString -> ServiceId -> [RecipientId] -> IO ()
 subscribeServiceQueues sh servicePK corrId serviceId rIds = do
