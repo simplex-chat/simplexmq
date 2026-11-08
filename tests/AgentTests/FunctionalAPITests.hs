@@ -3290,6 +3290,7 @@ testBatchedPendingMessages nCreate nMsgs =
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+    upOrMsg :: AgentClient -> ExceptT AgentErrorType IO (Either [ConnId] (ConnId, AgentMsgId))
     upOrMsg b =
       pGet b >>= \case
         ("", "", AEvt SAENone (UP _ aIds')) -> pure $ Left aIds'
