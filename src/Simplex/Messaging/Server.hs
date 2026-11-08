@@ -2187,7 +2187,9 @@ client
             (used, recorded) <- atomically $ stateTVar' fwdCorrIds $ \ids -> ((S.member fwdId ids, S.size ids), S.insert fwdId ids)
             when used $ throwE CRYPTO
             maxIds <- asks $ maxFwdCorrIds . config
-            when (recorded >= maxIds) $ throwIO $ userError "too many forwarded commands below version 23"
+            when (recorded >= maxIds) $ do
+              logWarn $ "Closing proxy session: limit of " <> tshow maxIds <> " forwarded commands below version 23"
+              throwIO $ userError "too many forwarded commands below version 23"
           let clntThAuth = Just $ THAuthServer {serverPrivKey, peerClientService = Nothing, peerEntitlement = Nothing, sessSecret' = Just clientSecret}
               encodeResp r = do
                 r' <- case batchTransmissions clntTHParams [Right (Nothing, encodeTransmission clntTHParams r)] of
