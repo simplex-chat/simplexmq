@@ -297,6 +297,7 @@ testInvalidKeyEncoding :: IO ()
 testInvalidKeyEncoding = do
   C.decodePubKey @C.APublicKey "\x30\x0a\x30\x05\x06\x03\x2b\x65\x6e\x03\x01\x3d" `shouldBe` Left bitStringError
   C.decodePubKey @C.APublicKey "\x02\x01\x00\x03\x01\x3d" `shouldBe` Left bitStringError
+  C.decodePubKey @C.APublicKey ("\x30\x2a\x30\x05\x06\x03\x2b\x65\x6e\x03\x21\x00" <> B.replicate 32 '\1' <> "\x03\x01\x3d") `shouldBe` Left bitStringError
   C.decodePrivKey @C.APrivateKey "\x30\x0f\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x03\x03\x01\x3d" `shouldBe` Left bitStringError
   where
     bitStringError = "TypeDecodingFailed \"bitstring: skip number not within bound 61 \\\"=\\\"\""
@@ -365,12 +366,17 @@ testInvalidCertEncoding :: IO ()
 testInvalidCertEncoding = do
   g <- C.newRandom
   (k, _) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+  (_, cert) <- genCredentials g Nothing (1, 24) "root"
   let invalidBitString = "\x30\x03\x03\x01\x3d"
       emptySignatureOID = "\x30\x35\x30\x2c" <> C.encodePubKey k <> "\x30\x02\x06\x00\x03\x01\x00"
+      emptySignatureOIDCert = "\x30\x82" <> smpEncode (Large $ X.getSignedData cert <> "\x30\x02\x06\x00\x03\x01\x00")
   signedKey invalidBitString `shouldSatisfy` isLeft
   signedKey emptySignatureOID `shouldSatisfy` isLeft
   parseAll C.certChainP (smpEncode $ Large invalidBitString :| []) `shouldSatisfy` isLeft
   strDecode @X.CertificateChain (strEncode invalidBitString) `shouldSatisfy` isLeft
+  X.decodeCertificateChain (X.CertificateChainRaw [emptySignatureOIDCert]) `shouldSatisfy` isRight
+  parseAll C.certChainP (smpEncode $ Large emptySignatureOIDCert :| []) `shouldSatisfy` isLeft
+  strDecode @X.CertificateChain (strEncode emptySignatureOIDCert) `shouldSatisfy` isLeft
   where
     signedKey s = C.getSignedExact <$> smpDecode @(C.SignedObject X.PubKey) (smpEncode $ Large s)
 
