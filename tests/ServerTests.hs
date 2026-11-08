@@ -100,6 +100,8 @@ serverTests = do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
     testServiceSubsTotalCount
+    testServiceSubsTotalCountDeleted
+    testServiceSubsTotalCountOperatorDeleted
     testServiceSubSendBlock
     testServiceSubAssociatedQueue
     testServiceDowngradeConnected
@@ -1148,6 +1150,57 @@ testServiceSubsTotalCount =
             ]
         threadDelay 1500000
         B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
+
+testServiceSubsTotalCountDeleted :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCountDeleted =
+  it "should subtract the queue deleted by the service from totalServiceSubs" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        serviceSubsMetric n = threadDelay 1500000 >> B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just n
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId1 _ _ _) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        Resp "2" NoEntity (IDS _) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+        serviceSubsMetric 2
+        Resp "3" _ OK <- signSendRecv sh rKey ("3", rId1, DEL)
+        serviceSubsMetric 1
+      serviceSubsMetric 0
+
+testServiceSubsTotalCountOperatorDeleted :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCountOperatorDeleted =
+  it "should reduce totalServiceSubs to the store count on SUBS after the operator deletes a queue" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+        cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1, controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+        serviceSubsMetric n = threadDelay 1500000 >> B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just n
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+      Resp "1" NoEntity (Ids_ rId1 _ _ serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+      Resp "2" NoEntity (Ids_ rId2 sId2 _ _) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+      serviceSubsMetric 2
+      [_, deleted] <- controlPortCommands cpPort ["auth admin", "delete " <> B.unpack (strEncode sId2)]
+      deleted `shouldBe` "ok, 0 messages deleted"
+      signSend_ sh aServicePK Nothing ("3", serviceId, SUBS 2 (queueIdsHash [rId1, rId2]))
+      void $
+        receiveInAnyOrder sh
+          [ \case
+              Resp "3" _ (SOKS n idsHash') -> Just () <$ ((n, idsHash') `shouldBe` (1, queueIdsHash [rId1]))
+              _ -> pure Nothing,
+            \case
+              Resp "" NoEntity ALLS -> pure $ Just ()
+              _ -> pure Nothing
+          ]
+      serviceSubsMetric 1
 
 testServiceSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
 testServiceSubSendBlock =
