@@ -67,6 +67,7 @@ msgStoreTests = do
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
+    it "should end the thread cancelled during database query" $ withMsgStore testPostgresStoreConfig testCancelDBQuery
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -457,4 +458,9 @@ testExpireMessagesInBatches ms = do
 testCancelDBTransaction :: PostgresMsgStore -> IO ()
 testCancelDBTransaction ms =
   testCancelledInside $ \waitCancel -> runExceptT $ withDB' "test" (queueStore ms) $ \_ -> waitCancel
+
+testCancelDBQuery :: PostgresMsgStore -> IO ()
+testCancelDBQuery ms =
+  testCancelledWhenBlocked $ \started -> runExceptT $ withDB' "test" (queueStore ms) $ \db ->
+    started >> (DB.query_ db "SELECT pg_sleep(10)" :: IO [Only ()])
 #endif

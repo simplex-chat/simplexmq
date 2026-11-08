@@ -8,7 +8,7 @@
 
 module Util where
 
-import Control.Concurrent (myThreadId, threadDelay)
+import Control.Concurrent (ThreadId, myThreadId, threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception as E
@@ -50,18 +50,24 @@ inParrallel n action = do
 testCancelledInside :: (IO () -> IO a) -> IO ()
 testCancelledInside action = do
   canceller <- myThreadId
+  testCancelledWhenBlocked $ \started -> action $ started >> waitStatus canceller (== ThreadBlocked BlockedOnException)
+
+testCancelledWhenBlocked :: (IO () -> IO a) -> IO ()
+testCancelledWhenBlocked action = do
   started <- newEmptyTMVarIO
-  let waitCancel = atomically (putTMVar started ()) >> waitThrowTo
-      waitThrowTo = do
-        threadDelay 1000
-        status <- threadStatus canceller
-        unless (status == ThreadBlocked BlockedOnException) waitThrowTo
-  a <- async $ action waitCancel
+  a <- async $ action $ atomically $ putTMVar started ()
   atomically $ takeTMVar started
+  waitStatus (asyncThreadId a) (/= ThreadRunning)
   cancel a
   waitCatch a >>= \case
     Left e -> fromException e `shouldBe` Just AsyncCancelled
     Right _ -> expectationFailure "cancelled thread continued"
+
+waitStatus :: ThreadId -> (ThreadStatus -> Bool) -> IO ()
+waitStatus t done = do
+  threadDelay 1000
+  status <- threadStatus t
+  unless (done status) $ waitStatus t done
 
 combinations :: Int -> [a] -> [[a]]
 combinations 0 _ = [[]]
