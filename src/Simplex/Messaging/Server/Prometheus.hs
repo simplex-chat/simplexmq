@@ -382,7 +382,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_relay_messages_requests{source=\"all\"} " <> mshow (_pRequests _pMsgFwds) <> "\n# pMsgFwds_pRequests\n\
       \simplex_smp_relay_messages_requests{source=\"own\"} " <> mshow (_pRequests _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pRequests\n\
       \\n\
-      \# HELP simplex_smp_relay_messages_requests_version Message requests sent through relay, by client version.\n\
+      \# HELP simplex_smp_relay_messages_requests_version Message requests sent through relay, by forwarded command version.\n\
       \# TYPE simplex_smp_relay_messages_requests_version counter\n\
       \simplex_smp_relay_messages_requests_version{version=\"below_23\"} " <> mshow _pMsgFwdsBelow23 <> "\n# pMsgFwdsBelow23\n\
       \simplex_smp_relay_messages_requests_version{version=\"from_23\"} " <> mshow _pMsgFwdsFrom23 <> "\n# pMsgFwdsFrom23\n\
@@ -405,7 +405,7 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_relay_messages_received counter\n\
       \simplex_smp_relay_messages_received " <> mshow _pMsgFwdsRecv <> "\n# pMsgFwdsRecv\n\
       \\n\
-      \# HELP simplex_smp_relay_messages_received_version Messages received from proxies, by client version.\n\
+      \# HELP simplex_smp_relay_messages_received_version Messages received from proxies, by forwarded command version.\n\
       \# TYPE simplex_smp_relay_messages_received_version counter\n\
       \simplex_smp_relay_messages_received_version{version=\"below_23\"} " <> mshow _pMsgFwdsRecvBelow23 <> "\n# pMsgFwdsRecvBelow23\n\
       \simplex_smp_relay_messages_received_version{version=\"from_23\"} " <> mshow _pMsgFwdsRecvFrom23 <> "\n# pMsgFwdsRecvFrom23\n\
