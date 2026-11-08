@@ -2256,7 +2256,7 @@ client
               -- we delete subscription here, so the client with no subscriptions can be disconnected.
               sub <- atomically $ TM.lookupDelete entId $ subscriptions clnt
               liftIO $ mapM_ cancelSub sub
-              when (isJust rcvServiceId) $ atomically $ whenM (((0 /=) . fst) <$> readTVar (serviceSubsCount clnt)) $ do
+              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ whenM (((0 /=) . fst) <$> readTVar (serviceSubsCount clnt)) $ do
                 modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
                 modifyTVar' (totalServiceSubs subscribers) $ subtractServiceSubs (1, queueIdHash (recipientId q))
               liftIO $ processSub clnt $ CSDeleted entId rcvServiceId
