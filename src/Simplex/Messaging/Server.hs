@@ -2297,10 +2297,8 @@ client
               -- we delete subscription here, so the client with no subscriptions can be disconnected.
               sub <- atomically $ TM.lookupDelete entId $ subscriptions clnt
               liftIO $ mapM_ cancelSub sub
-              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ whenM (((0 /=) . fst) <$> readTVar (serviceSubsCount clnt)) $ do
-                modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
-                modifyTVar' (totalServiceSubs subscribers) $ subtractServiceSubs (1, queueIdHash (recipientId q))
-              liftIO $ processSub clnt $ CSDeleted entId rcvServiceId
+              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+              atomically $ writeTQueue (subQ subscribers) (CSDeleted entId rcvServiceId, clientId)
               forM_ (notifier qr) $ \NtfCreds {notifierId = nId, ntfServiceId} -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
                 -- so we don't need to remove subscription from the current client.
