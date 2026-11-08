@@ -118,7 +118,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
     sq <- mkQ rId qr
-    add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
+    E.uninterruptibleMask_ $ add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
     where
       STMQueueStore {queues, senders, notifiers, links} = st
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
@@ -165,7 +165,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         _ -> Left AUTH
 
   addQueueLinkData :: STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
-  addQueueLinkData st sq lnkId d =
+  addQueueLinkData st sq lnkId d = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= add)
       $>> withLog "addQueueLinkData" st (\s -> logCreateLink s rId lnkId d)
     where
@@ -187,7 +187,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
                 pure $ Right ()
 
   deleteQueueLinkData :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  deleteQueueLinkData st sq =
+  deleteQueueLinkData st sq = E.uninterruptibleMask_ $
     withQueueRec qr delete
       $>> withLog "deleteQueueLinkData" st (`logDeleteLink` recipientId sq)
     where
@@ -197,7 +197,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         writeTVar qr $ Just q {queueData = Nothing}
 
   updateKeys :: STMQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
-  updateKeys st sq rKeys =
+  updateKeys st sq rKeys = E.uninterruptibleMask_ $
     withQueueRec qr update
       $>> withLog "updateKeys" st (\s -> logUpdateKeys s (recipientId sq) rKeys)
     where
@@ -205,7 +205,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       update q = writeTVar qr $ Just q {recipientKeys = rKeys}
 
   secureQueue :: STMQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
-  secureQueue st sq sKey =
+  secureQueue st sq sKey = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= secure)
       $>> withLog "secureQueue" st (\s -> logSecureQueue s (recipientId sq) sKey)
     where
@@ -217,7 +217,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
           pure $ Right ()
 
   addQueueNotifier :: STMQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NtfCreds))
-  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} =
+  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= add)
       $>>= \nc_ -> nc_ <$$ withLog "addQueueNotifier" st (\s -> logAddNotifier s rId ntfCreds)
     where
@@ -232,7 +232,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure $ Right nc_
 
   deleteQueueNotifier :: STMQueueStore q -> q -> IO (Either ErrorType (Maybe NtfCreds))
-  deleteQueueNotifier st sq =
+  deleteQueueNotifier st sq = E.uninterruptibleMask_ $
     withQueueRec qr delete
       $>>= (<$$ withLog "deleteQueueNotifier" st (`logDeleteNotifier` recipientId sq))
     where
@@ -243,22 +243,22 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure nc
 
   suspendQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  suspendQueue st sq =
+  suspendQueue st sq = E.uninterruptibleMask_ $
     setStatus (queueRec sq) EntityOff
       $>> withLog "suspendQueue" st (`logSuspendQueue` recipientId sq)
 
   blockQueue :: STMQueueStore q -> q -> BlockingInfo -> IO (Either ErrorType ())
-  blockQueue st sq info =
+  blockQueue st sq info = E.uninterruptibleMask_ $
     setStatus (queueRec sq) (EntityBlocked info)
       $>> withLog "blockQueue" st (\sl -> logBlockQueue sl (recipientId sq) info)
 
   unblockQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  unblockQueue st sq =
+  unblockQueue st sq = E.uninterruptibleMask_ $
     setStatus (queueRec sq) EntityActive
       $>> withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
 
   updateQueueTime :: STMQueueStore q -> q -> SystemDate -> IO (Either ErrorType QueueRec)
-  updateQueueTime st sq t = withQueueRec qr update $>>= log'
+  updateQueueTime st sq t = E.uninterruptibleMask_ $ withQueueRec qr update $>>= log'
     where
       qr = queueRec sq
       update q@QueueRec {updatedAt}
@@ -271,7 +271,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         | otherwise = pure $ Right q
 
   deleteStoreQueue :: STMQueueStore q -> q -> IO (Either ErrorType QueueRec)
-  deleteStoreQueue st sq =
+  deleteStoreQueue st sq = E.uninterruptibleMask_ $
     withQueueRec qr delete
       $>>= (<$$ withLog "deleteStoreQueue" st (`logDeleteQueue` rId))
     where
@@ -287,7 +287,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure q
 
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
-  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
+  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} = E.uninterruptibleMask_ $
     TM.lookupIO fp serviceCerts
       >>= maybe
         (atomically $ TM.lookup fp serviceCerts >>= maybe newService checkService)
@@ -315,7 +315,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure STMService {serviceRec = sr, serviceRcvQueues, serviceNtfQueues}
 
   setQueueService :: (PartyI p, ServiceParty p) => STMQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueService st sq party serviceId =
+  setQueueService st sq party serviceId = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= setService)
       $>> withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
     where
