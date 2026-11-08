@@ -1906,7 +1906,7 @@ subscribeConnections_ :: AgentClient -> [(ConnId, Either StoreError SomeConnSub)
 subscribeConnections_ c conns = do
   let (subRs, cs) = foldr partitionResultsConns ([], []) conns
   resumeDelivery cs
-  resumeConnCmds c $ map fst cs
+  resumeConnCmds c False $ map fst cs
   -- queue/service association is handled in the client
   rcvRs <- lift $ connResults <$> subscribeQueues c False (concatMap rcvQueues cs)
   ns <- asks ntfSupervisor
@@ -2220,10 +2220,10 @@ resumeSrvCmds :: AgentClient -> ConnId -> Maybe SMPServer -> AM' ()
 resumeSrvCmds = void .:. getAsyncCmdWorker False
 {-# INLINE resumeSrvCmds #-}
 
-resumeConnCmds :: AgentClient -> [ConnId] -> AM ()
-resumeConnCmds c connIds = do
+resumeConnCmds :: AgentClient -> Bool -> [ConnId] -> AM ()
+resumeConnCmds c hasWork connIds = do
   connSrvs <- withStore' c (`getPendingCommandServers` connIds)
-  lift $ mapM_ (\(connId, srvs) -> mapM_ (resumeSrvCmds c connId) srvs) connSrvs
+  lift $ mapM_ (\(connId, srvs) -> mapM_ (void . getAsyncCmdWorker hasWork c connId) srvs) connSrvs
 
 resumeAllCommands :: AgentClient -> AM ()
 resumeAllCommands c = do
@@ -3814,7 +3814,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                     cStats <- connectionStats c conn''
                                     notify $ RSYNC RSOk Nothing cStats
                                     withStore' c $ \db -> setConnRatchetSync db connId RSOk
-                                    lift . mapM_ (mapM_ (getAsyncCmdWorker True c connId) . snd) =<< withStore' c (`getPendingCommandServers` [connId])
+                                    resumeConnCmds c True [connId]
                                     pure conn''
                                 | otherwise = pure conn'
                           Right Nothing -> prohibited "msg: bad agent msg" >> ack
