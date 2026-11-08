@@ -29,6 +29,7 @@ where
 import Control.Concurrent.STM
 import qualified Control.Exception as E
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as BB
@@ -108,9 +109,13 @@ instance MsgStoreClass PostgresMsgStore where
 
   foldRcvServiceMessages :: PostgresMsgStore -> ServiceId -> (a -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO a) -> a -> IO (Either ErrorType a)
   foldRcvServiceMessages ms serviceId f acc =
-    runExceptT $ withDB' "foldRcvServiceMessages" (queueStore_ ms) $ \db ->
-      DB.fold
-        db
+    runExceptT $ foldPages NoEntity acc
+    where
+      foldPages afterId a = do
+        rows <- withDB' "foldRcvServiceMessages" (queueStore_ ms) $ \db -> DB.query db query (serviceId, afterId, pageSize)
+        (lastId, a') <- liftIO $ foldM f' (afterId, a) rows
+        if length rows < pageSize then pure a' else foldPages lastId a'
+      query =
         [sql|
           SELECT q.recipient_id, q.recipient_keys, q.rcv_dh_secret,
             q.sender_id, q.sender_key, q.queue_mode,
@@ -125,16 +130,15 @@ instance MsgStoreClass PostgresMsgStore where
               ORDER BY message_id ASC
               LIMIT 1
           ) m ON true
-          WHERE q.rcv_service_id = ? AND q.deleted_at IS NULL;
+          WHERE q.rcv_service_id = ? AND q.deleted_at IS NULL AND q.recipient_id > ?
+          ORDER BY q.recipient_id ASC
+          LIMIT ?;
         |]
-        (Only serviceId)
-        acc
-        f'
-    where
-      f' a (qRow :. mRow) =
+      f' (_, a) (qRow :. mRow) =
         let (rId, qr) = rowToQueueRec qRow
             msg_ = toMaybeMessage mRow
-         in f a rId $ Right ((qr,) <$> msg_)
+         in (rId,) <$> f a rId (Right ((qr,) <$> msg_))
+      pageSize = 100 :: Int
 
   queueStore = queueStore_
   {-# INLINE queueStore #-}
