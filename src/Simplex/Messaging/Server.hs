@@ -1681,7 +1681,7 @@ client
         case command of
           SUB -> case batchSubs >>= \(msgs, rcvAssocs, _, subs) -> sequence (M.lookup entId rcvAssocs) $> (msgs, subs) of
             Left e -> pure $ Just (err e, Nothing)
-            Right (msgs, subs) -> withQueue' $ deliverSubMsg (M.lookup entId msgs) (M.lookup entId subs)
+            Right (msgs, rcvAssoc_) -> withQueue' $ \_ -> subscribeQueueAndDeliver (M.lookup entId msgs) rcvAssoc_
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1822,12 +1822,25 @@ client
         suspendQueue_ :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         suspendQueue_ (q, _) = liftIO $ either err (const ok) <$> suspendQueue (queueStore ms) q
 
-        deliverSubMsg :: Maybe Message -> Maybe (Either ErrorType (Bool, Maybe Sub)) -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
-        deliverSubMsg msg_ r_ _ qr = case r_ of
-          Just (Right r) -> deliver r
-          Just (Left e) -> pure (err e, Nothing)
-          Nothing -> pure (err INTERNAL, Nothing)
+        subscribeQueueAndDeliver :: Maybe Message -> Maybe (TVar (Maybe ServiceId)) -> QueueRec -> M s ResponseAndMessage
+        subscribeQueueAndDeliver msg_ rcvAssoc_ qr =
+          liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
+            Nothing ->
+              deliver =<< subscribeQueue
+            Just s@Sub {subThread} -> do
+              stats <- asks serverStats
+              case subThread of
+                ProhibitSub -> do
+                  -- cannot use SUB in the same connection where GET was used
+                  incStat $ qSubProhibited stats
+                  pure (err (CMD PROHIBITED), Nothing)
+                _ -> do
+                  incStat $ qSubDuplicate stats
+                  atomically (writeTVar (delivered s) Nothing) >> subscribeQueue >> deliver (True, Just s)
           where
+            subscribeQueue = do
+              rcvServiceId <- replacedServiceId rcvAssoc_
+              sharedSubscribeQueue rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
             deliver :: (Bool, Maybe Sub) -> M s ResponseAndMessage
             deliver (hasSub, sub_) = do
               stats <- asks serverStats
