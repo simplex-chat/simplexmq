@@ -772,7 +772,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains, pr
   where
     connectClient :: SMPClientVar -> AM SMPConnectedClient
     connectClient v' = do
-      cfg <- lift $ getClientConfig c smpCfg
+      cfg@ProtocolClientConfig {serverVRange} <- lift $ getClientConfig c smpCfg
       g <- asks random
       service <- getServiceCredentials c userId srv
       let cfg' = cfg {serviceCredentials = fst <$> service}
@@ -782,7 +782,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains, pr
         ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
-      when (isPresetServer srv presetServers) $ updateClientSupport smp
+      when (isPresetServer srv presetServers) $ updateClientSupport (maxVersion serverVRange) smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
     updateClientService service smp = case (service, smpClientServiceId smp) of
       (Just (_, serviceId_), Just serviceId) -> withStore' c $ \db -> do
@@ -791,9 +791,9 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains, pr
       (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
       (Nothing, Just _) -> logError "server returned serviceId without service credentials in request"
       (Nothing, Nothing) -> pure ()
-    updateClientSupport smp =
+    updateClientSupport clientVersion smp =
       forM_ (clientSupport =<< eitherToMaybe =<< serverInfo (thParams smp)) $ \cs ->
-        atomically (stateTVar (presetClientSupport c) $ mergeClientSupport (thVersion $ thParams smp) cs)
+        atomically (stateTVar (presetClientSupport c) $ mergeClientSupport clientVersion cs)
           >>= mapM_ (notifySub c . CLIENT_SUPPORT)
 
 mergeClientSupport :: VersionSMP -> ClientSupport -> ClientSupport -> (Maybe ClientSupport, ClientSupport)

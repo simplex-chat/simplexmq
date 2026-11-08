@@ -4437,7 +4437,7 @@ testClientSupport ps =
         get bob ##> ("", aliceId, INFO "alice's connInfo")
         get bob ##> ("", aliceId, CON)
   where
-    Version v = min currentClientSMPRelayVersion currentServerSMPRelayVersion
+    Version v = currentClientSMPRelayVersion
     cs1 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v + 1, fromDate = fromGregorian 2027 5 1}, stableRelease = Nothing, betaRelease = Nothing}
     cs2 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v + 2, fromDate = fromGregorian 2027 9 1}, stableRelease = Just "7.2.0", betaRelease = Nothing}
 
@@ -4448,7 +4448,7 @@ testClientSupportNoEvent ps =
       withAgent 2 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB2 $ \bob ->
         runRight_ . void $ makeConnection alice bob
   where
-    Version v = min currentClientSMPRelayVersion currentServerSMPRelayVersion
+    Version v = currentClientSMPRelayVersion
     cs1 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v, fromDate = fromGregorian 2027 5 1}, stableRelease = Nothing, betaRelease = Nothing}
     cs2 = ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = v + 1, fromDate = fromGregorian 2027 5 1}, stableRelease = Just "7.2.0", betaRelease = Nothing}
 
