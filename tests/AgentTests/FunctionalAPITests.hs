@@ -1582,6 +1582,8 @@ testServiceRequestExpiringReplyQueue ps@(t, _) =
             withAsync (runExceptT $ sendServiceRequestAsync client 1 connReq (Just 1) Nothing "service request") $ \req -> do
               timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
               timeout 5_000000 (wait req) `shouldReturn` Just (Left $ AGENT $ A_SERVICE ASETimeout)
+              get client =##> \case ("", "", DEL_CONNS [_]) -> True; _ -> False
+              withTransaction (store $ agentEnv client) getConnIds `shouldReturn` []
               atomically $ putTMVar opened ()
               suspendAgent client 5_000000
               nGet client ##> ("", "", SUSPENDED)

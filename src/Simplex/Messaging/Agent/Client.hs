@@ -99,6 +99,7 @@ module Simplex.Messaging.Agent.Client
     sendAck,
     suspendQueue,
     deleteQueue,
+    deleteNewQueue,
     deleteQueues,
     logServer,
     logSecret,
@@ -391,7 +392,7 @@ data AgentClient = AgentClient
     clientId :: Int,
     agentEnv :: Env,
     proxySessTs :: TVar UTCTime,
-    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody), TVar Bool),
+    serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody)),
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
     ntfServersStats :: TMap (UserId, NtfServer) AgentNtfServerStats,
@@ -2138,6 +2139,11 @@ deleteQueue :: AgentClient -> NetworkRequestMode -> RcvQueue -> AM ()
 deleteQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} = do
   withSMPClient c nm rq "DEL" $ \smp ->
     deleteSMPQueue smp nm rcvPrivateKey rcvId
+
+deleteNewQueue :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> NewRcvQueue -> AM ()
+deleteNewQueue c nm tSess RcvQueue {rcvId, rcvPrivateKey} =
+  withLogClient c nm tSess (unEntityId rcvId) "DEL" $ \smp ->
+    deleteSMPQueue (connectedClient smp) nm rcvPrivateKey rcvId
 
 deleteQueues :: AgentClient -> NetworkRequestMode -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
 deleteQueues c nm = sendTSessionBatches "DEL" mkSMPTSession deleteQueues_ c nm
