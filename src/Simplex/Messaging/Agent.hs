@@ -1172,12 +1172,11 @@ createRcvQueue c nm userId connId srvWithAuth@(ProtoServerWithAuth srv _) enable
     newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys
       `catchAllErrors` \e -> liftIO (print e) >> throwE e
   incSMPServerStat c userId srv connCreated
-  rq' <-
-    withConnLock c connId "createRcvQueue" (do
-        rq' <- withStore c $ \db -> updateNewConnRcv db connId rq subMode
-        lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
-        pure rq')
-      `catchAllErrors` \e -> tryAllErrors (deleteNewQueue c nm tSess rq) >> throwE e
+  recorded <- withConnLock c connId "createRcvQueue" $ do
+    r <- tryAllErrors $ withStore c $ \db -> updateNewConnRcv db connId rq subMode
+    forM_ r $ \rq' -> lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
+    pure r
+  rq' <- either (\e -> tryAllErrors (deleteNewQueue c nm tSess rq) >> throwE e) pure recorded
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure (rq', qUri)
 
