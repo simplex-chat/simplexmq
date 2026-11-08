@@ -322,7 +322,7 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Mem.Weak (Weak, deRefWeak)
 import System.Random (randomR)
-import UnliftIO (mapConcurrently, timeout)
+import UnliftIO (QSem, mapConcurrently, newQSem, timeout, withQSem)
 import UnliftIO.Async (async)
 import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
@@ -360,6 +360,7 @@ data AgentClient = AgentClient
     ntfClients :: TMap NtfTransportSession NtfClientVar,
     xftpServers :: TMap UserId (UserServers 'PXFTP),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
+    xftpDownloadSessions :: QSem,
     userEntitlements :: TMap UserId EntitlementCredential,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     presetDomains :: [HostName],
@@ -533,6 +534,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   ntfClients <- TM.emptyIO
   xftpServers <- newTVarIO $ M.map mkUserServers xftp
   xftpClients <- TM.emptyIO
+  xftpDownloadSessions <- newQSem $ xftpMaxDownloadSessions cfg
   userEntitlements <- newTVarIO entitlements
   useNetworkConfig <- newTVarIO (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVarIO $ UserNetworkInfo UNOther True
@@ -577,6 +579,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         ntfClients,
         xftpServers,
         xftpClients,
+        xftpDownloadSessions,
         userEntitlements,
         useNetworkConfig,
         presetDomains,
@@ -2216,9 +2219,18 @@ agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
   withNtfClient c NRMBackground ntfServer subId "SDEL" $ \ntf -> ntfDeleteSubscription ntf ntfPrivKey subId
 
 agentXFTPDownloadChunk :: AgentClient -> UserId -> FileDigest -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> AM ()
-agentXFTPDownloadChunk c userId (FileDigest chunkDigest) RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec = do
+agentXFTPDownloadChunk c@AgentClient {xftpServers, xftpDownloadSessions} userId (FileDigest chunkDigest) RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec = do
   g <- asks random
-  withXFTPClient c (userId, server, chunkDigest) "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
+  tSess <- mkTransportSession c userId server chunkDigest
+  let download = withLogClient c NRMBackground tSess chunkDigest "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
+  ifM (liftIO $ sharedSession tSess) download $
+    ExceptT . withQSem xftpDownloadSessions . runExceptT $
+      download `allFinally` liftIO (closeClient c xftpClients tSess)
+  where
+    sharedSession :: XFTPTransportSession -> IO Bool
+    sharedSession = \case
+      (_, _, Nothing) -> maybe False (any ((server ==) . protoServer . snd) . storageSrvs) <$> TM.lookupIO userId xftpServers
+      _ -> pure False
 
 agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe Word32 -> AM NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) storageHours = do
