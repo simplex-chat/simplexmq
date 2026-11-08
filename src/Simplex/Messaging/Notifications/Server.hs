@@ -144,13 +144,13 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
 
     stopServer :: M ()
     stopServer = do
-      logNote "Saving server state..."
-      saveServer
       NtfSubscriber {smpSubscribers, smpAgent} <- asks subscriber
       liftIO $ readTVarIO smpSubscribers >>= mapM_ stopSubscriber
       NtfPushServer {pushWorkers} <- asks pushServer
       liftIO $ readTVarIO pushWorkers >>= mapM_ stopPushWorker
       liftIO $ closeSMPClientAgent smpAgent
+      logNote "Saving server state..."
+      saveServer
       logNote "Server stopped"
       where
         stopSubscriber v =
