@@ -4,7 +4,7 @@
 
 - Each subscription change is processed by `processClientSub` under `uninterruptibleMask_`, in the client thread of the connection.
 - `serverThread` and `subQ` are removed.
-- `processClientSub` takes the place of `serverThread` in `smpServer`; its branch for a disconnected client is kept.
+- `processClientSub` takes the place of `serverThread` in `smpServer`; its branch for a disconnected client is removed.
 - SUB, from clients with and without a service certificate: the subscriber is registered in `prepareBatchSubs`, after the queue associations and before `tryPeekMsgs`, except for a service client when the queue is associated with its service and the connection has a service count, as on master.
 - Duplicate SUB: `delivered` of the subscription is reset in `prepareBatchSubs`, before `tryPeekMsgs`.
 - SUB of a blocked queue, or of a queue with a failed association: the subscriber is registered only by a later successful SUB.

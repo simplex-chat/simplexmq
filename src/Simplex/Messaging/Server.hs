@@ -256,49 +256,34 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       Client s -> ClientSub -> IO ()
     processClientSub srv srvSubscribers clientSubs clientServiceSubs unsub_ clnt sub =
       uninterruptibleMask_ $
-        atomically (updateSubscribers (Just clnt) (sub, clientId clnt))
+        atomically (updateSubscribers clnt sub)
           >>= endPreviousSubscriptions
       where
         ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents} = srvSubscribers srv
-        updateSubscribers :: Maybe (Client s) -> (ClientSub, ClientId) -> STM [PrevClientSub s]
-        updateSubscribers c_ (clntSub, clntId) = case c_ of
-          Just c@Client {connected} -> ifM (readTVar connected) (updateSubConnected c) updateSubDisconnected
-          Nothing -> updateSubDisconnected
+        updateSubscribers :: Client s -> ClientSub -> STM [PrevClientSub s]
+        updateSubscribers c@Client {clientId = clntId} clntSub = case clntSub of
+          CSClient qId prevServiceId serviceId_ -> do
+            modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+            as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
+            case serviceId_ of
+              Just serviceId -> do
+                modifyTVar' totalServiceSubs $ addServiceSubs (1, queueIdHash qId) -- server count and IDs hash for all services
+                as <- endQueueSub qId END
+                as' <- cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
+                pure $ as ++ as' ++ as''
+              Nothing -> do
+                as <- prevSub qId END (CSAEndSub qId) =<< upsertSubscribedClient qId c queueSubscribers
+                pure $ as ++ as''
+          CSDeleted qId serviceId -> do
+            removeWhenNoSubs c
+            as <- endQueueSub qId DELD
+            as' <- endServiceSub serviceId qId DELD
+            pure $ as ++ as'
+          CSService serviceId changedSubs -> do
+            modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+            modifyTVar' totalServiceSubs $ addServiceSubs changedSubs -- server count and IDs hash for all services
+            cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
           where
-            updateSubConnected c = case clntSub of
-              CSClient qId prevServiceId serviceId_ -> do
-                modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
-                as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
-                case serviceId_ of
-                  Just serviceId -> do
-                    modifyTVar' totalServiceSubs $ addServiceSubs (1, queueIdHash qId) -- server count and IDs hash for all services
-                    as <- endQueueSub qId END
-                    as' <- cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
-                    pure $ as ++ as' ++ as''
-                  Nothing -> do
-                    as <- prevSub qId END (CSAEndSub qId) =<< upsertSubscribedClient qId c queueSubscribers
-                    pure $ as ++ as''
-              CSDeleted qId serviceId -> do
-                removeWhenNoSubs c
-                as <- endQueueSub qId DELD
-                as' <- endServiceSub serviceId qId DELD
-                pure $ as ++ as'
-              CSService serviceId changedSubs -> do
-                modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
-                modifyTVar' totalServiceSubs $ addServiceSubs changedSubs -- server count and IDs hash for all services
-                cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
-            updateSubDisconnected = case clntSub of
-                -- do not insert client if it is already disconnected, but send END/DELD to any other client subscribed to this queue or service
-                CSClient qId prevServiceId serviceId -> do
-                  as <- endQueueSub qId END
-                  as' <- endServiceSub serviceId qId END
-                  as'' <- if prevServiceId == serviceId then pure [] else endServiceSub prevServiceId qId END
-                  pure $ as ++ as' ++ as''
-                CSDeleted qId serviceId -> do
-                  as <- endQueueSub qId DELD
-                  as' <- endServiceSub serviceId qId DELD
-                  pure $ as ++ as'
-                CSService serviceId _ -> cancelServiceSubs serviceId =<< lookupSubscribedClient serviceId serviceSubscribers
             endQueueSub :: QueueId -> BrokerMsg -> STM [PrevClientSub s]
             endQueueSub qId msg = prevSub qId msg (CSAEndSub qId) =<< lookupDeleteSubscribedClient qId queueSubscribers
             endServiceSub :: Maybe ServiceId -> QueueId -> BrokerMsg -> STM [PrevClientSub s]
