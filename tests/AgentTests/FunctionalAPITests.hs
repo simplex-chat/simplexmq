@@ -72,7 +72,7 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (isRight)
+import Data.Either (isRight, partitionEithers)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -3282,15 +3282,19 @@ testBatchedPendingMessages nCreate nMsgs =
     withB $ \b -> runRight_ $ do
       let aIds = map fst conns
       subscribeAllConnections b False Nothing
-      ("", "", UP _ aIds') <- nGet b
-      liftIO $ S.fromList aIds' `shouldBe` S.fromList aIds
-      replicateM_ nMsgs $ do
-        ("", cId, Msg' msgId _ "hello") <- get b
+      (ups, msgs) <- partitionEithers <$> replicateM (nMsgs + 1) (upOrMsg b)
+      liftIO $ map S.fromList ups `shouldBe` [S.fromList aIds]
+      forM_ msgs $ \(cId, msgId) -> do
         liftIO $ isJust (find ((cId ==) . fst) msgConns) `shouldBe` True
         ackMessage b cId msgId Nothing
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+    upOrMsg b =
+      pGet b >>= \case
+        ("", "", AEvt SAENone (UP _ aIds')) -> pure $ Left aIds'
+        ("", cId, AEvt SAEConn (Msg' msgId _ "hello")) -> pure $ Right (cId, msgId)
+        r -> error $ "unexpected event: " <> show r
 
 testSendMessagesB :: HasTestEnv => IO ()
 testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
