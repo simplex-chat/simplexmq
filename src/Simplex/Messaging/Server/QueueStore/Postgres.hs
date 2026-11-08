@@ -388,11 +388,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       (rId,) <$> if S.member rId updated
         then readQueueRecIO (queueRec sq) $>>= \q -> do
           atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
-          withLog "setQueueServices" st $ \sl -> logQueueService sl rId party serviceId
-          pure $ Right ()
-        else pure $ Left AUTH
-    pure $ M.fromList results
-    where
+          when (prevSrvId /= serviceId) $ withLog "setQueueServices" st $ \sl -> logQueueService sl (recipientId sq) party serviceId
+          pure $ Right prevSrvId
+        Nothing -> pure $ Left AUTH
       updateQuery = case party of
         SRecipientService ->
           "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"

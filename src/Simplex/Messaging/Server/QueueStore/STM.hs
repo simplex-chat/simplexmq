@@ -372,6 +372,38 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         SRecipientService -> serviceRcvQueues
         SNotifierService -> serviceNtfQueues
 
+setQueueService_ :: (StoreQueueClass q, PartyI p, ServiceParty p) => STMQueueStore q -> Maybe QueueId -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType (Maybe ServiceId))
+setQueueService_ st qId_ sq party serviceId =
+  atomically (readQueueRec qr $>>= setService)
+    $>>= \prevSrvId ->
+      if prevSrvId == serviceId
+        then pure $ Right prevSrvId
+        else prevSrvId <$$ withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
+  where
+    qr = queueRec sq
+    rId = recipientId sq
+    setService :: QueueRec -> STM (Either ErrorType (Maybe ServiceId))
+    setService q@QueueRec {rcvServiceId = prevSrvId} = case party of
+      SRecipientService
+        | prevSrvId == serviceId -> pure $ Right prevSrvId
+        | otherwise -> do
+            updateServiceQueues serviceRcvQueues rId prevSrvId
+            let !q' = Just q {rcvServiceId = serviceId}
+            writeTVar qr q' $> Right prevSrvId
+      SNotifierService -> case notifier q of
+        Nothing -> pure $ Left AUTH
+        Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevNtfSrvId}
+          | any (/= nId) qId_ -> pure $ Left AUTH
+          | prevNtfSrvId == serviceId -> pure $ Right prevNtfSrvId
+          | otherwise -> do
+              let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
+              updateServiceQueues serviceNtfQueues nId prevNtfSrvId
+              writeTVar qr q' $> Right prevNtfSrvId
+    updateServiceQueues :: (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> Maybe ServiceId -> STM ()
+    updateServiceQueues serviceSel qId prevSrvId = do
+      mapM_ (removeServiceQueue st serviceSel qId) prevSrvId
+      mapM_ (addServiceQueue st serviceSel qId) serviceId
+
 foldRcvServiceQueues :: StoreQueueClass q => STMQueueStore q -> ServiceId -> (a -> (q, QueueRec)  -> IO a) -> a -> IO a
 foldRcvServiceQueues st serviceId f acc =
   TM.lookupIO serviceId (services st) >>= \case
