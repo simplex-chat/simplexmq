@@ -1432,11 +1432,12 @@ client
     prepareBatchSubs clntServiceId_ batch = do
       let (subMsgQs, rcvAssocQs, ntfAssocQs) = foldr partitionSubs ([], [], []) batch
           partitionSubs t (msgQs, rcvQs, ntfQs) = case t of
-            (Just (q, qr), (_, _, Cmd SRecipient SUB))
-              | clntServiceId_ /= rcvServiceId qr -> ((q, qr) : msgQs, q : rcvQs, ntfQs)
-              | otherwise -> ((q, qr) : msgQs, rcvQs, ntfQs)
-            (Just (q, qr), (_, _, Cmd SNotifier NSUB))
-              | clntServiceId_ /= (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, q : ntfQs)
+            (Just (_, QueueRec {status = EntityBlocked _}), (_, _, Cmd SRecipient SUB)) -> (msgQs, rcvQs, ntfQs)
+            (Just (q, qr), (_, entId, Cmd SRecipient SUB))
+              | clntServiceId_ /= rcvServiceId qr -> (q : msgQs, M.insert entId q rcvQs, ntfQs)
+              | otherwise -> (q : msgQs, rcvQs, ntfQs)
+            (Just (q, qr), (_, entId, Cmd SNotifier NSUB))
+              | clntServiceId_ /= (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, M.insert entId q ntfQs)
             _ -> (msgQs, rcvQs, ntfQs)
       runExceptT $ do
         rcvAssocs <- ifNotNull rcvAssocQs $ setService SRecipientService clntServiceId_
