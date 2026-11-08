@@ -817,7 +817,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       (Nothing, Nothing) -> pure ()
     updateClientSupport clientVersion smp =
       forM_ (clientSupport =<< eitherToMaybe =<< serverInfo (thParams smp)) $ \cs ->
-        atomically (stateTVar (presetClientSupport c) $ mergeClientSupport clientVersion cs)
+        atomically (stateTVar' (presetClientSupport c) $ mergeClientSupport clientVersion cs)
           >>= mapM_ (notifySub c . CLIENT_SUPPORT)
 
 mergeClientSupport :: VersionSMP -> ClientSupport -> ClientSupport -> (Maybe ClientSupport, ClientSupport)
