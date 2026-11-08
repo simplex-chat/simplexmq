@@ -394,6 +394,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                 putStat "ntfReceived" ntfReceived
                 putStat "ntfDelivered" ntfDelivered
                 putStat "ntfFailed" ntfFailed
+                putStat "ntfDropped" ntfDropped
                 putStat "ntfCronDelivered" ntfCronDelivered
                 putStat "ntfCronFailed" ntfCronFailed
                 putStat "ntfVrfQueued" ntfVrfQueued
