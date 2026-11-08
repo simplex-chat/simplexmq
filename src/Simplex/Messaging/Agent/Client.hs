@@ -2221,16 +2221,16 @@ agentNtfDeleteSubscription c subId NtfToken {ntfServer, ntfPrivKey} =
 agentXFTPDownloadChunk :: AgentClient -> UserId -> FileDigest -> RcvFileChunkReplica -> XFTPRcvChunkSpec -> AM ()
 agentXFTPDownloadChunk c@AgentClient {xftpServers, xftpDownloadSessions} userId (FileDigest chunkDigest) RcvFileChunkReplica {server, replicaId = ChunkReplicaId fId, replicaKey} chunkSpec = do
   g <- asks random
-  tSess <- mkTransportSession c userId server chunkDigest
+  tSess@(_, _, entId_) <- mkTransportSession c userId server chunkDigest
   let download = withLogClient c NRMBackground tSess chunkDigest "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
-  ifM (liftIO $ sharedSession tSess) download $
-    ExceptT . withQSem xftpDownloadSessions . runExceptT $
-      download `allFinally` liftIO (closeClient c xftpClients tSess)
+      downloadAndClose = download `allFinally` liftIO (closeClient c xftpClients tSess)
+  ifM
+    (liftIO userServer)
+    (if isJust entId_ then downloadAndClose else download)
+    (ExceptT . withQSem xftpDownloadSessions . runExceptT $ downloadAndClose)
   where
-    sharedSession :: XFTPTransportSession -> IO Bool
-    sharedSession = \case
-      (_, _, Nothing) -> maybe False (any ((server ==) . protoServer . snd) . storageSrvs) <$> TM.lookupIO userId xftpServers
-      _ -> pure False
+    userServer :: IO Bool
+    userServer = maybe False (any ((server ==) . protoServer . snd) . storageSrvs) <$> TM.lookupIO userId xftpServers
 
 agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe Word32 -> AM NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) storageHours = do

@@ -88,7 +88,10 @@ xftpAgentTests =
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
       it "should report permanent error even when rcv tmp path cannot be removed" $ \_ -> testXFTPAgentReceiveCleanupError
-      it "should limit download sessions with servers outside the user's list" testXFTPAgentDownloadSessionsLimit
+      it "should limit download sessions with servers outside the user's list" $
+        testXFTPAgentDownloadSessionsLimit initAgentServers
+      it "should limit download sessions with servers outside the user's list in entity session mode" $
+        testXFTPAgentDownloadSessionsLimit initAgentServers {AEnv.netCfg = (AEnv.netCfg initAgentServers) {AEnv.sessionMode = TSMEntity}}
       it "should close download session with a server outside the user's list" $
         testXFTPAgentDownloadSessions initAgentServers {AEnv.xftp = userServers $ testXFTPServer2 :| []} 0
       it "should close download sessions in entity session mode" $
@@ -604,15 +607,15 @@ testXFTPAgentReceiveCleanupError = withGlobalLogging logCfgNoLogs $ do
         `finally` setPermissions prefixPath perms
       doesDirectoryExist tmpPath `shouldReturn` True
 
-testXFTPAgentDownloadSessionsLimit :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
-testXFTPAgentDownloadSessionsLimit = withXFTPServer $ do
+testXFTPAgentDownloadSessionsLimit :: (HasCallStack, HasTestEnv) => InitialAgentServers -> AFStoreType -> IO ()
+testXFTPAgentDownloadSessionsLimit rcpServers = withXFTPServer $ do
   filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
   rfd <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
     (_, _, rfd, _) <- testSendCF' sndr (CF.plain filePath) (kb 320)
     pure rfd
   silentRfd <- silentServersDescription 6
   withStallingServerOn' xftpTestPort2 $ \accepted _ ->
-    withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} initAgentServers testDB2 $ \rcp -> do
+    withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} rcpServers testDB2 $ \rcp -> do
       runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
       _ <- runRight $ xftpReceiveFile rcp 1 silentRfd Nothing True
       timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
