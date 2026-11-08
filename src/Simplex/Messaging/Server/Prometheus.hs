@@ -384,6 +384,11 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_relay_messages_requests{source=\"all\"} " <> mshow (_pRequests _pMsgFwds) <> "\n# pMsgFwds_pRequests\n\
       \simplex_smp_relay_messages_requests{source=\"own\"} " <> mshow (_pRequests _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pRequests\n\
       \\n\
+      \# HELP simplex_smp_relay_messages_requests_version Message requests sent through relay, by forwarded command version.\n\
+      \# TYPE simplex_smp_relay_messages_requests_version counter\n\
+      \simplex_smp_relay_messages_requests_version{version=\"below_23\"} " <> mshow _pMsgFwdsBelow23 <> "\n# pMsgFwdsBelow23\n\
+      \simplex_smp_relay_messages_requests_version{version=\"from_23\"} " <> mshow _pMsgFwdsFrom23 <> "\n# pMsgFwdsFrom23\n\
+      \\n\
       \# HELP simplex_smp_relay_messages_successes Successful messages sent through relay.\n\
       \# TYPE simplex_smp_relay_messages_successes counter\n\
       \simplex_smp_relay_messages_successes{source=\"all\"} " <> mshow (_pSuccesses _pMsgFwds) <> "\n# pMsgFwds_pSuccesses\n\
@@ -414,6 +419,10 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_forward_worker_queue_length Forwarded commands waiting in forward worker queues.\n\
       \# TYPE simplex_smp_forward_worker_queue_length gauge\n\
       \simplex_smp_forward_worker_queue_length " <> mshow fwdWorkerQLength <> "\n# fwdWorkerQLength\n\
+      \# HELP simplex_smp_relay_messages_received_version Messages received from proxies, by forwarded command version.\n\
+      \# TYPE simplex_smp_relay_messages_received_version counter\n\
+      \simplex_smp_relay_messages_received_version{version=\"below_23\"} " <> mshow _pMsgFwdsRecvBelow23 <> "\n# pMsgFwdsRecvBelow23\n\
+      \simplex_smp_relay_messages_received_version{version=\"from_23\"} " <> mshow _pMsgFwdsRecvFrom23 <> "\n# pMsgFwdsRecvFrom23\n\
       \\n"
     services =
       "# Services\n\
