@@ -102,6 +102,7 @@ serverTests = do
     testServiceSubsTotalCount
     testServiceSubsTotalCountDeleted
     testServiceSubsTotalCountOperatorDeleted
+    testServiceSubsTotalCountOtherServiceDeleted
     testServiceSubSendBlock
     testServiceSubAssociatedQueue
     testServiceDowngradeConnected
@@ -1201,6 +1202,30 @@ testServiceSubsTotalCountOperatorDeleted =
               _ -> pure Nothing
           ]
       serviceSubsMetric 1
+
+testServiceSubsTotalCountOtherServiceDeleted :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCountOtherServiceDeleted =
+  it "should keep totalServiceSubs when the queue of the previous service is deleted from the new service" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    prevCreds <- genCredentials g Nothing (0, 2400) "localhost"
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_, prevTlsCred) = tlsCredentials [prevCreds]
+        (_, tlsCred) = tlsCredentials [creds]
+    prevServiceKeys@(_, prevServicePK) <- atomically $ C.generateKeyPair g
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        serviceSubsMetric n = threadDelay 1500000 >> B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just n
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      prevRId <- runSMPServiceClient t (prevTlsCred, prevServiceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ prevRId _ _ _) <- serviceSignSendRecv sh rKey prevServicePK ("1", NoEntity, New rPub dhPub)
+        pure prevRId
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "2" NoEntity (IDS _) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+        Resp "3" _ OK <- signSendRecv sh rKey ("3", prevRId, DEL)
+        serviceSubsMetric 1
+      serviceSubsMetric 0
 
 testServiceSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
 testServiceSubSendBlock =
