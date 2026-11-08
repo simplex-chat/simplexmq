@@ -89,7 +89,7 @@ import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (SMPServiceRole (..))
-import Simplex.Messaging.Util (eitherToMaybe, firstRow, maybeFirstRow, maybeFirstRow', tshow, (<$$>), ($>>=))
+import Simplex.Messaging.Util (catchOwn', eitherToMaybe, firstRow, maybeFirstRow, maybeFirstRow', tshow, (<$$>), ($>>=))
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
 import UnliftIO.STM
@@ -636,7 +636,7 @@ withDB' op st action = withDB op st $ fmap Right . action
 
 withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
 withDB op st action =
-  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+  ExceptT $ withTransaction (dbStore st) action `catchOwn'` logErr
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)

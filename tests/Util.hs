@@ -8,16 +8,16 @@
 
 module Util where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception as E
 import Control.Logger.Simple
-import Control.Monad (replicateM, when)
+import Control.Monad (replicateM, unless, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
 import Data.String (IsString (..))
-import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
+import GHC.Conc (BlockReason (..), ThreadStatus (..), getNumCapabilities, getNumProcessors, setNumCapabilities, threadStatus)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import Network.Socket (ServiceName)
@@ -46,6 +46,22 @@ inParrallel n action = do
   (es, rs) <- partitionEithers <$> mapM waitCatch streams
   map show es `shouldBe` []
   length rs `shouldBe` n
+
+testCancelledInside :: (IO () -> IO a) -> IO ()
+testCancelledInside action = do
+  canceller <- myThreadId
+  started <- newEmptyTMVarIO
+  let waitCancel = atomically (putTMVar started ()) >> waitThrowTo
+      waitThrowTo = do
+        threadDelay 1000
+        status <- threadStatus canceller
+        unless (status == ThreadBlocked BlockedOnException) waitThrowTo
+  a <- async $ action waitCancel
+  atomically $ takeTMVar started
+  cancel a
+  waitCatch a >>= \case
+    Left e -> fromException e `shouldBe` Just AsyncCancelled
+    Right _ -> expectationFailure "cancelled thread continued"
 
 combinations :: Int -> [a] -> [[a]]
 combinations 0 _ = [[]]

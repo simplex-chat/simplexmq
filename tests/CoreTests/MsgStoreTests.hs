@@ -33,10 +33,12 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), withLog')
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import SMPClient (testStoreLogFile)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -57,12 +59,14 @@ msgStoreTests = do
   describe "STM message store" $ do
     someMsgStoreTests testSMTStoreConfig
     it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
+    it "should end the thread cancelled during store log write" testCancelStoreLogWrite
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
     it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
+    it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -285,6 +289,12 @@ testDeleteQueueMaps ms = do
   where
     expectAuth = either (`shouldBe` AUTH) (\_ -> expectationFailure "deleted queue is still found")
 
+testCancelStoreLogWrite :: HasTestEnv => IO ()
+testCancelStoreLogWrite =
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl -> do
+    sl' <- newTVarIO $ Just sl
+    testCancelledInside $ \waitCancel -> withLog' "test" sl' $ \_ -> waitCancel
+
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
   ntfMsgId <- atomically $ randomMsgId 24 g
@@ -443,4 +453,8 @@ testExpireMessagesInBatches ms = do
     fillPastQuota q = go 0
       where
         go n = write q "fill" >>= maybe (pure n) (const $ go (n + 1))
+
+testCancelDBTransaction :: PostgresMsgStore -> IO ()
+testCancelDBTransaction ms =
+  testCancelledInside $ \waitCancel -> runExceptT $ withDB' "test" (queueStore ms) $ \_ -> waitCancel
 #endif

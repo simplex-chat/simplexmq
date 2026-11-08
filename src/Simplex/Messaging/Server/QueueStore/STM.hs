@@ -427,7 +427,7 @@ readQueueRecIO qr = maybe (Left AUTH) Right <$> readTVarIO qr
 withLog' :: Text -> TVar (Maybe (StoreLog 'WriteMode)) -> (StoreLog 'WriteMode -> IO ()) -> IO (Either ErrorType ())
 withLog' name sl action =
   readTVarIO sl
-    >>= maybe (pure $ Right ()) (E.try . E.uninterruptibleMask_ . action >=> bimapM logErr pure)
+    >>= maybe (pure $ Right ()) (E.uninterruptibleMask_ . E.try . action >=> bimapM logErr pure)
   where
     logErr :: E.SomeException -> IO ErrorType
     logErr e = logError ("STORE: " <> err) $> STORE err
