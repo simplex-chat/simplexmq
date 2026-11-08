@@ -3856,6 +3856,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                   cStats <- connectionStats c conn''
                                   notify $ RSYNC rss' (Just e) cStats
                                   withStore' c $ \db -> setConnRatchetSync db connId rss'
+                                  when (rss' == RSAllowed) $ resumeConnCmds c True [connId]
                           Left e -> do
                             incSMPServerStat c userId srv recvErrs
                             checkDuplicateHash e encryptedMsgHash >> ack
