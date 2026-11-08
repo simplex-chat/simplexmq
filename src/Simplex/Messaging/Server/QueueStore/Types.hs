@@ -45,7 +45,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   deleteStoreQueue :: s -> q -> IO (Either ErrorType QueueRec)
   getCreateService :: s -> ServiceRec -> IO (Either ErrorType ServiceId)
   setQueueService :: (PartyI p, ServiceParty p) => s -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueServices :: (PartyI p, ServiceParty p) => s -> SParty p -> Maybe ServiceId -> [q] -> IO (Either ErrorType (Map RecipientId (Either ErrorType ())))
+  setQueueServices :: (PartyI p, ServiceParty p) => s -> SParty p -> Maybe ServiceId -> Map QueueId q -> IO (Either ErrorType (Map QueueId (Either ErrorType (Maybe ServiceId))))
   getQueueNtfServices :: s -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => s -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
 
