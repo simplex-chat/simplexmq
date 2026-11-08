@@ -2184,7 +2184,7 @@ client
             _ -> throwE BLOCK
           when (fwdVersion < fwdNoncesSMPVersion) $ do
             let fwdId = SBS.toShort $ C.unCbNonce fwdCorrId
-            (used, recorded) <- atomically $ stateTVar fwdCorrIds $ \ids -> ((S.member fwdId ids, S.size ids), S.insert fwdId ids)
+            (used, recorded) <- atomically $ stateTVar' fwdCorrIds $ \ids -> ((S.member fwdId ids, S.size ids), S.insert fwdId ids)
             when used $ throwE CRYPTO
             maxIds <- asks $ maxFwdCorrIds . config
             when (recorded >= maxIds) $ throwIO $ userError "too many forwarded commands below version 23"
