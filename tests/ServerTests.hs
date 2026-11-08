@@ -116,6 +116,7 @@ serverTests = do
     testMessageServiceNotifications
     testServiceNotificationsTwoRestarts
     testServiceNotificationsRepeatedNSUB
+    testServiceNotificationsReturnToConnection
   describe "Message expiration" $ do
     testMsgExpireOnSend
     testMsgExpireOnInterval
@@ -1986,6 +1987,39 @@ testServiceNotificationsRepeatedNSUB =
           idsHash' `shouldBe` idsHash
           Resp "" _ (ENDS n idsHash'') <- tGet1 snh
           (n, idsHash'') `shouldBe` (1, idsHash)
+
+testServiceNotificationsReturnToConnection :: SpecWith (ASrvTransport, AStoreType)
+testServiceNotificationsReturnToConnection =
+  it "should move the notification service subscription back to the replaced connection when it subscribes again" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest2 t msType $ \rh sh -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+      serviceId <- testNtfServiceClient t serviceKeys $ \nh -> do
+        Resp "2" _ (SOK (Just serviceId)) <- serviceSignSendRecv nh nKey servicePK ("2", nId, NSUB)
+        pure serviceId
+      let idsHash = queueIdsHash [nId]
+          subscribeService nh corrId = do
+            Resp _ serviceId' (SOKS n idsHash') <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) (corrId, serviceId, NSUBS 1 idsHash)
+            (serviceId', n, idsHash') `shouldBe` (serviceId, 1, idsHash)
+      testNtfServiceClient t serviceKeys $ \nh1 -> do
+        subscribeService nh1 "3"
+        testNtfServiceClient t serviceKeys $ \nh2 -> do
+          subscribeService nh2 "4"
+          Resp "" _ (ENDS 1 _) <- tGet1 nh1
+          subscribeService nh1 "5"
+          Resp "" _ (ENDS 1 _) <- tGet1 nh2
+          Resp "6" _ OK <- signSendRecv sh sKey ("6", sId, _SEND' "hello")
+          Resp "" _ (Msg mId _) <- tGet1 rh
+          Resp "7" _ OK <- signSendRecv rh rKey ("7", rId, ACK mId)
+          Resp "" nId' (NMSG _ _) <- tGet1 nh1
+          nId' `shouldBe` nId
+          Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh2
+          pure ()
 
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =
