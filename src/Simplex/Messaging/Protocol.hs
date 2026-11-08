@@ -286,6 +286,7 @@ import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.SimplexName (LabelHash, SimplexDomain (..), SimplexTLD (..), fullDomainName, labelHash)
+import Simplex.Messaging.SystemTime (checkTimeRange)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts (..))
 import Simplex.Messaging.Util (bshow, eitherToMaybe, safeDecodeUtf8, (<$?>))
@@ -922,7 +923,7 @@ instance Encoding NMsgMeta where
   smpP = do
     -- Tail here is to allow extension in the future clients/servers
     (msgId, msgTs, Tail _) <- smpP
-    pure NMsgMeta {msgId, msgTs}
+    NMsgMeta {msgId, msgTs} <$ either fail pure (checkTimeRange $ systemToUTCTime msgTs)
 
 -- it must be data for correct JSON encoding
 data MsgFlags = MsgFlags {notification :: Bool}
