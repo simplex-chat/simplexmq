@@ -348,7 +348,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
 setQueueService_ :: (StoreQueueClass q, PartyI p, ServiceParty p) => STMQueueStore q -> Maybe QueueId -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType (Maybe ServiceId))
 setQueueService_ st qId_ sq party serviceId =
   atomically (readQueueRec qr $>>= setService)
-    $>>= (<$$ withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId))
+    $>>= \prevSrvId ->
+      if prevSrvId == serviceId
+        then pure $ Right prevSrvId
+        else prevSrvId <$$ withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
   where
     qr = queueRec sq
     rId = recipientId sq

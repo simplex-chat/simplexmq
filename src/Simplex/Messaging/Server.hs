@@ -1435,10 +1435,10 @@ client
           partitionSubs t (msgQs, rcvQs, ntfQs) = case t of
             (Just (_, QueueRec {status = EntityBlocked _}), (_, _, Cmd SRecipient SUB)) -> (msgQs, rcvQs, ntfQs)
             (Just (q, qr), (_, entId, Cmd SRecipient SUB))
-              | clntServiceId_ /= rcvServiceId qr -> (q : msgQs, M.insert entId q rcvQs, ntfQs)
+              | isJust clntServiceId_ || isJust (rcvServiceId qr) -> (q : msgQs, M.insert entId q rcvQs, ntfQs)
               | otherwise -> (q : msgQs, rcvQs, ntfQs)
             (Just (q, qr), (_, entId, Cmd SNotifier NSUB))
-              | clntServiceId_ /= (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, M.insert entId q ntfQs)
+              | isJust clntServiceId_ || isJust (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, M.insert entId q ntfQs)
             _ -> (msgQs, rcvQs, ntfQs)
       liftIO $ runExceptT $ do
         rcvAssocs <- ifNotNull rcvAssocQs $ setService SRecipientService clntServiceId_

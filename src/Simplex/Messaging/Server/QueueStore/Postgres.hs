@@ -389,7 +389,7 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       setQueue prevSrvIds qId sq = case M.lookup qId prevSrvIds of
         Just prevSrvId -> readQueueRecIO (queueRec sq) $>>= \q -> do
           atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
-          withLog "setQueueServices" st $ \sl -> logQueueService sl (recipientId sq) party serviceId
+          when (prevSrvId /= serviceId) $ withLog "setQueueServices" st $ \sl -> logQueueService sl (recipientId sq) party serviceId
           pure $ Right prevSrvId
         Nothing -> pure $ Left AUTH
       updateQuery = case party of
