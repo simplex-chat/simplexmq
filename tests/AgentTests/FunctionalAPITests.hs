@@ -4506,6 +4506,22 @@ testSwitchChangedWhileNewQueue changeSwitch err ps@(t, _) =
             waitRcvQueueRecords b 1
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
 
+testSwitchRatchetSyncBeforeNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchRatchetSyncBeforeNewQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort2 $ \_ -> do
+        setUserNetworkInfo b $ UserNetworkInfo UNNone False
+        runRight_ $ do
+          void $ switchConnectionAsync b "" aId
+          void $ synchronizeRatchet b aId PQSupportOn True
+        setUserNetworkInfo b $ UserNetworkInfo UNWifi True
+        get b =##> \case ("", c, ERR (A.CMD PROHIBITED "switchConnection: send prohibited")) -> c == aId; _ -> False
+        runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
+      storeLogQueues testStoreLogFile2 `shouldReturn` (0, 0)
+
 waitRcvQueueRecords :: HasCallStack => AgentClient -> Int -> IO ()
 waitRcvQueueRecords c n = go (50 :: Int)
   where
