@@ -310,12 +310,12 @@ import Simplex.Messaging.Protocol
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.Information (ServerPublicInfo)
+import Simplex.Messaging.Server.Information (ClientSupport (..), MinClientVersion (..), ServerPublicInfo (clientSupport))
 import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), VersionSMP, newNtfCredsSMPVersion, pattern VersionSMP)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -364,6 +364,7 @@ data AgentClient = AgentClient
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     presetDomains :: [HostName],
     presetServers :: [SMPServer],
+    presetClientSupport :: TVar ClientSupport,
     userNetworkInfo :: TVar UserNetworkInfo,
     userNetworkUpdated :: TVar (Maybe UTCTime),
     subscrConns :: TVar (Set ConnId),
@@ -535,6 +536,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   xftpClients <- TM.emptyIO
   userEntitlements <- newTVarIO entitlements
   useNetworkConfig <- newTVarIO (slowNetworkConfig netCfg, netCfg)
+  presetClientSupport <- newTVarIO $ ClientSupport Nothing Nothing Nothing
   userNetworkInfo <- newTVarIO $ UserNetworkInfo UNOther True
   userNetworkUpdated <- newTVarIO Nothing
   subscrConns <- newTVarIO S.empty
@@ -581,6 +583,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         useNetworkConfig,
         presetDomains,
         presetServers,
+        presetClientSupport,
         userNetworkInfo,
         userNetworkUpdated,
         subscrConns,
@@ -759,13 +762,13 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
         Nothing -> Left $ BROKER (B.unpack $ strEncode srv) TIMEOUT
 
 smpConnectClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> TMap SMPServer ProxiedRelayVar -> SMPClientVar -> AM SMPConnectedClient
-smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm tSess@(userId, srv, _) prs v =
+smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains, presetServers} nm tSess@(userId, srv, _) prs v =
   newProtocolClient c tSess smpClients connectClient v
     `catchAllErrors` \e -> lift (resubscribeSMPSession c tSess) >> throwE e
   where
     connectClient :: SMPClientVar -> AM SMPConnectedClient
     connectClient v' = do
-      cfg <- lift $ getClientConfig c smpCfg
+      cfg@ProtocolClientConfig {serverVRange} <- lift $ getClientConfig c smpCfg
       g <- asks random
       service <- getServiceCredentials c userId srv
       let cfg' = cfg {serviceCredentials = fst <$> service}
@@ -775,6 +778,7 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
         ExceptT $ getProtocolClient g nm tSess cfg' presetDomains (Just msgQ) ts $ smpClientDisconnected c tSess env v' prs
       atomically $ SS.setSessionId tSess (sessionId $ thParams smp) $ currentSubs c
       updateClientService service smp
+      when (isPresetServer srv presetServers) $ updateClientSupport (maxVersion serverVRange) smp
       pure SMPConnectedClient {connectedClient = smp, proxiedRelays = prs}
     updateClientService service smp = case (service, smpClientServiceId smp) of
       (Just (_, serviceId_), Just serviceId) -> withStore' c $ \db -> do
@@ -783,6 +787,24 @@ smpConnectClient c@AgentClient {smpClients, msgQ, proxySessTs, presetDomains} nm
       (Just _, Nothing) -> withStore' c $ \db -> deleteClientService db userId srv -- e.g., server version downgrade
       (Nothing, Just _) -> logError "server returned serviceId without service credentials in request"
       (Nothing, Nothing) -> pure ()
+    updateClientSupport clientVersion smp =
+      forM_ (clientSupport =<< eitherToMaybe =<< serverInfo (thParams smp)) $ \cs ->
+        atomically (stateTVar' (presetClientSupport c) $ mergeClientSupport clientVersion cs)
+          >>= mapM_ (notifySub c . CLIENT_SUPPORT)
+
+mergeClientSupport :: VersionSMP -> ClientSupport -> ClientSupport -> (Maybe ClientSupport, ClientSupport)
+mergeClientSupport v new cs =
+  (cs' <$ guard (cs' /= cs), cs')
+  where
+    cs' =
+      ClientSupport
+        { minClientVersion = case (minClientVersion cs, mfilter unsupported $ minClientVersion new) of
+            (Just m, Just m') | fromDate m <= fromDate m' -> Just m
+            (m_, m_') -> m_' <|> m_,
+          stableRelease = stableRelease new <|> stableRelease cs,
+          betaRelease = betaRelease new <|> betaRelease cs
+        }
+    unsupported MinClientVersion {protocolVersion} = VersionSMP protocolVersion > v
 
 smpClientDisconnected :: AgentClient -> SMPTransportSession -> Env -> SMPClientVar -> TMap SMPServer ProxiedRelayVar -> SMPClient -> IO ()
 smpClientDisconnected c@AgentClient {active, smpClients, smpProxiedRelays} tSess@(userId, srv, cId) env v prs client = do

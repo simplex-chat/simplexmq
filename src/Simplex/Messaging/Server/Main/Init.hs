@@ -238,6 +238,13 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
     <> "\n\
        \# Hosting type can be `virtual`, `dedicated`, `colocation`, `owned`\n"
     <> ("hosting_type = " <> maybe "virtual" (decodeLatin1 . strEncode) hostingType <> "\n\n")
+    <> "# Client support announced to the apps.\n\
+       \# Clients with protocol version below client_min_version are not supported from client_min_version_date.\n\
+       \# client_min_version = 23\n\
+       \# client_min_version_date = YYYY-MM-DD\n\
+       \# The latest app releases.\n\
+       \# client_stable_release = 7.1.2\n\
+       \# client_beta_release = 7.2.0-beta.1\n\n"
   where
     ServerPublicInfo {operator, website, hosting, hostingType, serverCountry} = serverInfo
     countryStr optName country = optDisabled country <> optName <> "_country = " <> fromMaybe "ISO-3166 2-letter code" country <> "\n"

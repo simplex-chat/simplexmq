@@ -286,6 +286,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       serverClientConcurrency = 2,
       serverResolverConcurrency = defaultNameResolverConcurrency,
       maxClientCmdWait = defaultMaxClientCmdWait,
+      maxFwdCorrIds = defaultMaxFwdCorrIds,
       namesConfig = Nothing,
       information = Nothing,
       startOptions = defaultStartOptions

@@ -13,10 +13,11 @@ import qualified Crypto.PubKey.RSA as RSA
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
-import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
+import Data.Ini (Ini (..), lookupValue, parseIni, readIniFile, writeIniFile)
 import Data.List (isInfixOf, isPrefixOf)
 import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
+import Data.Time.Calendar (fromGregorian)
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
@@ -25,7 +26,8 @@ import qualified Network.HTTP2.Client as H2
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.CLI (simplexmqVersionCommit)
-import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
+import Simplex.Messaging.Server.Information (ClientSupport (..), MinClientVersion (..), ServerPublicInfo (clientSupport))
+import Simplex.Messaging.Server.Main (serverPublicInfo, smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
@@ -86,6 +88,7 @@ cliTests = do
       it "with store log, no password" $ smpServerTest True False
       it "static files" smpServerTestStatic
       it "cloud scripts disable embedded web without certificates" smpCloudScriptsDisableWeb
+    it "reads client support information" smpServerClientSupport
 #if defined(dbServerPostgres)
   around_ (postgressBracket ntfTestServerDBConnectInfo) $ before_ (createNtfSchema ntfTestServerDBConnectInfo ntfTestServerDBOpts) $
     describe "Ntf server CLI" $ do
@@ -215,6 +218,12 @@ smpServerTestStatic = do
           getLn tls >>= \case
             "" -> pure []
             h -> (h :) <$> getHeaders
+
+smpServerClientSupport :: HasCallStack => IO ()
+smpServerClientSupport = do
+  Right ini <- pure $ parseIni "[INFORMATION]\nsource_code = https://github.com/simplex-chat/simplexmq\nclient_min_version = 24\nclient_min_version_date = 2027-05-01\nclient_stable_release = 7.2.0\n"
+  (clientSupport =<< serverPublicInfo ini)
+    `shouldBe` Just ClientSupport {minClientVersion = Just MinClientVersion {protocolVersion = 24, fromDate = fromGregorian 2027 5 1}, stableRelease = Just "7.2.0", betaRelease = Nothing}
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do

@@ -286,6 +286,7 @@ import Simplex.Messaging.Protocol
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.Information (ClientSupport)
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
@@ -441,6 +442,7 @@ data AEvent (e :: AEntity) where
   ERR :: AgentErrorType -> AEvent AEConn
   ERRS :: NonEmpty (ConnId, AgentErrorType) -> AEvent AENone
   SUSPENDED :: AEvent AENone
+  CLIENT_SUPPORT :: ClientSupport -> AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
   RFERR :: AgentErrorType -> AEvent AERcvFile
@@ -525,6 +527,7 @@ data AEventTag (e :: AEntity) where
   ERR_ :: AEventTag AEConn
   ERRS_ :: AEventTag AENone
   SUSPENDED_ :: AEventTag AENone
+  CLIENT_SUPPORT_ :: AEventTag AENone
   -- XFTP commands and responses
   RFDONE_ :: AEventTag AERcvFile
   RFPROG_ :: AEventTag AERcvFile
@@ -591,6 +594,7 @@ aEventTag = \case
   ERR _ -> ERR_
   ERRS _ -> ERRS_
   SUSPENDED -> SUSPENDED_
+  CLIENT_SUPPORT _ -> CLIENT_SUPPORT_
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
