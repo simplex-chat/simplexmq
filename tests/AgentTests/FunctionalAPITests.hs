@@ -1583,7 +1583,9 @@ testServiceRequestExpiringReplyQueue ps@(t, _) =
               timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
               timeout 5_000000 (wait req) `shouldReturn` Just (Left $ AGENT $ A_SERVICE ASETimeout)
               atomically $ putTMVar opened ()
-              waitQueueDeleted testStoreLogFile2
+              suspendAgent client 5_000000
+              nGet client ##> ("", "", SUSPENDED)
+      storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
   where
     clientServers = initAgentServersLongConnect {smp = userServers [testSMPServer2]}
 
@@ -4039,18 +4041,24 @@ testSwitchChangedWhileNewQueue changeSwitch err ps@(t, _) =
             atomically $ putTMVar opened ()
             timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED err)
             runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
-            waitQueueDeleted testStoreLogFile2
+            waitRcvQueueRecords b 1
+      storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
 
-waitQueueDeleted :: HasCallStack => FilePath -> IO ()
-waitQueueDeleted storeLogFile = go (50 :: Int)
+waitRcvQueueRecords :: HasCallStack => AgentClient -> Int -> IO ()
+waitRcvQueueRecords c n = go (50 :: Int)
   where
-    go n = do
-      records <- B.lines <$> B.readFile storeLogFile
-      case (count "CREATE " records, count "DELETE " records) of
-        (1, 1) -> pure ()
-        counts
-          | n > 0 -> threadDelay 100000 >> go (n - 1)
-          | otherwise -> expectationFailure $ "the created queue was not deleted: " <> show counts
+    go i = do
+      qs :: [(ConnId, Int64)] <- withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, rcv_queue_id FROM rcv_queues")
+      unless (length qs == n) $
+        if i > 0
+          then threadDelay 100000 >> go (i - 1)
+          else expectationFailure $ "receive queue records: " <> show qs
+
+storeLogQueues :: FilePath -> IO (Int, Int)
+storeLogQueues storeLogFile = do
+  records <- B.lines <$> B.readFile storeLogFile
+  pure (count "CREATE " records, count "DELETE " records)
+  where
     count tag = length . filter (tag `B.isPrefixOf`)
 
 testFastSwitchRatchetSyncWhileSecuring :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
