@@ -971,7 +971,7 @@ newProtocolClient ::
 newProtocolClient c tSess@(userId, srv, entityId_) clients connectClient v =
   tryAllErrors (connectClient v) >>= \case
     Right client -> do
-      logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
+      logInfo . safeDecodeUtf8 $ "Agent connected to " <> showServer srv <> " (user " <> bshow userId <> maybe "" (" for entity " <>) entityId_ <> ")"
       atomically $ putTMVar (sessionVar v) (Right client)
       liftIO $ nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ hostEvent CONNECT client)
       pure client
