@@ -632,7 +632,7 @@ testXFTPAgentDownloadSessionsLimitFile = withXFTPServer $ do
   (_, rfd) <- sendTwoChunkFile initAgentServers
   silentRfd <- silentServersDescription 3
   withStallingServerOn' xftpTestPort2 $ \accepted _ ->
-    withAgent 2 agentCfg {AEnv.tbqSize = 16, AEnv.xftpMaxDownloadSessions = 1} xftpServer2Only testDB2 $ \rcp -> do
+    withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} xftpServer2Only testDB2 $ \rcp -> do
       runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
       _ <- runRight $ xftpReceiveFile rcp 1 silentRfd Nothing True
       timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
