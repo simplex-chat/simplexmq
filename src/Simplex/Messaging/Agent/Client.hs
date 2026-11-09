@@ -2240,7 +2240,7 @@ agentXFTPDownloadChunk c@AgentClient {xftpServers} permit userId (FileDigest chu
     downloadWithPermit
   where
     userServer :: IO Bool
-    userServer = maybe False (S.member server . knownSrvs) <$> TM.lookupIO userId xftpServers
+    userServer = maybe False (\srvs -> any (`S.member` knownHosts srvs) $ serverHosts server) <$> TM.lookupIO userId xftpServers
 
 holdXFTPDownloadPermit :: AgentClient -> XFTPDownloadPermit -> XFTPTransportSession -> IO ()
 holdXFTPDownloadPermit c permit tSess =
