@@ -48,7 +48,8 @@ import Util
 
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
+import qualified Control.Exception as E
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
 import Simplex.Messaging.Agent.Store.Postgres.Common
@@ -56,6 +57,7 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
 import SMPClient (testStoreDBOpts)
+import System.Timeout (timeout)
 #endif
 
 msgStoreTests :: Spec
@@ -71,6 +73,7 @@ msgStoreTests = do
     it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
+    it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
     it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
     it "should end the thread cancelled during database query" $ withMsgStore testPostgresStoreConfig testCancelDBQuery
 #endif
@@ -471,6 +474,17 @@ testExpireMessagesInBatches ms = do
     fillPastQuota q = go 0
       where
         go n = write q "fill" >>= maybe (pure n) (const $ go (n + 1))
+
+testClosedStore :: PostgresMsgStore -> IO ()
+testClosedStore ms = do
+  closeMsgStore ms
+  r <- newEmptyTMVarIO
+  _ <- forkIO $ E.uninterruptibleMask_ (E.try $ withTransaction (dbStore $ queueStore ms) (`DB.query_` "SELECT 1")) >>= atomically . putTMVar r
+  res <- timeout 5000000 $ atomically $ readTMVar r
+  case res of
+    Just (Left (_ :: E.SomeException)) -> pure ()
+    Just (Right (_ :: [Only Int])) -> expectationFailure "query succeeded on a closed store"
+    Nothing -> expectationFailure "query waited on a closed store"
 
 testCancelDBTransaction :: PostgresMsgStore -> IO ()
 testCancelDBTransaction ms =

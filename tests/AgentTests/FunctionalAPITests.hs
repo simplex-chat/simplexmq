@@ -72,7 +72,7 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (isRight)
+import Data.Either (isRight, partitionEithers)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -1018,10 +1018,14 @@ testAgentClient3 =
     2 <- sendMessage a cId SMP.noMsgFlags "c4"
     3 <- sendMessage a bId SMP.noMsgFlags "b5"
     3 <- sendMessage a cId SMP.noMsgFlags "c5"
-    get a =##> \case ("", connId, SENT 2) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 2) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 3) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 3) -> connId == bId || connId == cId; _ -> False
+    liftIO $
+      getInAnyOrder
+        a
+        [ \case ("", connId, AEvt SAEConn (SENT 2)) -> connId == bId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 2)) -> connId == cId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 3)) -> connId == bId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 3)) -> connId == cId; _ -> False
+        ]
     get b =##> \case ("", connId, Msg "b4") -> connId == aIdForB; _ -> False
     ackMessage b aIdForB 2 Nothing
     get b =##> \case ("", connId, Msg "b5") -> connId == aIdForB; _ -> False
@@ -3282,15 +3286,20 @@ testBatchedPendingMessages nCreate nMsgs =
     withB $ \b -> runRight_ $ do
       let aIds = map fst conns
       subscribeAllConnections b False Nothing
-      ("", "", UP _ aIds') <- nGet b
-      liftIO $ S.fromList aIds' `shouldBe` S.fromList aIds
-      replicateM_ nMsgs $ do
-        ("", cId, Msg' msgId _ "hello") <- get b
+      (ups, msgs) <- partitionEithers <$> replicateM (nMsgs + 1) (upOrMsg b)
+      liftIO $ map S.fromList ups `shouldBe` [S.fromList aIds]
+      forM_ msgs $ \(cId, msgId) -> do
         liftIO $ isJust (find ((cId ==) . fst) msgConns) `shouldBe` True
         ackMessage b cId msgId Nothing
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+    upOrMsg :: AgentClient -> ExceptT AgentErrorType IO (Either [ConnId] (ConnId, AgentMsgId))
+    upOrMsg b =
+      pGet b >>= \case
+        ("", "", AEvt SAENone (UP _ aIds')) -> pure $ Left aIds'
+        ("", cId, AEvt SAEConn (Msg' msgId _ "hello")) -> pure $ Right (cId, msgId)
+        r -> error $ "unexpected event: " <> show r
 
 testSendMessagesB :: HasTestEnv => IO ()
 testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do
