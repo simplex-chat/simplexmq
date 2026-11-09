@@ -1950,7 +1950,7 @@ client
                   subsChange <- atomically $ do
                     writeTVar (clientServiceSubscribed clnt) True
                     currSubs <- swapTVar (clientServiceSubs clnt) subs'
-                    pure $ subtractServiceSubs currSubs subs'
+                    pure (count' - fst currSubs, idsHash' <> snd currSubs)
                   let incSrvStat sel n = liftIO $ atomicModifyIORef'_ (sel $ servicesSel stats) (+ n)
                       diff = fromIntegral $ count' - count
                   if -- `count == -1` only for subscriptions by old NTF servers
@@ -2256,7 +2256,9 @@ client
               -- we delete subscription here, so the client with no subscriptions can be disconnected.
               sub <- atomically $ TM.lookupDelete entId $ subscriptions clnt
               liftIO $ mapM_ cancelSub sub
-              when (isJust rcvServiceId) $ atomically $ modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ whenM (((0 /=) . fst) <$> readTVar (serviceSubsCount clnt)) $ do
+                modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+                modifyTVar' (totalServiceSubs subscribers) $ subtractServiceSubs (1, queueIdHash (recipientId q))
               liftIO $ processSub clnt $ CSDeleted entId rcvServiceId
               forM_ (notifier qr) $ \NtfCreds {notifierId = nId, ntfServiceId} -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
