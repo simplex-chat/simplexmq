@@ -161,7 +161,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             >>= mapM (deRefWeak . workerThreadId >=> mapM_ killThread)
 
     saveServer :: M ()
-    saveServer = asks store >>= liftIO . closeNtfDbStore >> saveServerStats
+    saveServer = saveServerStats >> asks store >>= liftIO . closeNtfDbStore
 
     serverStatsThread_ :: NtfServerConfig -> [M ()]
     serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =

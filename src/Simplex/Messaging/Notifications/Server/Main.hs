@@ -227,8 +227,8 @@ ntfServerCLI cfgPath logPath =
     iniDeletedTTL ini = readIniDefault (86400 * defaultDeletedTTL) "STORE_LOG" "db_deleted_ttl" ini
 
 printNtfServerConfig :: [(ServiceName, ASrvTransport, AddHTTP)] -> PostgresStoreCfg -> IO ()
-printNtfServerConfig transports PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}, dbStoreLogPath} = do
-  B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
+printNtfServerConfig transports PostgresStoreCfg {dbOpts = DBOpts {schema}, dbStoreLogPath} = do
+  B.putStrLn $ "PostgreSQL database schema: " <> schema
   printServerConfig "NTF" transports dbStoreLogPath
 
 data CliCommand
