@@ -23,7 +23,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket
-import Network.Socket.ByteString (recv, sendAll)
+import Network.Socket.ByteString (recv)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
@@ -44,7 +44,6 @@ import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Info (os)
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (race_)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar, tryPutTMVar)
@@ -435,22 +434,6 @@ withStallingServerOn' port action = do
         void $ atomically $ tryPutTMVar closed ())
     (pure ())
     (const $ action accepted closed)
-
-withSlowServerOn :: HasCallStack => ServiceName -> ServiceName -> IO a -> IO a
-withSlowServerOn port srvPort action =
-  serverBracket (\started -> runLocalTCPServer started port relay) (pure ()) (const action)
-  where
-    relay client = E.bracket connectServer close $ \srv -> race_ (forward 0 client srv) (forward 2 srv client)
-    connectServer = do
-      addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just srvPort)
-      E.bracketOnError (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)) close $ \sock ->
-        sock <$ connect sock (addrAddress addr)
-    forward usPerByte src dst = do
-      s <- recv src 16384
-      unless (B.null s) $ do
-        threadDelay $ usPerByte * B.length s
-        sendAll dst s
-        forward usPerByte src dst
 
 withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const

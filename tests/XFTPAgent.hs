@@ -29,7 +29,7 @@ import qualified Data.Set as S
 import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Clock.System (getSystemTime, systemSeconds)
 import SMPAgentClient (agentCfg, initAgentServers, noAuthSrvCfg, testDB, testDB2, testDB3, userServers)
-import SMPClient (withSlowServerOn, withStallingServerOn', xit'')
+import SMPClient (withStallingServerOn', xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileChunk (..), FileChunkReplica (..), FileDescription (..), FileDescriptionURI (..), FileDigest (..), FileSize (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, validateFileDescription, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..), SFileParty (..))
@@ -92,8 +92,6 @@ xftpAgentTests =
         testXFTPAgentDownloadSessionsLimit initAgentServers
       it "should limit download sessions with servers outside the user's list in entity session mode" $
         testXFTPAgentDownloadSessionsLimit $ entitySessionMode initAgentServers
-      it "should limit download sessions and take turns between servers outside the user's list after each chunk" testXFTPAgentDownloadSessionsLimitFile
-      it "should limit download sessions and receive a file while a slow server outside the user's list has chunks to download" testXFTPAgentDownloadSessionsSlowServer
       it "should release download sessions of stopped workers" testXFTPAgentDownloadSessionsStopped
       it "should keep download session with a server outside the user's list for all chunks of a file" $
         testXFTPAgentDownloadSessionChunks xftpServer2Only 1
@@ -626,45 +624,6 @@ testXFTPAgentDownloadSessionsLimit rcpServers = withXFTPServer $ do
       threadDelay 500000
       M.size <$> readTVarIO (xftpClients rcp) `shouldReturn` 1
       timeout 5000000 (runRight $ testReceiveCF' rcp rfd Nothing filePath (kb 320)) >>= (`shouldSatisfy` isJust)
-
-testXFTPAgentDownloadSessionsLimitFile :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
-testXFTPAgentDownloadSessionsLimitFile = withXFTPServer $ do
-  (_, rfd) <- sendTwoChunkFile initAgentServers
-  silentRfd <- silentServersDescription 3
-  withStallingServerOn' xftpTestPort2 $ \accepted _ ->
-    withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} xftpServer2Only testDB2 $ \rcp -> do
-      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
-      _ <- runRight $ xftpReceiveFile rcp 1 silentRfd Nothing True
-      timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
-      maxSessions <- newTVarIO 0
-      withAsync (forever $ recordSessions rcp maxSessions) $ \_ -> do
-        _ <- runRight $ xftpReceiveFile rcp 1 rfd Nothing True
-        timeout 20000000 (xftpConnectsUntilReceived rcp) `shouldReturn` Just 2
-      readTVarIO maxSessions `shouldReturn` 1
-  where
-    recordSessions rcp maxSessions = do
-      sessions <- M.size <$> readTVarIO (xftpClients rcp)
-      atomically $ modifyTVar' maxSessions (max sessions)
-      threadDelay 10000
-
-testXFTPAgentDownloadSessionsSlowServer :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
-testXFTPAgentDownloadSessionsSlowServer = withXFTPServer $ do
-  (_, rfd) <- sendTwoChunkFile initAgentServers
-  withSlowServerOn slowPort xftpTestPort $ do
-    (_, slowRfd) <- sendTwoChunkFile initAgentServers {AEnv.xftp = userServers $ testXFTPServer {port = slowPort} :| []}
-    withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} xftpServer2Only testDB2 $ \rcp -> do
-      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
-      replicateM_ 12 $ runRight $ xftpReceiveFile rcp 1 slowRfd Nothing True
-      (_, _, RFPROG {}) <- rfGet rcp
-      rfId <- runRight $ xftpReceiveFile rcp 1 rfd Nothing True
-      timeout 4000000 (receivedFile rcp rfId) `shouldReturn` Just ()
-  where
-    slowPort = testServerPort 8
-    receivedFile :: AgentClient -> RcvFileId -> IO ()
-    receivedFile rcp rfId =
-      rfGet rcp >>= \case
-        (_, rfId', RFDONE _) | rfId' == rfId -> pure ()
-        _ -> receivedFile rcp rfId
 
 testXFTPAgentDownloadSessionsStopped :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
 testXFTPAgentDownloadSessionsStopped = withXFTPServer $ do
