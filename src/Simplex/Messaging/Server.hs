@@ -1185,10 +1185,10 @@ sendResponses c@Client {sndQ} stats authDelay since rs@(ts, _)
 sendAfterDelay :: Client s -> ServerStats -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
 sendAfterDelay Client {sndQ, delayedQ} stats delay since rs
   | delay > 0 = do
-      now <- microseconds <$> getSystemTime
-      let elapsed = now - microseconds since
+      elapsed <- subtract (microseconds since) . microseconds <$> getSystemTime
       when (elapsed >= delay) $ incStat $ authDelayExceeded stats
-      atomically $ writeTBQueue delayedQ (now + delay - elapsed `mod` delay, rs)
+      due <- registerDelay $ fromIntegral $ delay - elapsed `mod` delay
+      atomically $ writeTBQueue delayedQ (due, rs)
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
@@ -1197,9 +1197,8 @@ sendDelayed :: Client s -> IO ()
 sendDelayed Client {sndQ, delayedQ, clientTHParams = THandleParams {sessionId}} = do
   labelMyThread . B.unpack $ "client $" <> encode sessionId <> " auth"
   forever $ do
-    (sendAt, rs) <- atomically $ readTBQueue delayedQ
-    now <- microseconds <$> getSystemTime
-    threadDelay' (sendAt - now)
+    (due, rs) <- atomically $ readTBQueue delayedQ
+    atomically $ unlessM (readTVar due) retry
     atomically $ writeTBQueue sndQ rs
 
 updateSlotWaitStats :: ServerStats -> SystemTime -> Bool -> IO ()
