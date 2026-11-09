@@ -365,6 +365,7 @@ data AgentClient = AgentClient
     xftpServers :: TMap UserId (UserServers 'PXFTP),
     xftpClients :: TMap XFTPTransportSession XFTPClientVar,
     xftpDownloadSessions :: QSem,
+    xftpDownloadWaiters :: TVar Int,
     userEntitlements :: TMap UserId EntitlementCredential,
     useNetworkConfig :: TVar (NetworkConfig, NetworkConfig), -- (slow, fast) networks
     presetDomains :: [HostName],
@@ -539,6 +540,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   xftpServers <- newTVarIO $ M.map mkUserServers xftp
   xftpClients <- TM.emptyIO
   xftpDownloadSessions <- newQSem $ xftpMaxDownloadSessions cfg
+  xftpDownloadWaiters <- newTVarIO 0
   userEntitlements <- newTVarIO entitlements
   useNetworkConfig <- newTVarIO (slowNetworkConfig netCfg, netCfg)
   userNetworkInfo <- newTVarIO $ UserNetworkInfo UNOther True
@@ -584,6 +586,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         xftpServers,
         xftpClients,
         xftpDownloadSessions,
+        xftpDownloadWaiters,
         userEntitlements,
         useNetworkConfig,
         presetDomains,
@@ -2244,13 +2247,17 @@ agentXFTPDownloadChunk c@AgentClient {xftpServers} permit userId (FileDigest chu
     userServer = maybe False (S.member server . knownSrvs) <$> TM.lookupIO userId xftpServers
 
 holdXFTPDownloadPermit :: AgentClient -> XFTPDownloadPermit -> XFTPTransportSession -> IO ()
-holdXFTPDownloadPermit c permit tSess =
+holdXFTPDownloadPermit c permit tSess = do
+  whenM downloadsWaiting $ releaseXFTPDownloadPermit c permit
   readTVarIO permit >>= \case
-    Nothing -> E.mask_ $ waitQSem (xftpDownloadSessions c) >> setSession
+    Nothing -> E.mask_ $ waitPermit >> setSession
     Just tSess'
       | tSess' == tSess -> pure ()
       | otherwise -> closeClient c xftpClients tSess' >> setSession
   where
+    downloadsWaiting = (> 0) <$> readTVarIO (xftpDownloadWaiters c)
+    waitPermit = E.bracket_ (addWaiters 1) (addWaiters (-1)) $ waitQSem (xftpDownloadSessions c)
+    addWaiters n = atomically $ modifyTVar' (xftpDownloadWaiters c) (+ n)
     setSession = atomically $ writeTVar permit $ Just tSess
 
 releaseXFTPDownloadPermit :: AgentClient -> XFTPDownloadPermit -> IO ()
