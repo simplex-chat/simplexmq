@@ -929,7 +929,8 @@ data NameResolverStats = NameResolverStats
     rslvSucc :: IORef Int,
     rslvNotFound :: IORef Int,
     rslvResolverErrs :: IORef Int,
-    rslvDisabled :: IORef Int
+    rslvDisabled :: IORef Int,
+    rslvRejected :: IORef Int
   }
 
 newNameResolverStats :: IO NameResolverStats
@@ -939,14 +940,16 @@ newNameResolverStats = do
   rslvNotFound <- newIORef 0
   rslvResolverErrs <- newIORef 0
   rslvDisabled <- newIORef 0
-  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvResolverErrs, rslvDisabled}
+  rslvRejected <- newIORef 0
+  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvResolverErrs, rslvDisabled, rslvRejected}
 
 data NameResolverStatsData = NameResolverStatsData
   { _rslvReqs :: Int,
     _rslvSucc :: Int,
     _rslvNotFound :: Int,
     _rslvResolverErrs :: Int,
-    _rslvDisabled :: Int
+    _rslvDisabled :: Int,
+    _rslvRejected :: Int
   }
   deriving (Show)
 
@@ -957,7 +960,8 @@ newNameResolverStatsData =
       _rslvSucc = 0,
       _rslvNotFound = 0,
       _rslvResolverErrs = 0,
-      _rslvDisabled = 0
+      _rslvDisabled = 0,
+      _rslvRejected = 0
     }
 
 getNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
@@ -967,7 +971,8 @@ getNameResolverStatsData s = do
   _rslvNotFound <- readIORef $ rslvNotFound s
   _rslvResolverErrs <- readIORef $ rslvResolverErrs s
   _rslvDisabled <- readIORef $ rslvDisabled s
-  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled}
+  _rslvRejected <- readIORef $ rslvRejected s
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected}
 
 getResetNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
 getResetNameResolverStatsData s = do
@@ -976,7 +981,8 @@ getResetNameResolverStatsData s = do
   _rslvNotFound <- atomicSwapIORef (rslvNotFound s) 0
   _rslvResolverErrs <- atomicSwapIORef (rslvResolverErrs s) 0
   _rslvDisabled <- atomicSwapIORef (rslvDisabled s) 0
-  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled}
+  _rslvRejected <- atomicSwapIORef (rslvRejected s) 0
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected}
 
 -- not thread safe; used on server start only
 setNameResolverStats :: NameResolverStats -> NameResolverStatsData -> IO ()
@@ -986,9 +992,10 @@ setNameResolverStats s d = do
   writeIORef (rslvNotFound s) $! _rslvNotFound d
   writeIORef (rslvResolverErrs s) $! _rslvResolverErrs d
   writeIORef (rslvDisabled s) $! _rslvDisabled d
+  writeIORef (rslvRejected s) $! _rslvRejected d
 
 instance StrEncoding NameResolverStatsData where
-  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} =
+  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected} =
     "reqs="
       <> strEncode _rslvReqs
       <> "\nsucc="
@@ -999,13 +1006,16 @@ instance StrEncoding NameResolverStatsData where
       <> strEncode _rslvResolverErrs
       <> "\ndisabled="
       <> strEncode _rslvDisabled
+      <> "\nrejected="
+      <> strEncode _rslvRejected
   strP = do
     _rslvReqs <- "reqs=" *> strP <* A.endOfLine
     _rslvSucc <- "succ=" *> strP <* A.endOfLine
     _rslvNotFound <- "notFound=" *> strP <* A.endOfLine
     _rslvResolverErrs <- "resolverErrs=" *> strP <* A.endOfLine
     _rslvDisabled <- "disabled=" *> strP
-    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled}
+    _rslvRejected <- (A.endOfLine *> "rejected=" *> strP) <|> pure 0
+    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected}
 
 data ServiceStats = ServiceStats
   { srvAssocNew :: IORef Int,

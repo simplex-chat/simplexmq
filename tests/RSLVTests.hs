@@ -29,7 +29,7 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
-import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
+import SMPNamesTests (availableBody, errorBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -88,6 +88,8 @@ rslvTests = do
   describe "RSLV direct (non-forwarded)" $ do
     it "resolver without the v2 route (404) -> NAME RESOLVER, not NOT_FOUND" testRslvBackendNotFound
     it "resolver replies 502 -> NAME (RESOLVER ..)" testRslvBackendHttpErr
+    it "a rejected name counts as rejected, not as a resolver error" testRslvRejectedStats
+    it "a resolver failure counts as a resolver error" testRslvResolverErrStats
     it "no names config -> NAME NO_RESOLVER" testRslvDisabled
     it "refuses to send RSLV on a session below namesSMPVersion" testRslvVersion
   describe "RSLV forwarded (PFWD)" $ do
@@ -127,6 +129,27 @@ testRslvBackendHttpErr =
     testSMPClient @TLS $ \h -> do
       (_, _, resp) <- sendRslv h "rs05" (domain "alice.simplex")
       resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
+
+testRslvRejectedStats :: HasTestEnv => IO ()
+testRslvRejectedStats =
+  rslvStatsTest (status502, errorBody "labelNotRecorded") `shouldReturn` (1, 0)
+
+testRslvResolverErrStats :: HasTestEnv => IO ()
+testRslvResolverErrStats =
+  rslvStatsTest (status502, errorBody "upstreamError") `shouldReturn` (0, 1)
+
+rslvStatsTest :: HasTestEnv => (Status, LB.ByteString) -> IO (Int, Int)
+rslvStatsTest (st, body) =
+  NRS.withResolverServer (NRS.resolveResp st body) $ \port _ ->
+    withSmpServerConfigOn (transport @TLS) (metricsCfg port) testPort $ const $ do
+      testSMPClient @TLS $ \h -> do
+        (_, _, resp) <- sendRslv h "rs08" (domain "alice.simplex")
+        resp `shouldBe` Right (ERR (NAME (RESOLVER "HTTP 502")))
+      threadDelay 1500000
+      ms <- readMetrics
+      (,) <$> metric ms "simplex_smp_names_rejected" <*> metric ms "simplex_smp_names_resolver_errs"
+  where
+    metricsCfg port = updateCfg (withNames port memCfg) $ \c -> c {prometheusInterval = Just 1}
 
 testRslvDisabled :: HasTestEnv => IO ()
 testRslvDisabled =
@@ -336,16 +359,21 @@ data SlotWaitMetrics = SlotWaitMetrics {waits :: Int, waitTimeouts :: Int, waitM
 
 readSlotWaitMetrics :: HasTestEnv => IO SlotWaitMetrics
 readSlotWaitMetrics = do
-  ms <- map words . lines <$> readFile testPrometheusMetricsFile
-  -- metric lines are "name value timestamp"
-  let metric name = case [v | n : v : _ <- ms, n == name] of
-        [v] -> pure $ read v
-        _ -> fail $ "no metric " <> name
+  ms <- readMetrics
   SlotWaitMetrics
-    <$> metric "simplex_smp_cmd_slot_wait_ms_count"
-    <*> metric "simplex_smp_cmd_slot_wait_timeouts"
-    <*> metric "simplex_smp_cmd_slot_wait_ms_max"
-    <*> metric "simplex_smp_cmd_slot_wait_ms_sum"
+    <$> metric ms "simplex_smp_cmd_slot_wait_ms_count"
+    <*> metric ms "simplex_smp_cmd_slot_wait_timeouts"
+    <*> metric ms "simplex_smp_cmd_slot_wait_ms_max"
+    <*> metric ms "simplex_smp_cmd_slot_wait_ms_sum"
+
+readMetrics :: HasTestEnv => IO [[String]]
+readMetrics = map words . lines <$> readFile testPrometheusMetricsFile
+
+-- metric lines are "name value timestamp"
+metric :: [[String]] -> String -> IO Int
+metric ms name = case [v | n : v : _ <- ms, n == name] of
+  [v] -> pure $ read v
+  _ -> fail $ "no metric " <> name
 
 -- | One RSLV per block, so no batch limit applies.
 sendRslvs :: THandleSMP TLS 'TClient -> String -> Int -> IO ()

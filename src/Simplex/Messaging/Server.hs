@@ -105,7 +105,7 @@ import Simplex.Messaging.Server.Control
 import Simplex.Messaging.Server.Env.STM as Env
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore
-import Simplex.Messaging.Server.Names (NamesEnv, closeNamesEnv, resolveName)
+import Simplex.Messaging.Server.Names (NameFailure (..), NamesEnv, closeNamesEnv, resolveName)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
@@ -642,8 +642,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
           map tshow [_pRequests, _pSuccesses, _pErrorsConnect, _pErrorsCompat, _pErrorsOther]
         showServiceStats ServiceStatsData {_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd} =
           map tshow [_srvAssocNew, _srvAssocDuplicate, _srvAssocUpdated, _srvAssocRemoved, _srvSubCount, _srvSubDuplicate, _srvSubQueues, _srvSubEnd]
-        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} =
-          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled]
+        showNameResolverStats NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected} =
+          map tshow [_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected]
 
     prometheusMetricsThread_ :: ServerConfig s -> [M s ()]
     prometheusMetricsThread_ ServerConfig {prometheusInterval = Just interval, prometheusMetricsFile} =
@@ -1617,7 +1617,8 @@ client
       (selector, msg) <-
         liftIO (resolveName nenv q) <&> \case
           Right res -> (if answered (registration res) then rslvSucc else rslvNotFound, RNAME res)
-          Left e -> (rslvResolverErrs, ERR $ NAME e)
+          Left (QueryRejected e) -> (rslvRejected, ERR $ NAME e)
+          Left (ResolverFailed e) -> (rslvResolverErrs, ERR $ NAME e)
       incStat (selector st) $> msg
       where
         -- below v22 the encoder answers anything but a record as NAME NOT_FOUND

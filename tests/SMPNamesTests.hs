@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, responseBody, resolved) where
+module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, responseBody, errorBody, resolved) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -17,17 +17,19 @@ import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Types (status200, status400, status404, status500, status502)
 import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
-import Simplex.Messaging.Encoding.String (strDecode)
+import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameResponse (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
 import Simplex.Messaging.Server.Main (validateUrl)
 import Simplex.Messaging.Server.Names
-  ( NamesConfig (..),
+  ( NameFailure (..),
+    NamesConfig (..),
     RpcAuth (..),
     newNamesEnv,
     pingEndpoint,
     resolveName,
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
+import Simplex.Messaging.Server.Stats (NameResolverStatsData (..))
 import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), labelHash)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import Simplex.Messaging.Transport (nameAvailSMPVersion, serverInfoSMPVersion)
@@ -62,6 +64,9 @@ availableBody = responseBody "{\"type\":\"available\",\"pricing\":{\"registratio
 reservedBody :: LB.ByteString
 reservedBody = responseBody "{\"type\":\"reserved\",\"reservedReason\":\"trademark\"}"
 
+errorBody :: LB.ByteString -> LB.ByteString
+errorBody code = "{\"name\":\"alice.simplex\",\"error\":\"" <> code <> "\"}"
+
 -- | The registration, and the block the resolver read it at.
 responseBody :: LB.ByteString -> LB.ByteString
 responseBody reg = "{\"lastBlockTs\":" <> testReadAt <> ",\"registration\":" <> reg <> "}"
@@ -86,6 +91,7 @@ smpNamesTests = do
   describe "HTTP resolver" resolverSpec
   describe "name availability" availabilitySpec
   describe "Resolver health probe" healthSpec
+  describe "name resolver stats" nameStatsSpec
   describe "resolver_endpoint validation" validateUrlSpec
 
 nameRecordEncodingSpec :: Spec
@@ -263,37 +269,57 @@ resolverSpec = do
   it "returns RESOLVER on 404 (a resolver without the v2 route)" $
     withResolverServer (resolveResp status404 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 404")
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "HTTP 404"))
 
-  it "returns RESOLVER on 400 (TLD not configured)" $
-    withResolverServer (resolveResp status400 "{}") $ \port _ -> do
+  it "rejects the query on 400 tldNotConfigured" $
+    withResolverServer (resolveResp status400 (errorBody "tldNotConfigured")) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 400")
+      resolveName env aliceDomain `shouldReturn` Left (QueryRejected (RESOLVER "HTTP 400"))
 
-  it "returns RESOLVER on 502 (upstream failure)" $
+  it "rejects the query on 400 notFullyQualified" $
+    withResolverServer (resolveResp status400 (errorBody "notFullyQualified")) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (QueryRejected (RESOLVER "HTTP 400"))
+
+  it "rejects the query on 502 labelNotRecorded" $
+    withResolverServer (resolveResp status502 (errorBody "labelNotRecorded")) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (QueryRejected (RESOLVER "HTTP 502"))
+
+  it "rejects the query on 502 noPriceOracle" $
+    withResolverServer (resolveResp status502 (errorBody "noPriceOracle")) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (QueryRejected (RESOLVER "HTTP 502"))
+
+  it "fails on 502 upstreamError" $
+    withResolverServer (resolveResp status502 (errorBody "upstreamError")) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "HTTP 502"))
+
+  it "fails on an error status without an error code" $
     withResolverServer (resolveResp status502 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 502")
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "HTTP 502"))
 
   it "returns RESOLVER when the body exceeds the response cap" $
     withResolverServer (resolveResp status200 (LB.fromStrict (B.replicate 500 'x'))) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverMaxResponseBytes = 100}
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "response too large")
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "response too large"))
 
   it "returns RESOLVER on malformed JSON from the resolver" $
     withResolverServer (resolveResp status200 "this is not json") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "invalid response"))
 
   it "returns RESOLVER when JSON parses but isn't a NameRegistration shape" $
     withResolverServer (resolveResp status200 "{}") $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "invalid response")
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "invalid response"))
 
   it "returns RESOLVER (timeout) when the resolver is slower than resolverTimeoutMs" $
     withResolverServerDelayed 1500 (resolveResp status200 (registeredBody testNameRecord)) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port) {resolverTimeoutMs = 300}
-      resolveName env aliceDomain `shouldReturn` Left (RESOLVER "timeout")
+      resolveName env aliceDomain `shouldReturn` Left (ResolverFailed (RESOLVER "timeout"))
 
   it "sends one HTTP request per lookup (no cache)" $
     withResolverServer (resolveResp status200 (registeredBody testNameRecord)) $ \port reqs -> do
@@ -324,8 +350,8 @@ healthSpec = do
     withResolverServer healthFails $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
       pingEndpoint env >>= \case
-        Left (HttpStatusErr 500) -> pure ()
-        r -> expectationFailure $ "expected Left (HttpStatusErr 500), got " <> show r
+        Left (HttpStatusErr 500 _) -> pure ()
+        r -> expectationFailure $ "expected Left (HttpStatusErr 500 _), got " <> show r
 
   it "pingEndpoint queries /health" $
     withResolverServer (resolveResp status200 "{}") $ \port reqs -> do
@@ -336,6 +362,15 @@ healthSpec = do
     healthFails = \case
       ["health"] -> (status500, "{}")
       _ -> (status404, "{}")
+
+nameStatsSpec :: Spec
+nameStatsSpec = do
+  it "round-trips the rejected count" $
+    (_rslvRejected <$> strDecode (strEncode stats {_rslvRejected = 3})) `shouldBe` Right 3
+  it "reads stats saved before the rejected count as zero" $
+    (_rslvRejected <$> strDecode "reqs=5\nsucc=1\nnotFound=1\nresolverErrs=2\ndisabled=1") `shouldBe` Right 0
+  where
+    stats = NameResolverStatsData {_rslvReqs = 5, _rslvSucc = 1, _rslvNotFound = 1, _rslvResolverErrs = 1, _rslvDisabled = 0, _rslvRejected = 0}
 
 validateUrlSpec :: Spec
 validateUrlSpec = do

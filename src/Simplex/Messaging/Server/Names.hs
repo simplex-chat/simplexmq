@@ -8,6 +8,7 @@ module Simplex.Messaging.Server.Names
   ( NamesConfig (..),
     RpcAuth (..),
     NamesEnv (..),
+    NameFailure (..),
     newNamesEnv,
     closeNamesEnv,
     pingEndpoint,
@@ -59,25 +60,35 @@ pingEndpoint :: NamesEnv -> IO (Either ResolverError ())
 pingEndpoint NamesEnv {resolverEnv, config} =
   fromMaybe (Left ResolverTimeout) <$> timeout (resolverTimeoutMs config * 1000) (healthHttp resolverEnv)
 
-resolveName :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
+data NameFailure
+  = QueryRejected NameErrorType
+  | ResolverFailed NameErrorType
+  deriving (Eq, Show)
+
+resolveName :: NamesEnv -> NameQuery -> IO (Either NameFailure NameResponse)
 resolveName env q = do
   r <- E.try (timeout (resolverTimeoutMs (config env) * 1000) (fetch env q))
   case r of
-    Right result -> pure (fromMaybe (Left (RESOLVER "timeout")) result)
+    Right result -> pure (fromMaybe (Left (ResolverFailed (RESOLVER "timeout"))) result)
     Left e
       | Just (_ :: E.SomeAsyncException) <- E.fromException e -> E.throwIO e
       | otherwise -> do
           logError $ "[NAMES] resolver fetch raised " <> T.pack (E.displayException e)
-          pure (Left (RESOLVER "resolver error"))
+          pure (Left (ResolverFailed (RESOLVER "resolver error")))
 
-fetch :: NamesEnv -> NameQuery -> IO (Either NameErrorType NameResponse)
+fetch :: NamesEnv -> NameQuery -> IO (Either NameFailure NameResponse)
 fetch NamesEnv {resolverEnv} q =
   first mapResolverError <$> resolveHttp resolverEnv (decodeLatin1 $ smpEncode q)
 
-mapResolverError :: ResolverError -> NameErrorType
+mapResolverError :: ResolverError -> NameFailure
 mapResolverError = \case
-  HttpStatusErr code -> RESOLVER ("HTTP " <> T.pack (show code))
-  HttpFailure _ -> RESOLVER "transport failure"
-  BodyTooLarge -> RESOLVER "response too large"
-  InvalidJson _ -> RESOLVER "invalid response"
-  ResolverTimeout -> RESOLVER "timeout"
+  HttpStatusErr code (Just c) | c `elem` queryErrors -> QueryRejected (httpErr code)
+  HttpStatusErr code _ -> ResolverFailed (httpErr code)
+  HttpFailure _ -> ResolverFailed $ RESOLVER "transport failure"
+  BodyTooLarge -> ResolverFailed $ RESOLVER "response too large"
+  InvalidJson _ -> ResolverFailed $ RESOLVER "invalid response"
+  ResolverTimeout -> ResolverFailed $ RESOLVER "timeout"
+  where
+    httpErr code = RESOLVER ("HTTP " <> T.pack (show code))
+    -- error codes of /v2/resolve listed in scripts/resolver/README.md
+    queryErrors = ["tldNotConfigured", "notFullyQualified", "labelNotRecorded", "noPriceOracle"]
