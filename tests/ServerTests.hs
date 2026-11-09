@@ -92,11 +92,15 @@ serverTests = do
     describe "Concurrent sending and delivery" testConcurrentSendDelivery
     describe "SUB while delivery waits" testSubPendingDelivery
     describe "SUB to a queue blocked by the operator" testSubBlockedQueue
+    describe "SUB and SEND in one block" testSubSendBlock
+    describe "switch subscription with SUB and SEND in one block" testSwitchSubSendBlock
+    describe "two SUBs in one block" testSubTwiceBlock
     describe "subscribe the same queues from two connections at once" testSubSameQueuesTwoConnections
   describe "Service message subscriptions" $ do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
     testServiceSubsTotalCount
+    testServiceSubSendBlock
     testServiceSubAssociatedQueue
     testServiceDowngradeConnected
     testServiceSubsReplacesConnection
@@ -721,8 +725,8 @@ testSubPendingDelivery =
       Resp "1" _ OK <- sendRecv sh ("", "1", sId, _SEND "hello")
       signSend_ rh rKey Nothing ("2", rId, SUB)
       threadDelay 500000
-      let drain st@(n, _, mId_) = case mId_ of
-            Just mId | n == length fillers -> pure mId
+      let drain st@(n, subscribed, mId_) = case mId_ of
+            Just mId | n == length fillers && subscribed -> pure mId
             _ -> 5000000 `timeout` tGetClient rh >>= maybe (error "drain timeout") (foldM received st) >>= drain
           received st@(n, subscribed, mId_) = \case
             Resp "" _ (LNK _ _) -> pure st
@@ -731,7 +735,7 @@ testSubPendingDelivery =
             Resp "" rId' (Msg mId msg)
               | rId' == rId -> do
                   dec mId msg `shouldBe` Right "hello"
-                  pure (n, subscribed, if subscribed then Just mId else mId_)
+                  pure (n, subscribed, Just mId)
               | rId' `elem` map fst fillers -> pure (n + 1, subscribed, mId_)
             r -> error $ "unexpected event: " <> show r
       mId <- drain (0 :: Int, False, Nothing)
@@ -752,6 +756,67 @@ testSubPendingDelivery =
                 pure $ Just ()
               _ -> pure Nothing
           ]
+
+testSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testSubSendBlock =
+  it "should deliver message sent in the same block as SUB" $ \(ATransport t, msType) ->
+    smpTest t msType $ \h@THandle {params} -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just (QRMessaging Nothing)) Nothing))
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+          TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+          TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+      Right subAuth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+      [Right (), Right ()] <- tPut h [Right (subAuth, subT), Right (Nothing, sendT)]
+      Resp "" _ (Msg mId msg) <- tGet1 h
+      dec mId msg `shouldBe` Right "hello"
+      [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient h
+      Resp "4" _ OK <- signSendRecv h rKey ("4", rId, ACK mId)
+      pure ()
+
+testSwitchSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testSwitchSubSendBlock =
+  it "should deliver message sent in the same block as SUB to the new connection" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \rh1 rh2@THandle {params} -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("1", NoEntity, New rPub dhPub)
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+          TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+          TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+      Right subAuth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+      [Right (), Right ()] <- tPut rh2 [Right (subAuth, subT), Right (Nothing, sendT)]
+      Resp "" _ end <- tGet1 rh1
+      end `shouldBe` END
+      Resp "" _ (Msg mId msg) <- tGet1 rh2
+      dec mId msg `shouldBe` Right "hello"
+      [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient rh2
+      Resp "4" _ OK <- signSendRecv rh2 rKey ("4", rId, ACK mId)
+      pure ()
+
+testSubTwiceBlock :: SpecWith (ASrvTransport, AStoreType)
+testSubTwiceBlock =
+  it "should deliver message once for two SUBs in the same block" $ \(ATransport t, msType) ->
+    smpTest t msType $ \h@THandle {params} -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just (QRMessaging Nothing)) Nothing))
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+      Resp "2" _ OK <- sendRecv h ("", "2", sId, _SEND "hello")
+      let TransmissionForAuth {tForAuth = forAuth1, tToSend = sub1} = encodeTransmissionForAuth params (CorrId "3", rId, SUB)
+          TransmissionForAuth {tForAuth = forAuth2, tToSend = sub2} = encodeTransmissionForAuth params (CorrId "4", rId, SUB)
+      Right auth1 <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing forAuth1
+      Right auth2 <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing forAuth2
+      [Right (), Right ()] <- tPut h [Right (auth1, sub1), Right (auth2, sub2)]
+      [Resp "3" _ (SOK Nothing), Resp "4" _ (SOK Nothing), Resp "" _ (Msg mId msg)] <- tGetClient h
+      dec mId msg `shouldBe` Right "hello"
+      Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg h
+      Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId)
+      pure ()
 
 testSubBlockedQueue :: SpecWith (ASrvTransport, AStoreType)
 testSubBlockedQueue =
@@ -1083,6 +1148,31 @@ testServiceSubsTotalCount =
             ]
         threadDelay 1500000
         B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
+
+testServiceSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubSendBlock =
+  it "should deliver message sent in the same block as service SUB" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh@THandle {params} -> do
+        let TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+            TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+        Right subAuth <- pure $ authTransmission (thAuth params) True (Just rKey) Nothing tForAuth
+        [Right (), Right ()] <- tPut sh [Right (subAuth, subT), Right (Nothing, sendT)]
+        Resp "" _ (Msg mId msg) <- tGet1 sh
+        dec mId msg `shouldBe` Right "hello"
+        [Resp "2" _ (SOK (Just serviceId')), Resp "3" _ OK] <- tGetClient sh
+        serviceId' `shouldBe` serviceId
+        Resp "4" _ OK <- signSendRecv sh rKey ("4", rId, ACK mId)
+        pure ()
 
 testServiceSubAssociatedQueue :: SpecWith (ASrvTransport, AStoreType)
 testServiceSubAssociatedQueue =
