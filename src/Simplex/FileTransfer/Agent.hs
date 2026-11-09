@@ -220,6 +220,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           where
             retryLoop loop e replicaDelay = do
               flip catchAllErrors (\_ -> pure ()) $ do
+                liftIO $ releaseXFTPDownloadPermit c permit
                 when (serverHostError e) $ notify c (fromMaybe rcvFileEntityId redirectEntityId_) (RFWARN e)
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay

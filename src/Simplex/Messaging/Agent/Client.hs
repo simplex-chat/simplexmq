@@ -90,6 +90,7 @@ module Simplex.Messaging.Agent.Client
     agentNtfCheckSubscriptions,
     agentNtfDeleteSubscription,
     withXFTPDownloadPermit,
+    releaseXFTPDownloadPermit,
     agentXFTPDownloadChunk,
     agentXFTPNewChunk,
     agentXFTPUploadChunk,
@@ -2235,9 +2236,7 @@ agentXFTPDownloadChunk c@AgentClient {xftpServers} permit userId (FileDigest chu
   tSess@(_, _, entId_) <- mkTransportSession c userId server chunkDigest
   let download = withLogClient c NRMBackground tSess chunkDigest "FGET" $ \xftp -> X.downloadXFTPChunk g xftp replicaKey fId chunkSpec
       downloadAndClose = download `allFinally` liftIO (closeClient c xftpClients tSess)
-      downloadWithPermit = do
-        liftIO $ holdXFTPDownloadPermit c permit tSess
-        download `catchAllErrors` \e -> liftIO (releaseXFTPDownloadPermit c permit) >> throwE e
+      downloadWithPermit = liftIO (holdXFTPDownloadPermit c permit tSess) >> download
   ifM
     (liftIO userServer)
     (if isJust entId_ then downloadAndClose else download)
