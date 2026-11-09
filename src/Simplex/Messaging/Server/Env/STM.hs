@@ -442,6 +442,7 @@ data Client s = Client
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    delayedQ :: TBQueue (TVar Bool, (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg])),
     procThreads :: TVar Int,
     fwdWorkers :: TVar (IntMap (TBQueue (M s ()))),
     endThreads :: TVar (IntMap (Weak ThreadId)),

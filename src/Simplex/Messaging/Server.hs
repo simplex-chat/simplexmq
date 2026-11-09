@@ -1202,10 +1202,19 @@ sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats
   | delay > 0 = do
       elapsed <- subtract (microseconds since) . microseconds <$> getSystemTime
       when (elapsed >= delay) $ incStat $ authDelayExceeded stats
-      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' (delay - elapsed `mod` delay) >> write
+      due <- registerDelay $ fromIntegral $ delay - elapsed `mod` delay
+      atomically $ writeTBQueue delayedQ (due, rs)
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
+
+sendDelayed :: Client s -> IO ()
+sendDelayed Client {sndQ, delayedQ, clientTHParams = THandleParams {sessionId}} = do
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " auth"
+  forever $ do
+    (due, rs) <- atomically $ readTBQueue delayedQ
+    atomically $ unlessM (readTVar due) retry
+    atomically $ writeTBQueue sndQ rs
 
 updateSlotWaitStats :: ServerStats -> SystemTime -> Bool -> IO ()
 updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, cmdSlotWaitTimeouts} since taken = do
