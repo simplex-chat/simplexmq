@@ -589,7 +589,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
           reserve = do
             us <- asks usedStorage
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
-            atomically . stateTVar us $
+            atomically . stateTVar' us $
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive restore = do
             path <- asks $ filesPath . config

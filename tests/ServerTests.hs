@@ -21,7 +21,7 @@ module ServerTests where
 import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, throwIO, try)
+import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Bifunctor (first)
@@ -31,7 +31,7 @@ import qualified Data.ByteString.Char8 as B
 import Data.Foldable (foldrM)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, isJust)
 import Data.String (IsString (..))
@@ -41,6 +41,7 @@ import Data.Type.Equality
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
+import Simplex.Messaging.Client (authTransmission)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -55,7 +56,8 @@ import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
 import System.Directory (doesFileExist, removeFile)
-import System.IO (IOMode (..), withFile)
+import qualified Network.Socket as N
+import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec hiding (fit, it, xit)
@@ -88,13 +90,23 @@ serverTests = do
     describe "GET & SUB commands" testGetSubCommands
     describe "Exceeding queue quota" testExceedQueueQuota
     describe "Concurrent sending and delivery" testConcurrentSendDelivery
+    describe "SUB while delivery waits" testSubPendingDelivery
+    describe "SUB to a queue blocked by the operator" testSubBlockedQueue
     describe "SUB and SEND in one block" testSubSendBlock
+    describe "switch subscription with SUB and SEND in one block" testSwitchSubSendBlock
+    describe "two SUBs in one block" testSubTwiceBlock
+    describe "subscribe the same queues from two connections at once" testSubSameQueuesTwoConnections
   describe "Service message subscriptions" $ do
     testServiceDeliverSubscribe
     testServiceUpgradeAndDowngrade
     testServiceSubsTotalCount
-    testServiceSubsSendBlock
-    testServiceSubsAfterDelete
+    testServiceSubsTotalCountDeleted
+    testServiceSubsTotalCountOperatorDeleted
+    testServiceSubsTotalCountOtherServiceDeleted
+    testServiceSubSendBlock
+    testServiceSubAssociatedQueue
+    testServiceDowngradeConnected
+    testServiceSubsReplacesConnection
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
@@ -102,6 +114,8 @@ serverTests = do
   describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
+    testDeleteQueueWithNotifier
+    testNotifierSubTwice
     testMessageServiceNotifications
     testServiceNotificationsTwoRestarts
   describe "Message expiration" $ do
@@ -161,14 +175,11 @@ signSendRecv_ h pk serviceKey_ t = do
   tGetClient h
 
 signSend_ :: forall c p. (Transport c, PartyI p) => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> IO ()
-signSend_ h pk serviceKey_ t = do
-  Right () <- tPut1 h $ signTransmission h pk serviceKey_ t
+signSend_ h@THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = do
+  let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
+  Right () <- tPut1 h (authorize tForAuth, tToSend)
   pure ()
-
-signTransmission :: PartyI p => THandleSMP c 'TClient -> C.APrivateAuthKey -> Maybe C.PrivateKeyEd25519 -> (ByteString, EntityId, Command p) -> SentRawTransmission
-signTransmission THandle {params} (C.APrivateAuthKey a pk) serviceKey_ (corrId, qId, cmd) = (authorize tForAuth, tToSend)
   where
-    TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId corrId, qId, cmd)
     authorize t = (,(`C.sign'` t) <$> serviceKey_) <$> case a of
       C.SEd25519 -> Just . TASignature . C.ASignature C.SEd25519 $ C.sign' pk t'
       C.SEd448 -> Just . TASignature . C.ASignature C.SEd448 $ C.sign' pk t'
@@ -688,6 +699,67 @@ testConcurrentSendDelivery =
         Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, ACK mId2)
         pure ()
 
+testSubPendingDelivery :: SpecWith (ASrvTransport, AStoreType)
+testSubPendingDelivery =
+  it "should deliver message after SUB while delivery waits for full send queue" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \rh@THandle {params} sh -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      let newQueue h = do
+            Resp "" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("", NoEntity, New rPub dhPub)
+            pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv)
+      (rId, sId, dec) <- newQueue rh
+      fillers <- replicateM 4 $ (\(fId, fsId, _) -> (fId, fsId)) <$> newQueue rh
+      (_, probeSId, _) <- newQueue sh
+      C.CbNonce corrId <- atomically $ C.randomCbNonce g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let linkData = (EncDataBytes "", EncDataBytes $ B.replicate 13000 '-')
+          qrd = QRContact $ Just (lnkId, (EntityId $ B.take 24 $ C.sha3_384 corrId, linkData))
+      Resp _ NoEntity (IDS _) <- signSendRecv sh rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just qrd) Nothing))
+      let TransmissionForAuth {tToSend = lget} = encodeTransmissionForAuth params (CorrId "", lnkId, LGET)
+          TransmissionForAuth {tToSend = probe} = encodeTransmissionForAuth params (CorrId "p", probeSId, _SEND "probe")
+      void $ tPut rh $ Right (Nothing, lget) :| replicate 1019 (Right (Nothing, lget))
+      Right () <- tPut1 rh (Nothing, probe)
+      Just (Resp "" _ (Msg _ _)) <- 5000000 `timeout` tGet1 sh
+      forM_ fillers $ \(_, fsId) -> do
+        Resp "f" _ OK <- sendRecv sh ("", "f", fsId, _SEND "filler")
+        pure ()
+      Resp "1" _ OK <- sendRecv sh ("", "1", sId, _SEND "hello")
+      signSend_ rh rKey Nothing ("2", rId, SUB)
+      threadDelay 500000
+      let drain st@(n, subscribed, mId_) = case mId_ of
+            Just mId | n == length fillers && subscribed -> pure mId
+            _ -> 5000000 `timeout` tGetClient rh >>= maybe (error "drain timeout") (foldM received st) >>= drain
+          received st@(n, subscribed, mId_) = \case
+            Resp "" _ (LNK _ _) -> pure st
+            Resp "p" _ OK -> pure st
+            Resp "2" _ (SOK Nothing) -> pure (n, True, mId_)
+            Resp "" rId' (Msg mId msg)
+              | rId' == rId -> do
+                  dec mId msg `shouldBe` Right "hello"
+                  pure (n, subscribed, Just mId)
+              | rId' `elem` map fst fillers -> pure (n + 1, subscribed, mId_)
+            r -> error $ "unexpected event: " <> show r
+      mId <- drain (0 :: Int, False, Nothing)
+      Resp "3" _ OK <- signSendRecv rh rKey ("3", rId, ACK mId)
+      Resp "4" _ OK <- sendRecv sh ("", "4", sId, _SEND "hello 2")
+      signSend_ rh rKey Nothing ("5", rId, QUE)
+      void $
+        receiveInAnyOrder
+          rh
+          [ \case
+              Resp "" _ (Msg mId2 msg2) -> do
+                dec mId2 msg2 `shouldBe` Right "hello 2"
+                pure $ Just ()
+              _ -> pure Nothing,
+            \case
+              Resp "5" _ (INFO QueueInfo {qiSub, qiSize}) -> do
+                (qSubThread <$> qiSub, isJust $ qDelivered =<< qiSub, qiSize) `shouldBe` (Just QNoSub, True, 1)
+                pure $ Just ()
+              _ -> pure Nothing
+          ]
+
 testSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
 testSubSendBlock =
   it "should deliver message sent in the same block as SUB" $ \(ATransport t, msType) ->
@@ -697,29 +769,134 @@ testSubSendBlock =
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just (QRMessaging Nothing)) Nothing))
       let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-          TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
-      [Right (), Right ()] <- tPut h [Right $ signTransmission h rKey Nothing ("2", rId, SUB), Right (Nothing, tToSend)]
-      signSend_ h rKey Nothing ("4", rId, QUE)
-      [mId] <-
-        fmap catMaybes $
-          receiveBlocksInAnyOrder
-            h
-            [ \case
-                [Resp "2" _ (SOK Nothing), Resp "3" _ OK] -> pure $ Just Nothing
-                _ -> pure Nothing,
-              \case
-                [Resp "" _ (Msg mId msg)] -> do
-                  dec mId msg `shouldBe` Right "hello"
-                  pure $ Just $ Just mId
-                _ -> pure Nothing,
-              \case
-                [Resp "4" _ (INFO QueueInfo {qiSub, qiSize})] -> do
-                  (qSubThread <$> qiSub, isJust $ qDelivered =<< qiSub, qiSize) `shouldBe` (Just QNoSub, True, 1)
-                  pure $ Just Nothing
-                _ -> pure Nothing
-            ]
+          TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+          TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+      Right subAuth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+      [Right (), Right ()] <- tPut h [Right (subAuth, subT), Right (Nothing, sendT)]
+      Resp "" _ (Msg mId msg) <- tGet1 h
+      dec mId msg `shouldBe` Right "hello"
+      [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient h
+      Resp "4" _ OK <- signSendRecv h rKey ("4", rId, ACK mId)
+      pure ()
+
+testSwitchSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testSwitchSubSendBlock =
+  it "should deliver message sent in the same block as SUB to the new connection" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \rh1 rh2@THandle {params} -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv rh1 rKey ("1", NoEntity, New rPub dhPub)
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+          TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+          TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+      Right subAuth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+      [Right (), Right ()] <- tPut rh2 [Right (subAuth, subT), Right (Nothing, sendT)]
+      Resp "" _ end <- tGet1 rh1
+      end `shouldBe` END
+      Resp "" _ (Msg mId msg) <- tGet1 rh2
+      dec mId msg `shouldBe` Right "hello"
+      [Resp "2" _ (SOK Nothing), Resp "3" _ OK] <- tGetClient rh2
+      Resp "4" _ OK <- signSendRecv rh2 rKey ("4", rId, ACK mId)
+      pure ()
+
+testSubTwiceBlock :: SpecWith (ASrvTransport, AStoreType)
+testSubTwiceBlock =
+  it "should deliver message once for two SUBs in the same block" $ \(ATransport t, msType) ->
+    smpTest t msType $ \h@THandle {params} -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId srvDh) <- signSendRecv h rKey ("1", NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just (QRMessaging Nothing)) Nothing))
+      let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+      Resp "2" _ OK <- sendRecv h ("", "2", sId, _SEND "hello")
+      let TransmissionForAuth {tForAuth = forAuth1, tToSend = sub1} = encodeTransmissionForAuth params (CorrId "3", rId, SUB)
+          TransmissionForAuth {tForAuth = forAuth2, tToSend = sub2} = encodeTransmissionForAuth params (CorrId "4", rId, SUB)
+      Right auth1 <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing forAuth1
+      Right auth2 <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing forAuth2
+      [Right (), Right ()] <- tPut h [Right (auth1, sub1), Right (auth2, sub2)]
+      [Resp "3" _ (SOK Nothing), Resp "4" _ (SOK Nothing), Resp "" _ (Msg mId msg)] <- tGetClient h
+      dec mId msg `shouldBe` Right "hello"
+      Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg h
       Resp "5" _ OK <- signSendRecv h rKey ("5", rId, ACK mId)
       pure ()
+
+testSubBlockedQueue :: SpecWith (ASrvTransport, AStoreType)
+testSubBlockedQueue =
+  it "should return BLOCKED to SUB after the operator blocks the queue" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    let cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+        info = BlockingInfo BRContent Nothing
+    smpTest2Cfg cfg' supportedClientSMPRelayVRange t $ \rh1 rh2 -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId sId _) <- signSendRecv rh1 rKey ("1", NoEntity, New rPub dhPub)
+      [_, blocked] <- controlPortCommands cpPort ["auth admin", "block " <> B.unpack (strEncode sId) <> " " <> B.unpack (strEncode info)]
+      blocked `shouldStartWith` "ok, queue blocked"
+      Resp "" rId' (ERR (BLOCKED info')) <- tGet1 rh1
+      (rId', info') `shouldBe` (rId, info)
+      Resp "2" _ (ERR (BLOCKED info'')) <- signSendRecv rh2 rKey ("2", rId, SUB)
+      info'' `shouldBe` info
+      Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh1
+      pure ()
+
+controlPortCommands :: N.ServiceName -> [String] -> IO [String]
+controlPortCommands port cmds = do
+  addr : _ <- N.getAddrInfo (Just N.defaultHints {N.addrSocketType = N.Stream}) (Just "127.0.0.1") (Just port)
+  sock <- N.socket (N.addrFamily addr) N.Stream N.defaultProtocol
+  N.connect sock (N.addrAddress addr)
+  h <- N.socketToHandle sock ReadWriteMode
+  hSetBuffering h LineBuffering
+  (replicateM_ 2 (hGetLine h) >> forM cmds (\cmd -> hPutStrLn h cmd >> hGetLine h)) `finally` hClose h
+
+testSubSameQueuesTwoConnections :: SpecWith (ASrvTransport, AStoreType)
+testSubSameQueuesTwoConnections =
+  it "should keep one subscriber for each queue when two connections subscribe the same queues at once" $ \(ATransport t, msType) ->
+    smpTest3 t msType $ \rh1 rh2 sh -> do
+      g <- C.newRandom
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      q1 : qs' <- forM [1 .. 100 :: Int] $ \i -> do
+        let corrId = B.pack $ show i
+        Resp _ NoEntity (Ids rId sId srvDh) <- signSendRecv sh rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMOnlyCreate (Just (QRMessaging Nothing)) Nothing))
+        Resp _ _ OK <- sendRecv sh ("", corrId, sId, _SEND "hello")
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv)
+      let qs = q1 : qs'
+          subs THandle {params} = forM (q1 :| qs') $ \(rId, _, _) -> do
+            let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId "1", rId, SUB)
+            Right auth <- pure $ authTransmission (thAuth params) False (Just rKey) Nothing tForAuth
+            pure $ Right (auth, tToSend)
+          events h =
+            2000000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg h >>= \case
+              Just ts -> (foldr (:) [] ts ++) <$> events h
+              Nothing -> pure []
+      subs1 <- subs rh1
+      subs2 <- subs rh2
+      concurrently_ (tPut rh1 subs1) (tPut rh2 subs2)
+      es1 <- events rh1
+      es2 <- events rh2
+      forM_ qs $ \(rId, sId, dec) -> do
+        let evts es = [r | (_, rId', Right r) <- es, rId' == rId]
+            ends es = length [() | END <- evts es]
+            subscribed es = do
+              (length [() | SOK Nothing <- evts es], 1) #== "one SOK in each connection"
+              ([dec mId msg | Msg mId msg <- evts es], [Right "hello"]) #== "the first message in each SUB response"
+        subscribed es1
+        subscribed es2
+        (ends es1 + ends es2, 1) #== "END in one connection"
+        let (holder, holderEs) = if ends es1 == 0 then (rh1, es1) else (rh2, es2)
+        [mId] <- pure [mId | Msg mId _ <- evts holderEs]
+        Resp "2" _ OK <- signSendRecv holder rKey ("2", rId, ACK mId)
+        Resp "3" _ OK <- sendRecv sh ("", "3", sId, _SEND "hello 2")
+        Resp "" rId' (Msg mId2 msg2) <- tGet1 holder
+        (rId', rId) #== "the next message is pushed to the connection without END"
+        (dec mId2 msg2, Right "hello 2") #== "the next message delivered"
+      let noMore h = do
+            Nothing <- 500000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg h
+            pure ()
+      noMore rh1
+      noMore rh2
 
 testServiceDeliverSubscribe :: SpecWith (ASrvTransport, AStoreType)
 testServiceDeliverSubscribe =
@@ -975,91 +1152,202 @@ testServiceSubsTotalCount =
         threadDelay 1500000
         B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just 3
 
-testServiceSubsSendBlock :: SpecWith (ASrvTransport, AStoreType)
-testServiceSubsSendBlock =
-  it "should deliver message sent in the same block as SUBS once" $ \(at@(ATransport t), msType) -> do
+testServiceSubsTotalCountDeleted :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCountDeleted =
+  it "should subtract the queue deleted by the service from totalServiceSubs" $ \(at@(ATransport t), msType) -> do
     g <- C.newRandom
     creds <- genCredentials g Nothing (0, 2400) "localhost"
     let (_fp, tlsCred) = tlsCredentials [creds]
     serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        serviceSubsMetric n = threadDelay 1500000 >> B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just n
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId1 _ _ _) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        Resp "2" NoEntity (IDS _) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+        serviceSubsMetric 2
+        Resp "3" _ OK <- signSendRecv sh rKey ("3", rId1, DEL)
+        serviceSubsMetric 1
+      serviceSubsMetric 0
+
+testServiceSubsTotalCountOperatorDeleted :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCountOperatorDeleted =
+  it "should reduce totalServiceSubs to the store count on SUBS after the operator deletes a queue" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
     let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+        cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1, controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+        serviceSubsMetric n = threadDelay 1500000 >> B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just n
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+      Resp "1" NoEntity (Ids_ rId1 _ _ serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+      Resp "2" NoEntity (Ids_ rId2 sId2 _ _) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+      serviceSubsMetric 2
+      [_, deleted] <- controlPortCommands cpPort ["auth admin", "delete " <> B.unpack (strEncode sId2)]
+      deleted `shouldBe` "ok, 0 messages deleted"
+      signSend_ sh aServicePK Nothing ("3", serviceId, SUBS 2 (queueIdsHash [rId1, rId2]))
+      void $
+        receiveInAnyOrder sh
+          [ \case
+              Resp "3" _ (SOKS n idsHash') -> Just () <$ ((n, idsHash') `shouldBe` (1, queueIdsHash [rId1]))
+              _ -> pure Nothing,
+            \case
+              Resp "" NoEntity ALLS -> pure $ Just ()
+              _ -> pure Nothing
+          ]
+      serviceSubsMetric 1
+
+testServiceSubsTotalCountOtherServiceDeleted :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsTotalCountOtherServiceDeleted =
+  it "should keep totalServiceSubs when the queue of the previous service is deleted from the new service" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    prevCreds <- genCredentials g Nothing (0, 2400) "localhost"
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_, prevTlsCred) = tlsCredentials [prevCreds]
+        (_, tlsCred) = tlsCredentials [creds]
+    prevServiceKeys@(_, prevServicePK) <- atomically $ C.generateKeyPair g
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        serviceSubsMetric n = threadDelay 1500000 >> B.readFile testPrometheusMetricsFile >>= \m -> readServiceSubsMetric (B.unpack m) `shouldBe` Just n
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      prevRId <- runSMPServiceClient t (prevTlsCred, prevServiceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ prevRId _ _ _) <- serviceSignSendRecv sh rKey prevServicePK ("1", NoEntity, New rPub dhPub)
+        pure prevRId
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "2" NoEntity (IDS _) <- serviceSignSendRecv sh rKey servicePK ("2", NoEntity, New rPub dhPub)
+        Resp "3" _ OK <- signSendRecv sh rKey ("3", prevRId, DEL)
+        serviceSubsMetric 1
+      serviceSubsMetric 0
+
+testServiceSubSendBlock :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubSendBlock =
+  it "should deliver message sent in the same block as service SUB" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
     withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      (rId, sId, srvDh, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
         Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
-        pure (rId, sId, srvDh, serviceId)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
       runSMPServiceClient t (tlsCred, serviceKeys) $ \sh@THandle {params} -> do
-        let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
-            idsHash = queueIdsHash [rId]
-            TransmissionForAuth {tToSend} = encodeTransmissionForAuth params (CorrId "2", sId, _SEND "hello")
-        [Right (), Right ()] <- tPut sh [Right (Nothing, tToSend), Right $ signTransmission sh aServicePK Nothing ("3", serviceId, SUBS 1 idsHash)]
-        [mId] <-
-          fmap catMaybes $
-            receiveBlocksInAnyOrder
-              sh
-              [ \case
-                  [Resp "2" _ OK, Resp "3" serviceId' (SOKS n idsHash')] -> do
-                    serviceId' `shouldBe` serviceId
-                    n `shouldBe` 1
-                    idsHash' `shouldBe` idsHash
-                    pure $ Just Nothing
-                  _ -> pure Nothing,
-                \case
-                  [Resp "" rId' (Msg mId msg)] -> do
-                    rId' `shouldBe` rId
-                    dec mId msg `shouldBe` Right "hello"
-                    pure $ Just $ Just mId
-                  _ -> pure Nothing,
-                \case
-                  [Resp "" NoEntity ALLS] -> pure $ Just Nothing
-                  _ -> pure Nothing
-              ]
+        let TransmissionForAuth {tForAuth, tToSend = subT} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+            TransmissionForAuth {tToSend = sendT} = encodeTransmissionForAuth params (CorrId "3", sId, _SEND "hello")
+        Right subAuth <- pure $ authTransmission (thAuth params) True (Just rKey) Nothing tForAuth
+        [Right (), Right ()] <- tPut sh [Right (subAuth, subT), Right (Nothing, sendT)]
+        Resp "" _ (Msg mId msg) <- tGet1 sh
+        dec mId msg `shouldBe` Right "hello"
+        [Resp "2" _ (SOK (Just serviceId')), Resp "3" _ OK] <- tGetClient sh
+        serviceId' `shouldBe` serviceId
         Resp "4" _ OK <- signSendRecv sh rKey ("4", rId, ACK mId)
         pure ()
 
-testServiceSubsAfterDelete :: SpecWith (ASrvTransport, AStoreType)
-testServiceSubsAfterDelete =
-  it "should end service subscription with queues remaining after DEL" $ \(at@(ATransport t), msType) -> do
+testServiceSubAssociatedQueue :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubAssociatedQueue =
+  it "should deliver the waiting message when the service subscribes its queue with SUB after reconnecting" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
+      Resp "2" _ OK <- sendRecv h ("", "2", sId, _SEND "hello")
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        (Resp "3" rId' (SOK (Just serviceId')), Resp "" rId'' (Msg mId msg)) <- serviceSignSendRecv2 sh rKey servicePK ("3", rId, SUB)
+        (rId', rId'', serviceId') `shouldBe` (rId, rId, serviceId)
+        dec mId msg `shouldBe` Right "hello"
+        Resp "4" _ OK <- signSendRecv sh rKey ("4", rId, ACK mId)
+        Resp "5" _ OK <- sendRecv h ("", "5", sId, _SEND "hello 2")
+        Resp "" _ (Msg mId2 msg2) <- tGet1 sh
+        dec mId2 msg2 `shouldBe` Right "hello 2"
+
+testServiceDowngradeConnected :: SpecWith (ASrvTransport, AStoreType)
+testServiceDowngradeConnected =
+  it "should end the service subscription to a queue when a client without a service certificate subscribes it" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh _) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        let dec = decryptMsgV3 $ C.dh' srvDh dhPriv
+        runSMPClient t $ \rh -> do
+          Resp "2" rId' (SOK Nothing) <- signSendRecv rh rKey ("2", rId, SUB)
+          rId' `shouldBe` rId
+          Resp "" rId'' END <- tGet1 sh
+          rId'' `shouldBe` rId
+          Resp "3" _ OK <- sendRecv h ("", "3", sId, _SEND "hello")
+          Resp "" _ (Msg mId msg) <- tGet1 rh
+          dec mId msg `shouldBe` Right "hello"
+          Resp "4" _ OK <- signSendRecv rh rKey ("4", rId, ACK mId)
+          Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg sh
+          pure ()
+
+testServiceSubsReplacesConnection :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsReplacesConnection =
+  it "should move the service subscription to a new connection while the old one is connected" $ \(at@(ATransport t), msType) -> do
     g <- C.newRandom
     creds <- genCredentials g Nothing (0, 2400) "localhost"
     let (_fp, tlsCred) = tlsCredentials [creds]
     serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
     let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
-    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> do
-      (rPub1, rKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      (dhPub1, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      (rPub2, rKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      (dhPub2, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      runSMPServiceClient t (tlsCred, serviceKeys) $ \c1 -> do
-        Resp "1" NoEntity (Ids_ rId1 _ _ serviceId) <- serviceSignSendRecv c1 rKey1 servicePK ("1", NoEntity, New rPub1 dhPub1)
-        Resp "2" NoEntity (Ids_ rId2 _ _ _) <- serviceSignSendRecv c1 rKey2 servicePK ("2", NoEntity, New rPub2 dhPub2)
-        Resp "3" _ OK <- signSendRecv c1 rKey1 ("3", rId1, DEL)
-        let idsHash = queueIdsHash [rId2]
-            subscribeService c = do
-              signSend_ c aServicePK Nothing ("4", serviceId, SUBS 1 idsHash)
-              void $
-                receiveInAnyOrder
-                  c
-                  [ \case
-                      Resp "4" serviceId' (SOKS n idsHash') -> do
-                        serviceId' `shouldBe` serviceId
-                        n `shouldBe` 1
-                        idsHash' `shouldBe` idsHash
-                        pure $ Just ()
-                      _ -> pure Nothing,
-                    \case
-                      Resp "" NoEntity ALLS -> pure $ Just ()
-                      _ -> pure Nothing
-                  ]
-        runSMPServiceClient t (tlsCred, serviceKeys) $ \c2 -> do
-          subscribeService c2
-          runSMPServiceClient t (tlsCred, serviceKeys) $ \c3 -> do
-            subscribeService c3
-            Resp "" serviceId' (ENDS n idsHash') <- tGet1 c2
-            serviceId' `shouldBe` serviceId
-            n `shouldBe` 1
-            idsHash' `shouldBe` idsHash
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
+      Resp "2" _ OK <- sendRecv h ("", "2", sId, _SEND "hello")
+      let idsHash = queueIdsHash [rId]
+          subscribeService sh corrId = do
+            signSend_ sh aServicePK Nothing (corrId, serviceId, SUBS 1 idsHash)
+            fmap catMaybes $
+              receiveInAnyOrder
+                sh
+                [ \case
+                    Resp corrId' serviceId' (SOKS 1 idsHash') | corrId' == CorrId corrId -> do
+                      (serviceId', idsHash') `shouldBe` (serviceId, idsHash)
+                      pure $ Just Nothing
+                    _ -> pure Nothing,
+                  \case
+                    Resp "" rId' (Msg mId msg) | rId' == rId -> do
+                      dec mId msg `shouldBe` Right "hello"
+                      pure $ Just $ Just mId
+                    _ -> pure Nothing,
+                  \case
+                    Resp "" NoEntity ALLS -> pure $ Just Nothing
+                    _ -> pure Nothing
+                ]
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1 -> do
+        [mId1] <- subscribeService sh1 "3"
+        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
+          [mId2] <- subscribeService sh2 "4"
+          Resp "" serviceId' (ENDS 1 idsHash') <- tGet1 sh1
+          (serviceId', idsHash') `shouldBe` (serviceId, idsHash)
+          Resp "5" _ (ERR NO_MSG) <- signSendRecv sh1 rKey ("5", rId, ACK mId1)
+          Resp "6" _ OK <- signSendRecv sh2 rKey ("6", rId, ACK mId2)
+          Resp "7" _ OK <- sendRecv h ("", "7", sId, _SEND "hello 2")
+          Resp "" _ (Msg mId3 msg3) <- tGet1 sh2
+          dec mId3 msg3 `shouldBe` Right "hello 2"
+          Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg sh1
+          pure ()
 
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
@@ -1071,17 +1359,11 @@ readServiceSubsMetric content =
     [] -> Nothing
 
 receiveInAnyOrder :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> [(CorrId, EntityId, Either ErrorType BrokerMsg) -> IO (Maybe b)] -> IO [b]
-receiveInAnyOrder = receiveInAnyOrder_ . tGet1
-
-receiveBlocksInAnyOrder :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> [NonEmpty (Transmission (Either ErrorType BrokerMsg)) -> IO (Maybe b)] -> IO [b]
-receiveBlocksInAnyOrder = receiveInAnyOrder_ . tGetClient
-
-receiveInAnyOrder_ :: (HasCallStack, Show r) => IO r -> [r -> IO (Maybe b)] -> IO [b]
-receiveInAnyOrder_ getNext = fmap reverse . go []
+receiveInAnyOrder h = fmap reverse . go []
   where
     go rs [] = pure rs
     go rs ps = withFrozenCallStack $ do
-      r <- 5000000 `timeout` getNext >>= maybe (error "inAnyOrder timeout") pure
+      r <- 5000000 `timeout` tGet1 h >>= maybe (error "inAnyOrder timeout") pure
       (r_, ps') <- foldrM (choose r) (Nothing, []) ps
       case r_ of
         Just r' -> go (r' : rs) ps'
@@ -1550,6 +1832,43 @@ testMessageNotifications =
       (dec mId4 msg4, Right "one more") #== "delivered from queue"
       Resp "10a" _ OK <- signSendRecv rh rKey ("10a", rId, ACK mId4)
       Resp "" _ (NMSG _ _) <- tGet1 nh1
+      pure ()
+
+testDeleteQueueWithNotifier :: SpecWith (ASrvTransport, AStoreType)
+testDeleteQueueWithNotifier =
+  it "should end the notifier subscription when the recipient deletes the queue" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    (sPub, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    smpTest2 t msType $ \rh nh -> do
+      (_, rId, rKey, _) <- createAndSecureQueue rh sPub
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      Resp "2" _ (SOK Nothing) <- signSendRecv nh nKey ("2", nId, NSUB)
+      Resp "3" _ OK <- signSendRecv rh rKey ("3", rId, DEL)
+      Resp "" nId' DELD <- tGet1 nh
+      nId' `shouldBe` nId
+      Resp "4" _ (ERR AUTH) <- signSendRecv nh nKey ("4", nId, NSUB)
+      pure ()
+
+testNotifierSubTwice :: SpecWith (ASrvTransport, AStoreType)
+testNotifierSubTwice =
+  it "should accept NSUB repeated in the same connection and deliver one notification" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    smpTest3 t msType $ \rh sh nh -> do
+      (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      Resp "2" _ (SOK Nothing) <- signSendRecv nh nKey ("2", nId, NSUB)
+      Resp "3" _ (SOK Nothing) <- signSendRecv nh nKey ("3", nId, NSUB)
+      Resp "4" _ OK <- signSendRecv sh sKey ("4", sId, _SEND' "hello")
+      Resp "" _ (Msg mId _) <- tGet1 rh
+      Resp "5" _ OK <- signSendRecv rh rKey ("5", rId, ACK mId)
+      Resp "" nId' (NMSG _ _) <- tGet1 nh
+      nId' `shouldBe` nId
+      Nothing <- 1000000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh
       pure ()
 
 testMessageServiceNotifications :: SpecWith (ASrvTransport, AStoreType)

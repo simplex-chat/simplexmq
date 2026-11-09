@@ -347,8 +347,7 @@ data Server s = Server
 newtype ServerClients s = ServerClients {serverClients :: TVar (IntMap (Client s))}
 
 data ServerSubscribers s = ServerSubscribers
-  { subQ :: TQueue (ClientSub, ClientId),
-    queueSubscribers :: SubscribedClients s,
+  { queueSubscribers :: SubscribedClients s,
     serviceSubscribers :: SubscribedClients s, -- service clients with long-term certificates that have subscriptions
     totalServiceSubs :: TVar (Int64, IdsHash),
     subClients :: TVar IntSet, -- clients with individual or service subscriptions
@@ -388,7 +387,7 @@ lookupSubscribedClient entId (SubscribedClients cs) = TM.lookup entId cs $>>= re
 -- lookup and delete currently subscribed client
 lookupDeleteSubscribedClient :: EntityId -> SubscribedClients s -> STM (Maybe (Client s))
 lookupDeleteSubscribedClient entId (SubscribedClients cs) =
-  TM.lookup entId cs $>>= \cv -> TM.delete entId cs >> swapTVar cv Nothing
+  TM.lookupDelete entId cs $>>= (`swapTVar` Nothing)
 {-# INLINE lookupDeleteSubscribedClient #-}
 
 deleteSubcribedClient :: EntityId -> Client s -> SubscribedClients s -> IO ()
@@ -486,13 +485,12 @@ deleteServerClient cId Server {clients} = atomically $ modifyTVar' (serverClient
 
 newServerSubscribers :: IO (ServerSubscribers s)
 newServerSubscribers = do
-  subQ <- newTQueueIO
   queueSubscribers <- SubscribedClients <$> TM.emptyIO
   serviceSubscribers <- SubscribedClients <$> TM.emptyIO
   totalServiceSubs <- newTVarIO (0, mempty)
   subClients <- newTVarIO IS.empty
   pendingEvents <- newTVarIO IM.empty
-  pure ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
+  pure ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
 newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client s)
 newClient clientId qSize clientTHParams createdAt = do

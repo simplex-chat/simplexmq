@@ -14,7 +14,6 @@ module Simplex.Messaging.TMap
     insertM,
     delete,
     lookupInsert,
-    lookupOrInsert,
     lookupOrInsertIO,
     lookupDelete,
     adjust,
@@ -28,6 +27,7 @@ where
 import Control.Concurrent.STM
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Simplex.Messaging.Util (stateTVar')
 
 type TMap k a = TVar (Map k a)
 
@@ -76,20 +76,18 @@ delete k m = modifyTVar' m $ M.delete k
 {-# INLINE delete #-}
 
 lookupInsert :: Ord k => k -> a -> TMap k a -> STM (Maybe a)
-lookupInsert k v m = stateTVar m $ M.alterF (,Just v) k
+lookupInsert k v m = stateTVar' m $ M.alterF (,Just v) k
 {-# INLINE lookupInsert #-}
-
-lookupOrInsert :: Ord k => k -> STM a -> TMap k a -> STM (Either a a)
-lookupOrInsert k new m = M.lookup k <$> readTVar m >>= maybe (new >>= \v -> Left v <$ insert k v m) (pure . Right)
-{-# INLINE lookupOrInsert #-}
 
 -- double lookup avoids STM transaction with a shared map in most cases
 lookupOrInsertIO :: Ord k => k -> STM a -> TMap k a -> IO (Either a a)
-lookupOrInsertIO k new m = lookupIO k m >>= maybe (atomically $ lookupOrInsert k new m) (pure . Right)
+lookupOrInsertIO k new m = lookupIO k m >>= maybe (atomically lookupOrInsert) (pure . Right)
+  where
+    lookupOrInsert = M.lookup k <$> readTVar m >>= maybe (new >>= \v -> Left v <$ insert k v m) (pure . Right)
 {-# INLINE lookupOrInsertIO #-}
 
 lookupDelete :: Ord k => k -> TMap k a -> STM (Maybe a)
-lookupDelete k m = stateTVar m $ M.alterF (,Nothing) k
+lookupDelete k m = stateTVar' m $ M.alterF (,Nothing) k
 {-# INLINE lookupDelete #-}
 
 adjust :: Ord k => (a -> a) -> k -> TMap k a -> STM ()
