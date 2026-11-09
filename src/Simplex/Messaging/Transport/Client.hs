@@ -89,7 +89,7 @@ instance StrEncoding TransportHost where
       [ THIPv4 <$> ((,,,) <$> ipNum <*> ipNum <*> ipNum <*> A.decimal),
         maybe (Left "bad IPv6") (Right . THIPv6 . fromIPv6w) . readMaybe . B.unpack <$?> ipv6StrP,
         THOnionHost <$> ((<>) <$> A.takeWhile (\c -> isAsciiLower c || isDigit c) <*> A.string ".onion"),
-        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t[]"))
+        THDomainName . B.unpack <$> (notOnion <$?> A.takeWhile1 (A.notInClass ":#,;/ \n\r\t[]\0"))
       ]
     where
       ipNum = validIP <$?> (A.decimal <* A.char '.')
@@ -300,8 +300,8 @@ mkTLSClientParams supported caStore_ host port cafp_ clientCreds_ clientCredsSen
     }
   where
     p = B.pack port
-    onServerCert _ _ _ cc = do
-      errs <- maybe def (\ca -> validateCertificateChain ca host p cc) cafp_
+    onServerCert caStore cache serviceID cc = do
+      errs <- maybe (XV.validateDefault caStore cache serviceID cc) (\ca -> validateCertificateChain ca host p cc) cafp_
       atomically $ putTMVar serverCerts $ if null errs then Just cc else Nothing
       pure errs
     onCertRequest = case clientCreds_ of

@@ -61,7 +61,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Constraint (Dict (..))
 import Data.Dynamic (toDyn)
-import Data.Either (fromRight, partitionEithers)
+import Data.Either (fromRight, isRight, partitionEithers)
 import Data.Foldable (foldrM)
 import Data.Functor (($>), (<&>))
 import Data.IORef
@@ -163,10 +163,10 @@ runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpSer
 type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
--- actions used in serverThread to reduce STM transaction scope
+-- actions used in processClientSub to reduce STM transaction scope
 data ClientSubAction
   = CSAEndSub QueueId -- end single direct queue subscription
-  | CSAEndServiceSub QueueId -- end service subscription to one queue
+  | CSAEndServiceSub ServiceId QueueId -- end service subscription to one queue
   | CSADecreaseSubs (Int64, IdsHash) -- reduce service subscriptions when cancelling. Fixed number is used to correctly handle race conditions when service resubscribes
 
 type PrevClientSub s = (Client s, ClientSubAction, (EntityId, BrokerMsg))
@@ -185,9 +185,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     stopServer s
     liftIO $ exitSuccess
   raceAny_
-    ( serverThread "server subscribers" s subscribers subscriptions serviceSubsCount (Just cancelSub)
-        : serverThread "server ntfSubscribers" s ntfSubscribers ntfSubscriptions ntfServiceSubsCount Nothing
-        : deliverNtfsThread s
+    ( deliverNtfsThread s
         : sendPendingEvtsThread s
         : receiveFromProxyAgent pa
         : expireNtfsThread cfg
@@ -248,70 +246,49 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       asks (smpAgent . proxyAgent) >>= liftIO . closeSMPClientAgent
       asks namesEnv >>= liftIO . mapM_ closeNamesEnv
 
-    serverThread ::
-      forall sub. String ->
+    processClientSub ::
+      forall sub.
       Server s ->
       (Server s -> ServerSubscribers s) ->
       (Client s -> TMap QueueId sub) ->
       (Client s -> TVar (Int64, IdsHash)) ->
       Maybe (sub -> IO ()) ->
-      M s ()
-    serverThread label srv srvSubscribers clientSubs clientServiceSubs unsub_ = do
-      labelMyThread label
-      liftIO . forever $ do
-        -- Reading clients outside of `updateSubscribers` transaction to avoid transaction re-evaluation on each new connected client.
-        -- In case client disconnects during the transaction (its `connected` property is read),
-        -- the transaction will still be re-evaluated, and the client won't be stored as subscribed.
-        sub@(_, clntId) <- atomically $ readTQueue subQ
-        c_ <- getServerClient clntId srv
-        atomically (updateSubscribers c_ sub)
+      Client s -> ClientSub -> IO ()
+    processClientSub srv srvSubscribers clientSubs clientServiceSubs unsub_ clnt sub =
+      uninterruptibleMask_ $
+        atomically (updateSubscribers clnt sub)
           >>= endPreviousSubscriptions
       where
-        ServerSubscribers {subQ, queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents} = srvSubscribers srv
-        updateSubscribers :: Maybe (Client s) -> (ClientSub, ClientId) -> STM [PrevClientSub s]
-        updateSubscribers c_ (clntSub, clntId) = case c_ of
-          Just c@Client {connected} -> ifM (readTVar connected) (updateSubConnected c) updateSubDisconnected
-          Nothing -> updateSubDisconnected
+        ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents} = srvSubscribers srv
+        updateSubscribers :: Client s -> ClientSub -> STM [PrevClientSub s]
+        updateSubscribers c@Client {clientId = clntId} clntSub = case clntSub of
+          CSClient qId prevServiceId serviceId_ -> do
+            modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+            as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
+            case serviceId_ of
+              Just serviceId -> do
+                modifyTVar' totalServiceSubs $ addServiceSubs (1, queueIdHash qId) -- server count and IDs hash for all services
+                as <- endQueueSub qId END
+                as' <- cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
+                pure $ as ++ as' ++ as''
+              Nothing -> do
+                as <- prevSub qId END (CSAEndSub qId) =<< upsertSubscribedClient qId c queueSubscribers
+                pure $ as ++ as''
+          CSDeleted qId serviceId -> do
+            removeWhenNoSubs c
+            as <- endQueueSub qId DELD
+            as' <- endServiceSub serviceId qId DELD
+            pure $ as ++ as'
+          CSService serviceId changedSubs -> do
+            modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
+            modifyTVar' totalServiceSubs $ addServiceSubs changedSubs -- server count and IDs hash for all services
+            cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
           where
-            updateSubConnected c = case clntSub of
-              CSClient qId prevServiceId serviceId_ -> do
-                modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
-                as'' <- if prevServiceId == serviceId_ then pure [] else endServiceSub prevServiceId qId END
-                case serviceId_ of
-                  Just serviceId -> do
-                    modifyTVar' totalServiceSubs $ addServiceSubs (1, queueIdHash qId) -- server count and IDs hash for all services
-                    as <- endQueueSub qId END
-                    as' <- cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
-                    pure $ as ++ as' ++ as''
-                  Nothing -> do
-                    as <- prevSub qId END (CSAEndSub qId) =<< upsertSubscribedClient qId c queueSubscribers
-                    pure $ as ++ as''
-              CSDeleted qId serviceId -> do
-                removeWhenNoSubs c
-                as <- endQueueSub qId DELD
-                as' <- endServiceSub serviceId qId DELD
-                pure $ as ++ as'
-              CSService serviceId changedSubs -> do
-                modifyTVar' subClients $ IS.insert clntId -- add ID to server's subscribed cients
-                modifyTVar' totalServiceSubs $ addServiceSubs changedSubs -- server count and IDs hash for all services
-                cancelServiceSubs serviceId =<< upsertSubscribedClient serviceId c serviceSubscribers
-            updateSubDisconnected = case clntSub of
-                -- do not insert client if it is already disconnected, but send END/DELD to any other client subscribed to this queue or service
-                CSClient qId prevServiceId serviceId -> do
-                  as <- endQueueSub qId END
-                  as' <- endServiceSub serviceId qId END
-                  as'' <- if prevServiceId == serviceId then pure [] else endServiceSub prevServiceId qId END
-                  pure $ as ++ as' ++ as''
-                CSDeleted qId serviceId -> do
-                  as <- endQueueSub qId DELD
-                  as' <- endServiceSub serviceId qId DELD
-                  pure $ as ++ as'
-                CSService serviceId _ -> cancelServiceSubs serviceId =<< lookupSubscribedClient serviceId serviceSubscribers
             endQueueSub :: QueueId -> BrokerMsg -> STM [PrevClientSub s]
             endQueueSub qId msg = prevSub qId msg (CSAEndSub qId) =<< lookupDeleteSubscribedClient qId queueSubscribers
             endServiceSub :: Maybe ServiceId -> QueueId -> BrokerMsg -> STM [PrevClientSub s]
             endServiceSub Nothing _ _ = pure []
-            endServiceSub (Just serviceId) qId msg = prevSub qId msg (CSAEndServiceSub qId) =<< lookupSubscribedClient serviceId serviceSubscribers
+            endServiceSub (Just serviceId) qId msg = prevSub qId msg (CSAEndServiceSub serviceId qId) =<< lookupSubscribedClient serviceId serviceSubscribers
             prevSub :: QueueId -> BrokerMsg -> ClientSubAction -> Maybe (Client s) -> STM [PrevClientSub s]
             prevSub qId msg action =
               checkAnotherClient $ \c -> pure [(c, action, (qId, msg))]
@@ -333,7 +310,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             CSAEndSub qId -> atomically (endSub c qId) >>= unsubPrev
             -- like endSub, also removes the delivery subscription from the service client's subscriptions map,
             -- otherwise the map retains entries for queues unassociated/deleted while the service stays connected.
-            CSAEndServiceSub qId -> atomically (endServiceQueueSub c qId) >>= unsubPrev
+            CSAEndServiceSub serviceId qId -> atomically (endServiceQueueSub c serviceId qId) >>= unsubPrev
             CSADecreaseSubs changedSubs -> do
               atomically $ modifyTVar' totalServiceSubs $ subtractServiceSubs changedSubs
               forM_ unsub_ $ \unsub -> atomically (swapTVar (clientSubs c) M.empty) >>= mapM_ unsub
@@ -342,10 +319,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             unsubPrev s_ = sequence_ (unsub_ <*> s_)
             endSub :: Client s -> QueueId -> STM (Maybe sub)
             endSub c qId = TM.lookupDelete qId (clientSubs c) >>= (removeWhenNoSubs c $>)
-            endServiceQueueSub :: Client s -> QueueId -> STM (Maybe sub)
-            endServiceQueueSub c qId = do
-              modifyTVar' (clientServiceSubs c) decrease
-              modifyTVar' totalServiceSubs decrease
+            endServiceQueueSub :: Client s -> ServiceId -> QueueId -> STM (Maybe sub)
+            endServiceQueueSub c serviceId qId = do
+              whenM (maybe False (sameClientId c) <$> lookupSubscribedClient serviceId serviceSubscribers) $ do
+                modifyTVar' (clientServiceSubs c) decrease
+                modifyTVar' totalServiceSubs decrease
               endSub c qId
               where
                 decrease = subtractServiceSubs (1, queueIdHash qId)
@@ -733,6 +711,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     runClient :: Transport c => X.CertificateChain -> C.APrivateSignKey -> TProxy c 'TServer -> c 'TServer -> M s ()
     runClient srvCert srvSignKey tp h = do
       ms <- asks msgStore
+      srv <- asks server
       g <- asks random
       idSize <- asks $ queueIdBytes . config
       kh <- asks serverIdentity
@@ -741,8 +720,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let serverInfo = LB.toStrict . J.encode <$> information
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> runClientTransport th
+        Just (Right th) -> runClientTransport (processSubs srv) th
         _ -> pure ()
+      where
+        processSubs srv = (processClientSub srv subscribers subscriptions serviceSubsCount (Just cancelSub), processClientSub srv ntfSubscribers ntfSubscriptions ntfServiceSubsCount Nothing)
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
@@ -1059,12 +1040,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
                     logError "Unauthorized control port command"
                     hPutStrLn h "AUTH"
 
-runClientTransport :: forall c s. (Transport c, MsgStoreClass s) => THandleSMP c 'TServer -> M s ()
-runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
+runClientTransport :: forall c s. (Transport c, MsgStoreClass s) => (Client s -> ClientSub -> IO (), Client s -> ClientSub -> IO ()) -> THandleSMP c 'TServer -> M s ()
+runClientTransport processSubs h@THandle {params = thParams@THandleParams {sessionId}} = do
   q <- asks $ tbqSize . config
   ts <- liftIO getSystemTime
   nextClientId <- asks clientSeq
-  clientId <- atomically $ stateTVar nextClientId $ \next -> (next, next + 1)
+  clientId <- atomically $ stateTVar' nextClientId $ \next -> (next, next + 1)
   c <- liftIO $ newClient clientId q thParams ts
   runClientThreads c `finally` clientDisconnected c
   where
@@ -1076,7 +1057,7 @@ runClientTransport h@THandle {params = thParams@THandleParams {sessionId}} = do
         expCfg <- asks $ inactiveClientExpiration . config
         th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
         labelMyThread . B.unpack $ "client $" <> encode sessionId
-        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, liftIO $ sendDelayed c, client s ms c, receive h ms c] <> disconnectThread_ c s expCfg
+        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, liftIO $ sendDelayed c, client processSubs s ms c, receive h ms c] <> disconnectThread_ c s expCfg
     disconnectThread_ :: Client s -> Server s -> Maybe ExpirationConfig -> [M s ()]
     disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
     disconnectThread_ _ _ _ = []
@@ -1409,17 +1390,18 @@ dummyKeyX25519 = "MCowBQYDK2VuAyEA4JGSMYht18H4mas/jHeBwfcM7jLwNYJNOAhi2/g4RXg="
 
 forkClient :: MonadUnliftIO m => Client s -> String -> m () -> m ()
 forkClient Client {endThreads, endThreadSeq} label action = do
-  tId <- atomically $ stateTVar endThreadSeq $ \next -> (next, next + 1)
+  tId <- atomically $ stateTVar' endThreadSeq $ \next -> (next, next + 1)
   t <- forkIO $ do
     labelMyThread label
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
-client :: forall s. MsgStoreClass s => Server s -> s -> Client s -> M s ()
+client :: forall s. MsgStoreClass s => (Client s -> ClientSub -> IO (), Client s -> ClientSub -> IO ()) -> Server s -> s -> Client s -> M s ()
 client
-  Server {subscribers, ntfSubscribers}
+  (processSub, processNtfSub)
+  Server {subscribers}
   ms
-  clnt@Client {clientId, rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -1437,25 +1419,100 @@ client
     prepareBatchSubs ::
       Maybe ServiceId ->
       NonEmpty (VerifiedTransmission s) ->
-      M s (Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ())))
+      M s (Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType (Bool, Maybe Sub))))
     prepareBatchSubs clntServiceId_ batch = do
       let (subMsgQs, rcvAssocQs, ntfAssocQs) = foldr partitionSubs ([], [], []) batch
           partitionSubs t (msgQs, rcvQs, ntfQs) = case t of
             (Just (q, qr), (_, _, Cmd SRecipient SUB))
-              | clntServiceId_ /= rcvServiceId qr -> (q : msgQs, q : rcvQs, ntfQs)
-              | otherwise -> (q : msgQs, rcvQs, ntfQs)
+              | clntServiceId_ /= rcvServiceId qr -> ((q, qr) : msgQs, q : rcvQs, ntfQs)
+              | otherwise -> ((q, qr) : msgQs, rcvQs, ntfQs)
             (Just (q, qr), (_, _, Cmd SNotifier NSUB))
               | clntServiceId_ /= (notifier qr >>= ntfServiceId) -> (msgQs, rcvQs, q : ntfQs)
             _ -> (msgQs, rcvQs, ntfQs)
-      liftIO $ runExceptT $ do
+      runExceptT $ do
         rcvAssocs <- ifNotNull rcvAssocQs $ setService SRecipientService clntServiceId_
         ntfAssocs <- ifNotNull ntfAssocQs $ setService SNotifierService clntServiceId_
-        msgs <- ifNotNull subMsgQs $ tryPeekMsgs ms
-        pure (msgs, rcvAssocs, ntfAssocs)
+        subs <- lift $ M.fromList <$> mapM (\(q, qr) -> (recipientId q,) <$> subscribeQueue clntServiceId_ q qr) (filter (subscribable rcvAssocs) subMsgQs)
+        msgs <- ifNotNull (map fst subMsgQs) $ mapExceptT liftIO . tryPeekMsgs ms
+        pure (msgs, rcvAssocs, ntfAssocs, subs)
       where
         ifNotNull qs f = if null qs then pure M.empty else f qs
-        setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType IO (Map RecipientId (Either ErrorType ()))
-        setService party sId = ExceptT . setQueueServices (queueStore ms) party sId
+        setService :: (PartyI p, ServiceParty p) => SParty p -> Maybe ServiceId -> [StoreQueue s] -> ExceptT ErrorType (ReaderT (Env s) IO) (Map RecipientId (Either ErrorType ()))
+        setService party sId = ExceptT . liftIO . setQueueServices (queueStore ms) party sId
+        subscribable rcvAssocs (q, QueueRec {status}) = case status of
+          EntityBlocked _ -> False
+          _ -> all isRight $ M.lookup (recipientId q) rcvAssocs
+
+    subscribeQueue :: Maybe ServiceId -> StoreQueue s -> QueueRec -> M s (Either ErrorType (Bool, Maybe Sub))
+    subscribeQueue clntServiceId q QueueRec {rcvServiceId} =
+      liftIO (TM.lookupIO rId $ subscriptions clnt) >>= \case
+        Nothing -> Right <$> sharedSubscribeQueue clntServiceId rId q rcvServiceId processSub subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
+        Just s@Sub {subThread} -> do
+          stats <- asks serverStats
+          case subThread of
+            ProhibitSub -> do
+              -- cannot use SUB in the same connection where GET was used
+              incStat $ qSubProhibited stats
+              pure $ Left $ CMD PROHIBITED
+            _ -> do
+              incStat $ qSubDuplicate stats
+              Right (True, Just s) <$ atomically (writeTVar (delivered s) Nothing)
+      where
+        rId = recipientId q
+
+    sharedSubscribeQueue ::
+      Maybe ServiceId ->
+      QueueId ->
+      StoreQueue s ->
+      Maybe ServiceId ->
+      (Client s -> ClientSub -> IO ()) ->
+      (Client s -> TMap QueueId sub) ->
+      (Client s -> TVar (Int64, IdsHash)) ->
+      STM sub ->
+      (ServerStats -> ServiceStats) ->
+      M s (Bool, Maybe sub)
+    sharedSubscribeQueue clntServiceId entId q queueServiceId processSub' clientSubs clientServiceSubs mkSub servicesSel = do
+      stats <- asks serverStats
+      let incSrvStat sel = incStat $ sel $ servicesSel stats
+          writeSub = processSub' clnt $ CSClient entId queueServiceId clntServiceId
+      liftIO $ case clntServiceId of
+        Just serviceId
+          | queueServiceId == Just serviceId -> do
+              -- duplicate queue-service association - can only happen in case of response error/timeout
+              hasSub <- atomically $ ifM hasServiceSub (pure True) (False <$ incServiceQueueSubs)
+              unless hasSub $ do
+                writeSub
+                incSrvStat srvSubCount
+                incSrvStat srvSubQueues
+              incSrvStat srvAssocDuplicate
+              pure (hasSub, Nothing)
+          | otherwise -> do
+              -- association already done in prepareBatchSubs
+              hasSub <- atomically $ (<$ incServiceQueueSubs) =<< hasServiceSub
+              writeSub
+              unless hasSub $ incSrvStat srvSubCount
+              incSrvStat srvSubQueues
+              incSrvStat $ maybe srvAssocNew (const srvAssocUpdated) queueServiceId
+              pure (hasSub, Nothing)
+          where
+            hasServiceSub = ((0 /=) . fst) <$> readTVar (clientServiceSubs clnt)
+            -- This function is used when queue association with the service is created.
+            incServiceQueueSubs = modifyTVar' (clientServiceSubs clnt) $ addServiceSubs (1, queueIdHash (recipientId q)) -- service count and IDS hash
+        Nothing -> case queueServiceId of
+          Just _ -> do
+            -- unassociation already done in prepareBatchSubs
+            incSrvStat srvAssocRemoved
+            -- getSubscription may find a subscription for receiving service, where clientSubs also hold active deliveries for service subscriptions.
+            -- For notification service it can only find one if storage and session states diverge.
+            r <- getSubscription
+            writeSub
+            pure r
+          Nothing -> do
+            r@(hasSub, _) <- getSubscription
+            unless hasSub writeSub
+            pure r
+          where
+            getSubscription = either ((False,) . Just) ((True,) . Just) <$> TM.lookupOrInsertIO entId mkSub (clientSubs clnt)
 
     processProxiedCmd :: Transmission (Command 'ProxiedClient) -> M s (Maybe ResponseAndMessage)
     processProxiedCmd (corrId, EntityId sessId, command) = (\t -> ((corrId, EntityId sessId, t), Nothing)) <$$> case command of
@@ -1583,7 +1640,7 @@ client
     mkIncProxyStats ps psOwn own sel = do
       incStat $ sel ps
       when own $ incStat $ sel psOwn
-    processCommand :: Maybe ServiceId -> Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ())) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
+    processCommand :: Maybe ServiceId -> Either ErrorType (Map RecipientId Message, Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType ()), Map RecipientId (Either ErrorType (Bool, Maybe Sub))) -> VerifiedTransmission s -> M s (Maybe ResponseAndMessage)
     processCommand clntServiceId batchSubs (q_, (corrId, entId, cmd)) = case cmd of
       Cmd SProxiedClient command -> processProxiedCmd (corrId, entId, command)
       Cmd SSender command -> case command of
@@ -1600,7 +1657,7 @@ client
       Cmd SNotifier NSUB -> response . (corrId,entId,) <$> case q_ of
         Just (q, QueueRec {notifier = Just ntfCreds}) ->
           either (pure . ERR) (\_ -> subscribeNotifications q ntfCreds)
-            $ batchSubs >>= \(_, _, ntfAssocs) -> sequence (M.lookup (recipientId q) ntfAssocs)
+            $ batchSubs >>= \(_, _, ntfAssocs, _) -> sequence (M.lookup (recipientId q) ntfAssocs)
         _ -> pure $ ERR INTERNAL
       Cmd SNotifierService (NSUBS n idsHash) -> response . (corrId,entId,) <$> case clntServiceId of
         Just serviceId -> subscribeServiceNotifications serviceId (n, idsHash)
@@ -1613,9 +1670,9 @@ client
               pure $ allowNewQueues && maybe True ((== auth_) . Just) newQueueBasicAuth
       Cmd SRecipient command ->
         case command of
-          SUB -> case batchSubs >>= \(msgs, rcvAssocs, _) -> sequence (M.lookup entId rcvAssocs) $> msgs of
+          SUB -> case batchSubs >>= \(msgs, rcvAssocs, _, subs) -> sequence (M.lookup entId rcvAssocs) $> (msgs, subs) of
             Left e -> pure $ Just (err e, Nothing)
-            Right msgs -> withQueue' $ subscribeQueueAndDeliver $ M.lookup entId msgs
+            Right (msgs, subs) -> withQueue' $ deliverSubMsg (M.lookup entId msgs) (M.lookup entId subs)
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
@@ -1736,7 +1793,7 @@ client
                 Right nc_ -> do
                   incStat . ntfCreated =<< asks serverStats
                   forM_ nc_ $ \NtfCreds {notifierId = nId, ntfServiceId} ->
-                    atomically $ writeTQueue (subQ ntfSubscribers) (CSDeleted nId ntfServiceId, clientId)
+                    liftIO $ processNtfSub clnt $ CSDeleted nId ntfServiceId
                   pure $ NID notifierId rcvPublicDhKey
 
         deleteQueueNotifier_ :: StoreQueue s -> M s (Transmission BrokerMsg)
@@ -1747,7 +1804,7 @@ client
               stats <- asks serverStats
               deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
               when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
-              atomically $ writeTQueue (subQ ntfSubscribers) (CSDeleted nId ntfServiceId, clientId)
+              liftIO $ processNtfSub clnt $ CSDeleted nId ntfServiceId
               incStat $ ntfDeleted stats
               pure ok
             Right Nothing -> pure ok
@@ -1756,32 +1813,24 @@ client
         suspendQueue_ :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         suspendQueue_ (q, _) = liftIO $ either err (const ok) <$> suspendQueue (queueStore ms) q
 
-        subscribeQueueAndDeliver :: Maybe Message -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
-        subscribeQueueAndDeliver msg_ q qr@QueueRec {rcvServiceId} =
-          liftIO (TM.lookupIO entId $ subscriptions clnt) >>= \case
-            Nothing ->
-              deliver =<< sharedSubscribeQueue q rcvServiceId subscribers subscriptions serviceSubsCount (newSubscription NoSub) rcvServices
-            Just s@Sub {subThread} -> do
-              stats <- asks serverStats
-              case subThread of
-                ProhibitSub -> do
-                  -- cannot use SUB in the same connection where GET was used
-                  incStat $ qSubProhibited stats
-                  pure (err (CMD PROHIBITED), Nothing)
-                _ -> do
-                  incStat $ qSubDuplicate stats
-                  atomically (writeTVar (delivered s) Nothing) >> deliver (True, Just s)
+        deliverSubMsg :: Maybe Message -> Maybe (Either ErrorType (Bool, Maybe Sub)) -> StoreQueue s -> QueueRec -> M s ResponseAndMessage
+        deliverSubMsg msg_ r_ _ qr = case r_ of
+          Just (Right r) -> deliver r
+          Just (Left e) -> pure (err e, Nothing)
+          Nothing -> pure (err INTERNAL, Nothing)
           where
             deliver :: (Bool, Maybe Sub) -> M s ResponseAndMessage
             deliver (hasSub, sub_) = do
               stats <- asks serverStats
               fmap (either ((,Nothing) . err) id) $ liftIO $ runExceptT $ do
-                msg' <- forM msg_ $ \msg -> liftIO $ do
+                msg' <- fmap join $ forM msg_ $ \msg -> liftIO $ do
                   ts <- getSystemSeconds
                   sub <- maybe getSub pure sub_
-                  atomically $ setDelivered sub msg ts
                   unless hasSub $ incStat $ qSub stats
-                  pure (NoCorrId, entId, MSG (encryptMsg qr msg))
+                  ifM
+                    (atomically $ trySetDelivered sub msg ts)
+                    (pure $ Just (NoCorrId, entId, MSG (encryptMsg qr msg)))
+                    (pure Nothing)
                 pure ((corrId, entId, SOK clntServiceId), msg')
 
         getSub :: IO Sub
@@ -1794,7 +1843,7 @@ client
             Nothing -> do
               sub <- atomically $ newSubscription NoSub
               atomically $ TM.insert rId sub $ subscriptions clnt
-          atomically $ writeTQueue (subQ subscribers) (CSClient rId rcvServiceId rcvServiceId, clientId)
+          liftIO $ processSub clnt $ CSClient rId rcvServiceId rcvServiceId
 
         -- clients that use GET are not added to server subscribers
         getMessage :: StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
@@ -1850,66 +1899,14 @@ client
 
         subscribeNotifications :: StoreQueue s -> NtfCreds -> M s BrokerMsg
         subscribeNotifications q NtfCreds {ntfServiceId} = do
-          (hasSub, _) <- sharedSubscribeQueue q ntfServiceId ntfSubscribers ntfSubscriptions ntfServiceSubsCount (pure ()) ntfServices
+          (hasSub, _) <- sharedSubscribeQueue clntServiceId entId q ntfServiceId processNtfSub ntfSubscriptions ntfServiceSubsCount (pure ()) ntfServices
           when (isNothing clntServiceId) $
             asks serverStats >>= incStat . (if hasSub then ntfSubDuplicate else ntfSub)
           pure $ SOK clntServiceId
 
-        sharedSubscribeQueue ::
-          StoreQueue s ->
-          Maybe ServiceId ->
-          ServerSubscribers s ->
-          (Client s -> TMap QueueId sub) ->
-          (Client s -> TVar (Int64, IdsHash)) ->
-          STM sub ->
-          (ServerStats -> ServiceStats) ->
-          M s (Bool, Maybe sub)
-        sharedSubscribeQueue q queueServiceId srvSubscribers clientSubs clientServiceSubs mkSub servicesSel = do
-          stats <- asks serverStats
-          let incSrvStat sel = incStat $ sel $ servicesSel stats
-              writeSub = writeTQueue (subQ srvSubscribers) (CSClient entId queueServiceId clntServiceId, clientId)
-          liftIO $ case clntServiceId of
-            Just serviceId
-              | queueServiceId == Just serviceId -> do
-                  -- duplicate queue-service association - can only happen in case of response error/timeout
-                  hasSub <- atomically $ ifM hasServiceSub (pure True) (False <$ incServiceQueueSubs)
-                  unless hasSub $ do
-                    atomically writeSub
-                    incSrvStat srvSubCount
-                    incSrvStat srvSubQueues
-                  incSrvStat srvAssocDuplicate
-                  pure (hasSub, Nothing)
-              | otherwise -> do
-                  -- association already done in prepareBatchSubs
-                  hasSub <- atomically $ (<$ incServiceQueueSubs) =<< hasServiceSub
-                  atomically writeSub
-                  unless hasSub $ incSrvStat srvSubCount
-                  incSrvStat srvSubQueues
-                  incSrvStat $ maybe srvAssocNew (const srvAssocUpdated) queueServiceId
-                  pure (hasSub, Nothing)
-              where
-                hasServiceSub = ((0 /=) . fst) <$> readTVar (clientServiceSubs clnt)
-                -- This function is used when queue association with the service is created.
-                incServiceQueueSubs = modifyTVar' (clientServiceSubs clnt) $ addServiceSubs (1, queueIdHash (recipientId q)) -- service count and IDS hash
-            Nothing -> case queueServiceId of
-              Just _ -> do
-                -- unassociation already done in prepareBatchSubs
-                incSrvStat srvAssocRemoved
-                -- getSubscription may find a subscription for receiving service, where clientSubs also hold active deliveries for service subscriptions.
-                -- For notification service it can only find one if storage and session states diverge.
-                r <- getSubscription
-                atomically writeSub
-                pure r
-              Nothing -> do
-                r@(hasSub, _) <- getSubscription
-                unless hasSub $ atomically writeSub
-                pure r
-              where
-                getSubscription = either ((False,) . Just) ((True,) . Just) <$> TM.lookupOrInsertIO entId mkSub (clientSubs clnt)
-
         subscribeServiceMessages :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceMessages serviceId expected =
-          sharedSubscribeService SRecipientService serviceId expected subscribers serviceSubscribed serviceSubsCount rcvServices >>= \case
+          sharedSubscribeService SRecipientService serviceId expected processSub serviceSubscribed serviceSubsCount rcvServices >>= \case
             Left e -> pure $ ERR e
             Right (hasSub, (count, idsHash)) -> do
               stats <- asks serverStats
@@ -1940,17 +1937,18 @@ client
                     Right _sub -> pure (qCnt + 1, msgCnt, dupCnt + 1, evts)
                     Left sub -> do
                       ts <- getSystemSeconds
-                      atomically $ setDelivered sub msg ts
-                      atomically $ writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]
-                      pure (qCnt + 1, msgCnt + 1, dupCnt, evts)
+                      ifM
+                        (atomically $ trySetDelivered sub msg ts)
+                        ((qCnt + 1, msgCnt + 1, dupCnt, evts) <$ atomically (writeTBQueue msgQ [(NoCorrId, rId, MSG (encryptMsg qr msg))]))
+                        (pure (qCnt + 1, msgCnt, dupCnt + 1, evts))
             getSubscription rId = TM.lookupOrInsertIO rId (newSubscription NoSub) (subscriptions clnt)
 
         subscribeServiceNotifications :: ServiceId -> (Int64, IdsHash) -> M s BrokerMsg
         subscribeServiceNotifications serviceId expected =
-          either ERR (uncurry SOKS . snd) <$> sharedSubscribeService SNotifierService serviceId expected ntfSubscribers ntfServiceSubscribed ntfServiceSubsCount ntfServices
+          either ERR (uncurry SOKS . snd) <$> sharedSubscribeService SNotifierService serviceId expected processNtfSub ntfServiceSubscribed ntfServiceSubsCount ntfServices
 
-        sharedSubscribeService :: (PartyI p, ServiceParty p) => SParty p -> ServiceId -> (Int64, IdsHash) -> ServerSubscribers s -> (Client s -> TVar Bool) -> (Client s -> TVar (Int64, IdsHash)) -> (ServerStats -> ServiceStats) -> M s (Either ErrorType (Bool, (Int64, IdsHash)))
-        sharedSubscribeService party serviceId (count, idsHash) srvSubscribers clientServiceSubscribed clientServiceSubs servicesSel = do
+        sharedSubscribeService :: (PartyI p, ServiceParty p) => SParty p -> ServiceId -> (Int64, IdsHash) -> (Client s -> ClientSub -> IO ()) -> (Client s -> TVar Bool) -> (Client s -> TVar (Int64, IdsHash)) -> (ServerStats -> ServiceStats) -> M s (Either ErrorType (Bool, (Int64, IdsHash)))
+        sharedSubscribeService party serviceId (count, idsHash) processSub' clientServiceSubscribed clientServiceSubs servicesSel = do
           subscribed <- readTVarIO $ clientServiceSubscribed clnt
           stats <- asks serverStats
           liftIO $ runExceptT $
@@ -1962,7 +1960,7 @@ client
                   subsChange <- atomically $ do
                     writeTVar (clientServiceSubscribed clnt) True
                     currSubs <- swapTVar (clientServiceSubs clnt) subs'
-                    pure $ subtractServiceSubs currSubs subs'
+                    pure (count' - fst currSubs, idsHash' <> snd currSubs)
                   let incSrvStat sel n = liftIO $ atomicModifyIORef'_ (sel $ servicesSel stats) (+ n)
                       diff = fromIntegral $ count' - count
                   if -- `count == -1` only for subscriptions by old NTF servers
@@ -1970,7 +1968,7 @@ client
                     | diff > 0 -> incSrvStat srvSubMore 1 >> incSrvStat srvSubMoreTotal diff
                     | diff < 0 -> incSrvStat srvSubFewer 1 >> incSrvStat srvSubFewerTotal (- diff)
                     | otherwise -> incSrvStat srvSubDiff 1
-                  atomically $ writeTQueue (subQ srvSubscribers) (CSService serviceId subsChange, clientId)
+                  liftIO $ processSub' clnt $ CSService serviceId subsChange
                   pure (count', idsHash')
 
         acknowledgeMsg :: MsgId -> StoreQueue s -> QueueRec -> M s (Transmission BrokerMsg)
@@ -2145,7 +2143,7 @@ client
                       ts <- getSystemSeconds
                       atomically $ whenM (sameClient rc rcv) $
                         readTVar delivered >>= \case
-                          Just _ -> pure () -- if a message was already delivered, should not deliver more
+                          Just _ -> writeTVar st NoSub -- if a message was already delivered, should not deliver more
                           Nothing -> do
                             -- a separate thread is needed because it blocks when client sndQ is full.
                             deliver sndQ' s ts
@@ -2214,7 +2212,7 @@ client
                     resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
               -- INTERNAL because processCommand never returns Nothing for sender commands;
               -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty)) t'')
+              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) t'')
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           traverse encodeResp r_ >>= \case
@@ -2256,6 +2254,9 @@ client
           let !msgId = messageId msg
           writeTVar delivered $ Just (msgId, ts)
 
+        trySetDelivered :: Sub -> Message -> SystemSeconds -> STM Bool
+        trySetDelivered sub msg ts = readTVar (delivered sub) >>= maybe (True <$ setDelivered sub msg ts) (const $ pure False)
+
         delQueueAndMsgs :: (StoreQueue s, QueueRec) -> M s (Transmission BrokerMsg)
         delQueueAndMsgs (q, QueueRec {rcvServiceId}) = do
           liftIO (deleteQueue ms q) >>= \case
@@ -2265,15 +2266,17 @@ client
               -- we delete subscription here, so the client with no subscriptions can be disconnected.
               sub <- atomically $ TM.lookupDelete entId $ subscriptions clnt
               liftIO $ mapM_ cancelSub sub
-              when (isJust rcvServiceId) $ atomically $ modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
-              atomically $ writeTQueue (subQ subscribers) (CSDeleted entId rcvServiceId, clientId)
+              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ whenM (((0 /=) . fst) <$> readTVar (serviceSubsCount clnt)) $ do
+                modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+                modifyTVar' (totalServiceSubs subscribers) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+              liftIO $ processSub clnt $ CSDeleted entId rcvServiceId
               forM_ (notifier qr) $ \NtfCreds {notifierId = nId, ntfServiceId} -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
                 -- so we don't need to remove subscription from the current client.
                 stats <- asks serverStats
                 deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
                 when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
-                atomically $ writeTQueue (subQ ntfSubscribers) (CSDeleted nId ntfServiceId, clientId)
+                liftIO $ processNtfSub clnt $ CSDeleted nId ntfServiceId
               updateDeletedStats qr
               pure ok
             Left e -> pure $ err e

@@ -46,7 +46,8 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`.
+returns `502`. A TLD whose controller has a name policy then still answers `502`
+until `docker compose restart resolver` (see Configuring addresses).
 
 ## Verify
 
@@ -172,7 +173,10 @@ label, so a hashed query cannot be answered with a name. See
 [Querying by labelhash](#querying-by-labelhash).
 
 A subname reports the expiry and grace of the 2LD above it, since that is what
-bounds its lifetime. A subname nobody created reports as not registered.
+bounds its lifetime. A subname is answered only while it is held: owned in the
+registry by the 2LD's holder, or by the subname registrar that the registrar's
+`subnameHook()` names, while its `ownerOf` names a holder. Any other subname,
+created or not, reports as not registered.
 
 ### v1: `/resolve/<name>`
 
@@ -232,7 +236,8 @@ expiry is what separates *never registered* from *registered and since
 released*.
 
 A subname reports the status of the 2LD above it, which is only as good as the
-name it sits under. A subname nobody created answers 404 `unregistered`.
+name it sits under. A subname that is not held, as v2 defines it, answers 404
+`unregistered`.
 
 #### v1 errors
 
@@ -357,20 +362,36 @@ from before the enum stores a boolean, whose `true` decodes as 1, which is why
 
 ### Configuring addresses
 
-The resolver reads three contracts, each configured per TLD.
+The resolver reads three contracts, each configured per TLD, the name policy a
+controller names, and the subname registrar a registrar names.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
 is where every expiry field comes from, and `labelOf`, which is how a hashed
 query is answered with a name. A name registered without recording its label
 cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
-the client will reject. With no registrar for a TLD, `/resolve` still works and
-reports `"status": "unknown"`. The **controller** holds
+the client will reject. Its `subnameHook()` names the subname registrar, whose
+`ownerOf` says who holds a subname it owns. With no registrar for a TLD,
+`/resolve` still works and reports `"status": "unknown"`, and only subnames the
+2LD's holder owns in the registry are answered. The **controller** holds
 `reservedNames`, which is where `reasonCode` comes from. With no controller a
 held-back name reads as not reserved, and no name can be priced.
 
 All three default to the mainnet `.testing` deployment. `.simplex` is unset
 until it is deployed.
+
+Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
+policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
+answers no `reservedNames` call. The resolver reads each controller's
+`namePolicy()` once at startup, before its workers start, and reads reservations
+from the policy it names. `.testing`'s controller is from before name policies,
+so the read reverts. A read that reverts, answers nothing, names no policy or
+fails with an RPC error is logged as `no_name_policy`, and reservations are read
+from the controller. For a controller that has a name policy, every lookup under
+its TLD then answers 502 until a restart: after an RPC error, or when the node
+has not yet reached the controller or its `setNamePolicy`. A node that
+does not answer stops the resolver, and the container restarts. After the
+controller's owner calls `setNamePolicy`, restart the resolver.
 
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two
@@ -388,7 +409,8 @@ as env vars when you run the script directly.
 
 A lookup reads the chain in at most three rounds: the name's status and
 registry entries, then its record from its resolver, then prices for a name
-that is free. The node runs the calls of a JSON-RPC batch one after another,
+that is free. A subname owned by the subname registrar takes one more round, for
+its holder. The node runs the calls of a JSON-RPC batch one after another,
 so the contract reads of a round go to the chain as one `eth_call` to
 [Multicall3](https://github.com/mds1/multicall). A node that is slow for a
 moment therefore delays a lookup a few times, not once per read. Connections to
@@ -418,13 +440,15 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 
 | Event | Level | Meaning |
 |---|---|---|
-| `listening` | info | started: address, workers, RPC endpoint, registries, trusted proxies |
+| `listening` | info | started: address, workers, RPC endpoint, registries, name policies, trusted proxies |
 | `request` | info | one answered request; `/health` only at debug |
 | `upstream_error` | warn | a read from the node failed; the caller got 502 |
+| `no_name_policy` | warn | at startup, a controller's `namePolicy()` named no policy (see Configuring addresses); its reservations are read from the controller |
 | `multicall_unavailable` | warn | Multicall3 did not answer; rounds are sent as plain batches |
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
 | `request_failed` | error | a request failed unexpectedly, with its traceback |
+| `startup_failed` | error | the node did not answer the startup read of the name policies; the container restarts |
 | `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
 | `stopping` | info | stopped by a signal |
 

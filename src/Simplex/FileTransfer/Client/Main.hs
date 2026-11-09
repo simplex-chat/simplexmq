@@ -70,7 +70,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Protocol (ProtoServerWithAuth (..), ProtocolServer (..), SenderId, SndPrivateAuthKey, XFTPServer, XFTPServerWithAuth)
-import Simplex.Messaging.Util (groupAllOn, ifM, tshow, whenM)
+import Simplex.Messaging.Util (groupAllOn, ifM, stateTVar', tshow, whenM)
 import System.Exit (exitFailure)
 import System.FilePath (splitFileName, (</>))
 import System.IO.Temp (getCanonicalTemporaryDirectory)
@@ -331,7 +331,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
           (sndId, rIds, _) <- withRetry retryCount $ createXFTPChunk c spKey ch (L.map fst rKeys) auth Nothing
           withReconnect a xftpServer retryCount $ \c' -> uploadXFTPChunk c' spKey sndId chunkSpec
           logDebug $ "uploaded chunk " <> tshow chunkNo
-          uploaded <- atomically . stateTVar uploadedChunks $ \cs ->
+          uploaded <- atomically . stateTVar' uploadedChunks $ \cs ->
             let cs' = fromIntegral chunkSize : cs in (sum cs', cs')
           liftIO $ do
             notifyProgress uploaded encSize
@@ -343,7 +343,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
         getXFTPServer gen = \case
           srv :| [] -> pure srv
           servers -> do
-            atomically $ (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+            atomically $ (servers L.!!) <$> stateTVar' gen (randomR (0, L.length servers - 1))
 
     -- M chunks, R replicas, N recipients
     -- rcvReplicas: M[SentFileChunk] -> M * R * N [SentRecipientReplica]
@@ -432,7 +432,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       (errs, rs) <- partitionEithers . concat <$> liftIO (pooledForConcurrentlyN 16 srvChunks $ mapM $ runExceptT . downloadFileChunk g a encPath size downloadedChunks)
       mapM_ throwE errs
       let chunkPaths = map snd $ sortOn fst rs
-      encDigest <- liftIO $ LC.sha512Hash <$> readChunks chunkPaths
+      encDigest <- liftIO $ sha512HashChunks chunkPaths
       when (encDigest /= unFileDigest digest) $ throwE $ CLIError "File digest mismatch"
       encSize <- liftIO $ foldM (\s path -> (s +) . fromIntegral <$> getFileSize path) 0 chunkPaths
       when (FileSize encSize /= size) $ throwE $ CLIError "File size mismatch"
@@ -462,7 +462,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       let chunkSpec = XFTPRcvChunkSpec chunkPath (unFileSize chunkSize) (unFileDigest digest)
       withReconnect a server retryCount $ \c -> downloadXFTPChunk g c replicaKey (unChunkReplicaId replicaId) chunkSpec
       logDebug $ "downloaded chunk " <> tshow chunkNo <> " to " <> T.pack chunkPath
-      downloaded <- atomically . stateTVar downloadedChunks $ \cs ->
+      downloaded <- atomically . stateTVar' downloadedChunks $ \cs ->
         let cs' = fromIntegral (unFileSize chunkSize) : cs in (sum cs', cs')
       liftIO $ do
         printProgress "Downloaded" downloaded encSize
