@@ -39,7 +39,7 @@ import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
 import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpPrepareReceiveFile, xftpPrepareSendFile, xftpReceiveFile, xftpSendDescription, xftpStartReceiveFile, xftpStartSendFile, xftpStartWorkers)
 import qualified Simplex.Messaging.Agent as XA
-import Simplex.Messaging.Agent.Client (AgentClient (xftpClients), AgentOpState (..), AgentOperation (..), ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, beginAgentOperation, endAgentOperation)
+import Simplex.Messaging.Agent.Client (AgentClient (subQ, xftpClients), AgentOpState (..), AgentOperation (..), ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, beginAgentOperation, endAgentOperation)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, InitialAgentServers, xftpCfg)
 import qualified Simplex.Messaging.Agent.Env.SQLite as AEnv
 import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
@@ -54,7 +54,7 @@ import Simplex.Messaging.Crypto.Entitlement (Entitlement (..), MasterKey (..), s
 import Simplex.Messaging.Crypto.File (CryptoFile (..), CryptoFileArgs)
 import qualified Simplex.Messaging.Crypto.File as CF
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
-import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), NetworkError (..), ProtoServerWithAuth (..), ProtocolServer (..), XFTPServer, XFTPServerWithAuth)
+import Simplex.Messaging.Protocol (AProtocolType (..), BasicAuth, EntityId (..), NetworkError (..), ProtoServerWithAuth (..), ProtocolServer (..), SProtocolType (..), XFTPServer, XFTPServerWithAuth)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
@@ -91,11 +91,15 @@ xftpAgentTests =
       it "should limit download sessions with servers outside the user's list" $
         testXFTPAgentDownloadSessionsLimit initAgentServers
       it "should limit download sessions with servers outside the user's list in entity session mode" $
-        testXFTPAgentDownloadSessionsLimit initAgentServers {AEnv.netCfg = (AEnv.netCfg initAgentServers) {AEnv.sessionMode = TSMEntity}}
-      it "should close download session with a server outside the user's list" $
-        testXFTPAgentDownloadSessions initAgentServers {AEnv.xftp = userServers $ testXFTPServer2 :| []} 0
+        testXFTPAgentDownloadSessionsLimit $ entitySessionMode initAgentServers
+      it "should limit download sessions and keep one session for a file from a server outside the user's list" testXFTPAgentDownloadSessionsLimitFile
+      it "should release download sessions of stopped workers" testXFTPAgentDownloadSessionsStopped
+      it "should keep download session with a server outside the user's list for all chunks of a file" $
+        testXFTPAgentDownloadSessionChunks xftpServer2Only 1
+      it "should open download session per chunk with a server outside the user's list in entity session mode" $
+        testXFTPAgentDownloadSessionChunks (entitySessionMode xftpServer2Only) 2
       it "should close download sessions in entity session mode" $
-        testXFTPAgentDownloadSessions initAgentServers {AEnv.netCfg = (AEnv.netCfg initAgentServers) {AEnv.sessionMode = TSMEntity}} 0
+        testXFTPAgentDownloadSessions (entitySessionMode initAgentServers) 0
       it "should keep download session shared with the user's server" $ testXFTPAgentDownloadSessions initAgentServers 1
       it "should keep download session with a disabled server in the user's list" $
         testXFTPAgentDownloadSessions initAgentServers {AEnv.xftp = M.fromList [(1, noAuthSrvCfg testXFTPServer2 :| [(noAuthSrvCfg testXFTPServer) {AEnv.enabled = False}])]} 1
@@ -611,10 +615,7 @@ testXFTPAgentReceiveCleanupError = withGlobalLogging logCfgNoLogs $ do
 
 testXFTPAgentDownloadSessionsLimit :: (HasCallStack, HasTestEnv) => InitialAgentServers -> AFStoreType -> IO ()
 testXFTPAgentDownloadSessionsLimit rcpServers = withXFTPServer $ do
-  filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
-  rfd <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
-    (_, _, rfd, _) <- testSendCF' sndr (CF.plain filePath) (kb 320)
-    pure rfd
+  (filePath, rfd) <- sendTwoChunkFile
   silentRfd <- silentServersDescription 6
   withStallingServerOn' xftpTestPort2 $ \accepted _ ->
     withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} rcpServers testDB2 $ \rcp -> do
@@ -624,6 +625,40 @@ testXFTPAgentDownloadSessionsLimit rcpServers = withXFTPServer $ do
       threadDelay 500000
       M.size <$> readTVarIO (xftpClients rcp) `shouldReturn` 1
       timeout 5000000 (runRight $ testReceiveCF' rcp rfd Nothing filePath (kb 320)) >>= (`shouldSatisfy` isJust)
+
+testXFTPAgentDownloadSessionsLimitFile :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
+testXFTPAgentDownloadSessionsLimitFile = withXFTPServer $ do
+  (_, rfd) <- sendTwoChunkFile
+  silentRfd <- silentServersDescription 3
+  withStallingServerOn' xftpTestPort2 $ \accepted _ ->
+    withAgent 2 agentCfg {AEnv.tbqSize = 16, AEnv.xftpMaxDownloadSessions = 1} xftpServer2Only testDB2 $ \rcp -> do
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
+      _ <- runRight $ xftpReceiveFile rcp 1 silentRfd Nothing True
+      timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+      maxSessions <- newTVarIO 0
+      withAsync (forever $ recordSessions rcp maxSessions) $ \_ -> do
+        _ <- runRight $ xftpReceiveFile rcp 1 rfd Nothing True
+        timeout 20000000 (xftpConnectsUntilReceived rcp) `shouldReturn` Just 1
+      readTVarIO maxSessions `shouldReturn` 1
+  where
+    recordSessions rcp maxSessions = do
+      sessions <- M.size <$> readTVarIO (xftpClients rcp)
+      atomically $ modifyTVar' maxSessions (max sessions)
+      threadDelay 10000
+
+testXFTPAgentDownloadSessionsStopped :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
+testXFTPAgentDownloadSessionsStopped = withXFTPServer $ do
+  (filePath, rfd) <- sendTwoChunkFile
+  silentRfd <- silentServersDescription 1
+  withStallingServerOn' xftpTestPort2 $ \accepted _ ->
+    withAgent 2 agentCfg {AEnv.xftpMaxDownloadSessions = 1} xftpServer2Only testDB2 $ \rcp -> do
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
+      _ <- runRight $ xftpReceiveFile rcp 1 silentRfd Nothing True
+      timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+      XA.disconnectAgentClient rcp
+      XA.resumeAgentClient rcp
+      runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
+      timeout 10000000 (runRight $ testReceiveCF' rcp rfd Nothing filePath (kb 320)) >>= (`shouldSatisfy` isJust)
 
 silentServersDescription :: HasTestEnv => Int -> IO (ValidFileDescription 'FRecipient)
 silentServersDescription n = do
@@ -637,14 +672,43 @@ silentServersDescription n = do
 
 testXFTPAgentDownloadSessions :: (HasCallStack, HasTestEnv) => InitialAgentServers -> Int -> AFStoreType -> IO ()
 testXFTPAgentDownloadSessions rcpServers sessions = withXFTPServer $ do
-  filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
-  rfd <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
-    (_, _, rfd, _) <- testSendCF' sndr (CF.plain filePath) (kb 320)
-    pure rfd
+  (filePath, rfd) <- sendTwoChunkFile
   withAgent 2 agentCfg rcpServers testDB2 $ \rcp -> do
     runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
     _ <- runRight $ testReceiveCF' rcp rfd Nothing filePath (kb 320)
     M.size <$> readTVarIO (xftpClients rcp) `shouldReturn` sessions
+
+testXFTPAgentDownloadSessionChunks :: (HasCallStack, HasTestEnv) => InitialAgentServers -> Int -> AFStoreType -> IO ()
+testXFTPAgentDownloadSessionChunks rcpServers connects = withXFTPServer $ do
+  (_, rfd) <- sendTwoChunkFile
+  withAgent 2 agentCfg rcpServers testDB2 $ \rcp -> do
+    runRight_ $ xftpStartWorkers rcp (Just recipientFiles)
+    _ <- runRight $ xftpReceiveFile rcp 1 rfd Nothing True
+    timeout 10000000 (xftpConnectsUntilReceived rcp) `shouldReturn` Just connects
+    timeout 5000000 (atomically $ readTVar (xftpClients rcp) >>= checkSTM . M.null) `shouldReturn` Just ()
+
+sendTwoChunkFile :: (HasCallStack, HasTestEnv) => IO (FilePath, ValidFileDescription 'FRecipient)
+sendTwoChunkFile = do
+  filePath <- createRandomFile_ (kb 319 :: Integer) "testfile"
+  rfd <- withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
+    (_, _, rfd, _) <- testSendCF' sndr (CF.plain filePath) (kb 320)
+    pure rfd
+  pure (filePath, rfd)
+
+xftpServer2Only :: HasTestEnv => InitialAgentServers
+xftpServer2Only = initAgentServers {AEnv.xftp = userServers $ testXFTPServer2 :| []}
+
+entitySessionMode :: InitialAgentServers -> InitialAgentServers
+entitySessionMode servers = servers {AEnv.netCfg = (AEnv.netCfg servers) {AEnv.sessionMode = TSMEntity}}
+
+xftpConnectsUntilReceived :: AgentClient -> IO Int
+xftpConnectsUntilReceived c = count 0
+  where
+    count n =
+      atomically (readTBQueue $ subQ c) >>= \case
+        (_, _, AEvt _ (CONNECT (AProtocolType SPXFTP) _)) -> count (n + 1)
+        (_, _, AEvt _ RFDONE {}) -> pure n
+        _ -> count n
 
 testXFTPAgentSendRestore :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentSendRestore = withGlobalLogging logCfgNoLogs $ do
