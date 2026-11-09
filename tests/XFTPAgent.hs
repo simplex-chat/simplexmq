@@ -28,7 +28,7 @@ import Data.Maybe (fromJust, isJust)
 import qualified Data.Set as S
 import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Clock.System (getSystemTime, systemSeconds)
-import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3, userServers)
+import SMPAgentClient (agentCfg, initAgentServers, noAuthSrvCfg, testDB, testDB2, testDB3, userServers)
 import SMPClient (withStallingServerOn', xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileChunk (..), FileChunkReplica (..), FileDescription (..), FileDescriptionURI (..), FileDigest (..), FileSize (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, validateFileDescription, pattern ValidFileDescription)
@@ -97,6 +97,8 @@ xftpAgentTests =
       it "should close download sessions in entity session mode" $
         testXFTPAgentDownloadSessions initAgentServers {AEnv.netCfg = (AEnv.netCfg initAgentServers) {AEnv.sessionMode = TSMEntity}} 0
       it "should keep download session shared with the user's server" $ testXFTPAgentDownloadSessions initAgentServers 1
+      it "should keep download session with a disabled server in the user's list" $
+        testXFTPAgentDownloadSessions initAgentServers {AEnv.xftp = M.fromList [(1, noAuthSrvCfg testXFTPServer2 :| [(noAuthSrvCfg testXFTPServer) {AEnv.enabled = False}])]} 1
       it "should resume sending file after restart" $ \_ -> testXFTPAgentSendRestore
       xit'' "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
       it "should delete sent file on server" testXFTPAgentDelete

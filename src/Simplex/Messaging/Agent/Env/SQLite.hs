@@ -126,6 +126,7 @@ data UserServers p = UserServers
     -- name resolution is opt-in: a plain list (NOT NonEmpty, no fallback-to-all).
     -- Empty = no servers resolve names = a clean agent error, never falls back.
     nameSrvs :: [(Maybe OperatorId, ProtoServerWithAuth p)],
+    knownSrvs :: Set (ProtocolServer p),
     knownHosts :: Set TransportHost
   }
 
@@ -133,10 +134,11 @@ type OperatorId = Int64
 
 -- This function sets all servers as enabled in case all passed servers are disabled.
 mkUserServers :: NonEmpty (ServerCfg p) -> UserServers p
-mkUserServers srvs = UserServers {storageSrvs = filterSrvs storage, proxySrvs = filterSrvs proxy, nameSrvs, knownHosts}
+mkUserServers srvs = UserServers {storageSrvs = filterSrvs storage, proxySrvs = filterSrvs proxy, nameSrvs, knownSrvs, knownHosts}
   where
     filterSrvs role = L.map (\ServerCfg {operator, server} -> (operator, server)) $ fromMaybe srvs $ L.nonEmpty $ L.filter (\ServerCfg {enabled, roles} -> enabled && role roles) srvs
     nameSrvs = map (\ServerCfg {operator, server} -> (operator, server)) $ L.filter (\ServerCfg {enabled, roles} -> enabled && names roles) srvs
+    knownSrvs = S.fromList $ L.toList $ L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> srv) srvs
     knownHosts = S.unions $ L.map (\ServerCfg {server = ProtoServerWithAuth srv _} -> serverHosts srv) srvs
 
 serverHosts :: ProtocolServer p -> Set TransportHost

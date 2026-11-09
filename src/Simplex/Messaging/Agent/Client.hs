@@ -2230,7 +2230,7 @@ agentXFTPDownloadChunk c@AgentClient {xftpServers, xftpDownloadSessions} userId 
     (ExceptT . withQSem xftpDownloadSessions . runExceptT $ downloadAndClose)
   where
     userServer :: IO Bool
-    userServer = maybe False (any ((server ==) . protoServer . snd) . storageSrvs) <$> TM.lookupIO userId xftpServers
+    userServer = maybe False (S.member server . knownSrvs) <$> TM.lookupIO userId xftpServers
 
 agentXFTPNewChunk :: AgentClient -> SndFileChunk -> Int -> XFTPServerWithAuth -> Maybe Word32 -> AM NewSndChunkReplica
 agentXFTPNewChunk c SndFileChunk {userId, chunkSpec = XFTPChunkSpec {chunkSize}, digest = FileDigest chunkDigest} n (ProtoServerWithAuth srv auth) storageHours = do
