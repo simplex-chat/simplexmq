@@ -704,6 +704,7 @@ entitySessionMode servers = servers {AEnv.netCfg = (AEnv.netCfg servers) {AEnv.s
 xftpConnectsUntilReceived :: AgentClient -> IO Int
 xftpConnectsUntilReceived c = count 0
   where
+    count :: Int -> IO Int
     count n =
       atomically (readTBQueue $ subQ c) >>= \case
         (_, _, AEvt _ (CONNECT (AProtocolType SPXFTP) _)) -> count (n + 1)
