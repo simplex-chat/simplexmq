@@ -9,7 +9,7 @@
   - `sndQ` is not full;
   - the chunk's notifications are taken and written as one `sndQ` element.
 - Delivery to a client stops at its first failed chunk in the cycle; notifications of that chunk and of later chunks are kept for the next cycle.
-- A cycle can fill `sndQ`; the client's command responses wait for free slots (`Server.hs:1210`).
+- A cycle can fill `sndQ`; the client's command responses wait for free slots (`Server.hs:1191`).
 - `ntfDeliveryChunk`:
 
   | Item | Value |
@@ -30,7 +30,6 @@
 - `Server/Env/STM.hs`: `ntfDeliveryChunk :: Int` in `ServerConfig`.
 - `Server/Main.hs`: `ntfDeliveryChunk = 1000`.
 - `Server.hs`:
-  - `isRight` added to the `Data.Either` import.
   - `runDeliverNtfs`:
 
     ```
