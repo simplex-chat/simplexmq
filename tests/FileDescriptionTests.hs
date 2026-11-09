@@ -7,14 +7,18 @@
 module FileDescriptionTests where
 
 import Control.Exception (bracket_)
+import Control.Monad (zipWithM_)
 import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import qualified Data.Yaml as Y
-import Simplex.FileTransfer.Chunks (chunkSize3)
+import Simplex.FileTransfer.Chunks (chunkSize0, chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
+import Simplex.FileTransfer.Crypto (sha512HashChunks)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
@@ -29,8 +33,11 @@ fileDescriptionTests = do
     it "serialize YAML file description" testSerializeYAMLFileDescription
     it "parse file description" testParseFileDescription
     it "reject file description with YAML aliases" testRejectYAMLAliases
-    it "limit replicas per chunk and per file" testFileDescriptionLimits
+    it "reject file description with a long number" testRejectLongNumber
+    it "accept file description with a number at the length limit" testAcceptMaxNumber
+    it "limit chunk sizes, replicas and redirect description size" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
+    it "hash chunk files one at a time" testHashChunks
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
@@ -51,7 +58,7 @@ fileDesc :: FileDescription 'FRecipient
 fileDesc =
   FileDescription
     { party = SFRecipient,
-      size = FileSize $ mb 26,
+      size = FileSize $ mb 13,
       digest = FileDigest "abc",
       key = testSbKey,
       nonce = testCbNonce,
@@ -87,7 +94,7 @@ fileDesc =
           FileChunk
             { chunkNo = 4,
               digest = chunkDigest,
-              chunkSize = FileSize $ mb 2,
+              chunkSize = FileSize $ mb 1,
               replicas =
                 [ FileChunkReplica {server = "xftp://abc=@example2.com", replicaId, replicaKey},
                   FileChunkReplica {server = "xftp://abc=@example3.com", replicaId, replicaKey}
@@ -97,7 +104,7 @@ fileDesc =
       redirect = Nothing
     }
   where
-    defaultChunkSize = FileSize $ mb 8
+    defaultChunkSize = FileSize $ mb 4
     replicaId = ChunkReplicaId $ EntityId "abc"
     replicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
     chunkDigest = FileDigest "ghi"
@@ -106,8 +113,8 @@ yamlFileDesc :: YAMLFileDescription
 yamlFileDesc =
   YAMLFileDescription
     { party = FRecipient,
-      size = "26mb",
-      chunkSize = "8mb",
+      size = "13mb",
+      chunkSize = "4mb",
       digest = FileDigest "abc",
       key = testSbKey,
       nonce = testCbNonce,
@@ -123,7 +130,7 @@ yamlFileDesc =
             { server = "xftp://abc=@example2.com",
               chunks =
                 [ "2:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp",
-                  "4:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp:2mb"
+                  "4:YWJj:MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe:Z2hp:1mb"
                 ]
             },
           YAMLServerReplicas
@@ -170,6 +177,20 @@ testRejectYAMLAliases = do
       aliased = header <> "- &g\n  " <> B.drop 2 groups <> "- *g\n" <> sizeLine
   (strDecode aliased :: Either String (FileDescription 'FRecipient)) `shouldBe` Left "YAML aliases are not allowed"
 
+testRejectLongNumber :: IO ()
+testRejectLongNumber = do
+  fd <- B.readFile fileDescPath
+  let withLongNumber = fd <> "x: " <> B.replicate 65 '7' <> "\n"
+  (strDecode withLongNumber :: Either String (FileDescription 'FRecipient))
+    `shouldBe` Left "number too long in file description"
+
+testAcceptMaxNumber :: IO ()
+testAcceptMaxNumber = do
+  fd <- B.readFile fileDescPath
+  let withMaxNumber = fd <> "x: " <> B.replicate 64 '7' <> "\n"
+  (strDecode withMaxNumber :: Either String (FileDescription 'FRecipient))
+    `shouldSatisfy` isRight
+
 testFileDescriptionLimits :: IO ()
 testFileDescriptionLimits = do
   let largestSplit = prepareChunkSizes (maxFileSizeHard - mb 1)
@@ -181,6 +202,11 @@ testFileDescriptionLimits = do
   validateFileDescription (descriptionOf split64GB 4) `shouldSatisfy` isRight
   validateFileDescription (descriptionOf (replicate 8192 chunkSize3) 16) `shouldSatisfy` isRight
   validateFileDescription (descriptionOf (replicate 8193 chunkSize3) 16) `shouldBe` Left "too many file replicas"
+  validateFileDescription (descriptionOf serverChunkSizes 1) `shouldSatisfy` isRight
+  validateFileDescription (descriptionOf [chunkSize3, mb 2] 1) `shouldBe` Left "incorrect chunk size"
+  validateFileDescription (descriptionOf [chunkSize3, mb 8] 1) `shouldBe` Left "incorrect chunk size"
+  validateFileDescription (redirectDesc [chunkSize3]) `shouldSatisfy` isRight
+  validateFileDescription (redirectDesc [chunkSize3, chunkSize0]) `shouldBe` Left "redirect file description is too large"
   where
     FileDescription {chunks = fixtureChunks} = fileDesc
     fixtureReplicas = concatMap (\FileChunk {replicas} -> replicas) fixtureChunks
@@ -197,6 +223,7 @@ testFileDescriptionLimits = do
         }
       where
         chunk chunkNo sz = FileChunk {chunkNo, chunkSize = FileSize sz, digest = FileDigest "ghi", replicas = take n $ cycle fixtureReplicas}
+    redirectDesc sizes = (descriptionOf sizes 1 :: FileDescription 'FRecipient) {redirect = Just RedirectFileInfo {size = FileSize 1024, digest = FileDigest "abc"}}
 
 testSerializeFileDescription :: HasTestEnv => IO ()
 testSerializeFileDescription = withRemoveTmpFile $ do
@@ -216,6 +243,15 @@ testFileDescriptionURIExtras = do
   vfd <- either fail pure $ validateFileDescription fileDesc
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
+
+testHashChunks :: HasTestEnv => IO ()
+testHashChunks = do
+  let sizes = [0, 65535, 65536, 100000, 200000]
+      paths = map (testPath . ("chunk" <>) . show) [1 .. length sizes]
+      chunks = zipWith B.replicate sizes ['a' ..]
+  zipWithM_ B.writeFile paths chunks
+  digest <- sha512HashChunks paths
+  digest `shouldBe` LC.sha512Hash (LB.fromStrict $ B.concat chunks)
 
 withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =

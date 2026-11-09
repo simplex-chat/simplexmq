@@ -119,7 +119,7 @@ eventuallyRemove path retries = case retries of
   where
     action = removeDirectoryRecursive path
 
-data TestWrapper a = TestWrapper (HasTestEnv => a)
+data TestWrapper a = TestWrapper String (HasTestEnv => a)
 
 -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
 testLogLevel :: LogLevel
@@ -127,7 +127,7 @@ testLogLevel = LogError
 
 instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
-  evaluateExample (TestWrapper action) params hooks state = do
+  evaluateExample (TestWrapper label action) params hooks state = do
     ci <- envCI
     runTest `E.catches` [E.Handler (onTestFailure ci), E.Handler (onTestException ci)]
     where
@@ -140,13 +140,13 @@ instance Example a => Example (TestWrapper a) where
       onTestFailure :: Bool -> ResultStatus -> IO Result
       onTestFailure ci = \case
         Failure loc_ reason | ci -> do
-          putStrLn $ "Test failed: location " ++ show loc_ ++ ", reason: " ++ show reason
+          putStrLn $ "Test failed: " ++ show label ++ ", location " ++ show loc_ ++ ", reason: " ++ show reason
           retryTest
         r -> E.throwIO r
       onTestException :: Bool -> SomeException -> IO Result
       onTestException False e = E.throwIO e
       onTestException True e = do
-        putStrLn $ "Test exception: " ++ show e
+        putStrLn $ "Test exception: " ++ show label ++ ", " ++ show e
         retryTest
       retryTest = do
         putStrLn "Retrying with more logs..."
@@ -157,10 +157,10 @@ envCI :: IO Bool
 envCI = (Just "true" ==) <$> lookupEnv "CI"
 
 it :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
-it label action = Hspec.it label (TestWrapper action)
+it label action = Hspec.it label (TestWrapper label action)
 
 fit :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
 fit label action = focus $ it label action
 
 xit :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
-xit label action = Hspec.xit label (TestWrapper action)
+xit label action = Hspec.xit label (TestWrapper label action)

@@ -43,6 +43,7 @@ module AgentTests.FunctionalAPITests
     rfGet,
     sfGet,
     nGet,
+    pGet,
     getInAnyOrder,
     (##>),
     (=##>),
@@ -71,7 +72,7 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Either (isRight)
+import Data.Either (isRight, partitionEithers)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -90,7 +91,7 @@ import SMPAgentClient
 import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
@@ -102,6 +103,7 @@ import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..), MigrationError (..))
 import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig, defaultSMPClientConfig, getProtocolClient, sendSMPMessage)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
 import Simplex.Messaging.Encoding
@@ -122,10 +124,11 @@ import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
 import System.Directory (copyFile, removeFile, renameFile)
+import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO
 import Util
-import XFTPClient (testXFTPServer)
+import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 
 #if defined(dbPostgres)
 import Fixtures
@@ -502,6 +505,8 @@ functionalAPITests ps = do
       testSuspendingAgentCompleteSending ps
     it "should suspend agent on timeout, even if pending messages not sent" $
       testSuspendingAgentTimeout ps
+    it "should send messages queued after file is sent before agent is suspended" $
+      testSuspendingAgentCompleteSendingFile ps
   describe "Batching SMP commands" $ do
     -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
@@ -1013,10 +1018,14 @@ testAgentClient3 =
     2 <- sendMessage a cId SMP.noMsgFlags "c4"
     3 <- sendMessage a bId SMP.noMsgFlags "b5"
     3 <- sendMessage a cId SMP.noMsgFlags "c5"
-    get a =##> \case ("", connId, SENT 2) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 2) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 3) -> connId == bId || connId == cId; _ -> False
-    get a =##> \case ("", connId, SENT 3) -> connId == bId || connId == cId; _ -> False
+    liftIO $
+      getInAnyOrder
+        a
+        [ \case ("", connId, AEvt SAEConn (SENT 2)) -> connId == bId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 2)) -> connId == cId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 3)) -> connId == bId; _ -> False,
+          \case ("", connId, AEvt SAEConn (SENT 3)) -> connId == cId; _ -> False
+        ]
     get b =##> \case ("", connId, Msg "b4") -> connId == aIdForB; _ -> False
     ackMessage b aIdForB 2 Nothing
     get b =##> \case ("", connId, Msg "b5") -> connId == aIdForB; _ -> False
@@ -3169,6 +3178,34 @@ testSuspendingAgentTimeout ps = withAgentClients2 $ \a b -> do
     ("", "", SUSPENDED) <- nGet b
     pure ()
 
+testSuspendingAgentCompleteSendingFile :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
+testSuspendingAgentCompleteSendingFile ps =
+  withSmpServer ps $ withXFTPServerThreadOn $ \_ -> withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    let filePath = senderFiles </> "testfile"
+    liftIO $ B.writeFile filePath "file content"
+    xftpStartWorkers b (Just senderFiles)
+    sfId <- xftpSendFile b 1 (CryptoFile filePath Nothing) 1 Nothing
+    liftIO $ do
+      suspendAgent b 60000000
+      timeout 5000000 (waitSuspendedOp b sndFilesOp) `shouldReturn` Just ()
+      suspendedOps b `shouldReturn` [True, True, False]
+    ("", _, SFPROG _ _) <- sfGet b
+    ("", sfId', SFDONE {}) <- sfGet b
+    liftIO $ sfId' `shouldBe` sfId
+    msgId <- sendMessage b aId SMP.noMsgFlags "file description"
+    liftIO $ do
+      xftpDeleteSndFileInternal b sfId
+      suspendedOps b `shouldReturn` [True, True, True]
+    get b ##> ("", aId, SENT msgId)
+    liftIO $ timeout 5000000 (nGet b) `shouldReturn` Just ("", "", SUSPENDED)
+    get a =##> \case ("", c, Msg "file description") -> c == bId; _ -> False
+  where
+    waitSuspendedOp :: AgentClient -> (AgentClient -> TVar AgentOpState) -> IO ()
+    waitSuspendedOp c op = atomically $ readTVar (op c) >>= checkSTM . opSuspended
+    suspendedOps :: AgentClient -> IO [Bool]
+    suspendedOps c = mapM (\op -> opSuspended <$> readTVarIO (op c)) [rcvNetworkOp, sndFilesOp, msgDeliveryOp]
+
 testBatchedSubscriptions :: HasTestEnv => Int -> Int -> (ASrvTransport, AStoreType) -> IO ()
 testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
   (conns, conns') <- withAgentClientsCfgServers2 agentCfg agentCfg initAgentServers2 $ \a b -> do
@@ -3249,15 +3286,20 @@ testBatchedPendingMessages nCreate nMsgs =
     withB $ \b -> runRight_ $ do
       let aIds = map fst conns
       subscribeAllConnections b False Nothing
-      ("", "", UP _ aIds') <- nGet b
-      liftIO $ S.fromList aIds' `shouldBe` S.fromList aIds
-      replicateM_ nMsgs $ do
-        ("", cId, Msg' msgId _ "hello") <- get b
+      (ups, msgs) <- partitionEithers <$> replicateM (nMsgs + 1) (upOrMsg b)
+      liftIO $ map S.fromList ups `shouldBe` [S.fromList aIds]
+      forM_ msgs $ \(cId, msgId) -> do
         liftIO $ isJust (find ((cId ==) . fst) msgConns) `shouldBe` True
         ackMessage b cId msgId Nothing
   where
     withA = withAgent 1 agentCfg initAgentServers testDB
     withB = withAgent 2 agentCfg initAgentServers testDB2
+    upOrMsg :: AgentClient -> ExceptT AgentErrorType IO (Either [ConnId] (ConnId, AgentMsgId))
+    upOrMsg b =
+      pGet b >>= \case
+        ("", "", AEvt SAENone (UP _ aIds')) -> pure $ Left aIds'
+        ("", cId, AEvt SAEConn (Msg' msgId _ "hello")) -> pure $ Right (cId, msgId)
+        r -> error $ "unexpected event: " <> show r
 
 testSendMessagesB :: HasTestEnv => IO ()
 testSendMessagesB = withAgentClients2 $ \a b -> runRight_ $ do

@@ -42,6 +42,7 @@ Environment:
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
+                         read from the policy its `namePolicy()` names, if any,
                          and through its `prices()` oracle what registering costs
                          (default: mainnet for .testing, empty for .simplex)
   SNRC_PORT              Listen port (default: 8000)
@@ -139,6 +140,10 @@ CONTROLLERS = {
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
 }
+
+# The name policy each TLD's controller names, which holds its reservations in
+# place of the controller; set at startup from `name_policies()`.
+NAME_POLICIES = {}
 
 # `reservedNames` holds a SimplexController.Reason; 0 means not reserved. A
 # controller from before the enum stores a bool, whose `true` decodes as 1,
@@ -520,7 +525,27 @@ def reservation_reason(tld: str, token: int) -> int:
     controller = CONTROLLERS.get(tld)
     if not controller:
         return 0
-    return decode_uint(eth_call(*reserved_call(controller, token)))
+    return decode_uint(eth_call(*reserved_call(NAME_POLICIES.get(tld, controller), token)))
+
+
+def name_policies() -> dict:
+    """The name policy of each configured controller that names one. A controller
+    that reverts, answers nothing or names no policy is logged, and its reservations
+    are read from it; an RPC error is taken as a revert. Raises when the node does
+    not answer."""
+    policies = {}
+    for tld, controller in CONTROLLERS.items():
+        if not controller:
+            continue
+        try:
+            policy = decode_address(eth_call(*name_policy_call(controller)))
+            if policy == ZERO_ADDR:
+                raise RuntimeError("namePolicy() is unset")
+        except RuntimeError as e:
+            log_event(logging.WARNING, "no_name_policy", tld=tld, controller=controller, message=str(e), reservations="controller")
+            continue
+        policies[tld] = policy
+    return policies
 
 
 def pricing_params(tld: str):
@@ -786,8 +811,12 @@ def label_call(registrar: str, token: int):
     return registrar, selector("labelOf(uint256)") + encode_uint(token)
 
 
-def reserved_call(controller: str, token: int):
-    return controller, selector("reservedNames(bytes32)") + encode_uint(token)
+def reserved_call(contract: str, token: int):
+    return contract, selector("reservedNames(bytes32)") + encode_uint(token)
+
+
+def name_policy_call(controller: str):
+    return controller, selector("namePolicy()")
 
 
 def prices_call(contract: str):
@@ -810,6 +839,14 @@ def owner_call(registry: str, node: bytes):
     return registry, selector("owner(bytes32)") + node.hex()
 
 
+def subname_hook_call(registrar: str):
+    return registrar, selector("subnameHook()")
+
+
+def subname_owner_call(subnames: str, node: bytes):
+    return subnames, selector("ownerOf(uint256)") + node.hex()
+
+
 def text_call(resolver: str, node: bytes, key: str):
     return resolver, encode_text_call(node, key)
 
@@ -829,12 +866,16 @@ def lookup_reads(name: str):
         reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
         if len(labels) == 2 and is_encoded_labelhash(labels[0]):
             reads.append(eth_call_read(*label_call(registrar, token)))
+        if len(labels) > 2:
+            reads.append(eth_call_read(*subname_hook_call(registrar)))
         if CONTROLLERS.get(tld):
-            reads.append(eth_call_read(*reserved_call(CONTROLLERS[tld], token)))
+            reads.append(eth_call_read(*reserved_call(NAME_POLICIES.get(tld, CONTROLLERS[tld]), token)))
     registry = REGISTRIES.get(tld)
     if registry:
         node = node_of(name)
         reads += [eth_call_read(*resolver_call(registry, node)), eth_call_read(*owner_call(registry, node))]
+        if len(labels) > 2:
+            reads.append(eth_call_read(*owner_call(registry, namehash(".".join(labels[-2:])))))
     return reads
 
 
@@ -1103,6 +1144,25 @@ def name_record(name: str):
     return rec
 
 
+def subname_holder(name: str) -> str:
+    labels = name.split(".")
+    tld = labels[-1]
+    registry, registrar = REGISTRIES[tld], REGISTRARS.get(tld)
+    node = node_of(name)
+    owner = decode_address(eth_call(*owner_call(registry, node)))
+    holder = decode_address(eth_call(*owner_call(registry, namehash(".".join(labels[-2:])))))
+    if owner in (ZERO_ADDR, holder):
+        return owner
+    if not registrar:
+        return ZERO_ADDR
+    try:
+        if owner != decode_address(eth_call(*subname_hook_call(registrar))):
+            return ZERO_ADDR
+        return decode_address(eth_call(*subname_owner_call(owner, node)))
+    except RuntimeError:
+        return ZERO_ADDR
+
+
 def name_response(reg, registration_body):
     """The SMP protocol's NameResponse: the registration and the block read at."""
     return 200, {"lastBlockTs": reg["lastBlockTs"], "registration": registration_body}
@@ -1123,9 +1183,9 @@ def registration(name: str):
         # hashed query the registrar cannot name is refused rather than answered
         if rec["name"] is None:
             return 502, {"name": name, "error": "labelNotRecorded"}
-        # a subname inherits the 2LD's status, so only its node's owner says
-        # whether anyone created it
-        if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
+        # a subname inherits the 2LD's status, so only its holder says whether
+        # it exists
+        if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
             # name_status reads pricing only when the name was already
             # unregistered, so read it here
             status = "unregistered"
@@ -1188,19 +1248,19 @@ def resolve(name: str):
         return (404 if reg["status"] == "unregistered" else 410), body
 
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
+    if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
+        return 404, {
+            "name": name,
+            **reg,
+            "status": "unregistered",
+            "error": "unregistered",
+            "message": "nobody holds this subname",
+        }
     if resolver_addr == ZERO_ADDR:
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
-        # answerable. For a subname, no owner means nobody created it.
+        # answerable.
         owner = decode_address(eth_call(*owner_call(registry, node)))
-        if len(name.split(".")) > 2 and owner == ZERO_ADDR:
-            return 404, {
-                "name": name,
-                **reg,
-                "status": "unregistered",
-                "error": "unregistered",
-                "message": "this subname has never been created",
-            }
         return 200, {
             "name": canonical_name(name) or name,
             "nickname": "",
@@ -1464,6 +1524,9 @@ def supervise(workers: int):
         stop()
         stop_on(signum, frame)
 
+    # each worker opens its own connections: one shared would mix their replies
+    while not _rpc_pool.empty():
+        _rpc_pool.get_nowait().close()
     # before forking, so a signal during startup cannot orphan the workers
     signal.signal(signal.SIGTERM, stop_and_exit)
     signal.signal(signal.SIGINT, stop_and_exit)
@@ -1488,6 +1551,11 @@ def supervise(workers: int):
 
 def main():
     setup_logging()
+    try:
+        NAME_POLICIES.update(name_policies())
+    except Exception:
+        log_event(logging.ERROR, "startup_failed", exc_info=True)
+        sys.exit(1)
     log_event(
         logging.INFO,
         "listening",
@@ -1496,6 +1564,7 @@ def main():
         workers=WORKERS,
         rpc=public_endpoint(RPC),
         registries=",".join(f"{tld}={addr or '-'}" for tld, addr in REGISTRIES.items()),
+        name_policies=",".join(f"{tld}={NAME_POLICIES.get(tld, '-')}" for tld in CONTROLLERS),
         trusted_proxies=",".join(map(str, TRUSTED_PROXIES)) or None,
     )
     if WORKERS > 1:

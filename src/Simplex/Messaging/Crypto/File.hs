@@ -36,7 +36,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Lazy (LazyByteString)
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Parsers (defaultJSON)
-import Simplex.Messaging.Util (liftEitherWith)
+import Simplex.Messaging.Util (liftEitherWith, stateTVar')
 import System.Directory (getFileSize)
 import UnliftIO (Handle, IOMode (..), liftIO)
 import qualified UnliftIO as IO
@@ -81,7 +81,7 @@ withFile (CryptoFile path cfArgs) mode action = do
 hPut :: CryptoFileHandle -> LazyByteString -> IO ()
 hPut (CFHandle h sb_) s = LB.hPut h =<< maybe (pure s) encrypt sb_
   where
-    encrypt sb = atomically $ stateTVar sb (`LC.sbEncryptChunkLazy` s)
+    encrypt sb = atomically $ stateTVar' sb (`LC.sbEncryptChunkLazy` s)
 
 hPutTag :: CryptoFileHandle -> IO ()
 hPutTag (CFHandle h sb_) = forM_ sb_ $ B.hPut h . BA.convert . LC.sbAuth <=< readTVarIO
@@ -89,7 +89,7 @@ hPutTag (CFHandle h sb_) = forM_ sb_ $ B.hPut h . BA.convert . LC.sbAuth <=< rea
 hGet :: CryptoFileHandle -> Int -> IO ByteString
 hGet (CFHandle h sb_) n = B.hGet h n >>= maybe pure decrypt sb_
   where
-    decrypt sb s = atomically $ stateTVar sb (`LC.sbDecryptChunk` s)
+    decrypt sb s = atomically $ stateTVar' sb (`LC.sbDecryptChunk` s)
 
 -- | Read and validate the auth tag.
 -- This function should be called after reading the whole file, it assumes you know the file size and read only the needed bytes.

@@ -29,6 +29,7 @@ import Data.Functor (($>))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Store.Postgres.Options
+import Simplex.Messaging.Util (ifM)
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
@@ -56,14 +57,14 @@ data DBStorePool = DBStorePool
   }
 
 withConnectionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
-withConnectionPriority DBStore {dbPriorityPool, dbPool, dbConnect} priority =
-  withConnectionPool (if priority then dbPriorityPool else dbPool) dbConnect
+withConnectionPriority DBStore {dbPriorityPool, dbPool, dbConnect, dbClosed} priority =
+  withConnectionPool (if priority then dbPriorityPool else dbPool) dbClosed dbConnect
 {-# INLINE withConnectionPriority #-}
 
-withConnectionPool :: DBStorePool -> IO PSQL.Connection -> (PSQL.Connection -> IO a) -> IO a
-withConnectionPool DBStorePool {dbPoolConns, dbSem} dbConnect action =
+withConnectionPool :: DBStorePool -> TVar Bool -> IO PSQL.Connection -> (PSQL.Connection -> IO a) -> IO a
+withConnectionPool DBStorePool {dbPoolConns, dbSem} dbClosed dbConnect action =
   E.mask $ \restore -> do
-    conn <- withMVar dbSem $ \_ -> atomically $ readTBQueue dbPoolConns
+    conn <- withMVar dbSem $ \_ -> atomically $ ifM (readTVar dbClosed) (throwSTM $ userError "withConnection: database closed") (readTBQueue dbPoolConns)
     r <- restore (action conn) `E.onException` reset conn
     atomically $ writeTBQueue dbPoolConns conn
     pure r

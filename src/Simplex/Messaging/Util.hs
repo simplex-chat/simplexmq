@@ -27,6 +27,7 @@ module Simplex.Messaging.Util
     mapAccumLM,
     packZipWith,
     tryWriteTBQueue,
+    stateTVar',
     catchAll,
     catchAll_,
     tryAllErrors,
@@ -259,6 +260,13 @@ tryWriteTBQueue q a = do
   unless full $ writeTBQueue q a
   pure $ not full
 {-# INLINE tryWriteTBQueue #-}
+
+stateTVar' :: TVar s -> (s -> (a, s)) -> STM a
+stateTVar' var f = do
+  (a, s') <- f <$> readTVar var
+  s' `seq` writeTVar var s'
+  pure a
+{-# INLINE stateTVar' #-}
 
 catchAll :: IO a -> (E.SomeException -> IO a) -> IO a
 catchAll = E.catch
