@@ -64,6 +64,7 @@ import Data.Dynamic (toDyn)
 import Data.Either (fromRight, isRight, partitionEithers)
 import Data.Foldable (foldrM)
 import Data.Functor (($>), (<&>))
+import Data.Hashable (hash)
 import Data.IORef
 import Data.Int (Int64)
 import qualified Data.IntMap.Strict as IM
@@ -1399,7 +1400,7 @@ client
   (processSub, processNtfSub)
   Server {subscribers}
   ms
-  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, fwdWorkers} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -1610,6 +1611,22 @@ client
           when free $ writeTVar procThreads $! used + 1
           pure free
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
+    forwardToWorker :: EntityId -> M s () -> M s ()
+    forwardToWorker (EntityId eId) action = do
+      n <- asks $ serverForwardedWorkers . config
+      q <- forwardedWorker $ hash eId `mod` n
+      run <- askRunInIO
+      atomically $ writeTBQueue q $ run action
+    forwardedWorker :: Int -> M s (TBQueue (IO ()))
+    forwardedWorker i =
+      IM.lookup i <$> readTVarIO fwdWorkers >>= \case
+        Just q -> pure q
+        Nothing -> do
+          q <- newTBQueueIO =<< asks (tbqSize . config)
+          atomically $ modifyTVar' fwdWorkers $ IM.insert i q
+          forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forwarded ") <> show i) $
+            liftIO $ forever $ join (atomically $ readTBQueue q) `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
+          pure q
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
       st <- asks (rslvStats . serverStats)
@@ -2195,29 +2212,35 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked (RSLV).
-          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
-            -- rejectOrVerify filters allowed commands, no need to repeat it here.
-            Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> do
-                  let sendResolved msg = do
-                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
-                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) t'')
-          stats <- asks serverStats
-          incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_ >>= \case
-            Just rres | any isAuthError r_ -> do
-              authDelay <- asks $ authErrorDelay . config
-              Nothing <$ liftIO (sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], []))
-            rres_ -> pure rres_
+              sendForwarded r = atomically $ writeTBQueue sndQ ([(corrId, NoEntity, r)], [])
+              forwarded = do
+                -- the inner response, or Nothing if forked (RSLV).
+                r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
+                  -- rejectOrVerify filters allowed commands, no need to repeat it here.
+                  Left r -> pure $ Just r
+                  Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
+                    Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+                      Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
+                      Just nenv -> do
+                        let sendResolved msg = do
+                              rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                              atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                        forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
+                          resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
+                    -- INTERNAL because processCommand never returns Nothing for sender commands;
+                    -- `fst` drops the empty message only returned for SUB.
+                    _ -> Just . maybe (corrId', entId', ERR INTERNAL) fst <$> lift (processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) t'')
+                stats <- asks serverStats
+                incStat $ pMsgFwdsRecv stats
+                traverse encodeResp r_ >>= \case
+                  Just rres | any isAuthError r_ -> do
+                    authDelay <- asks $ authErrorDelay . config
+                    Nothing <$ liftIO (sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], []))
+                  rres_ -> pure rres_
+          case t' of
+            Right (_, _, (_, _, Cmd SResolver _)) -> forwarded
+            Right (_, _, (_, entId', _)) -> Nothing <$ lift (forwardToWorker entId' $ runExceptT forwarded >>= mapM_ sendForwarded . either (Just . ERR) id)
+            Left _ -> forwarded
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case

@@ -67,6 +67,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
+    defaultForwardedWorkers,
     defaultMaxClientCmdWait,
     defaultAuthErrorDelayMs,
     readWriteQueueStore,
@@ -198,6 +199,7 @@ data ServerConfig s = ServerConfig
     -- aggregate over a single proxy->relay connection (only servers send proxied
     -- requests), so bounding them by the per-client limit would throttle unduly.
     serverResolverConcurrency :: Int,
+    serverForwardedWorkers :: Int,
     maxClientCmdWait :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
@@ -246,6 +248,9 @@ defaultProxyClientConcurrency = 500
 
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 5000
+
+defaultForwardedWorkers :: Int
+defaultForwardedWorkers = 8
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds
@@ -433,6 +438,7 @@ data Client s = Client
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
+    fwdWorkers :: TVar (IntMap (TBQueue (IO ()))),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     clientTHParams :: THandleParams SMPVersion 'TServer,
@@ -505,6 +511,7 @@ newClient clientId qSize clientTHParams createdAt = do
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
+  fwdWorkers <- newTVarIO IM.empty
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
   connected <- newTVarIO True
@@ -523,6 +530,7 @@ newClient clientId qSize clientTHParams createdAt = do
         sndQ,
         msgQ,
         procThreads,
+        fwdWorkers,
         endThreads,
         endThreadSeq,
         clientTHParams,
