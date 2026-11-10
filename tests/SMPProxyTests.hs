@@ -65,12 +65,6 @@ smpProxyTests = do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
   describe "proxy requests" $ do
-    describe "bad relay URIs" $ do
-      xit "host not resolved" todo
-      xit "when SMP port blackholed" todo
-      xit "no SMP service at host/port" todo
-      xit "bad SMP fingerprint" todo
-    xit "batching proxy requests" todo
     it "relay rejects forwarded command with changed version" $ \_ ->
       testChangedFwdVersion
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
@@ -113,9 +107,9 @@ smpProxyTests = do
         it "10x100" $ twoServersFirstProxy $ 10 `inParrallel` deliver 100
       describe "stress test - no host" $ do
         it "1x1000, no delay" $ oneServer $ proxyConnectDeadRelay 1000 0 srv1
-        xit "1x1000, 100ms" $ oneServer $ proxyConnectDeadRelay 1000 100000 srv1
-        xit "100x1000, 100ms" $ oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 1000 100000 srv1)
-      xdescribe "stress test 10k" $ do
+        it "1x1000, 100ms" $ oneServer $ proxyConnectDeadRelay 1000 100000 srv1
+        it "100x1000, 100ms" $ oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 1000 100000 srv1)
+      describe "stress test 10k" $ do
         let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
         it "1x10000" $ twoServersFirstProxy $ deliver 10000
         it "5x2000" $ twoServersFirstProxy $ 5 `inParrallel` deliver 2000
@@ -155,7 +149,7 @@ smpProxyTests = do
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
-      xdescribe "stress test 10k" $ do
+      describe "stress test 10k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "25 agents, 300 pairs, 17 messages" $ oneServer $ withNumCapabilities 4 $ deliver 25 17
   where
@@ -594,9 +588,6 @@ testAgentClientReconnectAfterCancel =
         { smp = userServers [testSMPServer2],
           netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 4000000 4000000}
         }
-
-todo :: AStoreType -> IO ()
-todo _ = fail "TODO"
 
 runExceptT' :: Exception e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either throwIO pure

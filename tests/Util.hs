@@ -31,9 +31,6 @@ import Test.Hspec hiding (fit, it, xit)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Core.Spec (Example (..), Result (..), ResultStatus (..))
 
-skip :: String -> SpecWith a -> SpecWith a
-skip = before_ . pendingWith
-
 withNumCapabilities :: Int -> IO a -> IO a
 withNumCapabilities new a = getNumCapabilities >>= \old -> bracket_ (setNumCapabilities new) (setNumCapabilities old) a
 

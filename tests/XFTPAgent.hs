@@ -28,7 +28,6 @@ import qualified Data.Set as S
 import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Clock.System (getSystemTime, systemSeconds)
 import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
-import SMPClient (xit'')
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..))
@@ -73,8 +72,7 @@ xftpAgentTests :: SpecWith AFStoreType
 xftpAgentTests =
   describe "agent XFTP API" $ do
       it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
-      -- uncomment CPP option slow_servers and run hpack to run this test
-      xit "should send and receive file with slow server responses" $ \_ ->
+      it "should send and receive file with slow server responses" $ \_ ->
         withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
           \_ -> testXFTPAgentSendReceive
       it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted
@@ -88,7 +86,7 @@ xftpAgentTests =
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
       it "should report permanent error even when rcv tmp path cannot be removed" $ \_ -> testXFTPAgentReceiveCleanupError
       it "should resume sending file after restart" $ \_ -> testXFTPAgentSendRestore
-      xit'' "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
+      it "should cleanup snd prefix path after permanent error" $ \_ -> testXFTPAgentSendCleanup
       it "should delete sent file on server" testXFTPAgentDelete
       it "should resume deleting file after restart" $ \_ -> testXFTPAgentDeleteRestore
       -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error

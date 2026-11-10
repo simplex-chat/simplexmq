@@ -53,7 +53,6 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..), QueueInfo (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
 import System.Directory (doesFileExist, removeFile)
@@ -2099,18 +2098,18 @@ testMsgNOTExpireOnInterval =
 
 testBlockMessageQueue :: SpecWith (ASrvTransport, AStoreType)
 testBlockMessageQueue =
-  -- TODO [postgres]
-  xit "should return BLOCKED error when queue is blocked" $ \ps@(ATransport (t :: TProxy c 'TServer), _) -> do
+  it "should return BLOCKED error when queue is blocked" $ \ps@(at@(ATransport (t :: TProxy c 'TServer)), msType) -> do
     g <- C.newRandom
-    (rId, sId) <- withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
+    let cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+    sId <- withSmpServerConfigOn at cfg' testPort $ runTest t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
       (rId1, NoEntity) #== "creates queue"
-      pure (rId, sId)
-
-    -- TODO [postgres] block via control port
-    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent Nothing
+      [_, blocked] <- controlPortCommands cpPort ["auth admin", "block " <> B.unpack (strEncode sId) <> " " <> B.unpack (strEncode $ BlockingInfo BRContent Nothing)]
+      blocked `shouldStartWith` "ok, queue blocked"
+      pure sId
 
     withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
