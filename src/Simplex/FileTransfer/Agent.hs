@@ -197,11 +197,15 @@ runXFTPRcvWorker c srv Worker {doWork} = do
   cfg <- asks config
   forever $ do
     lift $ waitForWork doWork
-    liftIO $ assertAgentForeground c
-    runXFTPOperation cfg
+    withXFTPDownloadPermit c $ downloadChunks cfg
   where
-    runXFTPOperation :: AgentConfig -> AM ()
-    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpConsecutiveRetries} =
+    downloadChunks :: AgentConfig -> XFTPDownloadPermit -> AM ()
+    downloadChunks cfg permit = do
+      liftIO $ assertAgentForeground c
+      runXFTPOperation cfg permit
+      unlessM (atomically $ isEmptyTMVar doWork) $ downloadChunks cfg permit
+    runXFTPOperation :: AgentConfig -> XFTPDownloadPermit -> AM ()
+    runXFTPOperation AgentConfig {rcvFilesTTL, reconnectInterval = ri, xftpConsecutiveRetries} permit =
       withWork c doWork (\db -> getNextRcvChunkToDownload db srv rcvFilesTTL) $ \case
         (RcvFileChunk {rcvFileId, rcvFileEntityId, fileTmpPath, replicas = []}, _, redirectEntityId_) ->
           rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ (Just fileTmpPath) (INTERNAL "chunk has no replicas")
@@ -211,11 +215,12 @@ runXFTPRcvWorker c srv Worker {doWork} = do
             liftIO $ waitWhileSuspended c
             liftIO $ waitForUserNetwork c
             incXFTPServerStat c userId srv downloadAttempts
-            downloadFileChunk fc replica approvedRelays
+            downloadFileChunk permit fc replica approvedRelays
               `catchAllErrors` \e -> retryOnError "XFTP rcv worker" (retryLoop loop e delay') (retryDone e) e
           where
             retryLoop loop e replicaDelay = do
               flip catchAllErrors (\_ -> pure ()) $ do
+                liftIO $ releaseXFTPDownloadPermit c permit
                 when (serverHostError e) $ notify c (fromMaybe rcvFileEntityId redirectEntityId_) (RFWARN e)
                 liftIO $ closeXFTPServerClient c userId server digest
                 withStore' c $ \db -> updateRcvChunkReplicaDelay db rcvChunkReplicaId replicaDelay
@@ -226,15 +231,15 @@ runXFTPRcvWorker c srv Worker {doWork} = do
                 XFTP _ XFTP.AUTH -> downloadAuthErrs
                 _ -> downloadErrs
               rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ (Just fileTmpPath) e
-    downloadFileChunk :: RcvFileChunk -> RcvFileChunkReplica -> Bool -> AM ()
-    downloadFileChunk RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica approvedRelays = do
+    downloadFileChunk :: XFTPDownloadPermit -> RcvFileChunk -> RcvFileChunkReplica -> Bool -> AM ()
+    downloadFileChunk permit RcvFileChunk {userId, rcvFileId, rcvFileEntityId, rcvChunkId, chunkNo, chunkSize, digest, fileTmpPath} replica approvedRelays = do
       unlessM ((approvedRelays ||) <$> ipAddressProtected') $ throwE $ FILE NOT_APPROVED
       fsFileTmpPath <- lift $ toFSFilePath fileTmpPath
       chunkPath <- uniqueCombine fsFileTmpPath $ show chunkNo
       let chSize = unFileSize chunkSize
           chunkSpec = XFTPRcvChunkSpec chunkPath chSize (unFileDigest digest)
           relChunkPath = fileTmpPath </> takeFileName chunkPath
-      agentXFTPDownloadChunk c userId digest replica chunkSpec
+      agentXFTPDownloadChunk c permit userId digest replica chunkSpec
       liftIO $ waitUntilForeground c
       (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ lockRcvFileForUpdate db rcvFileId
