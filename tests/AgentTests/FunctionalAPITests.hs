@@ -436,6 +436,7 @@ functionalAPITests ps = do
     it "should not create connection for prepared invitation link with too large data" $ testPrepareInvitationLinkTooLarge ps
     it "should not create connection for prepared contact link with too large data" $ testPrepareContactLinkTooLarge ps
     it "should connect via short link prepared for existing contact connection" $ testPrepareConnShortLink ps
+    it "should refuse short links to servers without key hash" $ testShortLinkWithoutKeyHash ps
   describe "Message delivery" $ do
     describe "update connection agent version on received messages" $ do
       it "should increase if compatible, shouldn'ps decrease" $
@@ -2204,6 +2205,20 @@ testPrepareConnShortLink ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
     get a ##> ("", bId, CON)
     get b ##> ("", aId, CON)
     exchangeGreetings a bId b aId
+
+testShortLinkWithoutKeyHash :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testShortLinkWithoutKeyHash ps = withSmpServer ps $ withAgentClients2 $ \a b -> do
+  let userCtData = UserContactData {direct = True, owners = [], relays = [], userData = UserLinkData "test user data", ratchetKeys = Nothing}
+  (_, CCLink _ (Just contactLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just $ UserContactLinkData userCtData) Nothing CR.IKPQOn False SMSubscribe
+  (_, CCLink _ (Just invLink)) <- runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just $ UserInvLinkData $ UserLinkData "test user data") Nothing CR.IKUsePQ False SMSubscribe
+  let hostOnlyLink = shortenShortLink [testSMPServer] contactLink
+  Left (A.CMD PROHIBITED _) <- runExceptT $ getConnShortLink b 1 hostOnlyLink
+  Left (A.CMD PROHIBITED _) <- runExceptT $ getConnShortLink b 1 $ shortenShortLink [testSMPServer] invLink
+  Left (A.CMD PROHIBITED _) <- runExceptT $ getConnShortLinkAsync b 1 "1" Nothing hostOnlyLink
+  withTransaction (store $ agentEnv b) (`DB.query_` "SELECT host, port FROM servers") `shouldReturn` ([] :: [(T.Text, T.Text)])
+  withTransaction (store $ agentEnv b) getConnIds `shouldReturn` []
+  (_, ContactLinkData _ userCtData', _) <- runRight $ getConnShortLink b 1 $ restoreShortLink [testSMPServer] hostOnlyLink
+  userCtData' `shouldBe` userCtData
 
 connReqWithKeys :: BinaryConnectionRequestUri m -> Maybe AddressRatchetKeys -> ConnectionRequestUri m
 connReqWithKeys cr rk = case cr of

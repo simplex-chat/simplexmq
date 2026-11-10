@@ -235,7 +235,7 @@ smpRouter = hosts port fingerprint
 hosts = length 1*host
 host = shortString
 port = shortString
-fingerprint = shortString
+fingerprint = length 1*OCTET
 notifierId = shortString ; returned by SMP router in response to `NKEY` SMP command
 notifierKey = length x509encoded ; private key used to authorize requests to subscribe to message notifications
 ```

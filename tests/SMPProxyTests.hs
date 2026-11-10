@@ -66,6 +66,7 @@ smpProxyTests = do
       testAgentClientReconnectAfterCancel
   describe "proxy requests" $ do
     describe "bad relay URIs" $ do
+      it "relay without key hash" testRelayWithoutKeyHash
       xit "host not resolved" todo
       xit "when SMP port blackholed" todo
       xit "no SMP service at host/port" todo
@@ -459,6 +460,13 @@ testProxyAuth msType = do
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
     proxyCfgAuth = updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth = Just "correct"}
+
+testRelayWithoutKeyHash :: HasTestEnv => AStoreType -> IO ()
+testRelayWithoutKeyHash msType = do
+  withSmpServerConfigOn (transport @TLS) (proxyCfgMS msType) testPort $ \_ -> do
+    testSMPClient_ "127.0.0.1" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+      (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY (SMPServer testHost testPort2 (C.KeyHash "")) Nothing)
+      reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
 
 -- Connect a sender client to the proxy and request a relay session to testSMPServer2 (PRXY).
 -- On success the reply is PKEY; otherwise it is the proxy error for the relay connection.

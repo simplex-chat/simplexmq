@@ -1201,6 +1201,7 @@ setConnShortLinkAsync' c corrId connId userLinkData clientData =
 
 getConnShortLinkAsync' :: AgentClient -> UserId -> ACorrId -> Maybe ConnId -> ConnShortLink 'CMContact -> AM ConnId
 getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) = do
+  checkShortLinkServer srv
   connId <- case connId_ of
     Just existingConnId -> do
       -- connId and srv can be unrelated: connId is used as "mailbox" for LDATA delivery,
@@ -1232,6 +1233,9 @@ getConnShortLinkAsync' c userId corrId connId_ shortLink@(CSLContact _ _ srv _) 
                 serviceRequestExpiresAt = Nothing
               }
       createNewConn db g cData SCMInvitation
+
+checkShortLinkServer :: SMPServer -> AM ()
+checkShortLinkServer = void . liftEitherWith (CMD PROHIBITED . ("short link: " <>)) . SMP.requireKeyHash
 
 setConnShortLink' :: AgentClient -> NetworkRequestMode -> ConnId -> SConnectionMode c -> UserConnLinkData c -> Maybe CRClientData -> NewRatchetKeys -> Maybe CR.InitialKeys -> AM (ConnShortLink c)
 setConnShortLink' c nm connId cMode userLinkData clientData rotateKeys pqKeys_ =
@@ -1321,6 +1325,7 @@ getConnLinkPrivKey' c connId = do
 getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> ConnShortLink c -> AM (FixedLinkData c, ConnLinkData c, ConnectionRequestUri c)
 getConnShortLink' c nm userId = \case
   CSLInvitation _ srv linkId linkKey -> do
+    checkShortLinkServer srv
     g <- asks random
     invLink <- withStore' c $ \db -> do
       getInvShortLink db srv linkId >>= \case
@@ -1335,6 +1340,7 @@ getConnShortLink' c nm userId = \case
     withStore' c $ \db -> setInvShortLinkSndId db invLink sndId
     decryptData srv linkKey k ld
   CSLContact _ _ srv linkKey -> do
+    checkShortLinkServer srv
     let (linkId, k) = SL.contactShortLinkKdf linkKey
     ld <- getQueueLink c nm userId srv linkId
     decryptData srv linkKey k ld
