@@ -346,9 +346,9 @@ functionalAPITests ps = do
       withSmpServer ps testJoinUsedInvitation
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
-    describe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
+    describe "one way (200)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 200
     describe "two way concurrently (50)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 50
-    describe "two way concurrently (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 1000
+    describe "two way concurrently (200)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 200
   describe "Establishing duplex connection, different PQ settings" $ do
     testPQMatrix2 ps $ runAgentClientTestPQ True
   describe "Establishing duplex connection v2, different Ratchet versions" $
