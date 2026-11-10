@@ -3242,14 +3242,20 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
       deleteFail a bIds'
       deleteFail b aIds'
   where
-    down c cs = do
-      ("", "", DOWN _ cs1) <- nGet c
-      ("", "", DOWN _ cs2) <- nGet c
-      liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
-    up c cs = do
-      ("", "", UP _ cs1) <- nGet c
-      ("", "", UP _ cs2) <- nGet c
-      liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
+    down c = receivedFor $ do
+      ("", "", DOWN _ cs') <- nGet c
+      pure cs'
+    up c = receivedFor $ do
+      ("", "", UP _ cs') <- nGet c
+      pure cs'
+    receivedFor getConns cs = go S.empty
+      where
+        go received
+          | received == S.fromList cs = pure ()
+          | otherwise = do
+              cs' <- getConns
+              liftIO $ S.fromList cs' `S.isSubsetOf` S.fromList cs `shouldBe` True
+              go $ received <> S.fromList cs'
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
       subscribeAllConnections c False Nothing
