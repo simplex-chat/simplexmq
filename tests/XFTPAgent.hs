@@ -83,6 +83,7 @@ xftpAgentTests =
       it "should receive prepared file only after it is started" testXFTPAgentPrepareReceive
       it "should send prepared file only after it is started" testXFTPAgentPrepareSend
       it "should extend storage time with an entitlement proof and report the granted expiry" $ \_ -> testXFTPAgentEntitlement
+      it "should report no granted expiry when the server grants storage until before year 1" $ \_ -> testXFTPAgentExpiryBeforeYear1
       describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
       it "should cleanup rcv tmp path after permanent error" $ \_ -> testXFTPAgentReceiveCleanup
@@ -458,6 +459,17 @@ testXFTPAgentEntitlement = do
         ("", _, A.SFDONE _ _ g) -> pure g
         ("", _, SFPROG _ _) -> waitSndDone sndr
         r -> error $ "Expected SFDONE, got " <> show r
+
+testXFTPAgentExpiryBeforeYear1 :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentExpiryBeforeYear1 =
+  withXFTPServerCfg testXFTPServerConfig {fileExpiration = ExpirationConfig {ttl = -100000000000, checkInterval = 7200}} $ \_ -> do
+    filePath <- createRandomFile
+    withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight_ $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      _ <- xftpSendFile sndr 1 (CF.plain filePath) 1
+      sfProgress sndr $ mb 18
+      ("", _, A.SFDONE _ _ granted) <- sfGet sndr
+      liftIO $ granted `shouldBe` Nothing
 
 testReceive :: (HasCallStack, HasTestEnv) => AgentClient -> ValidFileDescription 'FRecipient -> FilePath -> ExceptT AgentErrorType IO RcvFileId
 testReceive rcp rfd = testReceiveCF rcp rfd Nothing

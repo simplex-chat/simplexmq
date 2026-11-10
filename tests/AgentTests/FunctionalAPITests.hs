@@ -114,6 +114,7 @@ import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), StorePaths (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
+import Simplex.Messaging.Server.MsgStore (MsgLogRecord (..))
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
@@ -451,6 +452,8 @@ functionalAPITests ps = do
       testDuplicateMessage ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
+    it "should use receipt time when server time of message is before year 1" $
+      testServerTimeBeforeYear1 ps
     it "should connect to the server when server goes up if it initially was down" $
       testDeliveryAfterSubscriptionError ps
     it "should deliver messages if one of connections has quota exceeded" $
@@ -2464,6 +2467,33 @@ testSkippedMessages (t, msType) = do
   disposeAgentClient bob2
   where
     cfg' = withServerCfg (cfgMS msType) $ \cfg_ -> ASrvCfg SQSMemory SMSMemory cfg_ {serverStoreCfg = SSCMemory $ Just $ StorePaths testStoreLogFile Nothing}
+
+testServerTimeBeforeYear1 :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testServerTimeBeforeYear1 (t, msType) = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aliceId, bobId) <- withSmpServerConfigOn t cfg' testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    disposeAgentClient bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+    pure (aliceId, bobId)
+  nGet alice =##> \case ("", "", DOWN _ [c]) -> c == bobId; _ -> False
+  msgs <- B.lines <$> B.readFile testStoreMsgsFile
+  B.writeFile testStoreMsgsFile $ B.unlines $ map setMsgTs msgs
+  bob2 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+  withSmpServerConfigOn t cfg' testPort $ \_ -> runRight_ $ do
+    subscribeConnection bob2 aliceId
+    get bob2 =##> \case ("", c, MSG MsgMeta {recipient = (2, rcvTs), broker = (_, brokerTs)} _ "hello") -> c == aliceId && brokerTs == rcvTs; _ -> False
+    ackMessage bob2 aliceId 2 Nothing
+  disposeAgentClient alice
+  disposeAgentClient bob2
+  where
+    cfg' = withServerCfg (cfgMS msType) $ \cfg_ -> ASrvCfg SQSMemory SMSMemory cfg_ {serverStoreCfg = SSCMemory $ Just $ StorePaths testStoreLogFile $ Just testStoreMsgsFile, messageExpiration = Nothing}
+    setMsgTs s = case strDecode s of
+      Right (MLRv3 rId (SMP.Message mId _ flags body)) -> strEncode $ MLRv3 rId $ SMP.Message mId (MkSystemTime (-100000000000) 0) flags body
+      _ -> s
 
 testDeliveryAfterSubscriptionError :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryAfterSubscriptionError ps = do

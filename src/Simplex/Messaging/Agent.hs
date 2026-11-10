@@ -3830,7 +3830,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                 (internalId, internalRcvId, prevExtSndId, prevRcvMsgHash) <- liftIO $ updateRcvIds db connId
                                 let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash prevMsgHash
                                     recipient = (unId internalId, internalTs)
-                                    broker = (srvMsgId, systemToUTCTime srvTs)
+                                    broker = (srvMsgId, fromRight internalTs $ checkTimeRange $ systemToUTCTime srvTs)
                                     msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
                                     rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash, encryptedMsgHash}
                                 liftIO $ createRcvMsg db connId rq rcvMsg
