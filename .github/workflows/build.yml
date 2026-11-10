@@ -131,6 +131,7 @@ jobs:
             runner: "ubuntu-24.04"
             ghc: "9.6.3"
             should_run: true
+            client_postgres: true
           - os: 22.04
             os_underscore: 22_04
             arch: aarch64
@@ -285,7 +286,7 @@ jobs:
 
       - name: Build tests with PostgreSQL agent store
         id: build-client-postgres
-        if: matrix.should_run == true && matrix.arch == 'x86-64'
+        if: matrix.should_run == true && matrix.client_postgres == true
         shell: docker exec -t builder sh -eu {0}
         run: |
           cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres ${{ env.ghc_options }} simplexmq-test
@@ -293,7 +294,7 @@ jobs:
           cp "$bin" /out/simplexmq-test-client-postgres
 
       - name: Copy simplexmq-test-client-postgres from container
-        if: matrix.should_run == true && matrix.arch == 'x86-64'
+        if: matrix.should_run == true && matrix.client_postgres == true
         shell: bash
         run: |
           docker cp builder:/out/simplexmq-test-client-postgres .
@@ -439,15 +440,20 @@ jobs:
         if: matrix.should_run == true && matrix.arch == 'x86-64'
         timeout-minutes: 120
         shell: bash
-        env:
+        env: &test-env
           PGHOST: localhost
           REDUCED: ${{ needs.maybe-release.outputs.reduced }}
           TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
           PR_BODY: ${{ github.event.pull_request.draft == true && github.event.pull_request.body || '' }}
           ATTEMPTS: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) && 3 || 1 }}
-        run: |
-          scripts/ci/run-tests.sh ./simplexmq-test
-          scripts/ci/run-tests.sh ./simplexmq-test-client-postgres
+        run: scripts/ci/run-tests.sh ./simplexmq-test
+
+      - name: Test with PostgreSQL agent store
+        if: ${{ !cancelled() && steps.build-client-postgres.outcome == 'success' }}
+        timeout-minutes: 120
+        shell: bash
+        env: *test-env
+        run: scripts/ci/run-tests.sh ./simplexmq-test-client-postgres
 
       - name: Remove -O2 build directories
         id: remove-o2
@@ -481,7 +487,7 @@ jobs:
           scripts/ci/prune-old-builds.sh dist-newstyle dist-postgres dist-client-postgres
           cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres --ghc-options=-O0
           cabal build --jobs=$(nproc) --ghc-options=-O0
-          if [ "${{ matrix.arch }}" = x86-64 ]; then
+          if [ "${{ matrix.client_postgres }}" = true ]; then
             cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres --ghc-options=-O0 simplexmq-test
           fi
 
@@ -519,6 +525,7 @@ jobs:
             runner: "ubuntu-24.04"
             ghc: "9.6.3"
             should_run: true
+            client_postgres: true
     steps: *build-steps
 
 # =============================
