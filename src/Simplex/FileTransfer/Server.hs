@@ -511,7 +511,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
     createFile :: FileInfo -> NonEmpty RcvPublicAuthKey -> Maybe Word32 -> M s FileResponse
     createFile file rks storageHours = do
       st <- asks fileStore
-      r <- runExceptT $ do
+      r <- mask_ $ runExceptT $ do
         sizes <- asks $ allowedChunkSizes . config
         unless (size file `elem` sizes) $ throwE SIZE
         now <- liftIO getSystemSeconds
@@ -561,7 +561,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
     addRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s FileResponse
     addRecipients sId rks = do
       st <- asks fileStore
-      r <- runExceptT $ do
+      r <- mask_ $ runExceptT $ do
         rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
         lift $ withFileLog $ \sl -> logAddRecipients sl sId rcps
         stats <- asks serverStats
@@ -649,13 +649,13 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
       -- pure FROk
 
 deleteServerFile_ :: FileStoreClass s => FileRec -> M s (Either XFTPErrorType ())
-deleteServerFile_ fr@FileRec {senderId} = do
+deleteServerFile_ fr@FileRec {senderId} = mask_ $ do
   withFileLog (`logDeleteFile` senderId)
   deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
 
 -- this also deletes the file from storage, but doesn't include it in delete statistics
 blockServerFile :: FileStoreClass s => FileRec -> BlockingInfo -> M s (Either XFTPErrorType ())
-blockServerFile fr@FileRec {senderId} info = do
+blockServerFile fr@FileRec {senderId} info = mask_ $ do
   withFileLog $ \sl -> logBlockFile sl senderId info
   deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
 

@@ -5,10 +5,13 @@
 module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 
 import Control.Monad
+import Control.Monad.Trans.Except (runExceptT)
 import Data.Word (Word32)
+import Database.PostgreSQL.Simple (Only (..))
+import qualified Database.PostgreSQL.Simple as DB
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore, withDB')
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -40,6 +43,8 @@ xftpStoreTests = do
     it "should return expired files with limit" testExpiredFiles
     it "should expire files by stored expiration" testExpiredFilesStoredExpiration
     it "should compute committed used storage and file count" testStorageAndCount
+    it "should end the thread cancelled during database transaction" testCancelDBTransaction
+    it "should end the thread cancelled during database query" testCancelDBQuery
 
 xftpMigrationTests :: Spec
 xftpMigrationTests = describe "XFTP migration round-trip" $ do
@@ -247,6 +252,15 @@ testStorageAndCountForStore st = do
   getUsedStorage st `shouldReturn` 128000
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
   getUsedStorage st `shouldReturn` 192000
+
+testCancelDBTransaction :: HasTestEnv => Expectation
+testCancelDBTransaction = withPgStore $ \st ->
+  testCancelledInside $ \waitCancel -> runExceptT $ withDB' "test" st $ \_ -> waitCancel
+
+testCancelDBQuery :: HasTestEnv => Expectation
+testCancelDBQuery = withPgStore $ \st ->
+  testCancelledWhenBlocked $ \started -> runExceptT $ withDB' "test" st $ \db ->
+    started >> (DB.query_ db "SELECT pg_sleep(10)" :: IO [Only ()])
 
 -- Migration round-trip test
 

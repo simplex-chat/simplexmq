@@ -22,21 +22,27 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), withLog')
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import SMPClient (testStoreLogFile)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -59,6 +65,8 @@ msgStoreTests = do
   describe "STM message store" $ do
     someMsgStoreTests testSMTStoreConfig
     it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
+    it "should end the thread cancelled during store log write" testCancelStoreLogWrite
+    it "should log the queue change of the thread cancelled before store log write" $ withMsgStore testSMTStoreConfig testCancelBeforeStoreLogWrite
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
@@ -66,6 +74,8 @@ msgStoreTests = do
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
+    it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
+    it "should end the thread cancelled during database query" $ withMsgStore testPostgresStoreConfig testCancelDBQuery
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -323,6 +333,24 @@ testDeleteQueueMaps ms = do
   where
     expectAuth = either (`shouldBe` AUTH) (\_ -> expectationFailure "deleted queue is still found")
 
+testCancelStoreLogWrite :: HasTestEnv => IO ()
+testCancelStoreLogWrite =
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl -> do
+    sl' <- newTVarIO $ Just sl
+    testCancelledInside $ \waitCancel -> withLog' "test" sl' $ \_ -> waitCancel
+
+testCancelBeforeStoreLogWrite :: HasTestEnv => STMMsgStore -> IO ()
+testCancelBeforeStoreLogWrite ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  Right q <- addQueue ms rId qr
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl ->
+    testCancelledInside $ \waitCancel -> do
+      slAfterCancel <- unsafeInterleaveIO $ waitCancel $> Just sl
+      sl' <- newTVarIO slAfterCancel
+      deleteStoreQueue (queueStore ms) {storeLog = sl'} q
+  B.readFile testStoreLogFile `shouldReturn` strEncode (DeleteQueue rId) <> "\n"
+
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
   ntfMsgId <- atomically $ randomMsgId 24 g
@@ -492,4 +520,13 @@ testClosedStore ms = do
     Just (Left (_ :: E.SomeException)) -> pure ()
     Just (Right (_ :: [Only Int])) -> expectationFailure "query succeeded on a closed store"
     Nothing -> expectationFailure "query waited on a closed store"
+
+testCancelDBTransaction :: PostgresMsgStore -> IO ()
+testCancelDBTransaction ms =
+  testCancelledInside $ \waitCancel -> runExceptT $ withDB' "test" (queueStore ms) $ \_ -> waitCancel
+
+testCancelDBQuery :: PostgresMsgStore -> IO ()
+testCancelDBQuery ms =
+  testCancelledWhenBlocked $ \started -> runExceptT $ withDB' "test" (queueStore ms) $ \db ->
+    started >> (DB.query_ db "SELECT pg_sleep(10)" :: IO [Only ()])
 #endif

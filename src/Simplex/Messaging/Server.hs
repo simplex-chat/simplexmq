@@ -1921,7 +1921,7 @@ client
                   if qCnt == expectedCnt
                     then logNote $ logMsg <> tshow qCnt <> " queues)"
                     else logError $ logMsg <> "expected " <> tshow expectedCnt <> "," <> tshow qCnt <> " queues)"
-                Left e -> do
+                Left e -> whenM (readTVarIO $ connected clnt) $ do
                   logError $ "Service subscription error for " <> tshow serviceId <> ": " <> tshow e
                   atomically $ writeTBQueue msgQ [(NoCorrId, NoEntity, ERR e)]
             deliverQueueMsg :: (Int64, Int, Int, NonEmpty (Transmission BrokerMsg)) -> RecipientId -> Either ErrorType (Maybe (QueueRec, Message)) -> IO (Int64, Int, Int, NonEmpty (Transmission BrokerMsg))
