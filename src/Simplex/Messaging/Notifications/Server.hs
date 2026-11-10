@@ -394,6 +394,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                 putStat "ntfReceived" ntfReceived
                 putStat "ntfDelivered" ntfDelivered
                 putStat "ntfFailed" ntfFailed
+                putStat "ntfDropped" ntfDropped
                 putStat "ntfCronDelivered" ntfCronDelivered
                 putStat "ntfCronFailed" ntfCronFailed
                 putStat "ntfVrfQueued" ntfVrfQueued
@@ -550,7 +551,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}
                     isOwn = isOwnServer ca srv
                 liftIO (addTokenLastNtf st newNtf) >>= \case
                   Right (tkn, lastNtfs) -> do
-                    pushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
+                    tryPushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
                     liftIO $ incNtfStat_ stats ntfReceived
                     when isOwn $ liftIO $ incServerStat srvHost (ntfReceivedOwn stats)
                   Left AUTH -> liftIO $ do
@@ -641,10 +642,16 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(DeviceToken pp _)} ntf =
+pushNotification = pushNotification_ $ \q -> atomically . writeTBQueue q
+
+tryPushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
+tryPushNotification = pushNotification_ $ \q x -> unlessM (atomically $ tryWriteTBQueue q x) $ incNtfStat ntfDropped
+
+pushNotification_ :: (TBQueue (NtfTknRec, PushNotification) -> (NtfTknRec, PushNotification) -> M ()) -> NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
+pushNotification_ enqueue s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(DeviceToken pp _)} ntf =
   ifM
     (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= (`enqueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
   where
     pushWorkersPerServer = 8
