@@ -157,6 +157,9 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Limit number of threads a client can spawn to process proxy commands and name resolutions in parallel.\n"
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
     <> "\n\n\
+        \# Limit number of connections to destination servers being established at once.\n"
+    <> ("# connect_concurrency = " <> tshow defaultProxyConnectConcurrency)
+    <> "\n\n\
         \[NAMES]\n\
         \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
         \# Operator runs the resolver alongside smp-server (default port 8000)\n\

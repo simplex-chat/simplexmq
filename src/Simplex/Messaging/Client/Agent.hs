@@ -52,7 +52,7 @@ import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Set as S
 import Data.Text.Encoding
 import Data.Time.Clock (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
@@ -82,7 +82,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Util (catchAll_, ifM, safeDecodeUtf8, stateTVar', toChunks, tshow, whenM, ($>>=), (<$$>))
+import Simplex.Messaging.Util (catchAll_, diffToMicroseconds, ifM, safeDecodeUtf8, stateTVar', threadDelay', toChunks, tshow, whenM, ($>>=), (<$$>))
 import System.Timeout (timeout)
 import UnliftIO (async)
 import UnliftIO.STM
@@ -107,6 +107,9 @@ data SMPClientAgentConfig = SMPClientAgentConfig
   { smpCfg :: ProtocolClientConfig SMPVersion,
     reconnectInterval :: RetryInterval,
     persistErrorInterval :: NominalDiffTime,
+    maxPersistedErrors :: Int,
+    maxConnectingClients :: Maybe Int,
+    sessionPerConnectedServer :: Bool,
     msgQSize :: Maybe Natural,
     agentQSize :: Natural,
     agentSubsBatchSize :: Int,
@@ -124,6 +127,9 @@ defaultSMPClientAgentConfig =
             maxInterval = 10 * second
           },
       persistErrorInterval = 30, -- seconds
+      maxPersistedErrors = 1000,
+      maxConnectingClients = Nothing,
+      sessionPerConnectedServer = False,
       msgQSize = Just 2048,
       agentQSize = 2048,
       agentSubsBatchSize = 1360,
@@ -143,6 +149,9 @@ data SMPClientAgent p = SMPClientAgent
     randomDrg :: TVar ChaChaDRG,
     smpClients :: TMap SMPServer SMPClientVar,
     smpSessions :: TMap SessionId (OwnServer, SMPClient),
+    connectedServerSessions :: Maybe (TMap SMPServer SessionId),
+    connectingClients :: TVar Int,
+    persistedErrors :: TVar Int,
     -- Only one service subscription can exist per server with this agent.
     -- With correctly functioning SMP server, queue and service subscriptions can't be
     -- active at the same time.
@@ -159,7 +168,7 @@ data SMPClientAgent p = SMPClientAgent
 type OwnServer = Bool
 
 newSMPClientAgent :: SParty p -> SMPClientAgentConfig -> Maybe DBService -> TVar ChaChaDRG -> IO (SMPClientAgent p)
-newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize} dbService randomDrg = do
+newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize, sessionPerConnectedServer} dbService randomDrg = do
   active <- newTVarIO True
   startedAt <- getCurrentTime
   -- Only subscribing agents receive server transmissions, should not be created until processed to prevent deadlock.
@@ -167,6 +176,9 @@ newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize
   agentQ <- newTBQueueIO agentQSize
   smpClients <- TM.emptyIO
   smpSessions <- TM.emptyIO
+  connectedServerSessions <- if sessionPerConnectedServer then Just <$> TM.emptyIO else pure Nothing
+  connectingClients <- newTVarIO 0
+  persistedErrors <- newTVarIO 0
   activeServiceSubs <- TM.emptyIO
   activeQueueSubs <- TM.emptyIO
   pendingServiceSubs <- TM.emptyIO
@@ -185,6 +197,9 @@ newSMPClientAgent agentParty agentCfg@SMPClientAgentConfig {msgQSize, agentQSize
         randomDrg,
         smpClients,
         smpSessions,
+        connectedServerSessions,
+        connectingClients,
+        persistedErrors,
         activeServiceSubs,
         activeQueueSubs,
         pendingServiceSubs,
@@ -204,7 +219,7 @@ getSMPServerClient' ca srv = snd <$> getSMPServerClient'' ca srv
 {-# INLINE getSMPServerClient' #-}
 
 getSMPServerClient'' :: SMPClientAgent p -> SMPServer -> ExceptT SMPClientError IO (OwnServer, SMPClient)
-getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, workerSeq} srv = do
+getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, connectedServerSessions, connectingClients, persistedErrors, workerSeq} srv = do
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq srv smpClients ts (ExceptT . newSMPClient) waitForSMPClient
   where
@@ -224,29 +239,54 @@ getSMPServerClient'' ca@SMPClientAgent {agentCfg, smpClients, smpSessions, worke
         Nothing -> throwE PCEResponseTimeout
 
     newSMPClient :: SMPClientVar -> IO (Either SMPClientError (OwnServer, SMPClient))
-    newSMPClient v = do
-      r <- connectClient ca srv v `E.catches` clientHandlers
+    newSMPClient v = withConnectSlot $ \slot -> E.mask $ \restore -> do
+      r <- if slot then restore (connectClient ca srv v) `E.catches` clientHandlers else pure $ Left PCEResponseTimeout
       case r of
         Right smp -> do
           logInfo . decodeUtf8 $ "Agent connected to " <> showServer srv
           let !owned = isOwnServer ca srv
               !c = (owned, smp)
-          atomically $ do
-            putTMVar (sessionVar v) (Right c)
-            TM.insert (sessionId $ thParams smp) c smpSessions
-          notify ca $ CAConnected srv $ smpClientServiceId smp
-          pure $ Right c
+          atomically (sharedSession smp c) >>= \case
+            Just c0 -> Right c0 <$ E.uninterruptibleMask_ (closeProtocolClient smp)
+            Nothing -> do
+              notify ca $ CAConnected srv $ smpClientServiceId smp
+              pure $ Right c
         Left e -> do
           let ei = persistErrorInterval agentCfg
-          if ei == 0
+          persisted <- if slot && ei > 0 then atomically $ takeSlot persistedErrors $ maxPersistedErrors agentCfg else pure False
+          if not persisted
             then atomically $ do
               putTMVar (sessionVar v) (Left (e, Nothing))
               removeSessVar v srv smpClients
             else do
               ts <- addUTCTime ei <$> liftIO getCurrentTime
               atomically $ putTMVar (sessionVar v) (Left (e, Just ts))
-          reconnectClient ca srv
+              let removeError = atomically $ removeSessVar v srv smpClients >> modifyTVar' persistedErrors (subtract 1)
+              void (forkIO $ restore (threadDelay' $ diffToMicroseconds ei) `E.finally` removeError) `E.onException` removeError
+          restore $ reconnectClient ca srv
           pure $ Left e
+      where
+        sharedSession :: SMPClient -> (OwnServer, SMPClient) -> STM (Maybe (OwnServer, SMPClient))
+        sharedSession smp c =
+          (pure connectedServerSessions $>>= TM.lookup (connectedServer smp) $>>= (`TM.lookup` smpSessions)) >>= \case
+            Just c0 -> Just c0 <$ putTMVar (sessionVar v) (Right c0)
+            Nothing -> do
+              putTMVar (sessionVar v) (Right c)
+              whenM (activeClientSession ca smp srv) $ do
+                TM.insert sessId c smpSessions
+                forM_ connectedServerSessions $ TM.insert (connectedServer smp) sessId
+              pure Nothing
+          where
+            sessId = sessionId $ thParams smp
+
+    withConnectSlot :: (Bool -> IO a) -> IO a
+    withConnectSlot =
+      E.bracket
+        (atomically $ takeSlot connectingClients $ fromMaybe maxBound $ maxConnectingClients agentCfg)
+        (`when` atomically (modifyTVar' connectingClients (subtract 1)))
+
+    takeSlot :: TVar Int -> Int -> STM Bool
+    takeSlot slots limit = stateTVar' slots $ \n -> if n < limit then (True, n + 1) else (False, n)
 
 isOwnServer :: SMPClientAgent p -> SMPServer -> OwnServer
 isOwnServer SMPClientAgent {agentCfg} ProtocolServer {host} =
@@ -280,6 +320,8 @@ connectClient ca@SMPClientAgent {agentCfg, dbService, smpClients, smpSessions, m
       qVar_ <- TM.lookupIO srv $ activeQueueSubs ca
       atomically $ do
         TM.delete sessId smpSessions
+        forM_ (connectedServerSessions ca) $ \ss ->
+          whenM ((Just sessId ==) <$> TM.lookup (connectedServer smp) ss) $ TM.delete (connectedServer smp) ss
         removeSessVar v srv smpClients
         sSub <- pure sVar_ $>>= updateServiceSub
         qSubs <- pure qVar_ $>>= updateQueueSubs

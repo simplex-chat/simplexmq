@@ -10,6 +10,7 @@
 module Simplex.Messaging.Transport.Client
   ( runTransportClient,
     runTLSTransportClient,
+    runTLSTransportClient',
     smpClientHandshake,
     defaultSMPPort,
     defaultTcpConnectTimeout,
@@ -164,14 +165,17 @@ data ConnectionHandle c
   | CHTransport (c 'TClient)
 
 runTLSTransportClient :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (c 'TClient -> IO a) -> IO a
-runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, clientALPN, useSNI} socksCreds host port keyHash client = do
+runTLSTransportClient tlsParams caStore_ cfg socksCreds host port keyHash = runTLSTransportClient' tlsParams caStore_ cfg socksCreds host port keyHash . const
+
+runTLSTransportClient' :: Transport c => T.Supported -> Maybe XS.CertificateStore -> TransportClientConfig -> Maybe SocksCredentials -> TransportHost -> ServiceName -> Maybe C.KeyHash -> (IO (TransportHost, ServiceName) -> c 'TClient -> IO a) -> IO a
+runTLSTransportClient' tlsParams caStore_ cfg@TransportClientConfig {socksProxy, tcpKeepAlive, clientCredentials, clientALPN, useSNI} socksCreds host port keyHash client = do
   serverCert <- newEmptyTMVarIO
   clientCredsSent <- newIORef False
   let hostName = B.unpack $ strEncode host
       clientParams = mkTLSClientParams tlsParams caStore_ hostName port keyHash clientCredentials clientCredsSent clientALPN useSNI serverCert
-      connectTCP = case socksProxy of
-        Just proxy -> connectSocksClient proxy socksCreds (hostAddr host)
-        _ -> connectTCPClient hostName
+      (connectTCP, connectedAddress) = case socksProxy of
+        Just proxy -> (connectSocksClient proxy socksCreds (hostAddr host), \_ -> pure (host, show $ socksPort port))
+        _ -> (connectTCPClient hostName, fmap peerAddress . getPeerName)
   h <- newIORef Nothing
   let set hc = (>>= \c -> writeIORef h (Just $ hc c) $> c)
   E.bracket (set CHSocket $ connectTCP port) (\_ -> closeConn h) $ \sock -> do
@@ -181,7 +185,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     tls <- set CHContext $ connectTLS (Just hostName) tCfg clientParams sock
     chain <- takePeerCertChain serverCert
     sent <- readIORef clientCredsSent
-    client =<< set CHTransport (getTransportConnection tCfg sent chain tls)
+    client (connectedAddress sock) =<< set CHTransport (getTransportConnection tCfg sent chain tls)
   where
     closeConn = readIORef >=> mapM_ (\c -> E.uninterruptibleMask_ $ closeConn_ c `catchAll_` pure ())
     closeConn_ = \case
@@ -193,6 +197,14 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
       THIPv6 addr -> SocksAddrIPV6 addr
       THOnionHost h -> SocksAddrDomainName h
       THDomainName h -> SocksAddrDomainName $ B.pack h
+    peerAddress = \case
+      SockAddrInet p addr -> (THIPv4 $ unifyLoopback $ hostAddressToTuple addr, show p)
+      SockAddrInet6 p _ (0, 0, 0xffff, addr) _ -> peerAddress $ SockAddrInet p $ toHostAddress $ toIPv4w addr
+      SockAddrInet6 p _ addr _ -> (THIPv6 addr, show p)
+      _ -> (host, port)
+    unifyLoopback = \case
+      (127, _, _, _) -> (127, 0, 0, 1)
+      addr -> addr
 
 connectTCPClient :: HostName -> ServiceName -> IO Socket
 connectTCPClient host port = withSocketsDo $ resolve >>= tryOpen err
@@ -222,10 +234,13 @@ defaultSMPPort = 5223
 
 connectSocksClient :: SocksProxy -> Maybe SocksCredentials -> SocksHostAddress -> ServiceName -> IO Socket
 connectSocksClient (SocksProxy addr) socksCreds hostAddr _port = do
-  let port = if null _port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe _port
+  let port = socksPort _port
   fst <$> case socksCreds of
     Just creds -> socksConnectAuth (defaultSocksConf addr) (SocksAddress hostAddr port) creds
     _ -> socksConnect (defaultSocksConf addr) (SocksAddress hostAddr port)
+
+socksPort :: ServiceName -> PortNumber
+socksPort port = if null port then defaultSMPPort else fromMaybe defaultSMPPort $ readMaybe port
 
 defaultSocksHost :: (Word8, Word8, Word8, Word8)
 defaultSocksHost = (127, 0, 0, 1)

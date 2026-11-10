@@ -30,7 +30,7 @@ module Simplex.Messaging.Client
   ( -- * Connect (disconnect) client to (from) SMP server
     TransportSession,
     SMPTransportSession,
-    ProtocolClient (thParams, sessionTs),
+    ProtocolClient (thParams, sessionTs, connectedServer),
     SMPClient,
     ProxiedRelay (..),
     getProtocolClient,
@@ -171,7 +171,7 @@ import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
-import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTransportClient)
+import Simplex.Messaging.Transport.Client (SocksAuth (..), SocksProxyWithAuth (..), TransportClientConfig (..), TransportHost (..), defaultSMPPort, runTLSTransportClient')
 import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts, x509validate)
@@ -187,6 +187,7 @@ data ProtocolClient v err msg = ProtocolClient
   { action :: Maybe (Weak ThreadId),
     thParams :: THandleParams v 'TClient,
     sessionTs :: UTCTime,
+    connectedServer :: ProtoServer msg,
     client_ :: PClient v err msg
   }
 
@@ -210,6 +211,7 @@ data PClient v err msg = PClient
 smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
+      srv = "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001"
   connected <- newTVarIO False
   clientCorrId <- atomically $ C.newRandomDRG g
   sentCommands <- TM.emptyIO
@@ -235,10 +237,11 @@ smpClientStub g sessionId thVersion thAuth = do
               serverInfo = Nothing
             },
         sessionTs = ts,
+        connectedServer = srv,
         client_ =
           PClient
             { connected,
-              transportSession = (1, "smp://LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI=@localhost:5001", Nothing),
+              transportSession = (1, srv, Nothing),
               transportHost = "localhost",
               tcpConnectTimeout,
               tcpTimeout,
@@ -616,7 +619,7 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       let tcConfig = (transportClientConfig networkConfig nm useHost useSNI useALPN) {clientCredentials = serviceCreds <$> serviceCredentials}
           socksCreds = clientSocksCredentials networkConfig proxySessTs transportSession
       tId <-
-        restore (runTransportClient tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar))
+        restore (runTLSTransportClient' defaultSupportedParams Nothing tcConfig socksCreds useHost port' (Just $ keyHash srv) (client t c cVar))
           `forkFinally` \r ->
             let err = either toNetworkError (const NEFailedError) r
              in void $ atomically $ tryPutTMVar cVar $ Left $ PCENetworkError err
@@ -638,15 +641,16 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
 
     web = useWebPort networkConfig presetDomains srv
 
-    client :: forall c. Transport c => TProxy c 'TClient -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> c 'TClient -> IO ()
-    client _ c cVar h = do
+    client :: forall c. Transport c => TProxy c 'TClient -> PClient v err msg -> TMVar (Either (ProtocolClientError err) (ProtocolClient v err msg)) -> IO (TransportHost, ServiceName) -> c 'TClient -> IO ()
+    client _ c cVar connectedAddress h = do
       ks <- if agreeSecret then Just <$> atomically (C.generateKeyPair g) else pure Nothing
       serviceKeys_ <- mapM (\creds -> (creds,) <$> atomically (C.generateKeyPair g)) serviceCredentials
       runExceptT (protocolClientHandshake @v @err @msg h ks (keyHash srv) serverVRange proxyServer serviceKeys_) >>= \case
         Left e -> atomically . putTMVar cVar . Left $ PCETransportError e
         Right th@THandle {params} -> do
           sessionTs <- getCurrentTime
-          let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs}
+          connectedServer <- if proxyServer then (\(connectedHost, connectedPort) -> srv {host = [connectedHost], port = connectedPort}) <$> connectedAddress else pure srv
+          let c' = ProtocolClient {action = Nothing, client_ = c, thParams = params, sessionTs, connectedServer}
           atomically $ writeTVar (lastReceived c) sessionTs
           atomically $ do
             writeTVar (connected c) True
