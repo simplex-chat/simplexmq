@@ -1065,7 +1065,7 @@ runClientTransport processSubs h@THandle {params = thParams@THandleParams {sessi
         expCfg <- asks $ inactiveClientExpiration . config
         th <- newMVar h -- put TH under a fair lock to interleave messages and command responses
         labelMyThread . B.unpack $ "client $" <> encode sessionId
-        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, client processSubs s ms c, receive h ms c] <> disconnectThread_ c s expCfg
+        raceAny_ $ [liftIO $ send th c, liftIO $ sendMsg th c, liftIO $ sendDelayed c, client processSubs s ms c, receive h ms c] <> disconnectThread_ c s expCfg
     disconnectThread_ :: Client s -> Server s -> Maybe ExpirationConfig -> [M s ()]
     disconnectThread_ c s (Just expCfg) = [liftIO $ disconnectTransport h (rcvActiveAt c) (sndActiveAt c) expCfg (noSubscriptions c s)]
     disconnectThread_ _ _ _ = []
@@ -1191,14 +1191,23 @@ sendResponses c@Client {sndQ} stats authDelay since rs@(ts, _)
   | otherwise = atomically $ writeTBQueue sndQ rs
 
 sendAfterDelay :: Client s -> ServerStats -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
-sendAfterDelay c@Client {sndQ, clientTHParams = THandleParams {sessionId}} stats delay since rs
+sendAfterDelay Client {sndQ, delayedQ} stats delay since rs
   | delay > 0 = do
       elapsed <- subtract (microseconds since) . microseconds <$> getSystemTime
       when (elapsed >= delay) $ incStat $ authDelayExceeded stats
-      forkClient c (B.unpack $ "client $" <> encode sessionId <> " auth") $ threadDelay' (delay - elapsed `mod` delay) >> write
+      due <- registerDelay $ fromIntegral $ delay - elapsed `mod` delay
+      atomically $ writeTBQueue delayedQ (due, rs)
   | otherwise = write
   where
     write = atomically $ writeTBQueue sndQ rs
+
+sendDelayed :: Client s -> IO ()
+sendDelayed Client {sndQ, delayedQ, clientTHParams = THandleParams {sessionId}} = do
+  labelMyThread . B.unpack $ "client $" <> encode sessionId <> " auth"
+  forever $ do
+    (due, rs) <- atomically $ readTBQueue delayedQ
+    atomically $ unlessM (readTVar due) retry
+    atomically $ writeTBQueue sndQ rs
 
 updateSlotWaitStats :: ServerStats -> SystemTime -> Bool -> IO ()
 updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, cmdSlotWaitTimeouts} since taken = do
