@@ -1395,12 +1395,27 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
+forwardWorker :: Client s -> EntityId -> M s (TBQueue (M s ()))
+forwardWorker c@Client {fwdWorkers, clientTHParams = THandleParams {sessionId}} (EntityId eId) = do
+  n <- asks $ serverForwardWorkers . config
+  let i = hash eId `mod` n
+  IM.lookup i <$> readTVarIO fwdWorkers >>= \case
+    Just q -> pure q
+    Nothing -> do
+      q <- newTBQueueIO =<< asks (tbqSize . config)
+      atomically $ modifyTVar' fwdWorkers $ IM.insert i q
+      forkClient c (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
+        forever $ do
+          cmd <- atomically $ readTBQueue q
+          cmd `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
+      pure q
+
 client :: forall s. MsgStoreClass s => (Client s -> ClientSub -> IO (), Client s -> ClientSub -> IO ()) -> Server s -> s -> Client s -> M s ()
 client
   (processSub, processNtfSub)
   Server {subscribers}
   ms
-  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, fwdWorkers} = do
+  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -1611,23 +1626,6 @@ client
           when free $ writeTVar procThreads $! used + 1
           pure free
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    forwardToWorker :: EntityId -> M s () -> M s ()
-    forwardToWorker (EntityId eId) action = do
-      n <- asks $ serverForwardWorkers . config
-      q <- forwardWorker $ hash eId `mod` n
-      atomically $ writeTBQueue q action
-    forwardWorker :: Int -> M s (TBQueue (M s ()))
-    forwardWorker i =
-      IM.lookup i <$> readTVarIO fwdWorkers >>= \case
-        Just q -> pure q
-        Nothing -> do
-          q <- newTBQueueIO =<< asks (tbqSize . config)
-          atomically $ modifyTVar' fwdWorkers $ IM.insert i q
-          forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
-            forever $ do
-              cmd <- atomically $ readTBQueue q
-              cmd `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
-          pure q
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
       st <- asks (rslvStats . serverStats)
@@ -2240,7 +2238,8 @@ client
           case t' of
             Right (_, _, (_, _, Cmd SResolver _)) -> forwarded
             Right (_, _, (_, entId', _)) -> do
-              lift $ forwardToWorker entId' $ do
+              q <- lift $ forwardWorker clnt entId'
+              atomically $ writeTBQueue q $ do
                 rres_ <- either (Just . ERR) id <$> runExceptT forwarded
                 forM_ rres_ $ \rres -> atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
               pure Nothing
