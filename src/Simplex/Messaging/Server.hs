@@ -1625,7 +1625,9 @@ client
           q <- newTBQueueIO =<< asks (tbqSize . config)
           atomically $ modifyTVar' fwdWorkers $ IM.insert i q
           forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
-            liftIO $ forever $ join (atomically $ readTBQueue q) `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
+            liftIO $ forever $ do
+              cmd <- atomically $ readTBQueue q
+              cmd `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
           pure q
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
@@ -2212,7 +2214,6 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-              sendForwarded r = atomically $ writeTBQueue sndQ ([(corrId, NoEntity, r)], [])
               forwarded = do
                 -- the inner response, or Nothing if forked (RSLV).
                 r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
@@ -2239,7 +2240,11 @@ client
                   rres_ -> pure rres_
           case t' of
             Right (_, _, (_, _, Cmd SResolver _)) -> forwarded
-            Right (_, _, (_, entId', _)) -> Nothing <$ lift (forwardToWorker entId' $ runExceptT forwarded >>= mapM_ sendForwarded . either (Just . ERR) id)
+            Right (_, _, (_, entId', _)) -> do
+              lift $ forwardToWorker entId' $ do
+                rres_ <- either (Just . ERR) id <$> runExceptT forwarded
+                forM_ rres_ $ \rres -> atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+              pure Nothing
             Left _ -> forwarded
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
