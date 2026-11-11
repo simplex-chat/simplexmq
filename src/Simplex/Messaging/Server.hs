@@ -2229,18 +2229,18 @@ client
           -- the inner response, or Nothing if forked (RSLV) or queued to a worker.
           r_ <- case t' of
             Left (corrId', entId', e) -> pure $ Just (corrId', entId', ERR e)
-            Right t@(_, _, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> do
-                  let sendResolved msg = do
-                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
-                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-              Cmd SSender _ -> lift $ processInWorker t
-              Cmd SSenderLink _ -> lift $ processInWorker t
-              _ -> pure $ Just (corrId', entId', ERR $ CMD PROHIBITED)
+            Right t@(_, _, (corrId', entId', Cmd p cmd)) -> case forwardParty p of
+              Just Dict -> case cmd of
+                RSLV d -> lift $ rslvNamesEnv >>= \case
+                  Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
+                  Just nenv -> do
+                    let sendResolved msg = do
+                          rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                          atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                    forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
+                      resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
+                _ -> lift $ processInWorker t
+              Nothing -> pure $ Just (corrId', entId', ERR $ CMD PROHIBITED)
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           traverse encodeResp r_
