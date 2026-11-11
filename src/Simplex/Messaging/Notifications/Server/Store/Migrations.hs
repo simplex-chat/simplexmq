@@ -18,7 +18,8 @@ ntfServerSchemaMigrations =
   [ ("20250417_initial", m20250417_initial, Nothing),
     ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
     ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash),
-    ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server)
+    ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server),
+    ("20261111_subscriptions_uncommon_status", m20261111_subscriptions_uncommon_status, Just down_m20261111_subscriptions_uncommon_status)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -249,6 +250,18 @@ ALTER TABLE smp_servers
   DROP COLUMN ntf_service_priv_key;
   |]
   <> resetNtfServices
+
+m20261111_subscriptions_uncommon_status :: Text
+m20261111_subscriptions_uncommon_status =
+  [r|
+CREATE INDEX idx_subscriptions_uncommon_status ON subscriptions(status) WHERE status NOT IN ('ACTIVE', 'DELETED', 'AUTH');
+  |]
+
+down_m20261111_subscriptions_uncommon_status :: Text
+down_m20261111_subscriptions_uncommon_status =
+  [r|
+DROP INDEX idx_subscriptions_uncommon_status;
+  |]
 
 resetNtfServices :: Text
 resetNtfServices =

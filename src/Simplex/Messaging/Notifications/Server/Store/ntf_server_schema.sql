@@ -270,6 +270,10 @@ CREATE INDEX idx_subscriptions_token_id ON ntf_server.subscriptions USING btree 
 
 
 
+CREATE INDEX idx_subscriptions_uncommon_status ON ntf_server.subscriptions USING btree (status) WHERE (status <> ALL (ARRAY['ACTIVE'::text, 'DELETED'::text, 'AUTH'::text]));
+
+
+
 CREATE UNIQUE INDEX idx_tokens_push_provider_token ON ntf_server.tokens USING btree (push_provider, push_provider_token, verify_key);
 
 
