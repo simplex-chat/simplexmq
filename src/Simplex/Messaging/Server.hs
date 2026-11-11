@@ -1615,9 +1615,8 @@ client
     forwardToWorker (EntityId eId) action = do
       n <- asks $ serverForwardWorkers . config
       q <- forwardWorker $ hash eId `mod` n
-      run <- askRunInIO
-      atomically $ writeTBQueue q $ run action
-    forwardWorker :: Int -> M s (TBQueue (IO ()))
+      atomically $ writeTBQueue q action
+    forwardWorker :: Int -> M s (TBQueue (M s ()))
     forwardWorker i =
       IM.lookup i <$> readTVarIO fwdWorkers >>= \case
         Just q -> pure q
@@ -1625,7 +1624,7 @@ client
           q <- newTBQueueIO =<< asks (tbqSize . config)
           atomically $ modifyTVar' fwdWorkers $ IM.insert i q
           forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
-            liftIO $ forever $ do
+            forever $ do
               cmd <- atomically $ readTBQueue q
               cmd `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
           pure q

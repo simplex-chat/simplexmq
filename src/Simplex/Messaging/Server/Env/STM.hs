@@ -81,6 +81,7 @@ where
 import Control.Concurrent (ThreadId)
 import Control.Logger.Simple
 import Control.Monad
+import Control.Monad.Reader (ReaderT)
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
 import Data.Int (Int64)
@@ -438,7 +439,7 @@ data Client s = Client
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
-    fwdWorkers :: TVar (IntMap (TBQueue (IO ()))),
+    fwdWorkers :: TVar (IntMap (TBQueue (ReaderT (Env s) IO ()))),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     clientTHParams :: THandleParams SMPVersion 'TServer,
