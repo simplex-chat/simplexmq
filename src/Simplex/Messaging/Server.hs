@@ -2210,25 +2210,14 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-          -- the inner response, or Nothing if forked (RSLV) or queued to a worker.
-          r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
-            -- rejectOrVerify filters allowed commands, no need to repeat it here.
-            Left r -> pure $ Just r
-            Right t''@(_, (corrId', entId', cmd')) -> case cmd' of
-              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
-                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
-                Just nenv -> do
-                  let sendResolved msg = do
-                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
-                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
-                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-              -- INTERNAL because processCommand never returns Nothing for sender commands;
-              -- `fst` drops the empty message only returned for SUB.
-              _ -> lift $ do
+              processInWorker t@(_, _, t''@(corrId', entId', _)) = do
                 q <- forwardWorker clnt entId'
                 atomically $ writeTBQueue q $ do
-                  r <- maybe (corrId', entId', ERR INTERNAL) fst <$> processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) t''
+                  r <- liftIO (verifyTransmission ms Nothing clntThAuth t) >>= \case
+                    -- INTERNAL because processCommand never returns Nothing for sender commands;
+                    -- `fst` drops the empty message only returned for SUB.
+                    VRVerified q_ -> maybe (corrId', entId', ERR INTERNAL) fst <$> processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) (q_, t'')
+                    VRFailed e -> pure (corrId', entId', ERR e)
                   rres <- either ERR id <$> runExceptT (encodeResp r)
                   stats <- asks serverStats
                   authDelay <- asks $ authErrorDelay . config
@@ -2237,31 +2226,24 @@ client
                       then sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
                       else atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
                 pure Nothing
+          -- the inner response, or Nothing if forked (RSLV) or queued to a worker.
+          r_ <- case t' of
+            Left (corrId', entId', e) -> pure $ Just (corrId', entId', ERR e)
+            Right t@(_, _, (corrId', entId', cmd')) -> case cmd' of
+              Cmd SResolver (RSLV d) -> lift $ rslvNamesEnv >>= \case
+                Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
+                Just nenv -> do
+                  let sendResolved msg = do
+                        rres <- either ERR id <$> runExceptT (encodeResp (corrId', entId', msg))
+                        atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                  forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
+                    resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
+              Cmd SSender _ -> lift $ processInWorker t
+              Cmd SSenderLink _ -> lift $ processInWorker t
+              _ -> pure $ Just (corrId', entId', ERR $ CMD PROHIBITED)
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
-          traverse encodeResp r_ >>= \case
-            Just rres | any isAuthError r_ -> do
-              authDelay <- asks $ authErrorDelay . config
-              Nothing <$ liftIO (sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], []))
-            rres_ -> pure rres_
-          where
-            rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
-            rejectOrVerify clntThAuth = \case
-              Left (corrId', entId', e) -> pure $ Left (corrId', entId', ERR e)
-              Right t'@(_, _, t''@(corrId', entId', cmd'))
-                | allowed -> liftIO $ verified <$> verifyTransmission ms Nothing clntThAuth t'
-                | otherwise -> pure $ Left (corrId', entId', ERR $ CMD PROHIBITED)
-                where
-                  allowed = case cmd' of
-                    Cmd SSender SEND {} -> True
-                    Cmd SSender (SKEY _) -> True
-                    Cmd SSenderLink (LKEY _) -> True
-                    Cmd SSenderLink LGET -> True
-                    Cmd SResolver (RSLV _) -> True
-                    _ -> False
-                  verified = \case
-                    VRVerified q -> Right (q, t'')
-                    VRFailed e -> Left (corrId', entId', ERR e)
+          traverse encodeResp r_
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
         encryptMsg qr msg = encrypt . encodeRcvMsgBody $ case msg of
