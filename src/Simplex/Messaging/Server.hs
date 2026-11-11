@@ -2210,25 +2210,10 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-              processInWorker t@(_, _, t''@(corrId', entId', _)) = do
-                q <- forwardWorker clnt entId'
-                atomically $ writeTBQueue q $ do
-                  r <- liftIO (verifyTransmission ms Nothing clntThAuth t) >>= \case
-                    -- INTERNAL because processCommand never returns Nothing for sender commands;
-                    -- `fst` drops the empty message only returned for SUB.
-                    VRVerified q_ -> maybe (corrId', entId', ERR INTERNAL) fst <$> processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) (q_, t'')
-                    VRFailed e -> pure (corrId', entId', ERR e)
-                  rres <- either ERR id <$> runExceptT (encodeResp r)
-                  stats <- asks serverStats
-                  authDelay <- asks $ authErrorDelay . config
-                  liftIO $
-                    if isAuthError r
-                      then sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
-                      else atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
           -- the inner response, or Nothing if forked (RSLV) or queued to a worker.
           r_ <- case t' of
             Left (corrId', entId', e) -> pure $ Just (corrId', entId', ERR e)
-            Right t@(_, _, (corrId', entId', Cmd p cmd)) -> case forwardParty p of
+            Right t@(_, _, t''@(corrId', entId', Cmd p cmd)) -> case forwardParty p of
               Just Dict -> case cmd of
                 RSLV d -> lift $ rslvNamesEnv >>= \case
                   Nothing -> pure $ Just (corrId', entId', ERR (NAME NO_RESOLVER))
@@ -2238,7 +2223,22 @@ client
                           atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
                     forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
                       resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-                _ -> Nothing <$ lift (processInWorker t)
+                _ -> lift $ do
+                  q <- forwardWorker clnt entId'
+                  atomically $ writeTBQueue q $ do
+                    r <- liftIO (verifyTransmission ms Nothing clntThAuth t) >>= \case
+                      -- INTERNAL because processCommand never returns Nothing for sender commands;
+                      -- `fst` drops the empty message only returned for SUB.
+                      VRVerified q_ -> maybe (corrId', entId', ERR INTERNAL) fst <$> processCommand Nothing (Right (M.empty, M.empty, M.empty, M.empty)) (q_, t'')
+                      VRFailed e -> pure (corrId', entId', ERR e)
+                    rres <- either ERR id <$> runExceptT (encodeResp r)
+                    stats <- asks serverStats
+                    authDelay <- asks $ authErrorDelay . config
+                    liftIO $
+                      if isAuthError r
+                        then sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
+                        else atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                  pure Nothing
               Nothing -> pure $ Just (corrId', entId', ERR $ CMD PROHIBITED)
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
