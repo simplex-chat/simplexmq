@@ -1394,27 +1394,12 @@ forkClient Client {endThreads, endThreadSeq} label action = do
     action `finally` atomically (modifyTVar' endThreads $ IM.delete tId)
   mkWeakThreadId t >>= atomically . modifyTVar' endThreads . IM.insert tId
 
-forwardWorker :: Client s -> EntityId -> M s (TBQueue (M s ()))
-forwardWorker c@Client {fwdWorkers, clientTHParams = THandleParams {sessionId}} (EntityId eId) = do
-  n <- asks $ serverForwardWorkers . config
-  let i = hash eId `mod` n
-  IM.lookup i <$> readTVarIO fwdWorkers >>= \case
-    Just q -> pure q
-    Nothing -> do
-      q <- newTBQueueIO =<< asks (tbqSize . config)
-      atomically $ modifyTVar' fwdWorkers $ IM.insert i q
-      forkClient c (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
-        forever $ do
-          cmd <- atomically $ readTBQueue q
-          cmd `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
-      pure q
-
 client :: forall s. MsgStoreClass s => (Client s -> ClientSub -> IO (), Client s -> ClientSub -> IO ()) -> Server s -> s -> Client s -> M s ()
 client
   (processSub, processNtfSub)
   Server {subscribers}
   ms
-  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads} = do
+  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, fwdWorkers} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -2224,7 +2209,7 @@ client
                     forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
                       resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
                 _ -> lift $ do
-                  q <- forwardWorker clnt entId'
+                  q <- forwardWorker entId'
                   atomically $ writeTBQueue q $ do
                     r <- liftIO (verifyTransmission ms Nothing clntThAuth t) >>= \case
                       -- INTERNAL because processCommand never returns Nothing for sender commands;
@@ -2243,6 +2228,21 @@ client
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
           traverse encodeResp r_
+          where
+            forwardWorker :: EntityId -> M s (TBQueue (M s ()))
+            forwardWorker (EntityId eId) = do
+              n <- asks $ serverForwardWorkers . config
+              let i = hash eId `mod` n
+              IM.lookup i <$> readTVarIO fwdWorkers >>= \case
+                Just q -> pure q
+                Nothing -> do
+                  q <- newTBQueueIO =<< asks (tbqSize . config)
+                  atomically $ modifyTVar' fwdWorkers $ IM.insert i q
+                  forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
+                    forever $ do
+                      cmd <- atomically $ readTBQueue q
+                      cmd `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
+                  pure q
 
         encryptMsg :: QueueRec -> Message -> RcvMessage
         encryptMsg qr msg = encrypt . encodeRcvMsgBody $ case msg of
