@@ -26,6 +26,7 @@ module Simplex.Messaging.Server.Env.STM
     StorePaths (..),
     StartOptions (..),
     Env (..),
+    M,
     Server (..),
     ServerSubscribers (..),
     SubscribedClients,
@@ -280,6 +281,8 @@ data Env s = Env
     namesEnv :: Maybe NamesEnv -- public-namespace resolver, present when [NAMES] enable: on
   }
 
+type M s a = ReaderT (Env s) IO a
+
 msgStore :: Env s -> s
 msgStore = fromMsgStore . msgStore_
 {-# INLINE msgStore #-}
@@ -439,7 +442,7 @@ data Client s = Client
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
-    fwdWorkers :: TVar (IntMap (TBQueue (ReaderT (Env s) IO ()))),
+    fwdWorkers :: TVar (IntMap (TBQueue (M s ()))),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     clientTHParams :: THandleParams SMPVersion 'TServer,

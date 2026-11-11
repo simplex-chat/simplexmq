@@ -161,7 +161,6 @@ runSMPServer cfg attachHTTP_ = do
 runSMPServerBlocking :: MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe AttachHTTP -> IO ()
 runSMPServerBlocking started cfg attachHTTP_ = newEnv cfg >>= runReaderT (smpServer started cfg attachHTTP_)
 
-type M s a = ReaderT (Env s) IO a
 type AttachHTTP = Socket -> TLS.Context -> IO ()
 
 -- actions used in processClientSub to reduce STM transaction scope
