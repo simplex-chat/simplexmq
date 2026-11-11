@@ -56,7 +56,7 @@ import Database.PostgreSQL.Simple (Binary (..), Only (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Types (Query (..))
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
-import Simplex.Messaging.Server.Env.STM (defaultSenderWorkers)
+import Simplex.Messaging.Server.Env.STM (defaultForwardWorkers)
 #endif
 
 smpProxyTests :: SpecWith AStoreType
@@ -525,18 +525,10 @@ testForwardedAuthErrorDelay =
 #if defined(dbServerPostgres)
 smpProxyPostgresTests :: Spec
 smpProxyPostgresTests =
-  describe "relay processes messages to other queues while one queue is locked" $ do
-    it "forwarded messages" $ testQueueLocked $ \_ -> do
-      g <- C.newRandom
-      ts <- getCurrentTime
-      pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
-      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
-      pure $ \sId -> runExceptT' (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hello") >>= either (fail . show) pure
-    it "direct messages" $ testQueueLocked $ \rc ->
-      pure $ \sId -> runExceptT' $ sendSMPMessage rc NRMInteractive Nothing sId noMsgFlags "hello"
+  it "relay processes forwarded messages to other queues while one queue is locked" testForwardedQueueLocked
 
-testQueueLocked :: HasTestEnv => (SMPClient -> IO (SMP.SenderId -> IO ())) -> IO ()
-testQueueLocked mkSend =
+testForwardedQueueLocked :: HasTestEnv => IO ()
+testForwardedQueueLocked =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
     withSmpServerConfigOn (transport @TLS) (cfgS2QS SQSPostgres) testPort2 $ \_ -> do
       g <- C.newRandom
@@ -547,25 +539,27 @@ testQueueLocked mkSend =
             (rdhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
             SMP.QIK {rcvId, sndId} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rPriv) rdhPub Nothing SMOnlyCreate (QRMessaging Nothing) Nothing
             pure (rcvId, sndId)
-          queueWorker (SMP.EntityId sId) = hash sId `mod` defaultSenderWorkers
+          queueWorker (SMP.EntityId sId) = hash sId `mod` defaultForwardWorkers
       (SMP.EntityId rIdA, sIdA) <- newQueue
       let newQueueB = newQueue >>= \(_, sId) -> if queueWorker sId == queueWorker sIdA then newQueueB else pure sId
       sIdB <- newQueueB
-      send <- mkSend rc
+      pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      let proxySend sId = runExceptT' $ proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hello"
       withPostgres $ \locker -> withPostgres $ \db -> do
         PSQL.begin locker
         [Only (1 :: Int)] <- PSQL.query locker "SELECT 1 FROM msg_queues WHERE recipient_id = ? FOR UPDATE" (Only $ Binary rIdA)
         [Only (lockerPid :: Int)] <- PSQL.query_ locker "SELECT pg_backend_pid()"
-        withAsync (send sIdA) $ \sendA -> do
+        withAsync (proxySend sIdA) $ \sendA -> do
           let waitBlocked =
                 PSQL.query db "SELECT count(*) FROM pg_locks WHERE NOT granted AND ? = ANY(pg_blocking_pids(pid))" (Only lockerPid) >>= \case
                   [Only (n :: Int64)] | n > 0 -> pure ()
                   _ -> threadDelay 10000 >> waitBlocked
           timeout 10000000 waitBlocked `shouldReturn` Just ()
-          timeout 10000000 (send sIdB) `shouldReturn` Just ()
+          timeout 10000000 (proxySend sIdB) `shouldReturn` Just (Right ())
           Nothing <- poll sendA
           PSQL.rollback locker
-          wait sendA
+          wait sendA `shouldReturn` Right ()
   where
     withPostgres = bracket connectPostgres PSQL.close
     connectPostgres = do

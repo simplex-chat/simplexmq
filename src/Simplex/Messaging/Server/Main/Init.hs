@@ -132,9 +132,6 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> "log_tls_errors = off\n\n\
         \# Minimum time to respond with AUTH error, milliseconds.\n"
     <> ("# auth_error_delay_ms = " <> tshow defaultAuthErrorDelayMs <> "\n\n")
-    <> "# Number of workers processing messages and other sender commands, direct and forwarded.\n\
-        \# Commands with the same queue ID are processed by one worker, in the order they are received.\n"
-    <> ("# sender_workers = " <> tshow defaultSenderWorkers <> "\n\n")
     <> "# Use `websockets = 443` to run websockets server in addition to plain TLS.\n\
         \# This option is deprecated and should be used for testing only.\n\
         \# , port 443 should be specified in port above\n\
@@ -159,6 +156,10 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# socks_mode = onion\n\n\
         \# Limit number of threads a client can spawn to process proxy commands and name resolutions in parallel.\n"
     <> ("# client_concurrency = " <> tshow defaultProxyClientConcurrency)
+    <> "\n\n\
+        \# Number of workers processing messages that one proxy server forwards to this server.\n\
+        \# Messages to one queue are processed by one worker, in the order they are received.\n"
+    <> ("# forward_workers = " <> tshow defaultForwardWorkers)
     <> "\n\n\
         \[NAMES]\n\
         \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
