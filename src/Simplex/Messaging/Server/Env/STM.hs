@@ -67,7 +67,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
-    defaultForwardWorkers,
+    defaultSenderWorkers,
     defaultMaxClientCmdWait,
     defaultAuthErrorDelayMs,
     readWriteQueueStore,
@@ -199,7 +199,7 @@ data ServerConfig s = ServerConfig
     -- aggregate over a single proxy->relay connection (only servers send proxied
     -- requests), so bounding them by the per-client limit would throttle unduly.
     serverResolverConcurrency :: Int,
-    serverForwardWorkers :: Int,
+    serverSenderWorkers :: Int,
     maxClientCmdWait :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
@@ -249,8 +249,8 @@ defaultProxyClientConcurrency = 500
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 5000
 
-defaultForwardWorkers :: Int
-defaultForwardWorkers = 8
+defaultSenderWorkers :: Int
+defaultSenderWorkers = 8
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds
@@ -276,7 +276,8 @@ data Env s = Env
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
     proxyAgent :: ProxyAgent, -- senders served on this proxy
-    namesEnv :: Maybe NamesEnv -- public-namespace resolver, present when [NAMES] enable: on
+    namesEnv :: Maybe NamesEnv, -- public-namespace resolver, present when [NAMES] enable: on
+    senderWorkers :: [TQueue (IO ())]
   }
 
 msgStore :: Env s -> s
@@ -438,7 +439,8 @@ data Client s = Client
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
     procThreads :: TVar Int,
-    fwdWorkers :: TVar (IntMap (TBQueue (IO ()))),
+    workerCmds :: TVar Int,
+    workerResps :: TQueue (Maybe SystemTime, Transmission BrokerMsg),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
     clientTHParams :: THandleParams SMPVersion 'TServer,
@@ -511,7 +513,8 @@ newClient clientId qSize clientTHParams createdAt = do
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
-  fwdWorkers <- newTVarIO IM.empty
+  workerCmds <- newTVarIO 0
+  workerResps <- newTQueueIO
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
   connected <- newTVarIO True
@@ -530,7 +533,8 @@ newClient clientId qSize clientTHParams createdAt = do
         sndQ,
         msgQ,
         procThreads,
-        fwdWorkers,
+        workerCmds,
+        workerResps,
         endThreads,
         endThreadSeq,
         clientTHParams,
@@ -552,9 +556,12 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes, serverSenderWorkers} = do
   when (msgIdBytes < 24) $ do
     logError "Error: msgIdBytes must be at least 24"
+    exitFailure
+  when (serverSenderWorkers < 1) $ do
+    logError "Error: sender_workers must be at least 1"
     exitFailure
   serverActive <- newTVarIO True
   server <- newServer
@@ -592,6 +599,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
       Right _ -> logInfo "[NAMES] endpoint probe ok"
       Left e -> logWarn $ "[NAMES] endpoint probe failed (server will still start, RSLV will return ERR (NAME ...) until reachable): " <> tshow e
     pure env
+  senderWorkers <- replicateM serverSenderWorkers newTQueueIO
   pure
     Env
       { serverActive,
@@ -608,7 +616,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         sockets,
         clientSeq,
         proxyAgent,
-        namesEnv
+        namesEnv,
+        senderWorkers
       }
   where
     loadStoreLog :: StoreQueueClass q => (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO ()

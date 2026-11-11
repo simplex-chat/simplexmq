@@ -176,6 +176,7 @@ smpServer :: forall s. MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe 
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
   s <- asks server
   pa <- asks proxyAgent
+  ws <- asks senderWorkers
   msgStats_ <- processServerMessages startOptions
   ntfStats <- restoreServerNtfs
   liftIO $ mapM_ (printMessageStats "messages") msgStats_
@@ -192,6 +193,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         : expireNtfsThread cfg
         : sigIntHandlerThread
         : map runServer transports
+            <> zipWith senderWorker [0 ..] ws
             <> expireMessagesThread_ cfg
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
@@ -217,6 +219,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
         _ ->
           runTransportServerState ss started tcpPort defaultSupportedParams smpCreds tCfg $ \h -> runClient srvCert srvSignKey t h `runReaderT` env
+
+    senderWorker :: Int -> TQueue (IO ()) -> M s ()
+    senderWorker i q = do
+      labelMyThread $ "sender worker " <> show i
+      liftIO $ forever $ join (atomically $ readTQueue q) `catchAny` \e -> logError $ "sender worker error: " <> tshow e
 
     sigIntHandlerThread :: M s ()
     sigIntHandlerThread = do
@@ -1186,6 +1193,12 @@ isAuthError (_, _, r) = case r of
   ERR AUTH -> True
   _ -> False
 
+senderCommand :: Cmd -> Bool
+senderCommand (Cmd p _) = case p of
+  SSender -> True
+  SSenderLink -> True
+  _ -> False
+
 sendResponses :: Client s -> ServerStats -> Int64 -> SystemTime -> (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]) -> IO ()
 sendResponses c@Client {sndQ} stats authDelay since rs@(ts, _)
   | any isAuthError ts = sendAfterDelay c stats authDelay since rs
@@ -1400,7 +1413,7 @@ client
   (processSub, processNtfSub)
   Server {subscribers}
   ms
-  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, fwdWorkers} = do
+  clnt@Client {rcvQ, sndQ, msgQ, clientTHParams = thParams'@THandleParams {sessionId}, procThreads, workerCmds, workerResps, connected} = do
     labelMyThread . B.unpack $ "client $" <> encode sessionId <> " commands"
     stats <- asks serverStats
     authDelay <- asks $ authErrorDelay . config
@@ -1408,12 +1421,18 @@ client
         process batchSubs t acc@(rs, msgs) =
           (maybe acc (\(!r, !msg_) -> (r : rs, maybe msgs (: msgs) msg_)))
             <$> processCommand clntServiceId batchSubs t
-    forever $ do
-      batch <- atomically (readTBQueue rcvQ)
-      processedAt <- liftIO getSystemTime
-      batchSubs <- prepareBatchSubs clntServiceId batch
-      foldrM (process batchSubs) ([], []) batch
-        >>= \(rs_, msgs) -> mapM_ (liftIO . sendResponses clnt stats authDelay processedAt . (,msgs)) (L.nonEmpty rs_)
+    forever $
+      atomically ((Left <$> readTQueue workerResps) `orElse` (Right <$> readTBQueue rcvQ)) >>= \case
+        Left (authSince_, r) -> liftIO $ maybe (atomically . writeTBQueue sndQ) (sendAfterDelay clnt stats authDelay) authSince_ ([r], [])
+        Right batch -> do
+          processedAt <- liftIO getSystemTime
+          batchSubs <- prepareBatchSubs clntServiceId batch
+          case batch of
+            t@(_, (_, entId, cmd)) :| []
+              | senderCommand cmd -> toWorker processedAt entId $ fst <$$> processCommand clntServiceId batchSubs t
+            _ ->
+              foldrM (process batchSubs) ([], []) batch
+                >>= \(rs_, msgs) -> mapM_ (liftIO . sendResponses clnt stats authDelay processedAt . (,msgs)) (L.nonEmpty rs_)
   where
     prepareBatchSubs ::
       Maybe ServiceId ->
@@ -1611,22 +1630,19 @@ client
           when free $ writeTVar procThreads $! used + 1
           pure free
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
-    forwardToWorker :: EntityId -> M s () -> M s ()
-    forwardToWorker (EntityId eId) action = do
-      n <- asks $ serverForwardWorkers . config
-      q <- forwardWorker $ hash eId `mod` n
+    toWorker :: SystemTime -> EntityId -> M s (Maybe (Transmission BrokerMsg)) -> M s ()
+    toWorker processedAt (EntityId eId) cmd = do
+      limit <- asks $ fromIntegral . tbqSize . config
+      atomically $ do
+        n <- readTVar workerCmds
+        when (n >= limit) retry
+        writeTVar workerCmds $! n + 1
+      ws <- asks senderWorkers
       run <- askRunInIO
-      atomically $ writeTBQueue q $ run action
-    forwardWorker :: Int -> M s (TBQueue (IO ()))
-    forwardWorker i =
-      IM.lookup i <$> readTVarIO fwdWorkers >>= \case
-        Just q -> pure q
-        Nothing -> do
-          q <- newTBQueueIO =<< asks (tbqSize . config)
-          atomically $ modifyTVar' fwdWorkers $ IM.insert i q
-          forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
-            liftIO $ forever $ join (atomically $ readTBQueue q) `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
-          pure q
+      let respond = mapM_ $ \r -> atomically $ writeTQueue workerResps (processedAt <$ guard (isAuthError r), r)
+          done = atomically $ modifyTVar' workerCmds (subtract 1)
+      atomically $ writeTQueue (ws !! (hash eId `mod` length ws)) $
+        whenM (readTVarIO connected) (run cmd >>= respond) `finally` done
     rslvNamesEnv :: M s (Maybe NamesEnv)
     rslvNamesEnv = do
       st <- asks (rslvStats . serverStats)
@@ -2212,7 +2228,6 @@ client
                 r2 <- liftEitherWith (const BLOCK) $ EncResponse <$> C.cbEncrypt clientSecret (fromMaybe (C.reverseNonce clientNonce) nonce_) r' paddedProxiedTLength
                 let fr = FwdResponse {fwdCorrId, fwdResponse = r2}
                 pure $ RRES nonce_ $ EncFwdResponse $ C.cbEncryptNoPad sessSecret (C.reverseNonce proxyNonce) (smpEncode fr)
-              sendForwarded r = atomically $ writeTBQueue sndQ ([(corrId, NoEntity, r)], [])
               forwarded = do
                 -- the inner response, or Nothing if forked (RSLV).
                 r_ <- lift (rejectOrVerify clntThAuth t') >>= \case
@@ -2233,14 +2248,12 @@ client
                 stats <- asks serverStats
                 incStat $ pMsgFwdsRecv stats
                 traverse encodeResp r_ >>= \case
-                  Just rres | any isAuthError r_ -> do
-                    authDelay <- asks $ authErrorDelay . config
-                    Nothing <$ liftIO (sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], []))
+                  Just rres | any isAuthError r_ -> Nothing <$ atomically (writeTQueue workerResps (Just startedAt, (corrId, NoEntity, rres)))
                   rres_ -> pure rres_
           case t' of
-            Right (_, _, (_, _, Cmd SResolver _)) -> forwarded
-            Right (_, _, (_, entId', _)) -> Nothing <$ lift (forwardToWorker entId' $ runExceptT forwarded >>= mapM_ sendForwarded . either (Just . ERR) id)
-            Left _ -> forwarded
+            Right (_, _, (_, entId', cmd'))
+              | senderCommand cmd' -> Nothing <$ lift (toWorker startedAt entId' $ fmap (corrId, NoEntity,) . either (Just . ERR) id <$> runExceptT forwarded)
+            _ -> forwarded
           where
             rejectOrVerify :: Maybe (THandleAuth 'TServer) -> SignedTransmissionOrError ErrorType Cmd -> M s (VerifiedTransmissionOrError s)
             rejectOrVerify clntThAuth = \case
