@@ -2225,7 +2225,6 @@ client
                     if isAuthError r
                       then sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
                       else atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
-                pure Nothing
           -- the inner response, or Nothing if forked (RSLV) or queued to a worker.
           r_ <- case t' of
             Left (corrId', entId', e) -> pure $ Just (corrId', entId', ERR e)
@@ -2239,7 +2238,7 @@ client
                           atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
                     forkCmd_ serverResolverConcurrency forwardedCmdWait (sendResolved rslvTooManyRequests) $
                       resolveNameMsg (thVersion clntTHParams) nenv d >>= sendResolved
-                _ -> lift $ processInWorker t
+                _ -> Nothing <$ lift (processInWorker t)
               Nothing -> pure $ Just (corrId', entId', ERR $ CMD PROHIBITED)
           stats <- asks serverStats
           incStat $ pMsgFwdsRecv stats
