@@ -1217,7 +1217,7 @@ proxyOKSMPCommand c nm proxiedRelay spKey sId command =
 
 proxySMPCommand ::
   forall p.
-  PartyI p =>
+  (PartyI p, ForwardParty p) =>
   SMPClient ->
   NetworkRequestMode ->
   -- proxy session from PKEY

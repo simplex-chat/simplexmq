@@ -54,6 +54,7 @@ import CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests)
 import NtfServerTests (ntfServerTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBOpts)
 import SMPClient (testServerDBConnectInfo, testServerDBOpts)
+import SMPProxyTests (smpProxyPostgresTests)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 import XFTPClient (testXFTPDBConnectInfo)
@@ -117,8 +118,9 @@ main = do
           describe "Notifications server (SMP server: postgres-only store)" $
             ntfServerTests (transport @TLS, ASType SQSPostgres SMSPostgres)
           describe "SMP client agent, server postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
-          describe "SMP proxy, postgres-only message store" $
+          describe "SMP proxy, postgres-only message store" $ do
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
+            smpProxyPostgresTests
 #endif
           describe "SMP client agent, server memory message store" $ agentTests (transport @TLS, ASType SQSMemory SMSMemory)
           describe "SMP proxy, memory message store" $

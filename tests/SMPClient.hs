@@ -286,6 +286,7 @@ cfgMS msType = withStoreCfg (testServerStoreConfig msType) $ \serverStoreCfg ->
       allowSMPProxy = False,
       serverClientConcurrency = 2,
       serverResolverConcurrency = defaultNameResolverConcurrency,
+      serverForwardWorkers = defaultForwardWorkers,
       maxClientCmdWait = defaultMaxClientCmdWait,
       namesConfig = Nothing,
       information = Nothing,
