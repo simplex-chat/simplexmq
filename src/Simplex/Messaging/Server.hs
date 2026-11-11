@@ -1613,18 +1613,18 @@ client
         signal = atomically $ modifyTVar' procThreads (\t -> t - 1)
     forwardToWorker :: EntityId -> M s () -> M s ()
     forwardToWorker (EntityId eId) action = do
-      n <- asks $ serverForwardedWorkers . config
-      q <- forwardedWorker $ hash eId `mod` n
+      n <- asks $ serverForwardWorkers . config
+      q <- forwardWorker $ hash eId `mod` n
       run <- askRunInIO
       atomically $ writeTBQueue q $ run action
-    forwardedWorker :: Int -> M s (TBQueue (IO ()))
-    forwardedWorker i =
+    forwardWorker :: Int -> M s (TBQueue (IO ()))
+    forwardWorker i =
       IM.lookup i <$> readTVarIO fwdWorkers >>= \case
         Just q -> pure q
         Nothing -> do
           q <- newTBQueueIO =<< asks (tbqSize . config)
           atomically $ modifyTVar' fwdWorkers $ IM.insert i q
-          forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forwarded ") <> show i) $
+          forkClient clnt (B.unpack ("client $" <> encode sessionId <> " forward ") <> show i) $
             liftIO $ forever $ join (atomically $ readTBQueue q) `catchAny` \e -> logError $ "forwarded command error: " <> tshow e
           pure q
     rslvNamesEnv :: M s (Maybe NamesEnv)

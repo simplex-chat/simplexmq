@@ -67,7 +67,7 @@ module Simplex.Messaging.Server.Env.STM
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
     defaultNameResolverConcurrency,
-    defaultForwardedWorkers,
+    defaultForwardWorkers,
     defaultMaxClientCmdWait,
     defaultAuthErrorDelayMs,
     readWriteQueueStore,
@@ -199,7 +199,7 @@ data ServerConfig s = ServerConfig
     -- aggregate over a single proxy->relay connection (only servers send proxied
     -- requests), so bounding them by the per-client limit would throttle unduly.
     serverResolverConcurrency :: Int,
-    serverForwardedWorkers :: Int,
+    serverForwardWorkers :: Int,
     maxClientCmdWait :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
@@ -249,8 +249,8 @@ defaultProxyClientConcurrency = 500
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 5000
 
-defaultForwardedWorkers :: Int
-defaultForwardedWorkers = 8
+defaultForwardWorkers :: Int
+defaultForwardWorkers = 8
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds

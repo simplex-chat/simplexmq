@@ -56,7 +56,7 @@ import Database.PostgreSQL.Simple (Binary (..), Only (..))
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Types (Query (..))
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
-import Simplex.Messaging.Server.Env.STM (defaultForwardedWorkers)
+import Simplex.Messaging.Server.Env.STM (defaultForwardWorkers)
 #endif
 
 smpProxyTests :: SpecWith AStoreType
@@ -539,7 +539,7 @@ testForwardedQueueLocked =
             (rdhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
             SMP.QIK {rcvId, sndId} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rPriv) rdhPub Nothing SMOnlyCreate (QRMessaging Nothing) Nothing
             pure (rcvId, sndId)
-          queueWorker (SMP.EntityId sId) = hash sId `mod` defaultForwardedWorkers
+          queueWorker (SMP.EntityId sId) = hash sId `mod` defaultForwardWorkers
       (SMP.EntityId rIdA, sIdA) <- newQueue
       let newQueueB = newQueue >>= \(_, sId) -> if queueWorker sId == queueWorker sIdA then newQueueB else pure sId
       sIdB <- newQueueB

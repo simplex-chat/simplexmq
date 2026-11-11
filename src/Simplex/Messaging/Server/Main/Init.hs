@@ -159,7 +159,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> "\n\n\
         \# Number of workers processing messages that one proxy server forwards to this server.\n\
         \# Messages to one queue are processed by one worker, in the order they are received.\n"
-    <> ("# forwarded_workers = " <> tshow defaultForwardedWorkers)
+    <> ("# forward_workers = " <> tshow defaultForwardWorkers)
     <> "\n\n\
         \[NAMES]\n\
         \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
