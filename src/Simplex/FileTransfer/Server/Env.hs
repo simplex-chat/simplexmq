@@ -23,6 +23,7 @@ module Simplex.FileTransfer.Server.Env
     fromFileStore,
     defaultInactiveClientExpiration,
     defaultXFTPKeepAlive,
+    defaultXFTPUserTimeout,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
@@ -138,6 +139,10 @@ defaultXFTPKeepAlive =
       keepIntvl = 10, -- seconds
       keepCnt = 6
     }
+
+-- | a peer that stops acknowledging sent data is detected after 3 minutes, as keep-alive does not run while data is unacknowledged
+defaultXFTPUserTimeout :: Int
+defaultXFTPUserTimeout = 180000 -- milliseconds
 
 data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,

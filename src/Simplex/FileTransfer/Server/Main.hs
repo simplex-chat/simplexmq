@@ -32,7 +32,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, defaultXFTPKeepAlive, readFileStoreType, runWithStoreConfig, migrateFileStore, checkFileStoreMode, importToDatabase, exportFromDatabase)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, defaultXFTPKeepAlive, defaultXFTPUserTimeout, readFileStoreType, runWithStoreConfig, migrateFileStore, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Entitlement (entitlementIssuerKeys)
@@ -336,7 +336,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                         (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
                         (Just $ alpnSupportedXFTPhandshakes <> httpALPN)
                         False
-                 in cfg {addCORSHeaders = isJust httpCredentials_, tcpKeepAlive = Just defaultXFTPKeepAlive},
+                 in cfg {addCORSHeaders = isJust httpCredentials_, tcpKeepAlive = Just defaultXFTPKeepAlive, tcpUserTimeout = Just defaultXFTPUserTimeout},
               responseDelay = 0,
               webStaticPath = webStaticPath'
             }

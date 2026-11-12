@@ -11,7 +11,7 @@ import Control.Monad
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isLeft)
 import Data.X509.Validation (Fingerprint (..))
-import Network.Socket (ServiceName, Socket, SocketOption (KeepAlive), getSocketOption)
+import Network.Socket (ServiceName, Socket, SocketOption (KeepAlive, UserTimeout), getSocketOption)
 import SMPClient (serverBracket)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Transport
@@ -33,6 +33,11 @@ transportTests = do
       testServerKeepAlive (Just defaultKeepAliveOpts) True
     it "should not enable keep-alive on accepted sockets by default" $
       testServerKeepAlive Nothing False
+  describe "TCP user timeout" $ do
+    it "should set user timeout on accepted sockets when configured" $
+      testServerUserTimeout (Just 180000) 180000
+    it "should not set user timeout on accepted sockets by default" $
+      testServerUserTimeout Nothing 0
 
 transportTestPort :: HasTestEnv => ServiceName
 transportTestPort = testServerPort 9
@@ -77,6 +82,11 @@ testCloseBlockedTLS = withTLSConnection (mkTransportServerConfig True Nothing Fa
       threadDelay 500000
       n' <- readTVarIO sent
       unless (n' == n) $ waitBlocked sent n'
+
+testServerUserTimeout :: HasTestEnv => Maybe Int -> Int -> Expectation
+testServerUserTimeout tcpUserTimeout expected =
+  withTLSConnection (mkTransportServerConfig True Nothing False) {tcpUserTimeout} $ \_client (sock, _) ->
+    getSocketOption sock UserTimeout `shouldReturn` expected
 
 testServerKeepAlive :: HasTestEnv => Maybe KeepAliveOpts -> Bool -> Expectation
 testServerKeepAlive tcpKeepAlive enabled =
