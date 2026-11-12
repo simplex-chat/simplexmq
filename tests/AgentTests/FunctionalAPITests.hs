@@ -4537,7 +4537,8 @@ testDeliveryReceiptsConcurrent (t, msType) =
 appVersionsCfg :: HasTestEnv => (Word16, Word16) -> (Word16, Word16) -> (Word16, Word16) -> AgentConfig
 appVersionsCfg (a1, a2) (c1, c2) (e1, e2) =
   agentCfg
-    { smpAgentVRange = mkVersionRange a1 a2,
+    { sndAuthAlg = C.AuthAlg C.SEd25519,
+      smpAgentVRange = mkVersionRange a1 a2,
       smpClientVRange = mkVersionRange c1 c2,
       e2eEncryptVRange = mkVersionRange e1 e2
     }

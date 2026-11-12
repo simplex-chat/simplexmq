@@ -1322,11 +1322,12 @@ getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> Co
 getConnShortLink' c nm userId = \case
   CSLInvitation _ srv linkId linkKey -> do
     g <- asks random
+    C.AuthAlg a <- asks $ sndAuthAlg . config
     invLink <- withStore' c $ \db -> do
       getInvShortLink db srv linkId >>= \case
         Just sl@InvShortLink {linkKey = lk} | linkKey == lk -> pure sl
         _ -> do
-          sndPrivateKey <- atomically $ C.generatePrivateAuthKey C.SEd25519 g
+          sndPrivateKey <- atomically $ C.generatePrivateAuthKey a g
           let sl = InvShortLink {server = srv, linkId, linkKey, sndPrivateKey, sndId = Nothing}
           createInvShortLink db sl
           pure sl
