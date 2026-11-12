@@ -109,7 +109,9 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent (forkIOWithUnmask, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
+import qualified Control.Exception as CE
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -381,9 +383,15 @@ withTlsUnique cxt f =
 
 closeTLS :: T.Context -> IO ()
 closeTLS ctx =
-  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
+  bye -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
     `E.finally` T.contextClose ctx
     `catchAll_` pure ()
+  where
+    -- tls 2 bye waits for the peer with a timeout, which cannot fire in the uninterruptible cleanup of UnliftIO bracket
+    bye = do
+      r <- newEmptyMVar
+      _ <- forkIOWithUnmask $ \unmask -> CE.try @CE.SomeException (unmask $ T.bye ctx) >>= putMVar r
+      takeMVar r >>= either CE.throwIO pure
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
