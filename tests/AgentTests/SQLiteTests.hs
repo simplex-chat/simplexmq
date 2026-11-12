@@ -152,6 +152,7 @@ storeTests = do
         it "should markNtfSubActionSMPFailed_" testMarkNtfSubActionSMPFailed
         it "should markNtfTokenToDeleteFailed_" testMarkNtfTokenToDeleteFailed
         it "should skip work item deleted after its ID was read" testGetWorkItemDeleted
+        it "should skip work items deleted after their IDs were read" testGetWorkItemsDeleted
   describe "open/close store" $ do
     it "should close and re-open" testCloseReopenStore
     it "should close and re-open encrypted store" testCloseReopenEncryptedStore
@@ -762,18 +763,26 @@ testGetPendingServerCommand st = do
     corruptCmd db corrId connId = DB.execute db "UPDATE commands SET command = cast('bad' as blob) WHERE conn_id = ? AND corr_id = ?" (connId, corrId)
 
 testGetWorkItemDeleted :: DBStore -> Expectation
-testGetWorkItemDeleted st = do
+testGetWorkItemDeleted st = withDeletedFirstCommand st $ \getIds getItem markFailed ->
+  getWorkItem "command" (maybeFirstRow id getIds) getItem markFailed `shouldReturn` Right (Just 2)
+
+testGetWorkItemsDeleted :: DBStore -> Expectation
+testGetWorkItemsDeleted st = withDeletedFirstCommand st $ \getIds getItem markFailed ->
+  getWorkItems "command" getIds getItem markFailed `shouldReturn` Right [Right 2]
+
+withDeletedFirstCommand :: DBStore -> (IO [Int] -> (Int -> IO (Either StoreError Int)) -> (Int -> IO ()) -> Expectation) -> Expectation
+withDeletedFirstCommand st test = do
   g <- C.newRandom
   withTransaction st $ \db -> do
     Right connId <- createNewConn db g cData1 {connId = ""} SCMInvitation
     Right () <- createCommand db "1" connId Nothing command
     Right () <- createCommand db "2" connId Nothing command
-    let getId = maybeFirstRow fromOnly $ DB.query_ db "SELECT command_id FROM commands WHERE failed = 0 ORDER BY command_id LIMIT 1"
+    let getIds = map fromOnly <$> DB.query_ db "SELECT command_id FROM commands WHERE failed = 0 ORDER BY command_id LIMIT 1"
         getItem i
           | i == 1 = Left (SEInternal "deleted") <$ DB.execute db "DELETE FROM commands WHERE command_id = ?" (Only i)
           | otherwise = pure $ Right i
         markFailed i = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only i)
-    getWorkItem "command" getId getItem markFailed `shouldReturn` Right (Just (2 :: Int))
+    test getIds getItem markFailed
   where
     command = AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False
 
