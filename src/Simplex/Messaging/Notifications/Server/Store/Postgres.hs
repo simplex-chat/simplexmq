@@ -49,6 +49,7 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     batchUpdateSrvSubErrors,
     removeServiceAndAssociations,
     addTokenLastNtf,
+    NtfEntityCounts (..),
     getEntityCounts,
     withDB',
     withClientDB,
@@ -728,13 +729,32 @@ toLastNtf (qRow :. (ts, nonce, Binary encMeta)) =
   let ntfTs = MkSystemTime (systemSeconds $ utcToSystemTime ts) 0
    in PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
-getEntityCounts :: NtfPostgresStore -> IO (Int64, Int64, Int64)
+data NtfEntityCounts = NtfEntityCounts
+  { tokenStatusCounts :: [(Text, Int64)],
+    approxSubCount :: Int64,
+    subStatusCounts :: [(Text, Int64)],
+    lastNtfCount :: Int64
+  }
+
+getEntityCounts :: NtfPostgresStore -> IO NtfEntityCounts
 getEntityCounts st =
-  fmap (fromRight (0, 0, 0)) $ withDB' "getEntityCounts" st $ \db -> do
-    tCnt <- count <$> DB.query_ db "SELECT count(1) FROM tokens"
-    sCnt <- count <$> DB.query_ db "SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'subscriptions' AND relkind = 'r'"
-    nCnt <- count <$> DB.query_ db "SELECT count(1) FROM last_notifications"
-    pure (tCnt, sCnt, nCnt)
+  fmap (fromRight $ NtfEntityCounts [] 0 [] 0) $ withDB' "getEntityCounts" st $ \db -> do
+    tokenStatusCounts <- DB.query_ db "SELECT status, count(1) FROM tokens GROUP BY status"
+    approxSubCount <- count <$> DB.query_ db "SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'subscriptions' AND relkind = 'r'"
+    uncommonSubCounts <- DB.query_ db "SELECT status, count(1) FROM subscriptions WHERE status NOT IN ('ACTIVE', 'DELETED', 'AUTH') GROUP BY status"
+    commonSubCounts <-
+      DB.query_
+        db
+        [sql|
+          SELECT v.status, (v.freq * GREATEST(c.reltuples, 0))::BIGINT
+          FROM pg_stats s
+          CROSS JOIN LATERAL unnest(s.most_common_vals::TEXT::TEXT[], s.most_common_freqs) AS v(status, freq)
+          JOIN pg_class c ON c.oid = 'subscriptions'::regclass
+          WHERE s.schemaname = current_schema() AND s.tablename = 'subscriptions' AND s.attname = 'status'
+            AND v.status IN ('ACTIVE', 'DELETED', 'AUTH')
+        |]
+    lastNtfCount <- count <$> DB.query_ db "SELECT count(1) FROM last_notifications"
+    pure NtfEntityCounts {tokenStatusCounts, approxSubCount, subStatusCounts = commonSubCounts <> uncommonSubCounts, lastNtfCount}
   where
     count (Only n : _) = n
     count [] = 0

@@ -252,8 +252,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       d <- getNtfServerStatsData ss
       let psTkns = periodStatDataCounts $ _activeTokens d
           psSubs = periodStatDataCounts $ _activeSubs d
-      (tokenCount, approxSubCount, lastNtfCount) <- getEntityCounts st
-      pure NtfServerMetrics {statsData = d, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions}
+      NtfEntityCounts {tokenStatusCounts, approxSubCount, subStatusCounts, lastNtfCount} <- getEntityCounts st
+      let tokenCount = sum $ map snd tokenStatusCounts
+      pure NtfServerMetrics {statsData = d, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, tokenStatusCounts, approxSubCount, subStatusCounts, lastNtfCount, rtsOptions}
 
     getNtfRealTimeMetrics :: NtfEnv -> IO NtfRealTimeMetrics
     getNtfRealTimeMetrics NtfEnv {subscriber, pushServer} = do
