@@ -5,6 +5,7 @@
 module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 
 import Control.Monad
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
@@ -42,6 +43,7 @@ xftpStoreTests = do
     it "should ack file reception" testAckFile
     it "should return expired files with limit" testExpiredFiles
     it "should expire files by stored expiration" testExpiredFilesStoredExpiration
+    it "should return at most limit expired files of both kinds" testExpiredFilesTotalLimit
     it "should compute committed used storage and file count" testStorageAndCount
 
 xftpMigrationTests :: Spec
@@ -240,6 +242,19 @@ testExpiredFilesStoredExpiration = withPgStore $ \st -> do
   addFile st (EntityId "stored_file_____") fileInfo oldTime (Just (RoundedSystemTime 900000)) EntityActive `shouldReturn` Right ()
   expired <- expiredFiles st (RoundedSystemTime 500000) 0 100
   map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
+
+testExpiredFilesTotalLimit :: HasTestEnv => Expectation
+testExpiredFilesTotalLimit = withPgStore $ \st -> do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let fileInfo = testFileInfo sndKey
+      oldTime = RoundedSystemTime 100000
+      addExpired i expiresAt = addFile st (EntityId $ "expired_file_" <> B.pack (show i) <> "__") fileInfo oldTime expiresAt EntityActive `shouldReturn` Right ()
+  -- 3 files expire by stored expiration, 3 by creation time
+  forM_ [1 .. 3 :: Int] $ \i -> addExpired i $ Just (RoundedSystemTime 400000)
+  forM_ [4 .. 6 :: Int] $ \i -> addExpired i Nothing
+  length <$> expiredFiles st (RoundedSystemTime 500000) 500000 4 `shouldReturn` 4
+  length <$> expiredFiles st (RoundedSystemTime 500000) 500000 10 `shouldReturn` 6
 
 testStorageAndCount :: HasTestEnv => Expectation
 testStorageAndCount = withPgStore $ \st -> do

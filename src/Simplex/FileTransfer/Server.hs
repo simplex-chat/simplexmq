@@ -718,11 +718,10 @@ expireServerFiles itemDelay expCfg = do
     mbs bs = tshow (bs `div` 1048576) <> "mb"
     expireLoop st us now old = do
       expired <- liftIO $ expiredFiles st now old 10000
-      forM_ expired $ \(sId, filePath_, fileSize) -> do
-        mapM_ threadDelay itemDelay
+      forM_ expired $ \(_, filePath_, fileSize) -> do
         forM_ filePath_ $ \fp ->
           whenM (doesFileExist fp) $
-            removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+            (removeFile fp >> mapM_ threadDelay itemDelay) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
         forM_ filePath_ $ \_ ->
           atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
         incFileStat filesExpired

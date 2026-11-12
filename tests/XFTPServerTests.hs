@@ -44,7 +44,8 @@ import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
-import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), XFTPStoreConfig (..), defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile)
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), alpnSupportedXFTPhandshakes, receiveEncFile, receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -52,6 +53,9 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
+import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
+import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..), getSystemSeconds)
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
@@ -80,6 +84,7 @@ xftpServerTests = do
       it "should delete file chunk (2 clients)" testFileChunkDelete2
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
+      it "should expire chunks that were never uploaded without delays" testExpireNotUploadedFiles
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should not disconnect clients during downloads longer than inactivity ttl" testLongDownloadExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
@@ -245,6 +250,28 @@ testFileChunkExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fs
       `catchError` (liftIO . (`shouldBe` PCEProtocolError AUTH))
   where
     fileExpiration = ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testExpireNotUploadedFiles :: HasTestEnv => AFStoreType -> Expectation
+testExpireNotUploadedFiles _ = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  now <- getSystemSeconds
+  let sIds = map (\i -> EntityId $ "never_uploaded" <> B.pack (show i)) [10 .. 59 :: Int]
+      fileInfo = FileInfo {sndKey, size = chSize, digest = "digest"}
+      createdAt = RoundedSystemTime $ roundedSeconds now
+      -- expire after the start-up expiration, during the periodic one
+      expiresAt = RoundedSystemTime $ roundedSeconds now + 2
+  sl <- openWriteStoreLog False testXFTPLogFile
+  forM_ sIds $ \sId -> logAddFile sl sId fileInfo createdAt (Just expiresAt) EntityActive
+  closeStoreLog sl
+  withXFTPServerCfg testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile, fileExpiration} $ \_ -> do
+    -- files expire within 4 seconds, with a delay per expired file 50 files would take 5 seconds more
+    threadDelay 6000000
+    testXFTPClient $ \c -> forM_ sIds $ \sId ->
+      runExceptT (addXFTPRecipients c spKey sId [rcvKey]) `shouldReturn` Left (PCEProtocolError AUTH)
+  where
+    fileExpiration = ExpirationConfig {ttl = 86400, checkInterval = 1}
 
 testInactiveClientExpiration :: HasTestEnv => AFStoreType -> Expectation
 testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> runRight_ $ do
