@@ -27,6 +27,7 @@ module Simplex.FileTransfer.Server.Env
     newXFTPServerEnv,
     readFileStoreType,
     runWithStoreConfig,
+    migrateFileStore,
     checkFileStoreMode,
     importToDatabase,
     exportFromDatabase,
@@ -245,6 +246,13 @@ runWithStoreConfig (AFSType SFSPostgres) ini storeLogFilePath confirmMigrations 
     dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
 #else
   error "server binary is compiled without support for PostgreSQL database"
+#endif
+
+migrateFileStore :: XFTPStoreConfig s -> IO ()
+migrateFileStore = \case
+  XSCMemory _ -> pure ()
+#if defined(dbServerPostgres)
+  XSCDatabase dbCfg -> (newFileStore dbCfg :: IO PostgresFileStore) >>= closeFileStore
 #endif
 
 -- | Validate startup config when store_files=database.
