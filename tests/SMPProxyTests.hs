@@ -21,6 +21,7 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
@@ -72,6 +73,12 @@ smpProxyTests = do
       testProxyReconnectAfterRelayRestart
     it "closes connection to relay after sender disconnects mid-connection" $ \_ ->
       testProxyClosesRelayConnectionAfterDisconnect
+    it "does not keep oversized forwarded command" $ \_ ->
+      testForwardOversizedNotKept
+    it "fails commands of closed client at once" $ \_ ->
+      testClosedClientCommandsFail
+    it "releases command kept for late response" $ \_ ->
+      testLateResponseCommandReleased
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -637,6 +644,51 @@ testProxyClosesRelayConnectionAfterDisconnect =
     withStallingServerOn' testPort2 $ \accepted closed -> do
       race_ (atomically $ takeTMVar accepted) requestRelaySession
       timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
+testForwardOversizedNotKept :: HasTestEnv => IO ()
+testForwardOversizedNotKept =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let proxyClientCfg = defaultSMPClientConfig {serverVRange = supportedProxyClientSMPRelayVRange, agreeSecret = True, proxyServer = True}
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) proxyClientCfg [] Nothing ts (\_ -> pure ())
+    (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+    let et = SMP.EncTransmission $ B.replicate smpBlockSize 'a'
+    runExceptT (forwardSMPTransmission c (either error id $ C.corrCbNonce "123456789012345678901234") currentClientSMPRelayVersion k et)
+      `shouldReturn` Left (PCETransportError TELargeMsg)
+    pClientSentCommandsCount c `shouldReturn` 0
+
+testClosedClientCommandsFail :: HasTestEnv => IO ()
+testClosedClientCommandsFail =
+  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    closed <- newEmptyTMVarIO
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> atomically $ putTMVar closed ())
+    closeProtocolClient c
+    atomically $ takeTMVar closed
+    Just rs <- timeout 1000000 $ sendProtocolCommands c NRMBackground $ L.fromList $ replicate 300 (NoEntity, Nothing, SMP.Cmd SMP.SIdleClient SMP.PING)
+    forM_ rs $ \(Response _ r) -> r `shouldBe` Left (PCENetworkError SMP.NEFailedError)
+    pClientSentCommandsCount c `shouldReturn` 0
+    atomically (lengthTBQueue $ pClientSndQ c) `shouldReturn` 0
+
+testLateResponseCommandReleased :: HasTestEnv => IO ()
+testLateResponseCommandReleased =
+  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {authErrorDelay = 2000000}) testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    msgQ <- newTBQueueIO 4
+    let clientCfg = defaultSMPClientConfig {networkConfig = defaultNetworkConfig {smpPingInterval = 100000}, sentCommandsTTL = 0.5}
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) clientCfg [] (Just msgQ) ts (\_ -> pure ())
+    rId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
+    (_, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) (Just rpKey) rId (SMP.Cmd SMP.SRecipient SMP.SUB))
+      `shouldReturn` Left PCEResponseTimeout
+    pClientSentCommandsCount c `shouldReturn` 1
+    threadDelay 1000000
+    pClientSentCommandsCount c `shouldReturn` 0
+    (_, _, [(_, STUnexpectedError _)]) <- atomically $ readTBQueue msgQ
+    pure ()
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
