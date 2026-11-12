@@ -1129,15 +1129,15 @@ deleteSMPQueues = okSMPCommands DEL
 
 -- send PRXY :: SMPServer -> Maybe BasicAuth -> Command Sender
 -- receives PKEY :: SessionId -> X.CertificateChain -> X.SignedExact X.PubKey -> BrokerMsg
-connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> ExceptT SMPClientError IO ProxiedRelay
-connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout, proxiedRelayVRange}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth =
+connectSMPProxiedRelay :: SMPClient -> NetworkRequestMode -> SMPServer -> Maybe BasicAuth -> VersionSMP -> ExceptT SMPClientError IO ProxiedRelay
+connectSMPProxiedRelay c@ProtocolClient {client_ = PClient {tcpConnectTimeout, tcpTimeout, proxiedRelayVRange}} nm relayServ@ProtocolServer {port = relayPort, keyHash = C.KeyHash kh} proxyAuth minRelayVersion =
   sendProtocolCommand_ c nm Nothing tOut Nothing NoEntity (Cmd SProxiedClient (PRXY relayServ proxyAuth)) >>= \case
     PKEY sId vr (CertChainPubKey chain key) ->
       case proxiedRelayVRange `compatibleVersion` vr of
-        Nothing -> throwE $ transportErr TEVersion
-        Just (Compatible v) -> do
+        Just (Compatible v) | v >= minRelayVersion -> do
           relayKey <- liftEitherWith (const $ transportErr $ TEHandshake IDENTITY) =<< liftIO (runExceptT $ validateRelay chain key)
           pure $ ProxiedRelay sId v proxyAuth relayKey
+        _ -> throwE $ transportErr TEVersion
     r -> throwE $ unexpectedResponse r
   where
     tOut = Just $ netTimeoutInt tcpConnectTimeout nm + netTimeoutInt tcpTimeout nm

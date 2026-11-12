@@ -163,6 +163,14 @@ smpProxyTests = do
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
+        it "sends directly to preset relay of previous version" $ twoServersPrevRelay $
+          agentViaProxyPresetRelay [srv2] Nothing
+        it "sends via proxy to preset relay of current version" $ twoServers $
+          agentViaProxyPresetRelay [srv2] (Just srv1)
+        it "sends via proxy to other relay of previous version" $ twoServersPrevRelay $
+          agentViaProxyPresetRelay [srv1] (Just srv1)
+        it "fails to join via preset relay of previous version when direct sending is prohibited" $
+          twoServersPrevRelay agentViaProxyPresetRelayProhibited
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
@@ -218,8 +226,8 @@ deliverMessagesViaProxyVR clientVR proxyServ relayServ alg unsecuredMsgs secured
   SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QRMessaging Nothing) Nothing
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
-  sess0 <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct")
-  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct")
+  sess0 <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct") minClientSMPRelayVersion
+  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct") minClientSMPRelayVersion
   sess0 `shouldBe` sess
   -- send via proxy to unsecured queue
   forM_ unsecuredMsgs $ \msg -> do
@@ -255,7 +263,7 @@ proxyConnectDeadRelay n d proxyServ = do
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session
   replicateM_ n $ do
-    sess0 <- runExceptT $ connectSMPProxiedRelay pc NRMInteractive (SMPServer testHost "45678" testKeyHash) (Just "correct")
+    sess0 <- runExceptT $ connectSMPProxiedRelay pc NRMInteractive (SMPServer testHost "45678" testKeyHash) (Just "correct") minClientSMPRelayVersion
     case sess0 of
       Right !_noWay -> error "got unexpected client"
       Left !_err -> threadDelay d
@@ -455,6 +463,31 @@ agentViaProxyRetryNoSession = do
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
+agentViaProxyPresetRelay :: HasTestEnv => [SMPServer] -> Maybe SMPServer -> IO ()
+agentViaProxyPresetRelay presetSrvs proxySrv_ =
+  withAgent 1 agentCfg aliceServers testDB $ \alice ->
+    withAgent 2 agentCfg bobServers testDB2 $ \bob -> runRight_ $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      mId <- sendMessage bob aliceId noMsgFlags "hello"
+      get bob ##> ("", aliceId, A.SENT mId proxySrv_)
+      get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+  where
+    aliceServers = initAgentServers {smp = userServers [testSMPServer2]}
+    bobServers = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers [testSMPServer], presetServers = presetSrvs}
+
+agentViaProxyPresetRelayProhibited :: HasTestEnv => IO ()
+agentViaProxyPresetRelayProhibited =
+  withAgent 1 agentCfg aliceServers testDB $ \alice ->
+    withAgent 2 agentCfg bobServers testDB2 $ \bob -> runRight_ $ do
+      (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
+      (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      Left (PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER (SMP.TRANSPORT TEVersion))))) <-
+        liftIO . runExceptT $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      pure ()
+  where
+    aliceServers = initAgentServers {smp = userServers [testSMPServer2]}
+    bobServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = userServers [testSMPServer], presetServers = [testSMPServer2]}
+
 testNoProxy :: HasTestEnv => AStoreType -> IO ()
 testNoProxy msType = do
   withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ -> do
@@ -517,7 +550,7 @@ testForwardedAuthErrorDelay =
       g <- C.newRandom
       ts <- getCurrentTime
       pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
-      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing minClientSMPRelayVersion
       (sendTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxySMPMessage pc NRMInteractive sess Nothing (SMP.EntityId "1234") noMsgFlags "hello"
       (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
       sendTime `shouldSatisfy` (>= 0.5)
@@ -545,7 +578,7 @@ testForwardedQueueLocked =
       let newQueueB = newQueue >>= \(_, sId) -> if queueWorker sId == queueWorker sIdA then newQueueB else pure sId
       sIdB <- newQueueB
       pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
-      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing minClientSMPRelayVersion
       let proxySend sId = runExceptT' $ proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hello"
       withPostgres $ \locker -> withPostgres $ \db -> do
         PSQL.begin locker

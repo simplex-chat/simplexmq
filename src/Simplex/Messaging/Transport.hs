@@ -216,6 +216,8 @@ serverInfoSMPVersion = VersionSMP 21
 nameAvailSMPVersion :: VersionSMP
 nameAvailSMPVersion = VersionSMP 22
 
+-- The agent requires this version to forward commands to preset servers (minRelayVersion in Simplex.Messaging.Agent.Client).
+-- Remove that requirement once lower versions are not supported.
 fwdNoncesSMPVersion :: VersionSMP
 fwdNoncesSMPVersion = VersionSMP 23
 
