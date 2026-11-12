@@ -315,7 +315,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), fwdNoncesSMPVersion, newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), fwdNoncesSMPVersion, minClientSMPRelayVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -726,7 +726,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     newProxiedRelay (SMPConnectedClient smp prs) proxyAuth rv =
-      tryAllErrors (liftClient proxyRelayError (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth >>= checkRelayVersion) >>= \case
+      tryAllErrors (liftClient proxyRelayError (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth minRelayVersion) >>= \case
         Right sess -> do
           atomically $ putTMVar (sessionVar rv) (Right sess)
           pure $ Right sess
@@ -749,11 +749,10 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
                 proxyErr = ProxyProtocolError e
               }
           e -> SMP proxyHost e
-        -- TODO remove this check once forwarding versions below fwdNoncesSMPVersion are not supported
-        checkRelayVersion :: ProxiedRelay -> ExceptT SMPClientError IO ProxiedRelay
-        checkRelayVersion r@ProxiedRelay {prVersion}
-          | prVersion < fwdNoncesSMPVersion && isPresetServer destSrv presetServers = throwE $ PCEProtocolError $ SMP.PROXY $ SMP.BROKER $ SMP.TRANSPORT TEVersion
-          | otherwise = pure r
+        -- TODO remove once forwarding versions below fwdNoncesSMPVersion are not supported
+        minRelayVersion
+          | isPresetServer destSrv presetServers = fwdNoncesSMPVersion
+          | otherwise = minClientSMPRelayVersion
     waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     waitForProxiedRelay (_, srv, _) rv = do
       NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c

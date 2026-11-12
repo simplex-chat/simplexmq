@@ -226,8 +226,8 @@ deliverMessagesViaProxyVR clientVR proxyServ relayServ alg unsecuredMsgs secured
   SMP.QIK {rcvId, sndId, rcvPublicDhKey = srvDh} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rPriv) rdhPub (Just "correct") SMSubscribe (QRMessaging Nothing) Nothing
   let dec = decryptMsgV3 $ C.dh' srvDh rdhPriv
   -- get proxy session
-  sess0 <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct")
-  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct")
+  sess0 <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct") minClientSMPRelayVersion
+  sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive relayServ (Just "correct") minClientSMPRelayVersion
   sess0 `shouldBe` sess
   -- send via proxy to unsecured queue
   forM_ unsecuredMsgs $ \msg -> do
@@ -263,7 +263,7 @@ proxyConnectDeadRelay n d proxyServ = do
   THAuthClient {} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams pc
   -- get proxy session
   replicateM_ n $ do
-    sess0 <- runExceptT $ connectSMPProxiedRelay pc NRMInteractive (SMPServer testHost "45678" testKeyHash) (Just "correct")
+    sess0 <- runExceptT $ connectSMPProxiedRelay pc NRMInteractive (SMPServer testHost "45678" testKeyHash) (Just "correct") minClientSMPRelayVersion
     case sess0 of
       Right !_noWay -> error "got unexpected client"
       Left !_err -> threadDelay d
@@ -550,7 +550,7 @@ testForwardedAuthErrorDelay =
       g <- C.newRandom
       ts <- getCurrentTime
       pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
-      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing minClientSMPRelayVersion
       (sendTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxySMPMessage pc NRMInteractive sess Nothing (SMP.EntityId "1234") noMsgFlags "hello"
       (getLinkTime, Left (PCEProtocolError SMP.AUTH)) <- responseTime $ runExceptT $ proxyGetSMPQueueLink pc NRMInteractive sess (SMP.EntityId "1234")
       sendTime `shouldSatisfy` (>= 0.5)
@@ -578,7 +578,7 @@ testForwardedQueueLocked =
       let newQueueB = newQueue >>= \(_, sId) -> if queueWorker sId == queueWorker sIdA then newQueueB else pure sId
       sIdB <- newQueueB
       pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
-      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing minClientSMPRelayVersion
       let proxySend sId = runExceptT' $ proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hello"
       withPostgres $ \locker -> withPostgres $ \db -> do
         PSQL.begin locker
