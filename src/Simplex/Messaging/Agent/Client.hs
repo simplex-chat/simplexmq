@@ -315,7 +315,7 @@ import Simplex.Messaging.Session
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), newNtfCredsSMPVersion)
+import Simplex.Messaging.Transport (HandshakeError (..), SMPServiceRole (..), SMPVersion, ServiceCredentials (..), SessionId, THClientService' (..), THandleAuth (..), THandleParams (sessionId, thAuth, thVersion, serverInfo), TransportError (..), fwdNoncesSMPVersion, newNtfCredsSMPVersion)
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Util
@@ -700,7 +700,7 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} nm tSess = do
       smpConnectClient c nm tSess prs v
 
 getSMPProxyClient :: AgentClient -> NetworkRequestMode -> Maybe SMPServerWithAuth -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
-getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} nm proxySrv_ destSess@(userId, destSrv, qId) = do
+getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq, presetServers} nm proxySrv_ destSess@(userId, destSrv, qId) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
   proxySrv <- maybe (getNextServer c userId proxySrvs [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
@@ -726,7 +726,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
       pure (clnt, sess)
     newProxiedRelay :: SMPConnectedClient -> Maybe SMP.BasicAuth -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     newProxiedRelay (SMPConnectedClient smp prs) proxyAuth rv =
-      tryAllErrors (liftClient proxyRelayError (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth) >>= \case
+      tryAllErrors (liftClient proxyRelayError (clientServer smp) $ connectSMPProxiedRelay smp nm destSrv proxyAuth >>= checkRelayVersion) >>= \case
         Right sess -> do
           atomically $ putTMVar (sessionVar rv) (Right sess)
           pure $ Right sess
@@ -749,6 +749,10 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
                 proxyErr = ProxyProtocolError e
               }
           e -> SMP proxyHost e
+        checkRelayVersion :: ProxiedRelay -> ExceptT SMPClientError IO ProxiedRelay
+        checkRelayVersion r@ProxiedRelay {prVersion}
+          | prVersion < fwdNoncesSMPVersion && isPresetServer destSrv presetServers = throwE $ PCEProtocolError $ SMP.PROXY $ SMP.BROKER $ SMP.TRANSPORT TEVersion
+          | otherwise = pure r
     waitForProxiedRelay :: SMPTransportSession -> ProxiedRelayVar -> AM (Either AgentErrorType ProxiedRelay)
     waitForProxiedRelay (_, srv, _) rv = do
       NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
