@@ -6,6 +6,7 @@ module Simplex.Messaging.Transport.HTTP2.Server where
 import Control.Concurrent.Async (Async, async, uninterruptibleCancel)
 import Control.Concurrent.STM
 import Control.Monad
+import Data.Maybe (catMaybes)
 import Data.Time.Clock.System (SystemTime, getSystemTime, systemSeconds)
 import Network.HPACK (BufferSize)
 import Network.HTTP2.Server (Request, Response)
@@ -17,9 +18,9 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
-import Simplex.Messaging.Util (threadDelay')
+import Simplex.Messaging.Util (threadDelay', unlessM)
 import UnliftIO (bracket_, finally)
-import UnliftIO.Concurrent (forkIO, killThread, myThreadId)
+import UnliftIO.Concurrent (forkIO, killThread, myThreadId, threadDelay)
 
 type HTTP2ServerFunc = SessionId -> Maybe ALPN -> Request -> (Response -> IO ()) -> IO ()
 
@@ -64,7 +65,7 @@ closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
 runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> IO ()
-runHTTP2Server started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
+runHTTP2Server started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ (Just $ firstRequestTimeout transportConfig) clientFinished bufferSize setup
   where
     setup handler = do
       ss <- newSocketState
@@ -76,18 +77,24 @@ runHTTP2ServerWith :: BufferSize -> ((TLS p -> IO ()) -> a) -> HTTP2ServerFunc -
 runHTTP2ServerWith bufferSize tlsSetup http2Server =
   runHTTP2ServerWith_
     Nothing
+    Nothing
     (\_sessId -> pure ())
     bufferSize
     (\handler -> tlsSetup $ \tls -> handler (False, tls))
     (\_ _ -> http2Server)
 
 -- | The handler receives an action that closes the client connection.
-runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> (((SNICredentialUsed, TLS p) -> IO ()) -> a) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> a
-runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup $ \(sniUsed, tls) -> do
+runHTTP2ServerWith_ :: Maybe ExpirationConfig -> Maybe Int -> (SessionId -> IO ()) -> BufferSize -> (((SNICredentialUsed, TLS p) -> IO ()) -> a) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> a
+runHTTP2ServerWith_ expCfg_ firstRequestTimeout_ clientFinished bufferSize setup http2Server = setup $ \(sniUsed, tls) -> do
   activity <- newClientActivity
   sessionThread <- myThreadId
-  tid_ <- mapM (forkIO . expireInactiveClient sessionThread activity) expCfg_
-  withHTTP2 bufferSize (run sniUsed tls sessionThread activity) (clientFinished $ tlsUniq tls) tls `finally` mapM_ killThread tid_
+  tids <-
+    sequence $
+      catMaybes
+        [ forkIO . expireInactiveClient sessionThread activity <$> expCfg_,
+          forkIO . closeWithoutRequest sessionThread activity <$> firstRequestTimeout_
+        ]
+  withHTTP2 bufferSize (run sniUsed tls sessionThread activity) (clientFinished $ tlsUniq tls) tls `finally` mapM_ killThread tids
   where
     run sniUsed tls sessionThread activity cfg = H.run cfg $ \req _aux sendResp ->
       trackRequest activity $ http2Server sniUsed (killThread sessionThread) (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
@@ -100,20 +107,24 @@ runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup 
           if n == 0 && systemSeconds ts < old
             then killThread sessionThread
             else loop
+    closeWithoutRequest sessionThread ClientActivity {requestStarted} t = do
+      threadDelay t
+      unlessM (readTVarIO requestStarted) $ killThread sessionThread
 
 data ClientActivity = ClientActivity
-  { requestsInFlight :: TVar Int,
+  { requestStarted :: TVar Bool,
+    requestsInFlight :: TVar Int,
     -- | the time the last request ended, or the connection started
     idleSince :: TVar SystemTime
   }
 
 newClientActivity :: IO ClientActivity
-newClientActivity = ClientActivity <$> newTVarIO 0 <*> (newTVarIO =<< getSystemTime)
+newClientActivity = ClientActivity <$> newTVarIO False <*> newTVarIO 0 <*> (newTVarIO =<< getSystemTime)
 
 trackRequest :: ClientActivity -> IO a -> IO a
-trackRequest ClientActivity {requestsInFlight, idleSince} = bracket_ started ended
+trackRequest ClientActivity {requestStarted, requestsInFlight, idleSince} = bracket_ started ended
   where
-    started = atomically $ modifyTVar' requestsInFlight (+ 1)
+    started = atomically $ writeTVar requestStarted True >> modifyTVar' requestsInFlight (+ 1)
     ended = do
       ts <- getSystemTime
       atomically $ modifyTVar' requestsInFlight (subtract 1) >> writeTVar idleSince ts

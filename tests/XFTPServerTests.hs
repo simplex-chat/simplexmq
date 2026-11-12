@@ -28,6 +28,7 @@ import qualified Data.CaseInsensitive as CI
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Maybe (isJust)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
@@ -40,26 +41,27 @@ import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
-import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), alpnSupportedXFTPhandshakes, XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (canonicalizePath, doesDirectoryExist, getSymbolicLinkTarget, listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, withAsync)
+import UnliftIO.Exception (tryAny)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
@@ -91,6 +93,7 @@ xftpServerTests = do
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection and file when download stalls" testStalledDownload
       it "should close connection when request body stalls" testStalledRequestBody
+      it "should close connections without requests" testNoRequestTimeout
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
@@ -470,6 +473,19 @@ testStalledRequestBody fsType =
     let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
     withAsync (HC.sendRequest http2Client req Nothing) $ \_ ->
       timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+
+testNoRequestTimeout :: HasTestEnv => AFStoreType -> Expectation
+testNoRequestTimeout fsType =
+  forM_ ([Nothing, Just defaultInactiveClientExpiration] :: [Maybe ExpirationConfig]) $ \inactiveClientExpiration ->
+    withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c@XFTPServerConfig {transportConfig = tc} -> c {inactiveClientExpiration, transportConfig = tc {firstRequestTimeout = 1000000}}) $ \_ -> do
+      Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+      let cfg = defaultTransportClientConfig {clientALPN = Just alpnSupportedXFTPhandshakes} :: TransportClientConfig
+      runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
+        timeout 5000000 (tryAny $ cGet tls 1) >>= (`shouldSatisfy` isJust)
+      (c, disconnected) <- connectXFTPClient
+      threadDelay 2000000
+      atomically (tryReadTMVar disconnected) `shouldReturn` Nothing
+      runRight_ $ pingXFTP c
 
 connectXFTPClient :: HasTestEnv => IO (XFTPClient, TMVar ())
 connectXFTPClient = do

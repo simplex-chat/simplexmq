@@ -66,7 +66,9 @@ data TransportServerConfig = TransportServerConfig
     askClientCert :: Bool,
     addCORSHeaders :: Bool,
     tlsSetupTimeout :: Int,
-    transportTimeout :: Int
+    transportTimeout :: Int,
+    -- | HTTP/2 connections are closed when no request starts within this time, microseconds
+    firstRequestTimeout :: Int
   }
   deriving (Eq, Show)
 
@@ -96,7 +98,8 @@ mkTransportServerConfig logTLSErrors serverALPN askClientCert =
       askClientCert,
       addCORSHeaders = False,
       tlsSetupTimeout = 60000000,
-      transportTimeout = 40000000
+      transportTimeout = 40000000,
+      firstRequestTimeout = 60000000
     }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
