@@ -102,6 +102,9 @@ services:
       --rpc.gascap 50000000
       --port 30303
       --discovery.port 30303
+    # Docker's default 10 s can kill reth before it flushes its database, and it
+    # then unwinds its last blocks on the next start.
+    stop_grace_period: 2m
     restart: unless-stopped
 
   nimbus:
@@ -141,9 +144,9 @@ services:
       # starting before reth has finished snapshot replay just yields a few
       # 502s until the chain is queryable. The upstream reth image doesn't
       # ship a HEALTHCHECK, so we can't gate on healthy.
-      # The startup read of the name policies is the exception: until reth
-      # answers, the resolver exits and restarts, and a TLD whose name policy
-      # reth has not yet reached answers 502 until the resolver restarts
+      # The startup read of the name policies is the exception: the resolver
+      # listens only once reth answers it, and a TLD whose name policy reth has
+      # not yet reached answers 502 until the resolver restarts
       # (README, "Configuring addresses").
       reth:
         condition: service_started
@@ -154,14 +157,14 @@ services:
       # (mainnet `.testing`; `.simplex` unconfigured). Set explicitly here
       # only if you're deploying against a different network or contract.
       # SNRC_REGISTRY_TESTING: 0x...
-      # SNRC_REGISTRY_SIMPLEX: 0x...
       # Registrar and controller, same cascade. Without the registrar `status`
       # is "unknown"; without the controller a reserved name is "unregistered".
       # SNRC_REGISTRAR_TESTING: 0x...
-      # SNRC_REGISTRAR_SIMPLEX: 0x...
       # SNRC_CONTROLLER_TESTING: 0x...
-      # SNRC_CONTROLLER_SIMPLEX: 0x...
       # Set in .env (see .env.example); unset or empty means the resolver's default.
+      SNRC_REGISTRY_SIMPLEX: ${SNRC_REGISTRY_SIMPLEX:-}
+      SNRC_REGISTRAR_SIMPLEX: ${SNRC_REGISTRAR_SIMPLEX:-}
+      SNRC_CONTROLLER_SIMPLEX: ${SNRC_CONTROLLER_SIMPLEX:-}
       SNRC_WORKERS: ${SNRC_WORKERS:-}
       SNRC_RPC_TIMEOUT: ${SNRC_RPC_TIMEOUT:-}
       SNRC_LOG_FORMAT: ${SNRC_LOG_FORMAT:-}
