@@ -19,7 +19,8 @@ ntfServerSchemaMigrations =
     ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
     ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash),
     ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server),
-    ("20261111_subscriptions_uncommon_status", m20261111_subscriptions_uncommon_status, Just down_m20261111_subscriptions_uncommon_status)
+    ("20261111_subscriptions_uncommon_status", m20261111_subscriptions_uncommon_status, Just down_m20261111_subscriptions_uncommon_status),
+    ("20261112_autovacuum", m20261112_autovacuum, Just down_m20261112_autovacuum)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -261,6 +262,28 @@ down_m20261111_subscriptions_uncommon_status :: Text
 down_m20261111_subscriptions_uncommon_status =
   [r|
 DROP INDEX idx_subscriptions_uncommon_status;
+  |]
+
+m20261112_autovacuum :: Text
+m20261112_autovacuum =
+  [r|
+ALTER TABLE subscriptions SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_analyze_scale_factor = 0.01,
+  autovacuum_vacuum_cost_limit = 1000
+);
+
+ALTER TABLE last_notifications SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_analyze_scale_factor = 0.01
+);
+  |]
+
+down_m20261112_autovacuum :: Text
+down_m20261112_autovacuum =
+  [r|
+ALTER TABLE subscriptions RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit);
+ALTER TABLE last_notifications RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
   |]
 
 resetNtfServices :: Text
