@@ -344,6 +344,8 @@ functionalAPITests ps = do
       withSmpServer ps testEnablePQEncryption
     it "should refuse joining already used invitation and keep connection" $
       withSmpServer ps testJoinUsedInvitation
+    it "should refuse confirmation with client version below the version of its agent" $
+      withSmpServer ps testConfClientVersionBelowAgentVersion
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
     xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
@@ -940,6 +942,14 @@ testJoinUsedInvitation =
     r <- liftIO . runExceptT $ A.joinConnection bob NRMInteractive 1 aliceId' True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     liftIO $ r `shouldBe` Left (CONN DUPLICATE "")
     exchangeGreetings alice bobId bob aliceId
+
+testConfClientVersionBelowAgentVersion :: (HasCallStack, HasTestEnv) => IO ()
+testConfClientVersionBelowAgentVersion =
+  withAgentClientsCfg2 agentCfg agentCfg {smpClientVRange = mkVersionRange 1 2} $ \alice bob -> runRight_ $ do
+    (bobId, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing (IKLinkPQ PQSupportOn) False SMSubscribe
+    (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+    _ <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+    get alice =##> \case ("", c, ERR (AGENT A_VERSION)) -> c == bobId; _ -> False
 
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
 testEnablePQEncryption =

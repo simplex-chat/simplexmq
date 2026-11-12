@@ -3931,6 +3931,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             let compatible =
                   (agentVersion `isCompatible` smpAgentVRange || agentVersion <= agreedAgentVersion)
                     && (phVer `isCompatible` smpClientVRange || phVer <= agreedClientVerion)
+                    && phVer >= min agreedClientVerion (minSMPClientVersion agentVersion)
             unless compatible $ throwE $ AGENT A_VERSION
 
           smpConfirmation :: SMP.MsgId -> Connection c -> Maybe C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()
