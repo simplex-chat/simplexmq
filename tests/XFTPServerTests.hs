@@ -29,8 +29,10 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
+import Network.HPACK (defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
+import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
 import qualified Network.TLS as T
 import SMPClient (withStallingServerOn')
 import ServerTests (logSize)
@@ -46,9 +48,9 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
@@ -88,6 +90,7 @@ xftpServerTests = do
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
+      it "should close connection when DATA exceeds the HTTP/2 flow-control window" testHTTP2FlowControl
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -453,6 +456,39 @@ testOldServerHandshake _ = do
   isLeft (decode $ smpEncode ("invalid" :: ByteString)) `shouldBe` True
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
+
+testHTTP2FlowControl :: HasTestEnv => AFStoreType -> Expectation
+testHTTP2FlowControl _ =
+  withStallingXFTPServer $ \requested _ -> do
+    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+    runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) -> do
+      cPut tls $ connectionPreface <> frame 0 id (SettingsFrame [])
+      SettingsFrame settings <- nextFrame tls $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
+      (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just 100, Just http2WindowSize)
+      cPut tls $ frame 0 setAck (SettingsFrame [])
+      nextFrame tls (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
+      dynTable <- newDynamicTableForEncoding 4096
+      hdrs <- encodeHeader defaultEncodeStrategy 4096 dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
+      cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
+      atomically $ takeTMVar requested
+      -- the stalling handler reads no body, so the server returns no window
+      let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
+      replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
+      cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
+      cPut tls $ frame 0 id $ PingFrame "flowctrl"
+      nextFrame tls (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
+      cPut tls $ frame 1 id $ DataFrame "x"
+      nextFrame tls (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
+  where
+    frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
+    nextFrame tls wanted = do
+      (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
+      payload <- either (error . show) pure . decodeFramePayload typ h =<< cGet tls (payloadLength h)
+      if wanted typ h
+        then pure payload
+        else case payload of
+          GoAwayFrame {} -> error $ "unexpected " <> show payload
+          _ -> nextFrame tls wanted
 
 -- SNI and CORS tests
 
