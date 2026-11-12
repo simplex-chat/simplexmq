@@ -558,6 +558,7 @@ test-suite simplexmq-test
       CoreTests.SOCKSSettings
       CoreTests.StoreLogTests
       CoreTests.TSessionSubs
+      CoreTests.TransportTests
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
