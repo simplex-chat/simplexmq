@@ -99,6 +99,7 @@ data XFTPTransportRequest = XFTPTransportRequest
     reqBody :: HTTP2Body,
     request :: H.Request,
     sendResponse :: H.Response -> IO (),
+    closeSession :: IO (),
     sniUsed :: SNICredentialUsed,
     addCORS :: Bool
   }
@@ -156,7 +157,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
+      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed closeSession sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
@@ -166,7 +167,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
             let v = VersionXFTP 1
                 thServerVRange = versionToRange v
                 thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfo = Nothing}
-                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, sniUsed, addCORS = addCORS'}
+                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, closeSession, sniUsed, addCORS = addCORS'}
             flip runReaderT env $ case sessionALPN of
               Nothing -> processRequest req0
               Just alpn
@@ -420,7 +421,7 @@ data ServerFile = ServerFile
   }
 
 processRequest :: FileStoreClass s => XFTPTransportRequest -> M s ()
-processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS}
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, closeSession, addCORS}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
   | otherwise =
       case xftpDecodeTServer thParams bodyHead of
@@ -437,21 +438,26 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse t' serverFile_ = do
       let t_ = xftpEncodeTransmission thParams t'
+      sendTimeout <- asks $ fileTimeout . config
 #ifdef slow_servers
       randomDelay
 #endif
-      liftIO $ sendResponse $ H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody t_
+      liftIO $ sendResponse $ H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody sendTimeout t_
       where
-        streamBody t_ send done = do
+        streamBody sendTimeout t_ send done = do
           case t_ of
             Left _ -> do
               send "padding error" -- TODO respond with BLOCK error?
               done
             Right t -> do
               send $ byteString t
-              -- timeout sending file in the same way as receiving
-              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
-                withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize
+              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} ->
+                timeout sendTimeout (withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize) >>= \case
+                  Just () -> pure ()
+                  Nothing -> do
+                    -- http2 cannot reset a stream while its send queue is full, so the connection is closed instead
+                    logWarn "file sending timeout, closing connection"
+                    closeSession
           done
 
 #ifdef slow_servers

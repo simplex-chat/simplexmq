@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -11,7 +12,7 @@ module XFTPServerTests (xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, bracket)
+import Control.Exception (IOException, SomeException, bracket, catch)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -36,7 +37,7 @@ import SMPClient (withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
-import Simplex.FileTransfer.Description (kb)
+import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
@@ -53,7 +54,7 @@ import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (listDirectory, removeFile)
+import System.Directory (canonicalizePath, doesDirectoryExist, getSymbolicLinkTarget, listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
@@ -85,6 +86,7 @@ xftpServerTests = do
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
+      it "should close connection and file when download stalls" testStalledDownload
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
@@ -420,6 +422,45 @@ testFileSkipCommitted fsType =
         uploadXFTPChunk c spKey sId chunkSpec -- upload again to get FROk without getting stuck
         downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
         liftIO $ B.readFile (testPath "received_chunk") `shouldReturn` bytes -- new chunk content got ignored
+
+testStalledDownload :: HasTestEnv => AFStoreType -> Expectation
+testStalledDownload fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+    g <- C.newRandom
+    (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    -- larger than the 1 MB stream window of http2 plus its send queue, so that the server blocks sending it
+    let size = mb 4
+        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = size}
+    B.writeFile testChunkPath =<< atomically (C.randomBytes (fromIntegral size) g)
+    digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+    disconnected <- newEmptyTMVarIO
+    ts <- getCurrentTime
+    c@XFTPClient {http2Client, thParams} <-
+      either (error . show) pure =<< getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
+    (sId, rId) <- runRight $ do
+      (sId, [rId]) <- createXFTPChunk c spKey FileInfo {sndKey, size, digest} [rcvKey] Nothing
+      uploadXFTPChunk c spKey sId chunkSpec
+      pure (sId, rId)
+    (rDhKey, _) <- atomically $ C.generateKeyPair g
+    t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams rpKey ("", rId, FileCmd SFRecipient $ FGET rDhKey)
+    -- only the response head is read, the rest of the body is never consumed
+    void . either (error . show) pure =<< HC.sendRequest http2Client (H2.requestBuilder "POST" "/" [] $ byteString t) Nothing
+    timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+    openDescriptors (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId)) >>= (`shouldSatisfy` maybe True (== 0))
+
+-- | Nothing when the platform has no /proc/self/fd
+openDescriptors :: FilePath -> IO (Maybe Int)
+openDescriptors path =
+  doesDirectoryExist fdDir >>= \case
+    False -> pure Nothing
+    True -> do
+      target <- canonicalizePath path
+      fds <- listDirectory fdDir
+      Just . length . filter (== target) <$> mapM linkTarget fds
+  where
+    fdDir = "/proc/self/fd"
+    linkTarget fd = getSymbolicLinkTarget (fdDir </> fd) `catch` \(_ :: IOException) -> pure ""
 
 testHandshakeTimeout :: HasTestEnv => AFStoreType -> Expectation
 testHandshakeTimeout _ =

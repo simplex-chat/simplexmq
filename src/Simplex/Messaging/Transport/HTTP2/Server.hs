@@ -54,7 +54,7 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize serverSupported srvCreds Nothing transportConfig Nothing (const $ pure ()) $ \_sniUsed sessionId sessionALPN r sendResponse -> do
+    runHTTP2Server started http2Port bufferSize serverSupported srvCreds Nothing transportConfig Nothing (const $ pure ()) $ \_sniUsed _closeSession sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
@@ -63,7 +63,7 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> HTTP2ServerFunc) -> IO ()
+runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> IO ()
 runHTTP2Server started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
   where
     setup handler = do
@@ -79,18 +79,19 @@ runHTTP2ServerWith bufferSize tlsSetup http2Server =
     (\_sessId -> pure ())
     bufferSize
     (\handler -> tlsSetup $ \tls -> handler (False, tls))
-    (const http2Server)
+    (\_ _ -> http2Server)
 
-runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> (((SNICredentialUsed, TLS p) -> IO ()) -> a) -> (SNICredentialUsed -> HTTP2ServerFunc) -> a
+-- | The handler receives an action that closes the client connection.
+runHTTP2ServerWith_ :: Maybe ExpirationConfig -> (SessionId -> IO ()) -> BufferSize -> (((SNICredentialUsed, TLS p) -> IO ()) -> a) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> a
 runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup $ \(sniUsed, tls) -> do
   activeAt <- newTVarIO =<< getSystemTime
   sessionThread <- myThreadId
   tid_ <- mapM (forkIO . expireInactiveClient sessionThread activeAt) expCfg_
-  withHTTP2 bufferSize (run sniUsed tls activeAt) (clientFinished $ tlsUniq tls) tls `finally` mapM_ killThread tid_
+  withHTTP2 bufferSize (run sniUsed tls sessionThread activeAt) (clientFinished $ tlsUniq tls) tls `finally` mapM_ killThread tid_
   where
-    run sniUsed tls activeAt cfg = H.run cfg $ \req _aux sendResp -> do
+    run sniUsed tls sessionThread activeAt cfg = H.run cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
-      http2Server sniUsed (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
+      http2Server sniUsed (killThread sessionThread) (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
     expireInactiveClient sessionThread activeAt expCfg = loop
       where
         loop = do

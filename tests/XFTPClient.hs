@@ -140,7 +140,7 @@ withStallingXFTPServer action = do
   requested <- newEmptyTMVarIO
   closed <- newEmptyTMVarIO
   creds <- loadServerCredential xftpCredentials
-  let stall _ _ _ _ _ = atomically (putTMVar requested ()) >> threadDelay maxBound
+  let stall _ _ _ _ _ _ = atomically (putTMVar requested ()) >> threadDelay maxBound
   serverBracket
     (\started -> runHTTP2Server started xftpTestPort defaultHTTP2BufferSize defaultSupportedParams creds Nothing transportConfig Nothing (\_ -> atomically $ putTMVar closed ()) stall)
     (pure ())
