@@ -377,8 +377,8 @@ the client will reject. Its `subnameHook()` names the subname registrar, whose
 `reservedNames`, which is where `reasonCode` comes from. With no controller a
 held-back name reads as not reserved, and no name can be priced.
 
-All three default to the mainnet `.testing` deployment. `.simplex` is unset
-until it is deployed.
+All three default to the mainnet `.testing` deployment. `.simplex` has no
+default; `.env.example` lists its mainnet addresses.
 
 Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
@@ -403,7 +403,8 @@ here.
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
-as env vars when you run the script directly.
+as env vars when you run the script directly. With docker compose, the
+`.simplex` ones can be set in `.env`.
 
 ### Load and scaling
 
