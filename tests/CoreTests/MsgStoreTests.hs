@@ -77,6 +77,7 @@ msgStoreTests = do
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
       it "should peek the first message of each queue in a batch" $ withMsgStore cfg testPeekMsgs
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
+      it "should not update recipient keys changed after the command was verified" $ withMsgStore cfg testUpdateChangedKeys
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -275,6 +276,21 @@ testLinkDataSecuredQueue ms = do
     liftIO $ ld' `shouldBe` ld
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
+
+testUpdateChangedKeys :: MsgStoreClass s => s -> IO ()
+testUpdateChangedKeys ms = do
+  g <- C.newRandom
+  (k1, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (k2, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+  (rId, qr@QueueRec {recipientKeys = ks}) <- testNewQueueRec g QMContact
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    ExceptT $ updateKeys st q (Just ks) [k1]
+    liftIO $ updateKeys st q (Just ks) [k2] `shouldReturn` Left AUTH
+    (_, QueueRec {recipientKeys}) <- ExceptT $ getQueueRec ms SRecipient rId
+    liftIO $ recipientKeys `shouldBe` [k1]
+    void $ ExceptT $ deleteQueue ms q
 
 -- sizes of queues, senders, links and notifiers maps
 type QueueMapSizes = (Int, Int, Int, Int)

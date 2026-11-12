@@ -245,11 +245,12 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         Just k | sKey /= k -> throwE AUTH
         _ -> pure ()
 
-  updateKeys :: PostgresQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
-  updateKeys st sq rKeys =
+  updateKeys :: PostgresQueueStore q -> q -> Maybe (NonEmpty RcvPublicAuthKey) -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys st sq prevKeys_ rKeys =
     withQueueRec sq $ \q -> do
-      assertUpdated $ withDB' "updateKeys" st $ \db ->
-        DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL" (rKeys, rId)
+      assertUpdated $ withDB' "updateKeys" st $ \db -> case prevKeys_ of
+        Just prevKeys -> DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL AND recipient_keys = ?" (rKeys, rId, prevKeys)
+        Nothing -> DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL" (rKeys, rId)
       atomically $ writeTVar (queueRec sq) $ Just q {recipientKeys = rKeys}
       withLog "updateKeys" st $ \s -> logUpdateKeys s rId rKeys
     where

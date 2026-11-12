@@ -1683,7 +1683,7 @@ client
           GET -> withQueue getMessage
           ACK msgId -> withQueue $ acknowledgeMsg msgId
           KEY sKey -> withQueue $ \q _ -> either err (corrId,entId,) <$> secureQueue_ q sKey
-          RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q rKeys)
+          RKEY rKeys -> withQueue $ \q qr -> checkMode QMContact qr $ OK <$$ liftIO (updateKeys (queueStore ms) q (Just $ recipientKeys qr) rKeys)
           LSET lnkId d ->
             withQueue $ \q qr -> case queueData qr of
               _ | isSecuredMsgQueue qr -> pure $ err AUTH
