@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -10,11 +11,12 @@ import Control.Monad
 import qualified Data.ByteString.Char8 as B
 import Data.Either (isLeft)
 import Data.X509.Validation (Fingerprint (..))
-import Network.Socket (ServiceName)
+import Network.Socket (ServiceName, Socket, SocketOption (KeepAlive), getSocketOption)
 import SMPClient (serverBracket)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (defaultTransportClientConfig, runTLSTransportClient)
+import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts, defaultKeepAliveOpts)
 import Simplex.Messaging.Transport.Server
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Async (async, wait, waitCatch)
@@ -23,9 +25,14 @@ import UnliftIO.Timeout (timeout)
 import Util
 
 transportTests :: Spec
-transportTests =
+transportTests = do
   describe "TLS connection close" $
     it "should close connection while a sender is blocked by a peer that stopped reading" testCloseBlockedTLS
+  describe "TCP keep-alive" $ do
+    it "should enable keep-alive on accepted sockets when configured" $
+      testServerKeepAlive (Just defaultKeepAliveOpts) True
+    it "should not enable keep-alive on accepted sockets by default" $
+      testServerKeepAlive Nothing False
 
 transportTestPort :: HasTestEnv => ServiceName
 transportTestPort = testServerPort 9
@@ -38,22 +45,24 @@ testCredentials =
       certificateFile = "tests/fixtures/server.crt"
     }
 
--- | Runs the client action with the server side of the same TLS connection
-withTLSConnection :: HasTestEnv => TransportServerConfig -> (TLS 'TClient -> TLS 'TServer -> IO a) -> IO a
+-- | Runs the client action with the server socket and TLS of the same connection
+withTLSConnection :: HasTestEnv => TransportServerConfig -> (TLS 'TClient -> (Socket, TLS 'TServer) -> IO a) -> IO a
 withTLSConnection cfg action = do
-  creds <- loadServerCredential testCredentials
+  credential <- loadServerCredential testCredentials
   Fingerprint fp <- loadFingerprint testCredentials
-  serverTLS <- newEmptyTMVarIO
-  let server tls = atomically (putTMVar serverTLS tls) >> threadDelay maxBound
+  ss <- newSocketState
+  serverConn <- newEmptyTMVarIO
+  let creds = TLSServerCredential {credential, sniCredential = Nothing}
+      server sock (_, tls) = atomically (putTMVar serverConn (sock, tls)) >> threadDelay maxBound
   serverBracket
-    (\started -> runTransportServer started transportTestPort defaultSupportedParams creds cfg server)
+    (\started -> runTransportServerState_ ss started transportTestPort defaultSupportedParams creds cfg server)
     (pure ())
     $ \_ ->
       runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" transportTestPort (Just $ C.KeyHash fp) $ \client ->
-        atomically (takeTMVar serverTLS) >>= action client
+        atomically (takeTMVar serverConn) >>= action client
 
 testCloseBlockedTLS :: HasTestEnv => Expectation
-testCloseBlockedTLS = withTLSConnection (mkTransportServerConfig True Nothing False) $ \_client server -> do
+testCloseBlockedTLS = withTLSConnection (mkTransportServerConfig True Nothing False) $ \_client (_, server) -> do
   sent <- newTVarIO (0 :: Int)
   sender <- async . forever $ cPut server block >> atomically (modifyTVar' sent (+ 1))
   waitBlocked sent 0
@@ -68,3 +77,8 @@ testCloseBlockedTLS = withTLSConnection (mkTransportServerConfig True Nothing Fa
       threadDelay 500000
       n' <- readTVarIO sent
       unless (n' == n) $ waitBlocked sent n'
+
+testServerKeepAlive :: HasTestEnv => Maybe KeepAliveOpts -> Bool -> Expectation
+testServerKeepAlive tcpKeepAlive enabled =
+  withTLSConnection (mkTransportServerConfig True Nothing False) {tcpKeepAlive} $ \_client (sock, _) ->
+    ((/= 0) <$> getSocketOption sock KeepAlive) `shouldReturn` enabled

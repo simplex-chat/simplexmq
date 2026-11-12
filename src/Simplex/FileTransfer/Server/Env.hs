@@ -22,6 +22,7 @@ module Simplex.FileTransfer.Server.Env
     fileStore,
     fromFileStore,
     defaultInactiveClientExpiration,
+    defaultXFTPKeepAlive,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
@@ -71,6 +72,7 @@ import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
+import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts (..))
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
@@ -126,6 +128,15 @@ defaultInactiveClientExpiration =
   ExpirationConfig
     { ttl = 21600, -- seconds, 6 hours
       checkInterval = 3600 -- seconds, 1 hours
+    }
+
+-- | an idle peer that vanished is detected after keepIdle + keepCnt * keepIntvl = 120 seconds
+defaultXFTPKeepAlive :: KeepAliveOpts
+defaultXFTPKeepAlive =
+  KeepAliveOpts
+    { keepIdle = 60, -- seconds
+      keepIntvl = 10, -- seconds
+      keepCnt = 6
     }
 
 data XFTPEnv s = XFTPEnv
