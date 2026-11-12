@@ -402,12 +402,12 @@ prometheusMetrics sm rtm ts =
       \# TYPE simplex_smp_relay_messages_received counter\n\
       \simplex_smp_relay_messages_received " <> mshow _pMsgFwdsRecv <> "\n# pMsgFwdsRecv\n\
       \\n\
-      \# HELP simplex_smp_forward_worker_cmd_ms Time from the start of processing a forwarded command to queueing its response, without AUTH error delay, for commands processed by forward workers, in ms.\n\
+      \# HELP simplex_smp_forward_worker_cmd_ms Time from the start of processing a forwarded command to queueing its response, including the wait in the forward worker queue and excluding AUTH error delay, in ms.\n\
       \# TYPE simplex_smp_forward_worker_cmd_ms summary\n\
       \simplex_smp_forward_worker_cmd_ms_sum " <> mshow _fwdWorkerCmdMs <> "\n# fwdWorkerCmdMs\n\
       \simplex_smp_forward_worker_cmd_ms_count " <> mshow _fwdWorkerCmds <> "\n# fwdWorkerCmds\n\
       \\n\
-      \# HELP simplex_smp_forward_worker_cmd_ms_max The longest time from the start of processing a forwarded command to queueing its response, in ms.\n\
+      \# HELP simplex_smp_forward_worker_cmd_ms_max The longest time of simplex_smp_forward_worker_cmd_ms, in ms.\n\
       \# TYPE simplex_smp_forward_worker_cmd_ms_max gauge\n\
       \simplex_smp_forward_worker_cmd_ms_max " <> mshow _fwdWorkerCmdMaxMs <> "\n# fwdWorkerCmdMaxMs\n\
       \\n\
