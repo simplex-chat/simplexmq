@@ -19,8 +19,7 @@ ntfServerSchemaMigrations =
     ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
     ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash),
     ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server),
-    ("20261111_subscriptions_uncommon_status", m20261111_subscriptions_uncommon_status, Just down_m20261111_subscriptions_uncommon_status),
-    ("20261112_autovacuum", m20261112_autovacuum, Just down_m20261112_autovacuum)
+    ("20261112_status_counts_autovacuum", m20261112_status_counts_autovacuum, Just down_m20261112_status_counts_autovacuum)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -252,21 +251,11 @@ ALTER TABLE smp_servers
   |]
   <> resetNtfServices
 
-m20261111_subscriptions_uncommon_status :: Text
-m20261111_subscriptions_uncommon_status =
+m20261112_status_counts_autovacuum :: Text
+m20261112_status_counts_autovacuum =
   [r|
 CREATE INDEX idx_subscriptions_uncommon_status ON subscriptions(status) WHERE status NOT IN ('ACTIVE', 'DELETED', 'AUTH');
-  |]
 
-down_m20261111_subscriptions_uncommon_status :: Text
-down_m20261111_subscriptions_uncommon_status =
-  [r|
-DROP INDEX idx_subscriptions_uncommon_status;
-  |]
-
-m20261112_autovacuum :: Text
-m20261112_autovacuum =
-  [r|
 ALTER TABLE subscriptions SET (
   autovacuum_vacuum_scale_factor = 0.02,
   autovacuum_analyze_scale_factor = 0.01,
@@ -279,11 +268,13 @@ ALTER TABLE last_notifications SET (
 );
   |]
 
-down_m20261112_autovacuum :: Text
-down_m20261112_autovacuum =
+down_m20261112_status_counts_autovacuum :: Text
+down_m20261112_status_counts_autovacuum =
   [r|
-ALTER TABLE subscriptions RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit);
 ALTER TABLE last_notifications RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
+ALTER TABLE subscriptions RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit);
+
+DROP INDEX idx_subscriptions_uncommon_status;
   |]
 
 resetNtfServices :: Text
