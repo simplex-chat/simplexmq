@@ -1163,20 +1163,21 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
 getWorkItem :: (Eq i, Show i, AnyStoreError e) => String -> IO (Maybe i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e (Maybe a))
 getWorkItem itemName getId getItem markFailed = runExceptT nextItem
   where
-    nextItem = getId' $>>= \i -> tryGetItem itemName getItem markFailed isPending i >>= maybe nextItem (pure . Just)
+    nextItem = getId' $>>= \i -> tryGetItem itemName getId' getItem markFailed i >>= maybe nextItem (pure . Just)
     getId' = handleWrkErr itemName "getId" getId
-    isPending i = (Just i ==) <$> getId'
 
 getWorkItems :: (Eq i, Show i, AnyStoreError e) => String -> IO [i] -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e [Either e a])
-getWorkItems itemName getIds getItem markFailed =
-  runExceptT $ getIds' >>= fmap (mapMaybe sequence) . mapM (tryE . tryGetItem itemName getItem markFailed isPending)
+getWorkItems itemName getIds getItem markFailed = runExceptT nextItems
   where
+    nextItems = do
+      ids <- getIds'
+      rs <- mapMaybe sequence <$> mapM (tryE . tryGetItem itemName getIds' getItem markFailed) ids
+      if null rs && not (null ids) then nextItems else pure rs
     getIds' = handleWrkErr itemName "getIds" getIds
-    isPending i = elem i <$> getIds'
 
-tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> (i -> ExceptT e IO Bool) -> i -> ExceptT e IO (Maybe a)
-tryGetItem itemName getItem markFailed isPending itemId =
-  (Just <$> ExceptT (getItem itemId)) `catchAllErrors` \e -> ifM (isPending itemId) (mark >> throwE e) (pure Nothing)
+tryGetItem :: (Foldable t, Eq i, Show i, AnyStoreError e) => String -> ExceptT e IO (t i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO (Maybe a)
+tryGetItem itemName getIds getItem markFailed itemId =
+  (Just <$> ExceptT (getItem itemId)) `catchAllErrors` \e -> ifM (elem itemId <$> getIds) (mark >> throwE e) (pure Nothing)
   where
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
