@@ -459,22 +459,22 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
 #ifdef slow_servers
       randomDelay
 #endif
-      liftIO $ sendResponse $ H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody sendTimeout t_
+      liftIO . sendResponse $ case serverFile_ of
+        Nothing -> H.responseBuilder N.ok200 (corsHeaders addCORS) $ either (const paddingError) byteString t_
+        Just serverFile -> H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody sendTimeout t_ serverFile
       where
-        streamBody sendTimeout t_ send done = do
+        paddingError = "padding error" -- TODO respond with BLOCK error?
+        streamBody sendTimeout t_ ServerFile {filePath, fileSize, sbState} send done = do
           case t_ of
-            Left _ -> do
-              send "padding error" -- TODO respond with BLOCK error?
-              done
+            Left _ -> send paddingError
             Right t -> do
               send $ byteString t
-              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} ->
-                timeout sendTimeout (withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize) >>= \case
-                  Just () -> pure ()
-                  Nothing -> do
-                    -- http2 cannot reset a stream while its send queue is full, so the connection is closed instead
-                    logWarn "file sending timeout, closing connection"
-                    closeSession
+              timeout sendTimeout (withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize) >>= \case
+                Just () -> pure ()
+                Nothing -> do
+                  -- http2 cannot reset a stream while its send queue is full, so the connection is closed instead
+                  logWarn "file sending timeout, closing connection"
+                  closeSession
           done
 
 #ifdef slow_servers
