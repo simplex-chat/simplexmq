@@ -17,6 +17,7 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
+import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
@@ -50,6 +51,7 @@ import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
+import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
@@ -57,7 +59,7 @@ import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (canonicalizePath, doesDirectoryExist, getSymbolicLinkTarget, listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, withAsync)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
@@ -74,6 +76,7 @@ xftpServerTests = do
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
+      it "should not disconnect clients during downloads longer than inactivity ttl" testLongDownloadExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
@@ -87,6 +90,7 @@ xftpServerTests = do
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection and file when download stalls" testStalledDownload
+      it "should close connection when request body stalls" testStalledRequestBody
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
@@ -247,6 +251,30 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
     atomically (tryTakeTMVar disconnected) `shouldReturn` Just ()
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testLongDownloadExpiration :: HasTestEnv => AFStoreType -> Expectation
+testLongDownloadExpiration fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> do
+    (c, disconnected, rId, rpKey) <- uploadLargeChunk
+    g <- C.newRandom
+    HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
+    getPart <- maybe (error "no response body") pure bodyPart
+    -- the slow part takes longer than the inactivity ttl, the rest is read without delays
+    slowBytes <- readBody getPart (mb 2) 25000
+    restBytes <- readBody getPart maxBound 0
+    slowBytes + restBytes `shouldBe` mb 4 + C.authTagSize
+    runRight_ $ pingXFTP c
+    timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+  where
+    inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+    readBody getPart limit delay = go 0
+      where
+        go n
+          | n >= limit = pure n
+          | otherwise = do
+              threadDelay delay
+              len <- B.length <$> getPart fileBlockSize
+              if len == 0 then pure n else go (n + len)
 
 testCancelledClientConnect :: HasTestEnv => Expectation
 testCancelledClientConnect =
@@ -426,28 +454,52 @@ testFileSkipCommitted fsType =
 testStalledDownload :: HasTestEnv => AFStoreType -> Expectation
 testStalledDownload fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+    (c, disconnected, rId, rpKey) <- uploadLargeChunk
     g <- C.newRandom
-    (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-    -- larger than the 1 MB stream window of http2 plus its send queue, so that the server blocks sending it
-    let size = mb 4
-        chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = size}
-    B.writeFile testChunkPath =<< atomically (C.randomBytes (fromIntegral size) g)
-    digest <- LC.sha256Hash <$> LB.readFile testChunkPath
-    disconnected <- newEmptyTMVarIO
-    ts <- getCurrentTime
-    c@XFTPClient {http2Client, thParams} <-
-      either (error . show) pure =<< getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
-    (sId, rId) <- runRight $ do
-      (sId, [rId]) <- createXFTPChunk c spKey FileInfo {sndKey, size, digest} [rcvKey] Nothing
-      uploadXFTPChunk c spKey sId chunkSpec
-      pure (sId, rId)
-    (rDhKey, _) <- atomically $ C.generateKeyPair g
-    t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams rpKey ("", rId, FileCmd SFRecipient $ FGET rDhKey)
     -- only the response head is read, the rest of the body is never consumed
-    void . either (error . show) pure =<< HC.sendRequest http2Client (H2.requestBuilder "POST" "/" [] $ byteString t) Nothing
+    void $ sendFGET c g rpKey rId
     timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
-    openDescriptors (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId)) >>= (`shouldSatisfy` maybe True (== 0))
+    files <- listDirectory xftpServerFiles
+    mapM (openDescriptors . (xftpServerFiles </>)) files >>= (`shouldSatisfy` all (maybe True (== 0)))
+
+testStalledRequestBody :: HasTestEnv => AFStoreType -> Expectation
+testStalledRequestBody fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+    (XFTPClient {http2Client}, disconnected) <- connectXFTPClient
+    -- http2 client sends request headers only after the first part of the body
+    let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
+    withAsync (HC.sendRequest http2Client req Nothing) $ \_ ->
+      timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+
+connectXFTPClient :: HasTestEnv => IO (XFTPClient, TMVar ())
+connectXFTPClient = do
+  disconnected <- newEmptyTMVarIO
+  ts <- getCurrentTime
+  c <- either (error . show) pure =<< getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
+  pure (c, disconnected)
+
+-- | Uploads a chunk larger than the 1 MB stream window of http2 plus its send queue, so that its download blocks unless the body is read
+uploadLargeChunk :: HasTestEnv => IO (XFTPClient, TMVar (), RecipientId, C.APrivateAuthKey)
+uploadLargeChunk = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let size = mb 4
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = size}
+  B.writeFile testChunkPath =<< atomically (C.randomBytes (fromIntegral size) g)
+  digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+  (c, disconnected) <- connectXFTPClient
+  rId <- runRight $ do
+    (sId, [rId]) <- createXFTPChunk c spKey FileInfo {sndKey, size, digest} [rcvKey] Nothing
+    uploadXFTPChunk c spKey sId chunkSpec
+    pure rId
+  pure (c, disconnected, rId, rpKey)
+
+sendFGET :: XFTPClient -> TVar ChaChaDRG -> C.APrivateAuthKey -> RecipientId -> IO HC.HTTP2Response
+sendFGET XFTPClient {http2Client, thParams} g rpKey rId = do
+  (rDhKey, _) <- atomically $ C.generateKeyPair g
+  t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams rpKey ("", rId, FileCmd SFRecipient $ FGET rDhKey)
+  either (error . show) pure =<< HC.sendRequest http2Client (H2.requestBuilder "POST" "/" [] $ byteString t) Nothing
 
 -- | Nothing when the platform has no /proc/self/fd
 openDescriptors :: FilePath -> IO (Maybe Int)

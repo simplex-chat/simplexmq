@@ -162,20 +162,23 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
           Just "GET" | sniUsed -> forM_ webCanonicalRoot_ $ \root -> serveStaticPageH2 root r sendResponse
-          _ -> do
-            reqBody <- getHTTP2Body r xftpBlockSize
-            let v = VersionXFTP 1
-                thServerVRange = versionToRange v
-                thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfo = Nothing}
-                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, closeSession, sniUsed, addCORS = addCORS'}
-            flip runReaderT env $ case sessionALPN of
-              Nothing -> processRequest req0
-              Just alpn
-                | alpn == xftpALPNv1 || alpn == httpALPN11 || (sniUsed && alpn == "h2") ->
-                    xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
-                      Nothing -> pure ()
-                      Just thParams -> processRequest req0 {thParams}
-                | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
+          _ ->
+            -- requests in flight keep the connection from expiring, so a stalled request body must close it
+            timeout (fileTimeout cfg) (getHTTP2Body r xftpBlockSize) >>= \case
+              Nothing -> logWarn "request receiving timeout, closing connection" >> closeSession
+              Just reqBody -> do
+                let v = VersionXFTP 1
+                    thServerVRange = versionToRange v
+                    thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfo = Nothing}
+                    req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, closeSession, sniUsed, addCORS = addCORS'}
+                flip runReaderT env $ case sessionALPN of
+                  Nothing -> processRequest req0
+                  Just alpn
+                    | alpn == xftpALPNv1 || alpn == httpALPN11 || (sniUsed && alpn == "h2") ->
+                        xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
+                          Nothing -> pure ()
+                          Just thParams -> processRequest req0 {thParams}
+                    | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M s (Maybe (THandleParams XFTPVersion 'TServer))
     xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, request, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
       s <- atomically $ TM.lookup sessionId sessions
