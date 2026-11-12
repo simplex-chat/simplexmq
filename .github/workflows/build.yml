@@ -456,6 +456,11 @@ jobs:
         env: *test-env
         run: scripts/ci/run-tests.sh ./simplexmq-test-client-postgres
 
+      - name: Check generated files
+        if: ${{ !cancelled() && matrix.should_run == true && matrix.arch == 'x86-64' }}
+        shell: bash
+        run: git diff --exit-code
+
       - name: Remove -O2 build directories
         id: remove-o2
         if: env.cache_o0 == 'true' && !cancelled() && steps.build-postgres.outcome == 'success' && steps.build-standard.outcome != 'failure'
