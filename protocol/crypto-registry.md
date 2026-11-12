@@ -40,6 +40,7 @@ Status values used below:
 | Purpose | Default | Functions |
 |---|---|---|
 | Signature | Ed25519 | `C.sign'`, `C.verify'` with `C.SEd25519` |
+| Sender command authorization | crypto_box authenticator over X25519 queue keys | `C.cbAuthenticate`, `C.cbVerify`; agent `sndAuthAlg` |
 | Key agreement | X25519 | `C.generateKeyPair`, `C.dh'` |
 | Post-quantum KEM | sntrup761 | `KEM.sntrup761Keypair`, `sntrup761Enc`, `sntrup761Dec` |
 | Hybrid DH + KEM secret | HKDF-SHA512 over `dh \|\| kemSecret` with a new info string, as in `CR.rootKdf` | `C.hkdf` |
@@ -55,7 +56,7 @@ Status values used below:
 
 | Primitive | Status | Purpose and protocol | Implementation | Lengths |
 |---|---|---|---|---|
-| Ed25519 | Default | SMP/NTF/XFTP queue and file keys (agent default `rcvAuthAlg` in [Agent/Env/SQLite.hs](../src/Simplex/Messaging/Agent/Env/SQLite.hs)), short-link signatures and owner auth (`SL.encodeSign`, `SL.newOwnerAuth`), XRCP identity and session keys ([RemoteControl/Invitation.hs](../src/Simplex/RemoteControl/Invitation.hs)), agent service request signatures, client/service TLS certificates ([Transport/Credentials.hs](../src/Simplex/Messaging/Transport/Credentials.hs)) | crypton `Crypto.PubKey.Ed25519` via `C.sign'`/`C.verify'` | pub 32, priv 32, sig 64; X.509 SPKI 44 |
+| Ed25519 | Default | SMP recipient and notifier keys, NTF token keys, XFTP file keys (agent default `rcvAuthAlg` in [Agent/Env/SQLite.hs](../src/Simplex/Messaging/Agent/Env/SQLite.hs)), short-link signatures and owner auth (`SL.encodeSign`, `SL.newOwnerAuth`), XRCP identity and session keys ([RemoteControl/Invitation.hs](../src/Simplex/RemoteControl/Invitation.hs)), agent service request signatures, client/service TLS certificates ([Transport/Credentials.hs](../src/Simplex/Messaging/Transport/Credentials.hs)) | crypton `Crypto.PubKey.Ed25519` via `C.sign'`/`C.verify'` | pub 32, priv 32, sig 64; X.509 SPKI 44 |
 | Ed448 | Approved | Server CA and online certificates (default `signAlgorithm = ED448` in [Server/CLI.hs](../src/Simplex/Messaging/Server/CLI.hs)); accepted for SMP command signatures and TLS | crypton `Crypto.PubKey.Ed448`; server key generation by the `openssl genpkey` CLI | pub 57, priv 57, sig 114; SPKI 69 |
 | X25519 | Default | Per-queue e2e and server-to-recipient `crypto_box` keys, SMP session DH, command authenticator (SMP v7+), proxy (PRXY/PFWD), notification tokens, XFTP chunk transport, XRCP hello and announcements | crypton `Crypto.PubKey.Curve25519` via `C.dh'` | pub 32, priv 32, secret 32; SPKI 44 |
 | X448 | Restricted | E2E double ratchet only: X3DH and DH ratchet (`CR.RatchetX448`, E2E v3) | crypton `Crypto.PubKey.Curve448` | pub 56, priv 56, secret 56 |
