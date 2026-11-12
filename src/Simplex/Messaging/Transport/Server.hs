@@ -239,6 +239,7 @@ startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStart
     resolve =
       let hints = defaultHints {addrFlags = [AI_PASSIVE], addrSocketType = Stream}
        in select <$> getAddrInfo (Just hints) host (Just port)
+    select :: [AddrInfo] -> AddrInfo
     select as = fromJust $ family AF_INET6 <|> family AF_INET
       where
         family f = find ((== f) . addrFamily) as

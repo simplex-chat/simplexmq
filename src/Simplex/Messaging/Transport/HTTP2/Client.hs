@@ -27,6 +27,7 @@ import Control.Concurrent.Async
 import Control.Exception (Handler (..), IOException, SomeAsyncException, SomeException)
 import qualified Control.Exception as E
 import Control.Monad
+import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.X509 as X
@@ -153,7 +154,7 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
         Nothing -> cancel action $> Left (HCNetworkError NETimeoutError)
 
     client :: HClient -> TMVar (Either HTTP2ClientError HTTP2Client) -> TLS p -> H.Client HTTP2Response
-    client c cVar tls sendReq = do
+    client c cVar tls sendReq _aux = do
       sessionTs <- getCurrentTime
       let c' =
             HTTP2Client
@@ -173,7 +174,7 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
         putTMVar cVar (Right c')
       process c' sendReq `E.finally` disconnected
 
-    process :: HTTP2Client -> H.Client HTTP2Response
+    process :: HTTP2Client -> H.SendRequest -> IO HTTP2Response
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
       (req, respVar) <- atomically $ readTBQueue reqQ
       sendReq req $ \r -> do
@@ -220,4 +221,10 @@ runHTTP2ClientWith :: forall a p. BufferSize -> TransportHost -> ((TLS p -> IO a
 runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 bufferSize (run tls) (pure ()) tls
   where
     run :: TLS p -> H.Config -> IO a
-    run tls cfg = H.run (ClientConfig "https" (strEncode host) 20) cfg $ client tls
+    run tls cfg = H.run clientConfig cfg $ client tls
+    clientConfig =
+      H.defaultClientConfig
+        { scheme = "https",
+          authority = B.unpack $ strEncode host,
+          cacheLimit = 20
+        }

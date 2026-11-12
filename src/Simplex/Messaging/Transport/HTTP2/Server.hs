@@ -88,9 +88,10 @@ runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup 
   tid_ <- mapM (forkIO . expireInactiveClient sessionThread activeAt) expCfg_
   withHTTP2 bufferSize (run sniUsed tls activeAt) (clientFinished $ tlsUniq tls) tls `finally` mapM_ killThread tid_
   where
-    run sniUsed tls activeAt cfg = H.run cfg $ \req _aux sendResp -> do
+    run sniUsed tls activeAt cfg = H.run serverConfig cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
       http2Server sniUsed (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
+    serverConfig = H.defaultServerConfig
     expireInactiveClient sessionThread activeAt expCfg = loop
       where
         loop = do
