@@ -96,7 +96,7 @@ import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (.
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..))
+import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
 import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getConnIds, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
@@ -347,6 +347,8 @@ functionalAPITests ps = do
       withSmpServer ps testJoinUsedInvitation
     it "should refuse confirmation with client version below the version of its agent" $
       withSmpServer ps testConfClientVersionBelowAgentVersion
+    it "should create X25519 sender keys" $
+      withSmpServer ps testX25519SndKeys
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
     xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
@@ -960,6 +962,18 @@ testConfClientVersionBelowAgentVersion =
     (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
     _ <- A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
     get alice =##> \case ("", c, ERR (AGENT A_VERSION)) -> c == bobId; _ -> False
+
+testX25519SndKeys :: (HasCallStack, HasTestEnv) => IO ()
+testX25519SndKeys =
+  withAgentClients2 $ \alice bob -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    checkX25519SndKey alice bobId
+    checkX25519SndKey bob aliceId
+
+checkX25519SndKey :: AgentClient -> ConnId -> IO ()
+checkX25519SndKey c connId = do
+  Right (SomeConn _ (DuplexConnection _ _ (SndQueue {sndPrivateKey = C.APrivateAuthKey C.SX25519 _} :| _))) <- withTransaction (store $ agentEnv c) (`getConn` connId)
+  pure ()
 
 testEnablePQEncryption :: (HasCallStack, HasTestEnv) => IO ()
 testEnablePQEncryption =
@@ -1898,6 +1912,7 @@ testJoinConn_ viaProxy sndSecure a bId b connReq = do
   get a ##> ("", bId, CON)
   get b ##> ("", aId, INFO "alice's connInfo")
   get b ##> ("", aId, CON)
+  liftIO $ checkX25519SndKey b aId
   exchangeGreetingsViaProxy viaProxy a bId b aId
 
 testInvitationShortLinkAsync :: HasCallStack => Bool -> AgentClient -> AgentClient -> IO ()
