@@ -10,6 +10,8 @@
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -fno-warn-unticked-promoted-constructors #-}
+-- DhAlgorithm makes non-DH key constructors unreachable in lowOrderKeys, but GHC reports it as redundant
+{-# OPTIONS_GHC -fno-warn-redundant-constraints #-}
 
 module AgentTests.DoubleRatchetTests where
 
@@ -17,9 +19,14 @@ import Control.Concurrent.STM
 import Control.Monad (forM_, when)
 import Control.Monad.Except
 import Control.Monad.IO.Class
+import Crypto.Cipher.AES (AES256)
+import qualified Crypto.Error as CE
+import qualified Crypto.PubKey.Curve25519 as X25519
+import qualified Crypto.PubKey.Curve448 as X448
 import Crypto.Random (ChaChaDRG)
 import Data.Aeson (FromJSON, ToJSON, (.=))
 import qualified Data.Aeson as J
+import qualified Data.ByteArray as BA
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map.Strict as M
@@ -52,6 +59,8 @@ doubleRatchetTests = do
     it "should decode v2 Ratchet with default field values" $ testDecodeV2RatchetJSON
     it "should agree the same ratchet parameters" $ testAlgs testX3dh
     it "should agree the same ratchet parameters with version 1" $ testAlgs testX3dhV1
+    it "should reject low-order DH keys in key agreement" $ testAlgs testX3dhLowOrderKeys
+    it "should reject low-order DH key in message header" $ testAlgs testRatchetStepLowOrderKey
   describe "post-quantum hybrid KEM double-ratchet algorithm" $ do
     describe "hybrid KEM key agreement" $ do
       it "should propose KEM during agreement, but no shared secret" $ testAlgs testPqX3dhProposeInReply
@@ -398,6 +407,51 @@ testX3dhV1 _ = do
   paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   paramsAlice `shouldBe` paramsBob
 
+testX3dhLowOrderKeys :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testX3dhLowOrderKeys _ = do
+  g <- C.newRandom
+  let v = currentE2EEncryptVersion
+  (pksBob, AE2ERatchetParams _ e2eBob@(E2ERatchetParams _ bk1 bk2 _)) <- liftIO $ generateSndE2EParams @a g v Nothing
+  (pksAlice, e2eAlice@(E2ERatchetParams _ ak1 ak2 _)) <- liftIO $ generateRcvE2EParams @a g v PQSupportOff
+  Right _ <- pure $ pqX3dhSnd pksBob e2eAlice
+  Right _ <- runExceptT $ pqX3dhRcv pksAlice e2eBob
+  let params k1 k2 = E2ERatchetParams v k1 k2 Nothing :: E2ERatchetParams 'RKSProposed a
+  forM_ (lowOrderKeys ak1) $ \k -> do
+    pqX3dhSnd pksBob (params k ak2) `shouldBe` Left allZeroDhError
+    pqX3dhSnd pksBob (params ak1 k) `shouldBe` Left allZeroDhError
+    runExceptT (pqX3dhRcv pksAlice $ params k bk2) `shouldReturn` Left allZeroDhError
+    runExceptT (pqX3dhRcv pksAlice $ params bk1 k) `shouldReturn` Left allZeroDhError
+
+testRatchetStepLowOrderKey :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
+testRatchetStepLowOrderKey _ = do
+  g <- C.newRandom
+  (alice, Ratchet {rcSnd = Just SndRatchet {rcHKs}, rcAD = Str ad}, _, _, _) <- initRatchets @a
+  let decryptWithKey k = do
+        let hdr = MsgHeader {msgMaxVersion = currentE2EEncryptVersion, msgDHRs = k, msgKEM = Nothing, msgPN = 0, msgNs = 0}
+            ehIV = C.IV $ B.replicate (C.ivSize @AES256) '\0'
+        Right (ehAuthTag, ehBody) <- runExceptT $ C.encryptAEAD rcHKs ehIV (paddedHeaderLen PQSupportOff) ad (smpEncode hdr)
+        let emHeader = smpEncode EncMessageHeader {ehVersion = currentE2EEncryptVersion, ehIV, ehAuthTag, ehBody}
+        runExceptT $ rcDecrypt g alice M.empty $ smpEncode EncRatchetMessage {emHeader, emAuthTag = ehAuthTag, emBody = "message"}
+  (validKey, _) <- atomically $ C.generateKeyPair @a g
+  decryptWithKey validKey >>= \case
+    Right (Left C.AESDecryptError, _, _) -> pure ()
+    _ -> expectationFailure "header with valid key should be decrypted and ratchet advanced"
+  forM_ (lowOrderKeys validKey) $ \k ->
+    decryptWithKey k >>= \case
+      Left e -> e `shouldBe` allZeroDhError
+      Right _ -> expectationFailure "ratchet should not advance with low-order key"
+
+-- RFC 7748 section 6.2: u = 0 and u = 1 are low-order points on both curves and their twists
+lowOrderKeys :: DhAlgorithm a => C.PublicKey a -> [C.PublicKey a]
+lowOrderKeys = \case
+  C.PublicKeyX25519 k -> C.PublicKeyX25519 . CE.throwCryptoError . X25519.publicKey <$> lowOrderPoints (BA.length k)
+  C.PublicKeyX448 k -> C.PublicKeyX448 . CE.throwCryptoError . X448.publicKey <$> lowOrderPoints (BA.length k)
+  where
+    lowOrderPoints n = [B.replicate n '\0', B.cons '\1' $ B.replicate (n - 1) '\0']
+
+allZeroDhError :: CryptoError
+allZeroDhError = C.CryptoHeaderError "all-zero DH secret"
+
 testPqX3dhProposeInReply :: forall a. (AlgorithmI a, DhAlgorithm a) => C.SAlgorithm a -> IO ()
 testPqX3dhProposeInReply _ = do
   g <- C.newRandom
@@ -535,8 +589,8 @@ initRatchets = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let vs = testRatchetVersions
-      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOff
+  Right bob <- pure $ initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+  let alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOff
   pure (alice, bob, encrypt' noSndKEM, decrypt' noRcvKEM, (\#>))
 
 initRatchetsKEMProposed :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -552,8 +606,8 @@ initRatchetsKEMProposed = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let vs = testRatchetVersions
-      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
+  Right bob <- pure $ initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+  let alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMAccepted :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -570,8 +624,8 @@ initRatchetsKEMAccepted = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let vs = testRatchetVersions
-      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
+  Right bob <- pure $ initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+  let alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsKEMProposedAgain :: forall a. (AlgorithmI a, DhAlgorithm a) => IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
@@ -587,8 +641,8 @@ initRatchetsKEMProposedAgain = do
   Right paramsAlice <- runExceptT $ pqX3dhRcv pksAlice e2eBob
   (_, pkBob3) <- atomically $ C.generateKeyPair g
   let vs = testRatchetVersions
-      bob = initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
-      alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
+  Right bob <- pure $ initSndRatchet vs (C.publicKey pkAlice2) pkBob3 paramsBob
+  let alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
 initRatchetsV2 :: (AlgorithmI a, DhAlgorithm a) => Encrypt a -> Decrypt a -> IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
