@@ -1160,16 +1160,23 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
                 _ -> Left $ SEInternal "unexpected snd msg data"
     markMsgFailed msgId = DB.execute db "UPDATE snd_message_deliveries SET failed = 1 WHERE conn_id = ? AND internal_id = ?" (connId, msgId)
 
-getWorkItem :: (Show i, AnyStoreError e) => String -> IO (Maybe i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e (Maybe a))
-getWorkItem itemName getId getItem markFailed =
-  runExceptT $ handleWrkErr itemName "getId" getId >>= mapM (tryGetItem itemName getItem markFailed)
+getWorkItem :: (Eq i, Show i, AnyStoreError e) => String -> IO (Maybe i) -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e (Maybe a))
+getWorkItem itemName getId getItem markFailed = runExceptT nextItem
+  where
+    nextItem = getId' $>>= \i -> tryGetItem itemName getItem markFailed isPending i >>= maybe nextItem (pure . Just)
+    getId' = handleWrkErr itemName "getId" getId
+    isPending i = (Just i ==) <$> getId'
 
-getWorkItems :: (Show i, AnyStoreError e) => String -> IO [i] -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e [Either e a])
+getWorkItems :: (Eq i, Show i, AnyStoreError e) => String -> IO [i] -> (i -> IO (Either e a)) -> (i -> IO ()) -> IO (Either e [Either e a])
 getWorkItems itemName getIds getItem markFailed =
-  runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
+  runExceptT $ getIds' >>= fmap (mapMaybe sequence) . mapM (tryE . tryGetItem itemName getItem markFailed isPending)
+  where
+    getIds' = handleWrkErr itemName "getIds" getIds
+    isPending i = elem i <$> getIds'
 
-tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
-tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchAllErrors` \e -> mark >> throwE e
+tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> (i -> ExceptT e IO Bool) -> i -> ExceptT e IO (Maybe a)
+tryGetItem itemName getItem markFailed isPending itemId =
+  (Just <$> ExceptT (getItem itemId)) `catchAllErrors` \e -> ifM (isPending itemId) (mark >> throwE e) (pure Nothing)
   where
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
