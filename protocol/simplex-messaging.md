@@ -708,6 +708,8 @@ recipientKey = length x509encoded
 
 This command added to allow multiple group owners manage data of the same queue link.
 
+The router MUST respond with `AUTH` error and keep the current keys if the queue recipient keys changed after the command was authorized.
+
 #### Set short link
 
 This command is used to associate a short link with the queue:
