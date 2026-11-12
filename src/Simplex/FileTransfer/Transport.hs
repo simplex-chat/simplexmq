@@ -191,7 +191,7 @@ sendEncFile h send = go
     go sbState sz =
       getFileChunk h sz >>= \ch -> do
         let (encCh, sbState') = LC.sbEncryptChunk sbState ch
-        send (byteString encCh) `E.catch` \(e :: E.SomeException) -> print e >> E.throwIO e
+        send (byteString encCh) `E.catch` \(e :: E.SomeException) -> logInfo ("sendEncFile: " <> tshow e) >> E.throwIO e
         go sbState' $ sz - fromIntegral (B.length ch)
 
 receiveFile :: (Int -> IO ByteString) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
