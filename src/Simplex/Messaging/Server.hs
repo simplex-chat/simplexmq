@@ -695,8 +695,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       smpSubs <- getSubscribersMetrics subscribers
       ntfSubs <- getSubscribersMetrics ntfSubscribers
       loadedCounts <- loadedQueueCounts $ fromMsgStore ms
-      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts}
+      fwdWorkerQLength <- fmap sum . mapM fwdQLength =<< getServerClients srv
+      pure RealTimeMetrics {socketStats, threadsCount, clientsCount, deliveredSubs, deliveredTimes, smpSubs, ntfSubs, loadedCounts, fwdWorkerQLength}
       where
+        fwdQLength Client {fwdWorkers} = atomically $ readTVar fwdWorkers >>= fmap sum . mapM lengthTBQueue
         getSubscribersMetrics ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients} = do
           subsCount <- M.size <$> getSubscribedClients queueSubscribers
           subClientsCount <- IS.size <$> readTVarIO subClients
@@ -1207,6 +1209,13 @@ updateSlotWaitStats ServerStats {cmdSlotWaits, cmdSlotWaitMs, cmdSlotWaitMaxMs, 
   atomicModifyIORef'_ cmdSlotWaitMs (+ waitMs)
   atomicModifyIORef'_ cmdSlotWaitMaxMs (max waitMs)
   unless taken $ incStat cmdSlotWaitTimeouts
+
+updateFwdWorkerStats :: ServerStats -> SystemTime -> IO ()
+updateFwdWorkerStats ServerStats {fwdWorkerCmds, fwdWorkerCmdMs, fwdWorkerCmdMaxMs} since = do
+  cmdMs <- fromIntegral . (`div` 1000) . subtract (microseconds since) . microseconds <$> getSystemTime
+  incStat fwdWorkerCmds
+  atomicModifyIORef'_ fwdWorkerCmdMs (+ cmdMs)
+  atomicModifyIORef'_ fwdWorkerCmdMaxMs (max cmdMs)
 
 rslvTooManyRequests :: BrokerMsg
 rslvTooManyRequests = ERR $ NAME $ RESOLVER "too many requests"
@@ -2219,10 +2228,11 @@ client
                     rres <- either ERR id <$> runExceptT (encodeResp r)
                     stats <- asks serverStats
                     authDelay <- asks $ authErrorDelay . config
-                    liftIO $
+                    liftIO $ do
                       if isAuthError r
                         then sendAfterDelay clnt stats authDelay startedAt ([(corrId, NoEntity, rres)], [])
                         else atomically $ writeTBQueue sndQ ([(corrId, NoEntity, rres)], [])
+                      updateFwdWorkerStats stats startedAt
                   pure Nothing
               Nothing -> pure $ Just (corrId', entId', ERR $ CMD PROHIBITED)
           stats <- asks serverStats

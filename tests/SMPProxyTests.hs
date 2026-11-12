@@ -50,6 +50,7 @@ import UnliftIO
 import Util
 
 #if defined(dbServerPostgres)
+import qualified Data.ByteString.Char8 as B
 import Data.Hashable (hash)
 import Data.Int (Int64)
 import Database.PostgreSQL.Simple (Binary (..), Only (..))
@@ -530,7 +531,7 @@ smpProxyPostgresTests =
 testForwardedQueueLocked :: HasTestEnv => IO ()
 testForwardedQueueLocked =
   withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
-    withSmpServerConfigOn (transport @TLS) (cfgS2QS SQSPostgres) testPort2 $ \_ -> do
+    withSmpServerConfigOn (transport @TLS) (updateCfg (cfgS2QS SQSPostgres) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}) testPort2 $ \_ -> do
       g <- C.newRandom
       ts <- getCurrentTime
       rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (2, testSMPServer2, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
@@ -557,10 +558,22 @@ testForwardedQueueLocked =
                   _ -> threadDelay 10000 >> waitBlocked
           timeout 10000000 waitBlocked `shouldReturn` Just ()
           timeout 10000000 (proxySend sIdB) `shouldReturn` Just (Right ())
-          Nothing <- poll sendA
-          PSQL.rollback locker
-          wait sendA `shouldReturn` Right ()
+          withAsync (proxySend sIdA) $ \sendA' -> do
+            threadDelay 1500000
+            metric "simplex_smp_forward_worker_queue_length" `shouldReturn` 1
+            Nothing <- poll sendA
+            PSQL.rollback locker
+            wait sendA `shouldReturn` Right ()
+            wait sendA' `shouldReturn` Right ()
+        threadDelay 1500000
+        metric "simplex_smp_forward_worker_cmd_ms_count" `shouldReturn` 3
+        metric "simplex_smp_forward_worker_cmd_ms_max" >>= (`shouldSatisfy` (>= 1500))
   where
+    metric name = do
+      ms <- map B.words . B.lines <$> B.readFile testPrometheusMetricsFile
+      case [v | n : v : _ <- ms, n == name] of
+        [v] -> pure (read $ B.unpack v :: Int)
+        _ -> fail $ "no metric " <> B.unpack name
     withPostgres = bracket connectPostgres PSQL.close
     connectPostgres = do
       db <- PSQL.connectPostgreSQL testServerDBConnstr

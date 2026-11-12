@@ -20,6 +20,7 @@ import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Network.Socket (ServiceName)
+import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.MsgStore.Types (LoadedQueueCounts (..))
 import Simplex.Messaging.Server.QueueStore.Types (EntityCounts (..))
 import Simplex.Messaging.Server.Stats
@@ -46,7 +47,8 @@ data RealTimeMetrics = RealTimeMetrics
     deliveredTimes :: TimeBuckets,
     smpSubs :: RTSubscriberMetrics,
     ntfSubs :: RTSubscriberMetrics,
-    loadedCounts :: LoadedQueueCounts
+    loadedCounts :: LoadedQueueCounts,
+    fwdWorkerQLength :: Natural
   }
 
 data RTSubscriberMetrics = RTSubscriberMetrics
@@ -70,7 +72,8 @@ prometheusMetrics sm rtm ts =
         deliveredTimes,
         smpSubs,
         ntfSubs,
-        loadedCounts
+        loadedCounts,
+        fwdWorkerQLength
       } = rtm
     ServerStatsData
       { _fromTime,
@@ -131,6 +134,9 @@ prometheusMetrics sm rtm ts =
         _cmdSlotWaitMs,
         _cmdSlotWaitMaxMs,
         _cmdSlotWaitTimeouts,
+        _fwdWorkerCmds,
+        _fwdWorkerCmdMs,
+        _fwdWorkerCmdMaxMs,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -395,6 +401,19 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_relay_messages_received Relay messages statistics.\n\
       \# TYPE simplex_smp_relay_messages_received counter\n\
       \simplex_smp_relay_messages_received " <> mshow _pMsgFwdsRecv <> "\n# pMsgFwdsRecv\n\
+      \\n\
+      \# HELP simplex_smp_forward_worker_cmd_ms Time from receiving a forwarded command to queueing its response, for commands processed by forward workers, in ms.\n\
+      \# TYPE simplex_smp_forward_worker_cmd_ms summary\n\
+      \simplex_smp_forward_worker_cmd_ms_sum " <> mshow _fwdWorkerCmdMs <> "\n# fwdWorkerCmdMs\n\
+      \simplex_smp_forward_worker_cmd_ms_count " <> mshow _fwdWorkerCmds <> "\n# fwdWorkerCmds\n\
+      \\n\
+      \# HELP simplex_smp_forward_worker_cmd_ms_max The longest time from receiving a forwarded command to queueing its response, in ms.\n\
+      \# TYPE simplex_smp_forward_worker_cmd_ms_max gauge\n\
+      \simplex_smp_forward_worker_cmd_ms_max " <> mshow _fwdWorkerCmdMaxMs <> "\n# fwdWorkerCmdMaxMs\n\
+      \\n\
+      \# HELP simplex_smp_forward_worker_queue_length Forwarded commands waiting in forward worker queues.\n\
+      \# TYPE simplex_smp_forward_worker_queue_length gauge\n\
+      \simplex_smp_forward_worker_queue_length " <> mshow fwdWorkerQLength <> "\n# fwdWorkerQLength\n\
       \\n"
     services =
       "# Services\n\
