@@ -99,6 +99,9 @@ BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
 # The smp-server gives up after 3 s, so a slower call only holds a thread.
 RPC_TIMEOUT_S = float(os.environ.get("SNRC_RPC_TIMEOUT", "") or 5)
+# Waits between startup reads while the node is not answering, doubling up to the maximum.
+STARTUP_RETRY_MIN_S = 1
+STARTUP_RETRY_MAX_S = 30
 # The node and the beacon client usually share the host, so not every core.
 MAX_DEFAULT_WORKERS = 4
 WORKERS = int(os.environ.get("SNRC_WORKERS", "") or min(MAX_DEFAULT_WORKERS, os.cpu_count() or 1))
@@ -546,6 +549,18 @@ def name_policies() -> dict:
             continue
         policies[tld] = policy
     return policies
+
+
+def wait_for_name_policies() -> dict:
+    """name_policies(), read again until the node answers, as it starts with the resolver."""
+    delay = STARTUP_RETRY_MIN_S
+    while True:
+        try:
+            return name_policies()
+        except Exception as e:
+            log_event(logging.WARNING, "node_unavailable", error=type(e).__name__, message=str(e), retry_s=delay)
+        time.sleep(delay)
+        delay = min(delay * 2, STARTUP_RETRY_MAX_S)
 
 
 def pricing_params(tld: str):
@@ -1551,11 +1566,10 @@ def supervise(workers: int):
 
 def main():
     setup_logging()
-    try:
-        NAME_POLICIES.update(name_policies())
-    except Exception:
-        log_event(logging.ERROR, "startup_failed", exc_info=True)
-        sys.exit(1)
+    # as PID 1 in the container, the process ignores SIGTERM without a handler
+    signal.signal(signal.SIGTERM, stop_on)
+    signal.signal(signal.SIGINT, stop_on)
+    NAME_POLICIES.update(wait_for_name_policies())
     log_event(
         logging.INFO,
         "listening",
@@ -1570,8 +1584,6 @@ def main():
     if WORKERS > 1:
         supervise(WORKERS)
     else:
-        signal.signal(signal.SIGTERM, stop_on)
-        signal.signal(signal.SIGINT, stop_on)
         serve(reuse_port=False)
 
 
