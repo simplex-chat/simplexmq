@@ -340,7 +340,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         threadDelay interval
         ts <- getCurrentTime
         sm <- getFileServerMetrics ss rtsOpts
-        T.writeFile metricsFile $ xftpPrometheusMetrics sm ts
+        writeFileAtomic metricsFile $ xftpPrometheusMetrics sm ts
 
     getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
     getFileServerMetrics ss rtsOptions = do

@@ -245,7 +245,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         ts <- getCurrentTime
         sm <- getNtfServerMetrics st ss rtsOpts
         rtm <- getNtfRealTimeMetrics env
-        T.writeFile metricsFile $ ntfPrometheusMetrics sm rtm ts
+        writeFileAtomic metricsFile $ ntfPrometheusMetrics sm rtm ts
 
     getNtfServerMetrics :: NtfPostgresStore -> NtfServerStats -> Text -> IO NtfServerMetrics
     getNtfServerMetrics st ss rtsOptions = do

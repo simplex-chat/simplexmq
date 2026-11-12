@@ -672,7 +672,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         ts <- getCurrentTime
         sm <- getServerMetrics st ss rtsOpts
         rtm <- getRealTimeMetrics env
-        T.writeFile metricsFile $ prometheusMetrics sm rtm ts
+        writeFileAtomic metricsFile $ prometheusMetrics sm rtm ts
 
     getServerMetrics :: s -> ServerStats -> Text -> IO ServerMetrics
     getServerMetrics st ss rtsOptions = do
