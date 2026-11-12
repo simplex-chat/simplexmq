@@ -301,7 +301,7 @@ testInterruptedUploadStorage fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
                 send $ byteString $ B.replicate 1024 'x'
                 flush
                 threadDelay maxBound
-          race_ (HC.sendRequest http2Client req Nothing) (threadDelay 20000)
+          race_ (HC.sendRequest http2Client req Nothing pure) (threadDelay 20000)
           sId <$ closeXFTPClient c
     sIds <- pooledReplicateConcurrentlyN 10 300 interruptUpload
     threadDelay 1000000
@@ -506,7 +506,7 @@ testCORSHeaders =
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
-      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
       lookupResponseHeader "access-control-expose-headers" response `shouldBe` Just "*"
 
@@ -518,7 +518,7 @@ testCORSPreflight =
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "OPTIONS" "/" []
-      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
       lookupResponseHeader "access-control-allow-methods" response `shouldBe` Just "POST, OPTIONS"
       lookupResponseHeader "access-control-allow-headers" response `shouldBe` Just "*"
@@ -532,7 +532,7 @@ testNoCORSWithoutSNI =
         cfg = defaultTransportClientConfig {clientALPN = Just ["xftp/1"], useSNI = False}
     withH2Client defaultSupportedParams cfg caXFTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
-      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Nothing
 
 testFileChunkDeliverySNI :: HasTestEnv => Expectation
@@ -553,7 +553,7 @@ testWebHandshake =
       challenge <- atomically $ C.randomBytes 32 g
       helloBody <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge})) xftpBlockSize
       let helloReq = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody
-      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000)
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000) pure
       let serverHsBody = bodyHead (HC.respBody resp1)
       -- Decode server handshake
       serverHsDecoded <- either (error . show) pure $ C.unPad serverHsBody
@@ -575,7 +575,7 @@ testWebHandshake =
       let clientHs = XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash, entitlementProof = Nothing}
       clientHsPadded <- either (error . show) pure $ C.pad (smpEncode clientHs) xftpBlockSize
       let clientHsReq = H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded
-      resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000)
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000) pure
       let ackBody = bodyHead (HC.respBody resp2)
       B.length ackBody `shouldBe` 0
 
@@ -593,22 +593,22 @@ testWebReHandshake =
       challenge1 <- atomically $ C.randomBytes 32 g
       helloBody1 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge1})) xftpBlockSize
       let helloReq1 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody1
-      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000)
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000) pure
       serverHs1 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
       XFTPServerHandshake {sessionId = sid1} <- either error pure $ smpDecode serverHs1
       clientHsPadded <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash, entitlementProof = Nothing})) xftpBlockSize
-      resp1b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      resp1b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000) pure
       B.length (bodyHead (HC.respBody resp1b)) `shouldBe` 0
       -- Re-handshake on same connection with xftp-web-hello header
       challenge2 <- atomically $ C.randomBytes 32 g
       helloBody2 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge2})) xftpBlockSize
       let helloReq2 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody2
-      resp2 <- either (error . show) pure =<< HC.sendRequest h2 helloReq2 (Just 5000000)
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 helloReq2 (Just 5000000) pure
       serverHs2 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp2))
       XFTPServerHandshake {sessionId = sid2} <- either error pure $ smpDecode serverHs2
       sid2 `shouldBe` sid1
       -- Complete re-handshake
-      resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000) pure
       B.length (bodyHead (HC.respBody resp2b)) `shouldBe` 0
 
 testStaleWebSession :: HasTestEnv => Expectation
@@ -621,7 +621,7 @@ testStaleWebSession =
       -- Send a command on web connection without doing hello (no xftp-web-hello header)
       dummyBody <- either (error . show) pure $ C.pad "PING" xftpBlockSize
       let req = H2.requestBuilder "POST" "/" [] $ byteString dummyBody
-      resp <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      resp <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       let respBody = bodyHead (HC.respBody resp)
       -- Server should return padded SESSION error
       B.length respBody `shouldBe` xftpBlockSize

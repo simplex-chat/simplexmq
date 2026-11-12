@@ -182,7 +182,7 @@ smpServerTestStatic = do
       let h2cfg = HC.defaultHTTP2ClientConfig {HC.connTimeout = 1000000}
       bracket (either (error . show) pure =<< HC.attachHTTP2Client h2cfg "localhost" "5223" mempty 65536 tls) HC.closeHTTP2Client $ \h2 -> do
         let req = H2.requestNoBody "GET" "/" []
-        HC.sendRequest h2 req (Just 1000000) >>= \case
+        HC.sendRequest h2 req (Just 1000000) pure >>= \case
           Left _ -> pure ()
           Right _ -> expectationFailure "served over HTTP/2"
     logDebug "Combined HTTPS works"

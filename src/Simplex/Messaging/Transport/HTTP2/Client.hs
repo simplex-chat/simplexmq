@@ -23,6 +23,7 @@ module Simplex.Messaging.Transport.HTTP2.Client
     sendRequestDirect,
   ) where
 
+import Control.Concurrent (forkIO)
 import Control.Concurrent.Async
 import Control.Exception (Handler (..), IOException, SomeAsyncException, SomeException)
 import qualified Control.Exception as E
@@ -66,7 +67,7 @@ data HClient = HClient
     host :: TransportHost,
     port :: ServiceName,
     config :: HTTP2ClientConfig,
-    reqQ :: TBQueue (Request, TMVar HTTP2Response)
+    reqQ :: TBQueue (Request, TMVar HTTP2Response, TMVar ())
   }
 
 data HTTP2Response = HTTP2Response
@@ -174,25 +175,32 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
         putTMVar cVar (Right c')
       process c' sendReq `E.finally` disconnected
 
+    -- http2 resets the stream when the callback returns, so it waits for the request handler to finish.
+    -- Requests are still sent one at a time, each after the previous response arrives.
     process :: HTTP2Client -> H.SendRequest -> IO HTTP2Response
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
-      (req, respVar) <- atomically $ readTBQueue reqQ
-      sendReq req $ \r -> do
-        respBody <- getHTTP2Body r (bodyHeadSize config)
-        let resp = HTTP2Response {response = r, respBody}
-        atomically $ putTMVar respVar resp
-        pure resp
+      (req, respVar, doneVar) <- atomically $ readTBQueue reqQ
+      received <- newEmptyTMVarIO
+      let respond r = do
+            respBody <- getHTTP2Body r (bodyHeadSize config)
+            atomically $ putTMVar respVar HTTP2Response {response = r, respBody} >> putTMVar received Nothing
+            atomically $ readTMVar doneVar
+      void . forkIO $ sendReq req respond `E.catch` \(e :: SomeException) -> atomically $ void $ tryPutTMVar received $ Just e
+      atomically (takeTMVar received) >>= mapM_ E.throwIO
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTP2Client :: HTTP2Client -> IO ()
 closeHTTP2Client = mapM_ uninterruptibleCancel . action
 
-sendRequest :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
-sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
+-- | The response body can only be read in the handler, its stream is closed after it returns.
+sendRequest :: HTTP2Client -> Request -> Maybe Int -> (HTTP2Response -> IO a) -> IO (Either HTTP2ClientError a)
+sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ handleResponse = do
   resp <- newEmptyTMVarIO
-  atomically $ writeTBQueue reqQ (req, resp)
+  done <- newEmptyTMVarIO
+  atomically $ writeTBQueue reqQ (req, resp, done)
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resp))
+  r <- (reqTimeout `timeout` atomically (takeTMVar resp) >>= mapM handleResponse) `E.finally` atomically (putTMVar done ())
+  pure $ maybe (Left HCResponseTimeout) Right r
 
 -- | this function should not be used until HTTP2 is thread safe, use sendRequest
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
