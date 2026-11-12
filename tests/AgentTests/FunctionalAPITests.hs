@@ -101,7 +101,7 @@ import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..), MigrationError (..))
-import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig, defaultSMPClientConfig, getProtocolClient, sendSMPMessage)
+import Simplex.Messaging.Client (pattern NRMInteractive, NetworkConfig (..), NetworkTimeout (..), ProtocolClientConfig (..), TransportSessionMode (..), defaultClientConfig, defaultSMPClientConfig, getProtocolClient, sendSMPMessage)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..))
 import Simplex.Messaging.Crypto.Ratchet (InitialKeys (..), PQEncryption (..), PQSupport (..), pattern IKPQOff, pattern IKPQOn, pattern PQEncOff, pattern PQEncOn, pattern PQSupportOff, pattern PQSupportOn)
@@ -261,6 +261,9 @@ agentCfgVPrevPQ =
 agentCfgRatchetVPrev :: HasTestEnv => AgentConfig
 agentCfgRatchetVPrev = agentCfg {e2eEncryptVRange = prevRange $ e2eEncryptVRange agentCfg}
 
+initAgentServersLongConnect :: HasTestEnv => InitialAgentServers
+initAgentServersLongConnect = initAgentServers {netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 15_000000 15_000000}}
+
 mkVersionRange :: Word16 -> Word16 -> VersionRange v
 mkVersionRange v1 v2 = V.mkVersionRange (Version v1) (Version v2)
 
@@ -356,6 +359,7 @@ functionalAPITests ps = do
   describe "Establish duplex connection via contact address" $ do
     testMatrix2 ps runAgentClientContactTest
     it "should not decrypt contact request with zero DH secret" $ testContactRequestZeroSecret ps
+    it "should not block the connection while the server of the contact request does not respond" $ testAcceptContactStallingServer ps
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ True True
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
@@ -400,6 +404,10 @@ functionalAPITests ps = do
       withSmpServer ps testSignedServiceRequestAsync
     it "should deliver a service response across server outages" $
       testServiceRequestResilient ps
+    it "should expire the service request while the server of the service does not respond" $
+      testServiceRequestStallingServer ps
+    it "should delete the reply queue when the service request expires while the queue is created" $
+      testServiceRequestExpiringReplyQueue ps
   describe "Changing connection user id" $ do
     it "should change user id for new connections" $ do
       withSmpServer ps testUpdateConnectionUserId
@@ -571,6 +579,16 @@ functionalAPITests ps = do
       testFastSwitchDrainOldQueue ps
     it "should drain the old queue after QEND on the new queue and restart" $
       testFastSwitchDrainOldQueueRestart ps
+    it "should receive messages while the server of the new queue does not respond" $
+      testFastSwitchStallingNewServer ps
+    it "should delete the new queue when the switch is aborted while the queue is created" $
+      testSwitchChangedWhileNewQueue abortConnectionSwitch "switchConnection: aborted" ps
+    it "should delete the new queue when ratchet synchronization starts while the queue is created" $
+      testSwitchChangedWhileNewQueue (\c connId -> synchronizeRatchet c connId PQSupportOn True) "switchConnection: send prohibited" ps
+    it "should refuse the switch when ratchet synchronization starts before the new queue is created" $
+      testSwitchRatchetSyncBeforeNewQueue ps
+    it "should secure the new queue and complete the switch after ratchet synchronization" $
+      testFastSwitchRatchetSyncWhileSecuring ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -624,6 +642,9 @@ functionalAPITests ps = do
   describe "getConnectionVerifyCodes" $
     it "should return the same codes for both peers" $
       withSmpServer ps testConnectionVerifyCodes
+  describe "Connection locks" $
+    it "should prohibit server requests in connection lock" $
+      withSmpServer ps testServerRequestInConnLock
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
@@ -1103,6 +1124,25 @@ testContactRequestZeroSecret ps = withSmpServer ps $ withAgentClients2 $ \alice 
     void $ joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
     get alice =##> \case ("", c, REQ _ _ "bob's connInfo") -> c == contactId; _ -> False
 
+testAcceptContactStallingServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testAcceptContactStallingServer ps@(t, ASType qsType _) =
+  withSmpServer ps $
+    withAgent 1 agentCfg initAgentServersLongConnect testDB $ \a -> do
+      (bId, invId) <- withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ ->
+        withAgent 2 agentCfg bServers testDB2 $ \b -> runRight $ do
+          (_, cReq) <- createConnection a 1 True SCMContact Nothing SMSubscribe
+          void $ joinConnection b 1 True cReq "bob's connInfo" SMSubscribe
+          ("", _, REQ invId _ "bob's connInfo") <- get a
+          (bId, _) <- A.prepareConnectionToAccept a 1 True invId PQSupportOn
+          pure (bId, invId)
+      withStallingServerOn' testPort2 $ \accepted _ ->
+        withAsync (runExceptT $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe) $ \_ -> do
+          timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+          Just (Left (A.CMD PROHIBITED _)) <- timeout 5_000000 . runExceptT $ synchronizeRatchet a bId PQSupportOn False
+          timeout 1_000000 (runExceptT $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe) `shouldReturn` Nothing
+  where
+    bServers = initAgentServers {smp = userServers [testSMPServer2]}
+
 allowConfirmGreet :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ConfirmationId -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
 allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
   allowConnection bob aliceId confId "bob's connInfo"
@@ -1525,6 +1565,42 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
     sentConnId `shouldBe` replyConnId
     wait reqAsync
   resp `shouldBe` Right "resilient response"
+
+testServiceRequestStallingServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testServiceRequestStallingServer ps@(t, ASType qsType _) =
+  withSmpServer ps $
+    withAgent 1 agentCfg initAgentServersLongConnect testDB $ \client -> do
+      connReq <- withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ ->
+        withAgent 2 agentCfg serviceServers testDB2 $ \service -> runRight $ do
+          (_, CCLink connReq _) <- A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+          pure connReq
+      withStallingServerOn testPort2 $ do
+        timeout 5_000000 (runExceptT $ sendServiceRequestAsync client 1 connReq (Just 1) Nothing "service request")
+          `shouldReturn` Just (Left $ AGENT $ A_SERVICE ASETimeout)
+        threadDelay 500000
+        withTransaction (store $ agentEnv client) getConnIds `shouldReturn` []
+  where
+    serviceServers = initAgentServers {smp = userServers [testSMPServer2]}
+
+testServiceRequestExpiringReplyQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testServiceRequestExpiringReplyQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \service -> do
+      (_, CCLink connReq _) <- runRight $ A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+          withAgent 1 agentCfg clientServers testDB $ \client ->
+            withAsync (runExceptT $ sendServiceRequestAsync client 1 connReq (Just 1) Nothing "service request") $ \req -> do
+              timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+              timeout 5_000000 (wait req) `shouldReturn` Just (Left $ AGENT $ A_SERVICE ASETimeout)
+              get client =##> \case ("", "", DEL_CONNS [_]) -> True; _ -> False
+              withTransaction (store $ agentEnv client) getConnIds `shouldReturn` []
+              atomically $ putTMVar opened ()
+              suspendAgent client 5_000000
+              nGet client ##> ("", "", SUSPENDED)
+      storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+  where
+    clientServers = initAgentServersLongConnect {smp = userServers [testSMPServer2]}
 
 testUpdateConnectionUserId :: (HasCallStack, HasTestEnv) => IO ()
 testUpdateConnectionUserId =
@@ -3971,6 +4047,105 @@ testFastSwitchDrainOldQueueRestart ps =
         subscribeConnection a bId
         drainOldQueue a bId b aId
 
+testFastSwitchStallingNewServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchStallingNewServer ps@(t, ASType qsType _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
+      (aId, bId, aId', bId') <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ do
+        (aId, bId) <- makeConnection a b
+        (aId', bId') <- makeConnection a b
+        pure (aId, bId, aId', bId')
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> runRight_ $ do
+        _ <- switchConnectionAsync b "" aId
+        phaseRcv b aId SPStarted [Just RSSendingQADD, Nothing]
+      withStallingServerOn testPort2 $
+        withAgent 1 agentCfg initAgentServersLongConnect testDB $ \a -> runRight_ $ do
+          void $ subscribeConnections a [bId, bId']
+          void $ sendMessage b aId SMP.noMsgFlags "hello"
+          void $ sendMessage b aId' SMP.noMsgFlags "hello too"
+          liftIO $ timeout 5_000000 (receiveMsgs a [(bId, "hello"), (bId', "hello too")]) `shouldReturn` Just ()
+  where
+    receiveMsgs :: AgentClient -> [(ConnId, MsgBody)] -> IO ()
+    receiveMsgs _ [] = pure ()
+    receiveMsgs c msgs =
+      pGet c >>= \case
+        (_, cId, AEvt SAEConn (MSG _ _ body)) -> receiveMsgs c $ filter (/= (cId, body)) msgs
+        _ -> receiveMsgs c msgs
+
+testSwitchChangedWhileNewQueue :: (HasCallStack, HasTestEnv) => (AgentClient -> ConnId -> AE ConnectionStats) -> String -> (ASrvTransport, AStoreType) -> IO ()
+testSwitchChangedWhileNewQueue changeSwitch err ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+          withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
+            timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+            void . runRight $ changeSwitch b aId
+            atomically $ putTMVar opened ()
+            timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED err)
+            runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
+            waitRcvQueueRecords b 1
+      storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+
+testSwitchRatchetSyncBeforeNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchRatchetSyncBeforeNewQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort2 $ \_ -> do
+        setUserNetworkInfo b $ UserNetworkInfo UNNone False
+        runRight_ $ do
+          void $ switchConnectionAsync b "" aId
+          void $ synchronizeRatchet b aId PQSupportOn True
+        setUserNetworkInfo b $ UserNetworkInfo UNWifi True
+        get b =##> \case ("", c, ERR (A.CMD PROHIBITED "switchConnection: send prohibited")) -> c == aId; _ -> False
+        runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
+      storeLogQueues testStoreLogFile2 `shouldReturn` (0, 0)
+
+waitRcvQueueRecords :: HasCallStack => AgentClient -> Int -> IO ()
+waitRcvQueueRecords c n = go (50 :: Int)
+  where
+    go i = do
+      qs :: [(ConnId, Int64)] <- withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, rcv_queue_id FROM rcv_queues")
+      unless (length qs == n) $
+        if i > 0
+          then threadDelay 100000 >> go (i - 1)
+          else expectationFailure $ "receive queue records: " <> show qs
+
+storeLogQueues :: FilePath -> IO (Int, Int)
+storeLogQueues storeLogFile = do
+  records <- B.lines <$> B.readFile storeLogFile
+  pure (count "CREATE " records, count "DELETE " records)
+  where
+    count tag = length . filter (tag `B.isPrefixOf`)
+
+testFastSwitchRatchetSyncWhileSecuring :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testFastSwitchRatchetSyncWhileSecuring ps@(t, ASType qsType _) = withSmpServer ps $ do
+  a <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  (aId, bId) <- withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight $ makeConnection a b
+  setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
+  withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> runRight_ $ do
+    _ <- switchConnectionAsync a "" bId
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+  withAgent 3 agentCfg initAgentServers testDB2 $ \b -> do
+    runRight_ $ do
+      subscribeConnection b aId
+      phaseSnd b aId SPStarted [Just SSSecuringQueue, Nothing]
+    disposeAgentClient a
+    ConnectionStats {ratchetSyncState} <- runRight $ synchronizeRatchet b aId PQSupportOn True
+    ratchetSyncState `shouldBe` RSStarted
+    withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
+      threadDelay 3000000
+      withAgent 4 agentCfg initAgentServers testDB $ \a' -> do
+        runRight_ $ subscribeConnection a' bId
+        concurrently_
+          (timeout 20_000000 (runRight_ $ drainSwitchCompleted a' bId QDRcv) `shouldReturn` Just ())
+          (timeout 20_000000 (runRight_ $ drainSwitchCompleted b aId QDSnd) `shouldReturn` Just ())
+
 endSwitchOnNewQueue :: (HasCallStack, HasTestEnv) => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
 endSwitchOnNewQueue a b = do
   (aId, bId) <- makeConnection a b
@@ -4442,6 +4617,19 @@ testConnectionVerifyCodes =
       DB.execute_ db "UPDATE ratchets SET ratchet_state = NULL"
     codes1'' <- getConnectionVerifyCodes a bId
     liftIO $ codes1'' `shouldBe` codes1
+
+testServerRequestInConnLock :: (HasCallStack, HasTestEnv) => IO ()
+testServerRequestInConnLock =
+  withAgentClients2 $ \a b -> do
+    (_, bId) <- runRight $ makeConnection a b
+    let queueInfo = getConnectionQueueInfo a NRMInteractive bId
+    Left (A.INTERNAL e) <- runExceptT . withAgentEnv a . withConnLock a bId "test" . ExceptT . liftIO $ runExceptT queueInfo
+    e `shouldBe` "server request in connection lock test"
+    atomically (swapTVar (connLockViolations a) []) `shouldReturn` ["test"]
+    runRight_ $ void queueInfo
+    rs <- runRight $ withAgentEnv a . withConnLock a bId "batch" . ExceptT . liftIO $ runExceptT (subscribeConnections a [bId])
+    M.lookup bId rs `shouldBe` Just (Left $ A.INTERNAL "server request in connection lock batch")
+    atomically (swapTVar (connLockViolations a) []) `shouldReturn` ["batch"]
 
 testDeliveryReceipts :: (HasCallStack, HasTestEnv) => IO ()
 testDeliveryReceipts =
