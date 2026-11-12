@@ -84,6 +84,7 @@ import Data.Text.Encoding (decodeLatin1)
 import qualified Data.Text.IO as T
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import Data.Tuple (swap)
 import Data.Type.Equality (testEquality, (:~:) (Refl))
 import Data.Word (Word16)
 import GHC.Stack (withFrozenCallStack)
@@ -629,6 +630,15 @@ functionalAPITests ps = do
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
+  describe "Connections with apps of earlier versions" $ do
+    describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
+      appVersionTests ps 6 (appVersionsCfg (2, 6) (1, 3) (2, 3))
+    describe "app with agent versions 2-7, client versions 1-3, e2e versions 2-3" $
+      appVersionTests ps 7 (appVersionsCfg (2, 7) (1, 3) (2, 3))
+    describe "app with agent versions 2-7, client versions 1-4, e2e versions 2-3" $
+      appVersionTests ps 7 (appVersionsCfg (2, 7) (1, 4) (2, 3))
+    describe "app with agent versions 6-8, client versions 1-4, e2e version 3" $
+      appVersionTests ps 8 (appVersionsCfg (6, 8) (1, 4) (3, 3))
 
 functionalAPITimingTests :: (ASrvTransport, AStoreType) -> Spec
 functionalAPITimingTests ps = do
@@ -4523,6 +4533,162 @@ testDeliveryReceiptsConcurrent (t, msType) =
           3000000 `timeout` get client >>= \case
             Just r -> pure r
             _ -> error "timeout"
+
+appVersionsCfg :: HasTestEnv => (Word16, Word16) -> (Word16, Word16) -> (Word16, Word16) -> AgentConfig
+appVersionsCfg (a1, a2) (c1, c2) (e1, e2) =
+  agentCfg
+    { smpAgentVRange = mkVersionRange a1 a2,
+      smpClientVRange = mkVersionRange c1 c2,
+      e2eEncryptVRange = mkVersionRange e1 e2
+    }
+
+appVersionTests :: (ASrvTransport, AStoreType) -> Word16 -> (HasTestEnv => AgentConfig) -> Spec
+appVersionTests ps agreedVersion appCfg' = do
+  it "connects via invitation link of the app" $
+    testAppConnection ps agreedVersion appCfg' connectViaInvitation noAction
+  it "connects via invitation link of the current agent" $
+    testAppConnection ps agreedVersion appCfg' (\app current -> swap <$> connectViaInvitation current app) noAction
+  it "connects via contact address of the app" $
+    testAppConnection ps agreedVersion appCfg' (connectViaAddress (usesAddressRatchetKeys appCfg') id) noAction
+  it "connects via contact address of the current agent" $
+    testAppConnection ps agreedVersion appCfg' (\app current -> swap <$> connectViaAddress False id current app) noAction
+  it "connects via contact address with ratchet keys of the current agent" $
+    testAppConnection ps agreedVersion appCfg' (\app current -> swap <$> connectViaAddress True (addressAsReadBy appCfg') current app) noAction
+  it "switches the receiving queue of the app" $
+    testAppConnection ps agreedVersion appCfg' connectViaInvitation (switchQueue agreedVersion)
+  it "switches the receiving queue of the current agent" $
+    testAppConnection ps agreedVersion appCfg' connectViaInvitation $ \app currentId current appId ->
+      switchQueue agreedVersion current appId app currentId
+  it "switches queues of a connection made before both apps are upgraded" $
+    testSwitchAfterUpgrade ps appCfg' agentCfg 8
+  it "switches queues of a connection made before one app is upgraded" $
+    testSwitchAfterUpgrade ps appCfg' appCfg' agreedVersion
+  it "connects when the app is upgraded during the join" $
+    testJoinCompletedAfterUpgrade ps appCfg'
+
+testAppConnection ::
+  (HasCallStack, HasTestEnv) =>
+  (ASrvTransport, AStoreType) ->
+  Word16 ->
+  AgentConfig ->
+  (AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)) ->
+  (AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()) ->
+  IO ()
+testAppConnection ps agreedVersion appCfg' connect continue =
+  withSmpServer ps $ withAgentClientsCfg2 appCfg' agentCfg $ \app current -> runRight_ $ do
+    (appId, currentId) <- connect app current
+    checkVersion app currentId agreedVersion
+    checkVersion current appId agreedVersion
+    exchangeMessages app currentId current appId
+    continue app currentId current appId
+
+noAction :: AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+noAction _ _ _ _ = pure ()
+
+testSwitchAfterUpgrade :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> AgentConfig -> AgentConfig -> Word16 -> IO ()
+testSwitchAfterUpgrade ps appCfg' aCfgAfter agreedVersion =
+  withSmpServer ps $ do
+    (aId, bId) <- withAgentClientsCfg2 appCfg' appCfg' $ \a b -> runRight $ do
+      ids@(aId, bId) <- connectViaInvitation a b
+      exchangeMessages a bId b aId
+      pure ids
+    withAgentClientsCfg2 aCfgAfter agentCfg $ \a b -> runRight_ $ do
+      subscribeConnection a bId
+      subscribeConnection b aId
+      exchangeMessages a bId b aId
+      checkVersion a bId agreedVersion
+      checkVersion b aId agreedVersion
+      switchQueue agreedVersion a bId b aId
+      switchQueue agreedVersion b aId a bId
+
+testJoinCompletedAfterUpgrade :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> AgentConfig -> IO ()
+testJoinCompletedAfterUpgrade ps appCfg' =
+  withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
+    (bobId, aliceId, cReq) <- withAgent 2 appCfg' initAgentServers testDB2 $ \bob -> do
+      (bobId, cReq) <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+      ("", "", DOWN _ _) <- nGet alice
+      (aliceId, _) <- runRight $ A.prepareConnectionToJoin bob 1 True cReq PQSupportOn
+      Left (BROKER _ (NETWORK _)) <- runExceptT $ A.joinConnection bob NRMInteractive 1 aliceId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+      pure (bobId, aliceId, cReq)
+    withAgent 2 agentCfg initAgentServers testDB2 $ \bob ->
+      withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
+        ("", "", UP _ _) <- nGet alice
+        void $ A.joinConnection bob NRMInteractive 1 aliceId True cReq "bob's connInfo" PQSupportOn SMSubscribe
+        confId <- getConfirmation alice bobId "bob's connInfo"
+        allowConnection alice bobId confId "alice's connInfo"
+        get alice ##> ("", bobId, CON)
+        get bob ##> ("", aliceId, INFO "alice's connInfo")
+        get bob ##> ("", aliceId, CON)
+        exchangeMessages alice bobId bob aliceId
+
+connectViaInvitation :: HasCallStack => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId)
+connectViaInvitation alice bob = do
+  (bobId, cReq) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+  (aliceId, _) <- joinConnection bob 1 True cReq "bob's connInfo" SMSubscribe
+  confId <- getConfirmation alice bobId "bob's connInfo"
+  allowConnection alice bobId confId "alice's connInfo"
+  get alice ##> ("", bobId, CON)
+  get bob ##> ("", aliceId, INFO "alice's connInfo")
+  get bob ##> ("", aliceId, CON)
+  pure (aliceId, bobId)
+
+connectViaAddress ::
+  HasCallStack =>
+  UseRatchetKeys ->
+  (ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact) ->
+  AgentClient ->
+  AgentClient ->
+  ExceptT AgentErrorType IO (ConnId, ConnId)
+connectViaAddress useDR readAddress alice bob = do
+  (_, CCLink cReq Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn useDR SMSubscribe
+  (aliceId, _) <- joinConnection bob 1 True (readAddress cReq) "bob's connInfo" SMSubscribe
+  invId <-
+    get alice >>= \case
+      ("", _, REQ invId _ "bob's connInfo") -> pure invId
+      r -> error $ "unexpected event: " <> show r
+  (bobId, _) <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+  void $ acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+  confId <- getConfirmation bob aliceId "alice's connInfo"
+  allowConnection bob aliceId confId "bob's connInfo"
+  get alice ##> ("", bobId, INFO "bob's connInfo")
+  get alice ##> ("", bobId, CON)
+  get bob ##> ("", aliceId, CON)
+  pure (aliceId, bobId)
+
+usesAddressRatchetKeys :: AgentConfig -> Bool
+usesAddressRatchetKeys AgentConfig {smpAgentVRange} = maxVersion smpAgentVRange >= rpcAddressSMPAgentVersion
+
+addressAsReadBy :: AgentConfig -> ConnectionRequestUri 'CMContact -> ConnectionRequestUri 'CMContact
+addressAsReadBy cfg cReq@(CRContactUri crData _)
+  | usesAddressRatchetKeys cfg = cReq
+  | otherwise = CRContactUri crData Nothing
+
+getConfirmation :: HasCallStack => AgentClient -> ConnId -> ConnInfo -> ExceptT AgentErrorType IO ConfirmationId
+getConfirmation c connId connInfo =
+  get c >>= \case
+    ("", connId', CONF confId _ connInfo') | connId' == connId && connInfo' == connInfo -> pure confId
+    r -> error $ "unexpected event: " <> show r
+
+switchQueue :: HasCallStack => Word16 -> AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+switchQueue agreedVersion a bId b aId = do
+  void $ switchConnectionAsync a "" bId
+  if VersionSMPA agreedVersion >= rpcAddressSMPAgentVersion
+    then fastSwitchComplete a bId b aId
+    else switchComplete a bId b aId
+  exchangeMessages a bId b aId
+
+exchangeMessages :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
+exchangeMessages alice bobId bob aliceId = do
+  deliverMessage alice bobId bob aliceId "hello"
+  deliverMessage bob aliceId alice bobId "hello too"
+
+deliverMessage :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> MsgBody -> ExceptT AgentErrorType IO ()
+deliverMessage a bId b aId msg = do
+  msgId <- sendMessage a bId SMP.noMsgFlags msg
+  get a ##> ("", bId, SENT msgId)
+  get b >>= \case
+    ("", aId', Msg' rcvMsgId _ msg') | aId' == aId && msg' == msg -> ackMessage b aId rcvMsgId Nothing
+    r -> error $ "unexpected event: " <> show r
 
 testTwoUsers :: (HasCallStack, HasTestEnv) => IO ()
 testTwoUsers = withAgentClients2 $ \a b -> do
