@@ -164,9 +164,13 @@ smpProxyTests = do
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
         it "sends directly to preset relay of previous version" $ twoServersPrevRelay $
-          agentViaProxyPrevRelay [srv2] Nothing
+          agentViaProxyPresetRelay [srv2] Nothing
+        it "sends via proxy to preset relay of current version" $ twoServers $
+          agentViaProxyPresetRelay [srv2] (Just srv1)
         it "sends via proxy to other relay of previous version" $ twoServersPrevRelay $
-          agentViaProxyPrevRelay [srv1] (Just srv1)
+          agentViaProxyPresetRelay [srv1] (Just srv1)
+        it "fails to join via preset relay of previous version when direct sending is prohibited" $
+          twoServersPrevRelay agentViaProxyPresetRelayProhibited
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
@@ -459,8 +463,8 @@ agentViaProxyRetryNoSession = do
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
-agentViaProxyPrevRelay :: HasTestEnv => [SMPServer] -> Maybe SMPServer -> IO ()
-agentViaProxyPrevRelay presetSrvs proxySrv_ =
+agentViaProxyPresetRelay :: HasTestEnv => [SMPServer] -> Maybe SMPServer -> IO ()
+agentViaProxyPresetRelay presetSrvs proxySrv_ =
   withAgent 1 agentCfg aliceServers testDB $ \alice ->
     withAgent 2 agentCfg bobServers testDB2 $ \bob -> runRight_ $ do
       (aliceId, bobId) <- makeConnection alice bob
@@ -470,6 +474,19 @@ agentViaProxyPrevRelay presetSrvs proxySrv_ =
   where
     aliceServers = initAgentServers {smp = userServers [testSMPServer2]}
     bobServers = (initAgentServersProxy_ SPMAlways SPFAllow) {smp = userServers [testSMPServer], presetServers = presetSrvs}
+
+agentViaProxyPresetRelayProhibited :: HasTestEnv => IO ()
+agentViaProxyPresetRelayProhibited =
+  withAgent 1 agentCfg aliceServers testDB $ \alice ->
+    withAgent 2 agentCfg bobServers testDB2 $ \bob -> runRight_ $ do
+      (_, CCLink qInfo Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMInvitation Nothing Nothing CR.IKPQOn False SMSubscribe
+      (aliceId, _) <- A.prepareConnectionToJoin bob 1 True qInfo PQSupportOn
+      Left (PROXY _ _ (ProxyProtocolError (SMP.PROXY (SMP.BROKER (SMP.TRANSPORT TEVersion))))) <-
+        liftIO . runExceptT $ A.joinConnection bob NRMInteractive 1 aliceId True qInfo "bob's connInfo" PQSupportOn SMSubscribe
+      pure ()
+  where
+    aliceServers = initAgentServers {smp = userServers [testSMPServer2]}
+    bobServers = (initAgentServersProxy_ SPMAlways SPFProhibit) {smp = userServers [testSMPServer], presetServers = [testSMPServer2]}
 
 testNoProxy :: HasTestEnv => AStoreType -> IO ()
 testNoProxy msType = do
