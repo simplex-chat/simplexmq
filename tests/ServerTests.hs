@@ -1667,10 +1667,10 @@ testPrometheusMetrics = do
         metricsTime = B.takeWhile (/= '\n') <$> B.readFile testPrometheusMetricsFile
     withSmpServerConfigOn at cfg' testPort $ \_ -> do
       threadDelay 1500000
-      _ <- timeout 3000000 $ forever $ B.readFile testPrometheusMetricsFile
+      _ <- timeout 3000000 $ forever metricsTime
       recordedAt <- metricsTime
       threadDelay 1500000
-      metricsTime >>= (`shouldNotBe` recordedAt)
+      metricsTime `shouldNotReturn` recordedAt
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
