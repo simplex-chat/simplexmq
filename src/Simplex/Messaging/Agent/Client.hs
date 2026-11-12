@@ -749,6 +749,7 @@ getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq
                 proxyErr = ProxyProtocolError e
               }
           e -> SMP proxyHost e
+        -- TODO remove this check once forwarding versions below fwdNoncesSMPVersion are not supported
         checkRelayVersion :: ProxiedRelay -> ExceptT SMPClientError IO ProxiedRelay
         checkRelayVersion r@ProxiedRelay {prVersion}
           | prVersion < fwdNoncesSMPVersion && isPresetServer destSrv presetServers = throwE $ PCEProtocolError $ SMP.PROXY $ SMP.BROKER $ SMP.TRANSPORT TEVersion
