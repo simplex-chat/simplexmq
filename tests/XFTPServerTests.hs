@@ -29,8 +29,10 @@ import qualified Data.CaseInsensitive as CI
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Maybe (isJust)
-import Data.Time.Clock (getCurrentTime)
+import Data.Maybe (isJust, listToMaybe)
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Data.Time.Clock (UTCTime (..), getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
@@ -84,6 +86,7 @@ xftpServerTests = do
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
+      it "should reset daily download stats without stats log" testPeriodStatsReset
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -416,6 +419,21 @@ testFileLog _ = do
     download g c rpKey rId digest bytes = do
       downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
       liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
+
+testPeriodStatsReset :: HasTestEnv => AFStoreType -> Expectation
+testPeriodStatsReset fsType = do
+  ts <- getCurrentTime
+  let resetTime = floor (utctDayTime ts) + 5
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {logStatsInterval = Nothing, logStatsStartTime = resetTime, prometheusInterval = Just 1}) $ \_ -> do
+    testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
+    threadDelay 1500000
+    dailyDownloads `shouldReturn` Just "1"
+    threadDelay 5000000
+    dailyDownloads `shouldReturn` Just "0"
+  where
+    dailyDownloads = do
+      metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+      pure $ listToMaybe [n | l <- metrics, ["simplex_xftp_files_count_daily", n, _] <- [T.words l]]
 
 testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =

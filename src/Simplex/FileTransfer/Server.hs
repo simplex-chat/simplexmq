@@ -282,16 +282,30 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         liftIO $ threadDelay' interval
         expireServerFiles (Just 100000) expCfg
 
+    -- period stats are reset by the stats log, without it they are reset separately
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
-    serverStatsThread_ _ = []
+    serverStatsThread_ XFTPServerConfig {logStatsStartTime} = [resetPeriodStats logStatsStartTime]
+
+    delayUntilDayTime :: Int64 -> IO ()
+    delayUntilDayTime startAt = do
+      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> getCurrentTime
+      threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+
+    resetPeriodStats :: Int64 -> M s ()
+    resetPeriodStats startAt = do
+      FileServerStats {filesDownloaded} <- asks serverStats
+      liftIO $ do
+        delayUntilDayTime startAt
+        forever $ do
+          void . periodStatCounts filesDownloaded =<< getCurrentTime
+          threadDelay' $ 1_000_000 * periodStatsInterval
 
     logServerStats :: Int64 -> Int64 -> FilePath -> M s ()
     logServerStats startAt logInterval statsFilePath = do
-      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+      liftIO $ delayUntilDayTime startAt
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
@@ -716,6 +730,10 @@ expireServerFiles itemDelay expCfg = do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
         expireLoop st us now old
+
+-- | periodStatCounts resets day, week and month stats when called once a day
+periodStatsInterval :: Int64
+periodStatsInterval = 86400
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
