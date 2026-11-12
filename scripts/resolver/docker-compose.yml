@@ -102,6 +102,9 @@ services:
       --rpc.gascap 50000000
       --port 30303
       --discovery.port 30303
+    # Docker's default 10 s can kill reth before it flushes its database, and it
+    # then unwinds its last blocks on the next start.
+    stop_grace_period: 2m
     restart: unless-stopped
 
   nimbus:
