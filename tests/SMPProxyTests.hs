@@ -567,7 +567,9 @@ testForwardedQueueLocked =
             wait sendA' `shouldReturn` Right ()
         threadDelay 1500000
         metric "simplex_smp_forward_worker_cmd_ms_count" `shouldReturn` 3
-        metric "simplex_smp_forward_worker_cmd_ms_max" >>= (`shouldSatisfy` (>= 1500))
+        maxMs <- metric "simplex_smp_forward_worker_cmd_ms_max"
+        maxMs `shouldSatisfy` (>= 1500)
+        metric "simplex_smp_forward_worker_cmd_ms_sum" >>= (`shouldSatisfy` (>= maxMs + 1000))
   where
     metric name = do
       ms <- map B.words . B.lines <$> B.readFile testPrometheusMetricsFile
