@@ -268,6 +268,9 @@ xftpServerTest storeLog = do
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
   lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
+  lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "on"
+  lookupValue "INACTIVE_CLIENTS" "ttl" ini `shouldBe` Right "21600"
+  lookupValue "INACTIVE_CLIENTS" "check_interval" ini `shouldBe` Right "3600"
   doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SimpleX XFTP server v" <> simplexmqVersionCommit]

@@ -201,9 +201,9 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
             <> "\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
-               \disconnect = off\n"
-            <> ("# ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+               \disconnect = on\n"
+            <> ("ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
             <> "\n\
                \[WEB]\n\
                \# Set path to generate static mini-site for server information\n"
