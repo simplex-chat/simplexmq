@@ -92,6 +92,7 @@ xftpServerTests = do
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
       it "should reset daily download stats without stats log" testPeriodStatsReset
+      it "should export socket counts in Prometheus metrics" testSocketMetrics
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -461,6 +462,27 @@ testPeriodStatsReset fsType = do
     dailyDownloads = do
       metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
       pure $ listToMaybe [n | l <- metrics, ["simplex_xftp_files_count_daily", n, _] <- [T.words l]]
+
+testSocketMetrics :: HasTestEnv => AFStoreType -> Expectation
+testSocketMetrics fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {prometheusInterval = Just 1}) $ \_ -> do
+    testXFTPClient $ \c -> do
+      runRight_ $ pingXFTP c
+      threadDelay 1500000
+      socketMetrics `shouldReturn` [("accepted", "1"), ("closed", "0"), ("active", "1"), ("leaked", "0")]
+      closeXFTPClient c
+    threadDelay 2500000
+    socketMetrics `shouldReturn` [("accepted", "1"), ("closed", "1"), ("active", "0"), ("leaked", "0")]
+  where
+    socketMetrics = do
+      metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+      pure
+        [ (name, n)
+          | l <- metrics,
+            [metric, n, _] <- [T.words l],
+            Just name <- [T.stripPrefix "simplex_xftp_sockets_" =<< T.stripSuffix portLabel metric]
+        ]
+    portLabel = "{port=\"" <> T.pack xftpTestPort <> "\"}"
 
 testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =

@@ -76,7 +76,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, SocketState, TransportServerConfig (..), getSocketStats, runLocalTCPServer)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -157,7 +157,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed closeSession sessionId sessionALPN r sendResponse -> do
+      ss <- asks sockets
+      liftIO . runHTTP2Server ss started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed closeSession sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
@@ -352,19 +353,21 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       labelMyThread "savePrometheusMetrics"
       liftIO $ putStrLn $ "Prometheus metrics saved every " <> show saveInterval <> " seconds to " <> metricsFile
       ss <- asks serverStats
+      socketState <- asks sockets
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
       liftIO $ forever $ do
         threadDelay interval
         ts <- getCurrentTime
-        sm <- getFileServerMetrics ss rtsOpts
+        sm <- getFileServerMetrics ss socketState rtsOpts
         T.writeFile metricsFile $ xftpPrometheusMetrics sm ts
 
-    getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
-    getFileServerMetrics ss rtsOptions = do
+    getFileServerMetrics :: FileServerStats -> SocketState -> T.Text -> IO FileServerMetrics
+    getFileServerMetrics ss socketState rtsOptions = do
       d <- getFileServerStatsData ss
+      socketStats <- (xftpPort,) <$> getSocketStats socketState
       let fd = periodStatDataCounts $ _filesDownloaded d
-      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
+      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, socketStats, rtsOptions}
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]

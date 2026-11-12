@@ -17,7 +17,7 @@ import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, SocketState, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
 import Simplex.Messaging.Util (threadDelay', unlessM)
 import UnliftIO (bracket_, finally)
 import UnliftIO.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -55,7 +55,7 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
   started <- newEmptyTMVarIO
   reqQ <- newTBQueueIO qSize
   action <- async $
-    runHTTP2Server started http2Port bufferSize serverSupported srvCreds Nothing transportConfig Nothing (const $ pure ()) $ \_sniUsed _closeSession sessionId sessionALPN r sendResponse -> do
+    newSocketState >>= \ss -> runHTTP2Server ss started http2Port bufferSize serverSupported srvCreds Nothing transportConfig Nothing (const $ pure ()) $ \_sniUsed _closeSession sessionId sessionALPN r sendResponse -> do
       reqBody <- getHTTP2Body r bodyHeadSize
       atomically $ writeTBQueue reqQ HTTP2Request {sessionId, sessionALPN, request = r, reqBody, sendResponse}
   void . atomically $ takeTMVar started
@@ -64,11 +64,10 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> IO ()
-runHTTP2Server started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ (Just $ firstRequestTimeout transportConfig) clientFinished bufferSize setup
+runHTTP2Server :: SocketState -> TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> IO ()
+runHTTP2Server ss started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ (Just $ firstRequestTimeout transportConfig) clientFinished bufferSize setup
   where
     setup handler = do
-      ss <- newSocketState
       let combinedCreds = TLSServerCredential {credential = srvCreds, sniCredential = httpCreds_}
       runTransportServerState_ ss started port srvSupported combinedCreds transportConfig $ \_ -> handler
 

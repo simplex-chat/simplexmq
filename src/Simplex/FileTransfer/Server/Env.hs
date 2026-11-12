@@ -73,7 +73,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), SocketState, TransportServerConfig (..), loadFingerprint, loadServerCredential, newSocketState)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -148,7 +148,8 @@ data XFTPEnv s = XFTPEnv
     serverIdentity :: C.KeyHash,
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
-    serverStats :: FileServerStats
+    serverStats :: FileServerStats,
+    sockets :: SocketState
   }
 
 fileStore :: XFTPEnv s -> s
@@ -222,7 +223,8 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  sockets <- newSocketState
+  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats, sockets}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)
