@@ -673,7 +673,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         sm <- getServerMetrics st ss rtsOpts
         rtm <- getRealTimeMetrics env
         writeFileAtomic metricsFile (prometheusMetrics sm rtm ts)
-          `catchOwn'` \e -> logError $ "Prometheus metrics error: " <> tshow e
+          `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getServerMetrics :: s -> ServerStats -> Text -> IO ServerMetrics
     getServerMetrics st ss rtsOptions = do

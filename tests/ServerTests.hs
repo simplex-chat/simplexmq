@@ -1667,10 +1667,14 @@ testPrometheusMetrics = do
         metricsTime = B.takeWhile (/= '\n') <$> B.readFile testPrometheusMetricsFile
     withSmpServerConfigOn at cfg' testPort $ \_ -> do
       threadDelay 1500000
-      _ <- timeout 3000000 $ forever metricsTime
       recordedAt <- metricsTime
-      threadDelay 1500000
+      _ <- timeout 3000000 $ forever metricsTime
       metricsTime `shouldNotReturn` recordedAt
+  it "should continue when Prometheus metrics cannot be saved" $ \(at@(ATransport t), msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1, prometheusMetricsFile = testPath "missing/smp-server-metrics.txt"}
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      runSMPClient t $ \_ -> pure ()
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

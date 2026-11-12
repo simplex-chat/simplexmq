@@ -341,7 +341,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         ts <- getCurrentTime
         sm <- getFileServerMetrics ss rtsOpts
         writeFileAtomic metricsFile (xftpPrometheusMetrics sm ts)
-          `catchOwn'` \e -> logError $ "Prometheus metrics error: " <> tshow e
+          `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
     getFileServerMetrics ss rtsOptions = do

@@ -246,7 +246,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         sm <- getNtfServerMetrics st ss rtsOpts
         rtm <- getNtfRealTimeMetrics env
         writeFileAtomic metricsFile (ntfPrometheusMetrics sm rtm ts)
-          `catchOwn'` \e -> logError $ "Prometheus metrics error: " <> tshow e
+          `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getNtfServerMetrics :: NtfPostgresStore -> NtfServerStats -> Text -> IO NtfServerMetrics
     getNtfServerMetrics st ss rtsOptions = do
