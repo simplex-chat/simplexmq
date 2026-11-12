@@ -5,6 +5,7 @@
 module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 
 import Control.Monad
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
@@ -25,8 +26,9 @@ import XFTPClient (testXFTPPostgresCfg)
 
 xftpStoreTests :: Spec
 xftpStoreTests = do
-  describe "STMFileStore operations" $
+  describe "STMFileStore operations" $ do
     it "should compute committed used storage and file count" testSTMStorageAndCount
+    it "should add all recipients or none" $ (newFileStore () :: IO STMFileStore) >>= testAddRecipientsAtomically
   describe "PostgresFileStore operations" $ do
     it "should add and get file by sender" testAddGetFileSender
     it "should add and get file by recipient" testAddGetFileRecipient
@@ -34,6 +36,7 @@ xftpStoreTests = do
     it "should return AUTH for nonexistent file" testGetNonexistent
     it "should set file path with IS NULL guard" testSetFilePath
     it "should reject duplicate recipient" testDuplicateRecipient
+    it "should add all recipients or none" $ withPgStore testAddRecipientsAtomically
     it "should delete file and cascade recipients" testDeleteFileCascade
     it "should block file and update status" testBlockFile
     it "should ack file reception" testAckFile
@@ -143,6 +146,25 @@ testDuplicateRecipient = withPgStore $ \st -> do
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Left DUPLICATE_
+
+testAddRecipientsAtomically :: FileStoreClass s => s -> Expectation
+testAddRecipientsAtomically st = do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  [keyA, keyB, keyC] <- replicateM 3 $ fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+  let rcpA = FileRecipient (EntityId "recipient_a_____") keyA
+      rcpB = FileRecipient (EntityId "recipient_b_____") keyB
+      rcpC = FileRecipient (EntityId "recipient_c_____") keyC
+      recipientKey (FileRecipient rId _) = fmap snd <$> getFile st SFRecipient rId
+  addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addRecipient st testSenderId rcpA `shouldReturn` Right ()
+  addRecipients st testSenderId (rcpB :| [rcpA]) `shouldReturn` Left DUPLICATE_
+  recipientKey rcpB `shouldReturn` Left AUTH
+  addRecipients st testSenderId (rcpB :| [rcpC, rcpB]) `shouldReturn` Left DUPLICATE_
+  recipientKey rcpB `shouldReturn` Left AUTH
+  addRecipients st testSenderId (rcpB :| [rcpC]) `shouldReturn` Right ()
+  mapM recipientKey [rcpA, rcpB, rcpC] `shouldReturn` [Right keyA, Right keyB, Right keyC]
+  addRecipient st (EntityId "no_such_sender__") (FileRecipient (EntityId "recipient_d_____") keyA) `shouldReturn` Left AUTH
 
 testDeleteFileCascade :: HasTestEnv => Expectation
 testDeleteFileCascade = withPgStore $ \st -> do

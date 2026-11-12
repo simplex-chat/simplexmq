@@ -100,16 +100,16 @@ instance FileStoreClass PostgresFileStore where
       DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
     withLog "setFilePath" st $ \s -> logPutFile s sId fPath
 
-  addRecipient st senderId (FileRecipient rId rKey) = E.uninterruptibleMask_ $ runExceptT $ do
-    void $ withDB "addRecipient" st $ \db ->
+  addRecipients st senderId rcps = E.uninterruptibleMask_ $ runExceptT $ do
+    void $ withDB "addRecipients" st $ \db ->
       E.try
-        ( DB.execute
+        ( DB.executeMany
             db
             "INSERT INTO recipients (recipient_id, sender_id, recipient_key) VALUES (?,?,?)"
-            (rId, senderId, Binary (C.encodePubKey rKey))
+            (map (\(FileRecipient rId rKey) -> (rId, senderId, Binary (C.encodePubKey rKey))) $ L.toList rcps)
         )
         >>= either handleDuplicate (pure . Right)
-    withLog "addRecipient" st $ \s -> logAddRecipients s senderId (pure $ FileRecipient rId rKey)
+    withLog "addRecipients" st $ \s -> forM_ rcps $ logAddRecipients s senderId . pure
 
   deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "deleteFile" st $ \db ->
