@@ -91,7 +91,7 @@ runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup http2Server = setup 
     run sniUsed tls activeAt cfg = H.run serverConfig cfg $ \req _aux sendResp -> do
       getSystemTime >>= atomically . writeTVar activeAt
       http2Server sniUsed (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
-    serverConfig = H.defaultServerConfig
+    serverConfig = H.defaultServerConfig {H.connectionWindowSize = http2WindowSize, H.settings = http2Settings}
     expireInactiveClient sessionThread activeAt expCfg = loop
       where
         loop = do

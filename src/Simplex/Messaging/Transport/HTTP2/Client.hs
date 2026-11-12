@@ -226,5 +226,7 @@ runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 buff
       H.defaultClientConfig
         { scheme = "https",
           authority = B.unpack $ strEncode host,
-          cacheLimit = 20
+          cacheLimit = 20,
+          connectionWindowSize = http2WindowSize,
+          settings = http2Settings
         }

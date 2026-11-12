@@ -5,6 +5,8 @@ module Simplex.Messaging.Transport.HTTP2
   ( HTTP2Body (..),
     HTTP2BodyChunk (..),
     defaultHTTP2BufferSize,
+    http2Settings,
+    http2WindowSize,
     withHTTP2,
     http2TLSParams,
     getHTTP2Body,
@@ -44,8 +46,17 @@ allocHTTP2Config c sz = do
         confBufferSize = sz,
         confSendAll = cPut c,
         confReadN = cGet c,
-        confTimeoutManager = tm
+        confTimeoutManager = tm,
+        -- otherwise http2 closes a connection that receives no frames for the timeout above
+        confReadNTimeout = True
       }
+
+-- http2 4.2.2 advertised these limits; the received data is bounded by the connection window.
+http2Settings :: HS.Settings
+http2Settings = HS.defaultSettings {HS.maxConcurrentStreams = Just 100, HS.initialWindowSize = http2WindowSize}
+
+http2WindowSize :: Int
+http2WindowSize = 1048575
 
 http2TLSParams :: T.Supported
 http2TLSParams =
