@@ -1541,7 +1541,8 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSupport =
               Left e -> do
                 nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
                 runExceptT $ snd <$> createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
-          pure ((cData, sq), (Just e2eSndParams, Nothing))
+          let Compatible SMPQueueInfo {clientVersion} = qInfo
+          pure ((cData, (sq :: SndQueue) {smpClientVersion = clientVersion}), (Just e2eSndParams, Nothing))
         _ -> do
           let Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {smpServer, senderId}} = qInfo
           invLink_ <- withStore' c $ \db -> getInvShortLinkKeys db smpServer senderId
