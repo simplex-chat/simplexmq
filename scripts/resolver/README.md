@@ -389,9 +389,10 @@ so the read reverts. A read that reverts, answers nothing, names no policy or
 fails with an RPC error is logged as `no_name_policy`, and reservations are read
 from the controller. For a controller that has a name policy, every lookup under
 its TLD then answers 502 until a restart: after an RPC error, or when the node
-has not yet reached the controller or its `setNamePolicy`. A node that
-does not answer stops the resolver, and the container restarts. After the
-controller's owner calls `setNamePolicy`, restart the resolver.
+has not yet reached the controller or its `setNamePolicy`. While the node
+does not answer, the resolver does not listen and reads again, waiting 1 s,
+then twice as long each time, up to 30 s. After the controller's owner calls
+`setNamePolicy`, restart the resolver.
 
 The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
 lives in the proxy, so the implementation address answers nothing. The two
@@ -448,7 +449,7 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
 | `request_failed` | error | a request failed unexpectedly, with its traceback |
-| `startup_failed` | error | the node did not answer the startup read of the name policies; the container restarts |
+| `node_unavailable` | warn | the node did not answer the startup read of the name policies; read again after `retry_s` |
 | `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
 | `stopping` | info | stopped by a signal |
 
