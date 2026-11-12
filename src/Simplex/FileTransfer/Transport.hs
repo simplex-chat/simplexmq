@@ -44,6 +44,8 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
+import Crypto.Hash (Context, hashFinalize, hashInit, hashUpdate)
+import Crypto.Hash.Algorithms (SHA256)
 import qualified Data.Aeson.TH as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
@@ -51,8 +53,8 @@ import qualified Data.ByteArray as BA
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Functor (($>))
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Word (Word16, Word32)
 import Network.HTTP2.Client (HTTP2Error)
 import qualified Simplex.Messaging.Crypto as C
@@ -195,7 +197,7 @@ sendEncFile h send = go
 receiveFile :: (Int -> IO ByteString) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E.catches` handlers
   where
-    receive h sz = hReceiveFile getBody h sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
+    receive write sz = receiveFileBlocks getBody write sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
     handlers =
       [ E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
         E.Handler $ \(e :: E.SomeException) -> logError (err e) $> Left FILE_IO
@@ -205,14 +207,17 @@ receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E
 receiveEncFile :: (Int -> IO ByteString) -> LC.SbState -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveEncFile getBody = receiveFile_ . receive
   where
-    receive sbState h sz = first err <$> receiveSbFile getBody h sbState sz
+    receive sbState write sz = first err <$> receiveSbBlocks getBody write sbState sz
     err RFESize = SIZE
     err RFECrypto = CRYPTO
 
 data ReceiveFileError = RFESize | RFECrypto
 
 receiveSbFile :: (Int -> IO ByteString) -> Handle -> LC.SbState -> Word32 -> IO (Either ReceiveFileError ())
-receiveSbFile getBody h = receive
+receiveSbFile getBody h = receiveSbBlocks getBody (B.hPut h)
+
+receiveSbBlocks :: (Int -> IO ByteString) -> (ByteString -> IO ()) -> LC.SbState -> Word32 -> IO (Either ReceiveFileError ())
+receiveSbBlocks getBody write = receive
   where
     receive sbState sz = do
       ch <- getBody fileBlockSize
@@ -223,7 +228,7 @@ receiveSbFile getBody h = receive
             let (ch', rest) = B.splitAt (fromIntegral sz) ch
                 (decCh, sbState') = LC.sbDecryptChunk sbState ch'
                 sz' = sz - fromIntegral (B.length ch')
-            B.hPut h decCh
+            write decCh
             if sz' > 0
               then receive sbState' sz'
               else do
@@ -235,10 +240,12 @@ receiveSbFile getBody h = receive
         | otherwise -> pure $ Left RFESize
     authSz = fromIntegral C.authTagSize
 
-receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
+receiveFile_ :: ((ByteString -> IO ()) -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
-  ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
-  digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
+  hashCtx <- liftIO $ newIORef (hashInit :: Context SHA256)
+  let write h ch = B.hPut h ch >> modifyIORef' hashCtx (`hashUpdate` ch)
+  ExceptT $ withFile filePath WriteMode $ \h -> receive (write h) chunkSize
+  digest' <- liftIO $ BA.convert . hashFinalize <$> readIORef hashCtx
   when (digest' /= chunkDigest) $ throwE DIGEST
 
 data XFTPErrorType

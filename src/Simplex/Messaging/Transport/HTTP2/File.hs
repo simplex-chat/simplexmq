@@ -2,7 +2,7 @@
 
 module Simplex.Messaging.Transport.HTTP2.File
   ( fileBlockSize,
-    hReceiveFile,
+    receiveFileBlocks,
     hSendFile,
     getFileChunk,
   ) where
@@ -18,16 +18,16 @@ import System.IO (Handle)
 fileBlockSize :: Int
 fileBlockSize = 16384
 
-hReceiveFile :: (Int -> IO ByteString) -> Handle -> Word32 -> IO Int64
-hReceiveFile _ _ 0 = pure 0
-hReceiveFile getBody h size = get $ fromIntegral size
+receiveFileBlocks :: (Int -> IO ByteString) -> (ByteString -> IO ()) -> Word32 -> IO Int64
+receiveFileBlocks _ _ 0 = pure 0
+receiveFileBlocks getBody write size = get $ fromIntegral size
   where
     get sz = do
       ch <- getBody fileBlockSize
       let chSize = fromIntegral $ B.length ch
       if
         | chSize > sz -> pure (chSize - sz)
-        | chSize > 0 -> B.hPut h ch >> get (sz - chSize)
+        | chSize > 0 -> write ch >> get (sz - chSize)
         | otherwise -> pure (-sz)
 
 hSendFile :: Handle -> (Builder -> IO ()) -> Word32 -> IO ()

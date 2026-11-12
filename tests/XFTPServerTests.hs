@@ -19,6 +19,7 @@ import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -42,7 +43,7 @@ import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), alpnSupportedXFTPhandshakes, XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), alpnSupportedXFTPhandshakes, receiveEncFile, receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -97,6 +98,9 @@ xftpServerTests = do
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
+    describe "XFTP chunk receiving" $ beforeWith (const (pure ())) $ do
+      it "should verify digest of received chunk without reading the file back" testReceiveChunkDigest
+      it "should verify digest of received encrypted chunk without reading the file back" testReceiveEncChunkDigest
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -562,6 +566,34 @@ testOldServerHandshake _ = do
   isLeft (decode $ smpEncode ("invalid" :: ByteString)) `shouldBe` True
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
+
+-- the received chunks are written to /dev/null, so only the digest of received bytes can match
+testReceiveChunkDigest :: Expectation
+testReceiveChunkDigest = do
+  bytes <- atomically . C.randomBytes chSize =<< C.newRandom
+  let digest = LC.sha256Hash $ LB.fromStrict bytes
+      receive d = bodyReader bytes >>= \getBody -> runExceptT $ receiveFile getBody $ XFTPRcvChunkSpec "/dev/null" chSize d
+  receive digest `shouldReturn` Right ()
+  receive (digest <> "_wrong") `shouldReturn` Left DIGEST
+
+testReceiveEncChunkDigest :: Expectation
+testReceiveEncChunkDigest = do
+  g <- C.newRandom
+  bytes <- atomically $ C.randomBytes chSize g
+  key <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
+  sbState <- either (error . show) pure $ LC.sbInit key nonce
+  let (encrypted, sbState') = LC.sbEncryptChunk sbState bytes
+      body = encrypted <> BA.convert (LC.sbAuth sbState')
+      digest = LC.sha256Hash $ LB.fromStrict bytes
+      receive d = bodyReader body >>= \getBody -> runExceptT $ receiveEncFile getBody sbState $ XFTPRcvChunkSpec "/dev/null" chSize d
+  receive digest `shouldReturn` Right ()
+  receive (digest <> "_wrong") `shouldReturn` Left DIGEST
+
+bodyReader :: ByteString -> IO (Int -> IO ByteString)
+bodyReader bytes = do
+  rest <- newTVarIO bytes
+  pure $ \n -> atomically $ stateTVar rest $ B.splitAt n
 
 -- SNI and CORS tests
 
