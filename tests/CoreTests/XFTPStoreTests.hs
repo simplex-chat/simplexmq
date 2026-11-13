@@ -224,14 +224,17 @@ testExpiredFilesStoredExpiration = withPgStore $ \st -> do
 testDeleteFilesLog :: HasTestEnv => Expectation
 testDeleteFilesLog = do
   let storeLogPath = testPath "xftp-delete-files.log"
+      otherId = EntityId "other_file______"
   st <- newFileStore testXFTPPostgresCfg {dbStoreLogPath = Just storeLogPath} :: IO PostgresFileStore
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-  addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  let fileInfo = testFileInfo sndKey
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addFile st otherId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   void $ deleteFile st testSenderId
-  void $ deleteFiles st [testSenderId]
+  void $ deleteFiles st [testSenderId, otherId]
   closeFileStore st
-  map (take 4) . lines <$> readFile storeLogPath `shouldReturn` ["FNEW", "FDEL"]
+  map (take 4) . lines <$> readFile storeLogPath `shouldReturn` ["FNEW", "FNEW", "FDEL", "FDEL"]
 
 testStorageAndCount :: HasTestEnv => Expectation
 testStorageAndCount = withPgStore $ \st -> do
