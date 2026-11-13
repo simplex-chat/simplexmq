@@ -663,20 +663,20 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
       -- pure FROk
 
 deleteServerFile_ :: FileStoreClass s => FileRec -> M s (Either XFTPErrorType ())
-deleteServerFile_ fr@FileRec {senderId} = do
+deleteServerFile_ fr@FileRec {senderId} = mask_ $ do
   r <- deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
   forM_ r $ \_ -> withFileLog (`logDeleteFile` senderId)
   pure r
 
 -- this also deletes the file from storage, but doesn't include it in delete statistics
 blockServerFile :: FileStoreClass s => FileRec -> BlockingInfo -> M s (Either XFTPErrorType ())
-blockServerFile fr@FileRec {senderId} info = do
+blockServerFile fr@FileRec {senderId} info = mask_ $ do
   r <- deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
   forM_ r $ \_ -> withFileLog $ \sl -> logBlockFile sl senderId info
   pure r
 
 deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType (Maybe FilePath))) -> M s (Either XFTPErrorType ())
-deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $ runExceptT $ do
+deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = runExceptT $ do
   path <- readTVarIO filePath
   stats <- asks serverStats
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (mapM_ (removeServerFile stats) path)
@@ -717,7 +717,6 @@ expireServerFiles itemDelay expCfg = do
         mapM_ removeExpiredFile filePath_
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
-        withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         deleted <- M.fromList <$> liftIO (deleteFiles st sIds)
         forM_ expired $ \(sId, filePath_, fileSize) ->
           forM_ (M.lookup sId deleted) $ \path -> do
@@ -725,6 +724,7 @@ expireServerFiles itemDelay expCfg = do
               when (filePath_ /= Just fp) $ removeExpiredFile fp
               atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
             incFileStat filesExpired
+        withFileLog $ \sl -> mapM_ (logDeleteFile sl) (M.keys deleted)
         expireLoop st us now old
     removeExpiredFile fp =
       removeFile fp `catch` \e -> unless (isDoesNotExistError e) $ logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
