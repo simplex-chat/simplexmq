@@ -2500,11 +2500,11 @@ withStoreIsolation c isolation action = withStore_ c $ \st -> retryTransaction 3
 
 retryTransaction :: Int -> IO a -> IO a
 retryTransaction n transaction
-  | n > 0 = E.tryJust conflict transaction >>= either retry pure
+  | n > 0 = E.tryJust conflict transaction >>= either retryAfter pure
   | otherwise = transaction
   where
     conflict e = if isTransactionConflict e then Just e else Nothing
-    retry e = do
+    retryAfter e = do
       logWarn $ "transaction retried after " <> tshow e
       retryTransaction (n - 1) transaction
 
