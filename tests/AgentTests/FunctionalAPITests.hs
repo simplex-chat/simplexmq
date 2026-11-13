@@ -4796,6 +4796,16 @@ workItemReadTests = do
   it "should retry the read aborted by deadlock with ntf subscription deletion" $
     readWhileDeleting (createNtfSub $ NSANtf NSACreate) (lockTable "servers") "JOIN servers s ON s.host = ns.smp_host" "DELETE FROM ntf_subscriptions" (readNtfActions testNtfServer)
       `shouldReturn` False
+  it "should retry the read 3 times after serialization failures" $
+    readWithErrors 3 "40001" `shouldReturn` (Right (), 4)
+  it "should retry the read after deadlocks" $
+    readWithErrors 2 "40P01" `shouldReturn` (Right (), 3)
+  it "should report INTERNAL when serialization failures continue after 3 retries" $ do
+    (Left (INTERNAL _), attempts) <- readWithErrors 4 "40001"
+    attempts `shouldBe` 4
+  it "should not retry the read after other database errors" $ do
+    (Left (INTERNAL _), attempts) <- readWithErrors 1 "23505"
+    attempts `shouldBe` 1
   where
     createCmd :: DB.Connection -> IO ()
     createCmd db = do
@@ -4849,6 +4859,16 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
       ERR _ -> True
       ERRS _ -> True
       _ -> False
+
+readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), Int)
+readWithErrors failures errCode = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  attempts <- newIORef 0
+  r <- runReaderT (runExceptT $ withStoreIsolation' a RepeatableRead $ readItem attempts) (agentEnv a)
+  (r,) <$> readIORef attempts
+  where
+    readItem attempts db = do
+      n <- atomicModifyIORef' attempts $ \n -> (n + 1, n)
+      when (n < failures) $ DB.execute_ db $ "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '" <> errCode <> "'; END $$"
 
 waitForLock :: DBStore -> Int -> String -> IO ()
 waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Just ()
