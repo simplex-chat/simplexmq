@@ -1322,11 +1322,12 @@ getConnShortLink' :: forall c. AgentClient -> NetworkRequestMode -> UserId -> Co
 getConnShortLink' c nm userId = \case
   CSLInvitation _ srv linkId linkKey -> do
     g <- asks random
+    C.AuthAlg a <- asks $ sndAuthAlg . config
     invLink <- withStore' c $ \db -> do
       getInvShortLink db srv linkId >>= \case
         Just sl@InvShortLink {linkKey = lk} | linkKey == lk -> pure sl
         _ -> do
-          sndPrivateKey <- atomically $ C.generatePrivateAuthKey C.SEd25519 g
+          sndPrivateKey <- atomically $ C.generatePrivateAuthKey a g
           let sl = InvShortLink {server = srv, linkId, linkKey, sndPrivateKey, sndId = Nothing}
           createInvShortLink db sl
           pure sl
@@ -1541,7 +1542,8 @@ startJoinInvitation c userId connId sq_ enableNtfs cReqUri pqSupport =
               Left e -> do
                 nonBlockingWriteTBQueue (subQ c) ("", connId, AEvt SAEConn (ERR $ INTERNAL $ "no snd ratchet " <> show e))
                 runExceptT $ snd <$> createRatchet_ db g connId maxSupported pqSupport e2eRcvParams
-          pure ((cData, sq), (Just e2eSndParams, Nothing))
+          let Compatible SMPQueueInfo {clientVersion} = qInfo
+          pure ((cData, (sq :: SndQueue) {smpClientVersion = clientVersion}), (Just e2eSndParams, Nothing))
         _ -> do
           let Compatible SMPQueueInfo {queueAddress = SMPQueueAddress {smpServer, senderId}} = qInfo
           invLink_ <- withStore' c $ \db -> getInvShortLinkKeys db smpServer senderId
@@ -3931,6 +3933,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             let compatible =
                   (agentVersion `isCompatible` smpAgentVRange || agentVersion <= agreedAgentVersion)
                     && (phVer `isCompatible` smpClientVRange || phVer <= agreedClientVerion)
+                    && phVer >= min agreedClientVerion (minSMPClientVersion agentVersion)
             unless compatible $ throwE $ AGENT A_VERSION
 
           smpConfirmation :: SMP.MsgId -> Connection c -> Maybe C.APublicAuthKey -> C.PublicKeyX25519 -> Maybe (CR.SndE2ERatchetParams 'C.X448) -> ByteString -> VersionSMPC -> VersionSMPA -> AM ()

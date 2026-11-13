@@ -45,6 +45,7 @@ module Simplex.Messaging.Agent.Protocol
     rpcAddressSMPAgentVersion,
     currentSMPAgentVersion,
     supportedSMPAgentVRange,
+    minSMPClientVersion,
     e2eEncConnInfoLength,
     e2eEncAgentMsgLength,
 
@@ -332,6 +333,12 @@ currentSMPAgentVersion = VersionSMPA 8
 
 supportedSMPAgentVRange :: VersionRangeSMPA
 supportedSMPAgentVRange = mkVersionRange minSupportedSMPAgentVersion currentSMPAgentVersion
+
+minSMPClientVersion :: VersionSMPA -> VersionSMPC
+minSMPClientVersion v
+  | v >= rpcAddressSMPAgentVersion = shortLinksSMPClientVersion
+  | v >= ratchetOnConfSMPAgentVersion = sndAuthKeySMPClientVersion
+  | otherwise = initialSMPClientVersion
 
 -- it is shorter to allow all handshake headers,
 -- including E2E (double-ratchet) parameters and
