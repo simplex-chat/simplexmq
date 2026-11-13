@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     rejectContactAsync,
+    deleteRequestInvitation,
     sendServiceRequest,
     sendServiceRequestAsync,
     sendServiceReply,
@@ -542,6 +543,9 @@ rejectContact c = withAgentEnv c .:: rejectContact' c
 rejectContactAsync :: AgentClient -> ACorrId -> UserId -> ConfirmationId -> Maybe ByteString -> AE ()
 rejectContactAsync c = withAgentEnv c .:: rejectContactAsync' c
 {-# INLINE rejectContactAsync #-}
+
+deleteRequestInvitation :: AgentClient -> InvitationId -> AE ()
+deleteRequestInvitation c invId = withAgentEnv c $ withStore' c (`deleteInvitation` invId)
 
 sendServiceReply :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AE ConnId
 sendServiceReply c = withAgentEnv c .:: sendServiceReply' c
