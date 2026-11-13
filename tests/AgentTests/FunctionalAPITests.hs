@@ -635,8 +635,9 @@ functionalAPITests ps = do
       withSmpServer ps testConnectionVerifyCodes
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
-    it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False
-    it "should deliver receipt again after client restart before its status is saved" $ testDuplicateReceipt ps True
+    it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False False
+    it "should deliver receipt again after client restart before its status is saved" $ testDuplicateReceipt ps True False
+    it "should deliver receipt again after client restart when a message was sent after it" $ testDuplicateReceipt ps False True
     it "should delete sent message after its receipt is acknowledged" $ withSmpServer ps testReceiptDeletesSentMessage
     it "should accept and delete receipt for deleted sent message" $ withSmpServer ps testReceiptForDeletedSentMessage
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
@@ -4560,8 +4561,8 @@ testDeliveryReceipts =
     ackMessage b aId 5 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 5 Nothing
 
-testDuplicateReceipt :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> IO ()
-testDuplicateReceipt ps statusLost = do
+testDuplicateReceipt :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> Bool -> IO ()
+testDuplicateReceipt ps statusLost sentAfter = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
   bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
   withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
@@ -4573,6 +4574,10 @@ testDuplicateReceipt ps statusLost = do
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
       ackMessage bob aliceId 2 $ Just ""
       get alice =##> \case ("", c, Rcvd 2) -> c == bobId; _ -> False
+      when sentAfter $ do
+        4 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+        get alice ##> ("", bobId, SENT 4)
+        liftIO $ waitDeleted (sndDeliveries alice) (bobId, 4)
     when statusLost $
       withTransaction (store $ agentEnv alice) (`DB.execute_` "UPDATE snd_messages SET rcpt_internal_id = NULL, rcpt_status = NULL")
     disposeAgentClient alice
