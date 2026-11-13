@@ -9,6 +9,7 @@
 module XFTPClient where
 
 import Control.Concurrent (ThreadId, threadDelay)
+import Control.Exception (bracket)
 import Control.Monad (forM_)
 import Data.String (fromString)
 import Data.Time.Clock (getCurrentTime)
@@ -16,9 +17,9 @@ import Network.Socket (ServiceName)
 import SMPClient (serverBracket)
 import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
+import Simplex.FileTransfer.Protocol (FileInfo)
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig (..), AFStoreType (..), defaultFileExpiration, defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Protocol (FileInfo)
 import Simplex.FileTransfer.Server.Store (FileStoreClass, RoundedFileTime, SFSType (..), STMFileStore)
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
@@ -82,15 +83,13 @@ cfgFSTestFiles fsType@(AFSType fs) = case fs of
 
 addTestFiles :: HasTestEnv => AFStoreType -> [SenderId] -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> IO ()
 addTestFiles (AFSType fs) sIds file createdAt expiresAt = case fs of
-  SFSMemory -> do
-    sl <- openWriteStoreLog False testXFTPLogFile
-    forM_ sIds $ \sId -> logAddFile sl sId file createdAt expiresAt EntityActive
-    closeStoreLog sl
+  SFSMemory ->
+    bracket (openWriteStoreLog False testXFTPLogFile) closeStoreLog $ \sl ->
+      forM_ sIds $ \sId -> logAddFile sl sId file createdAt expiresAt EntityActive
 #if defined(dbServerPostgres)
-  SFSPostgres -> do
-    st <- newFileStore testXFTPPostgresCfg :: IO PostgresFileStore
-    forM_ sIds $ \sId -> addFile st sId file createdAt expiresAt EntityActive >>= either (error . show) pure
-    closeFileStore st
+  SFSPostgres ->
+    bracket (newFileStore testXFTPPostgresCfg) closeFileStore $ \(st :: PostgresFileStore) ->
+      forM_ sIds $ \sId -> addFile st sId file createdAt expiresAt EntityActive >>= either (error . show) pure
 #else
   SFSPostgres -> error "no postgres support"
 #endif
