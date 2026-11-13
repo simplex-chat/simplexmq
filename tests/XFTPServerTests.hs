@@ -39,6 +39,7 @@ import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), FileResponse (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpDecodeTClient, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
+import Simplex.FileTransfer.Server.StoreLog (serverFileName)
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -52,8 +53,8 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Version (mkVersionRange)
 import Simplex.Messaging.Util (unlessM)
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesFileExist, listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
@@ -330,12 +331,12 @@ testConcurrentChunkUpload = xftpTest2 $ \c@XFTPClient {http2Client, thParams} c'
         atomically $ takeTMVar resume
         send $ byteString part2
         flush
-      serverFile = xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId)
+      serverFile = xftpServerFiles </> serverFileName sId
       waitServerFile = unlessM (doesFileExist serverFile) $ threadDelay 10000 >> waitServerFile
   upload1 <- async $ HC.sendRequest http2Client req Nothing
   timeout 5000000 waitServerFile `shouldReturn` Just ()
   upload2 <- async $ runExceptT $ uploadXFTPChunk c' spKey sId chunkSpec
-  void $ timeout 1000000 $ wait upload2
+  timeout 1000000 (wait upload2) `shouldReturn` Nothing
   atomically $ putTMVar resume ()
   HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead}} <- either (error . show) pure =<< wait upload1
   case xftpDecodeTClient thParams bodyHead of

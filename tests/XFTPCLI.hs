@@ -192,8 +192,8 @@ testXFTPCLISendSharedTemp = do
       createDirectoryIfMissing True $ rcvPath r i
       createTestFile $ sndPath r i
     silence $ atOnce $ \i -> sendFile (\_ _ -> pure ()) (sndPath r i </> "testfile") (sndPath r i) tmpPath
+    silence $ forConcurrently_ [1 .. transfers] $ \i -> receiveFile (sndPath r i </> "testfile.xftp" </> "rcv1.xftp") (rcvPath r i) (rcvPath r i)
     forM_ [1 .. transfers] $ \i -> do
-      silence $ receiveFile (sndPath r i </> "testfile.xftp" </> "rcv1.xftp") (rcvPath r i) testDir
       file <- LB.readFile $ sndPath r i </> "testfile"
       LB.readFile (rcvPath r i </> "testfile") `shouldReturn` file
   listDirectory tmpPath `shouldReturn` []
