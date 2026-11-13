@@ -134,7 +134,8 @@ import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 #if defined(dbPostgres)
 import Fixtures
 import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
+import Simplex.Messaging.Agent.Store.AgentStore (createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubSMPActions, getNextSndFileToPrepare, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
+import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSASMP), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -560,6 +561,11 @@ functionalAPITests ps = do
       testUsersNoServer ps
     it "should connect two users and switch session mode" $
       withSmpServer ps testTwoUsers
+#if defined(dbPostgres)
+  describe "Work item locks" $ do
+    it "should wait to delete a file read by its worker" testWaitDeleteSndFile
+    it "should wait to delete a connection whose ntf subscription is read by its worker" testWaitDeleteNtfSubConn
+#endif
   describe "Client service certificates" $ do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
@@ -4766,6 +4772,47 @@ testTwoUsers = withAgentClients2 $ \a b -> do
         down cs = \case ("", "", AEvt SAENone (DOWN _ cs')) -> S.fromList cs' == S.fromList cs; _ -> False
         up :: ConnId -> ATransmission -> Bool
         up cId = \case ("", "", AEvt SAENone (UP _ [cId'])) -> cId' == cId; _ -> False
+
+#if defined(dbPostgres)
+testWaitDeleteSndFile :: HasTestEnv => IO ()
+testWaitDeleteSndFile = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+  g <- C.newRandom
+  key <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
+  withTransaction st $ \db -> do
+    Right sfId <- createSndFile db g 1 (CryptoFile "testfile" Nothing) 1 "test.xftp" key nonce Nothing Nothing
+    startPreparedSndFile db sfId `shouldReturn` Right ()
+  shouldWaitToDelete st readSndFile (`DB.execute_` "DELETE FROM snd_files")
+  where
+    readSndFile db = do
+      Right (Just _) <- getNextSndFileToPrepare db 86400
+      pure ()
+
+testWaitDeleteNtfSubConn :: HasTestEnv => IO ()
+testWaitDeleteNtfSubConn = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+      ProtocolServer {host = ntfHost, port = ntfPort, keyHash = ntfKeyHash} = testNtfServer
+  withTransaction st $ \db -> do
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
+    void $ createServer db testSMPServer
+    DB.execute db "INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (?,?,?)" (ntfHost, ntfPort, ntfKeyHash)
+    createNtfSubscription db (newNtfSubscription 1 "conn1" testSMPServer Nothing testNtfServer NASNew) (NSASMP NSASmpKey) `shouldReturn` Right ()
+  shouldWaitToDelete st readSub (`DB.execute_` "DELETE FROM connections")
+  where
+    readSub db = do
+      Right [Right _] <- getNextNtfSubSMPActions db testSMPServer 10
+      pure ()
+
+shouldWaitToDelete :: DBStore -> (DB.Connection -> IO ()) -> (DB.Connection -> IO ()) -> Expectation
+shouldWaitToDelete st readItem deleteItem = do
+  deleted <- newEmptyTMVarIO
+  withTransaction st $ \db -> do
+    readItem db
+    _ <- forkIO $ withTransaction st deleteItem >> atomically (putTMVar deleted ())
+    timeout 1000000 (atomically $ readTMVar deleted) `shouldReturn` Nothing
+  timeout 5000000 (atomically $ readTMVar deleted) `shouldReturn` Just ()
+#endif
 
 testClientServiceConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testClientServiceConnection ps = do
