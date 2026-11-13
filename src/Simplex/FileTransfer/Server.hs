@@ -84,6 +84,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
+import System.IO.Error (isDoesNotExistError)
 #ifdef slow_servers
 import System.Random (getStdRandom, randomR)
 #endif
@@ -686,7 +687,7 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $
   when (path' /= path) $ forM_ path' $ \p ->
     lift $ removeServerFile stats p `catch` \(e :: SomeException) -> logError $ "failed to remove file " <> tshow p <> ": " <> tshow e
   where
-    removeServerFile stats p = whenM (doesFileExist p) (removeFile p >> deletedStats stats)
+    removeServerFile stats p = (removeFile p >> deletedStats stats) `catch` \e -> unless (isDoesNotExistError e) $ throwIO e
     deletedStats stats = do
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
       liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
