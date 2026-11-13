@@ -727,8 +727,7 @@ expireServerFiles itemDelay expCfg = do
             incFileStat filesExpired
         expireLoop st us now old
     removeExpiredFile fp =
-      whenM (doesFileExist fp) $
-        removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+      removeFile fp `catch` \e -> unless (isDoesNotExistError e) $ logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
