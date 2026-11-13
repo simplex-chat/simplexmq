@@ -57,8 +57,8 @@ import Simplex.Messaging.Protocol (BasicAuth, NetworkError (..), ProtoServerWith
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
-import Simplex.Messaging.Util (tshow)
-import System.Directory (Permissions (writable), doesDirectoryExist, doesFileExist, getFileSize, getPermissions, listDirectory, removeFile, setPermissions)
+import Simplex.Messaging.Util (tshow, unlessM)
+import System.Directory (Permissions (writable), createDirectory, doesDirectoryExist, doesFileExist, getFileSize, getPermissions, listDirectory, removeFile, setPermissions)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
@@ -82,6 +82,7 @@ xftpAgentTests =
       it "should send and receive small file without a redirect" testXFTPAgentSendReceiveNoRedirect
       it "should receive prepared file only after it is started" testXFTPAgentPrepareReceive
       it "should send prepared file only after it is started" testXFTPAgentPrepareSend
+      it "should prepare files concurrently in distinct work directories" $ \_ -> testXFTPAgentPrepareSendConcurrently
       it "should extend storage time with an entitlement proof and report the granted expiry" $ \_ -> testXFTPAgentEntitlement
       describe "sending and receiving with version negotiation" $ beforeWith (const (pure ())) testXFTPAgentSendReceiveMatrix
       it "should resume receiving file after restart" $ \_ -> testXFTPAgentReceiveRestore
@@ -357,6 +358,29 @@ testXFTPAgentPrepareSend = withXFTPServer $ do
     pure rfd
   withAgent 3 agentCfg initAgentServers testDB2 $ \rcp ->
     runRight_ . void $ testReceive rcp rfd filePath2
+
+testXFTPAgentPrepareSendConcurrently :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentPrepareSendConcurrently = do
+  filePath <- createRandomFile_ (kb 1 :: Integer) "testfile"
+  let workPath = testPath "xftp-work-files"
+      rounds = 100
+      filesPerRound = 8
+      prepareAtOnce sndr = do
+        ready <- newTVarIO 0
+        started <- newTVarIO False
+        let waitStarted = unlessM (readTVarIO started) $ yield >> waitStarted
+            prepare = do
+              atomically $ modifyTVar' ready (+ 1)
+              waitStarted
+              runRight $ xftpPrepareSendFile sndr 1 (CF.plain filePath) 1 Nothing
+        concurrently_
+          (replicateConcurrently_ filesPerRound prepare)
+          (atomically $ readTVar ready >>= checkSTM . (== filesPerRound) >> writeTVar started True)
+  createDirectory workPath
+  withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+    runRight_ $ xftpStartWorkers sndr (Just workPath)
+    replicateM_ rounds $ prepareAtOnce sndr
+    length <$> listDirectory workPath `shouldReturn` rounds * filesPerRound
 
 testXFTPAgentSendReceiveMatrix :: Spec
 testXFTPAgentSendReceiveMatrix = do

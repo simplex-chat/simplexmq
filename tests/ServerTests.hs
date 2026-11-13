@@ -1657,11 +1657,24 @@ testRestoreExpireMessages =
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
-testPrometheusMetrics =
+testPrometheusMetrics = do
   it "should save Prometheus metrics" $ \(at, msType) -> do
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
     withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1000000
     doesFileExist testPrometheusMetricsFile `shouldReturn` True
+  it "should save Prometheus metrics while they are read" $ \(at, msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        metricsTime = B.takeWhile (/= '\n') <$> B.readFile testPrometheusMetricsFile
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      recordedAt <- metricsTime
+      _ <- timeout 3000000 $ forever metricsTime
+      metricsTime `shouldNotReturn` recordedAt
+  it "should continue when Prometheus metrics cannot be saved" $ \(at@(ATransport t), msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1, prometheusMetricsFile = testPath "missing/smp-server-metrics.txt"}
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      runSMPClient t $ \_ -> pure ()
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
