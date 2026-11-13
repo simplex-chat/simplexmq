@@ -454,6 +454,8 @@ functionalAPITests ps = do
       testDeliverClientRestart ps
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage ps
+    it "should deliver message again after client restart when a message was sent after it" $
+      testDuplicateMessageAfterSent ps
     it "should acknowledge a message again after it is deleted" $
       withSmpServer ps testAckDeletedMessage
     it "should report error via msg integrity on skipped messages" $
@@ -2454,6 +2456,28 @@ testDuplicateMessage ps = do
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
   disposeAgentClient alice2
   disposeAgentClient bob2
+
+testDuplicateMessageAfterSent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testDuplicateMessageAfterSent ps = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      get bob =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aliceId; _ -> False
+      3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+      get bob ##> ("", aliceId, SENT 3)
+    disposeAgentClient bob
+    threadDelay 250000
+    bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob1 aliceId
+      get bob1 =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aliceId; _ -> False
+      ackMessage bob1 aliceId 2 Nothing
+    disposeAgentClient bob1
+  disposeAgentClient alice
 
 testAckDeletedMessage :: (HasCallStack, HasTestEnv) => IO ()
 testAckDeletedMessage =

@@ -1260,7 +1260,7 @@ getLastMsg db connId msgId =
           m.msg_type, m.msg_body, m.pq_encryption, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
-        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
+        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_rcv_msg_id = r.internal_rcv_id
         LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
