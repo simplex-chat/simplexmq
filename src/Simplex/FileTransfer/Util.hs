@@ -22,21 +22,19 @@ uniqueCombine :: MonadIO m => FilePath -> String -> m FilePath
 uniqueCombine filePath fileName = tryCombine (0 :: Int)
   where
     tryCombine n =
-      let f = candidatePath filePath fileName n
+      let (name, ext) = splitExtensions $ safeFileNameStr fileName
+          suffix = if n == 0 then "" else "_" <> show n
+          f = filePath </> (name <> suffix <> ext)
        in ifM (doesPathExist f) (tryCombine $ n + 1) (pure f)
 
 createUniqueDirectory :: MonadUnliftIO m => FilePath -> String -> m FilePath
 createUniqueDirectory filePath dirName = tryCreate (0 :: Int)
   where
     tryCreate n =
-      let d = candidatePath filePath dirName n
+      let (name, ext) = splitExtensions $ safeFileNameStr dirName
+          suffix = if n == 0 then "" else "_" <> show n
+          d = filePath </> (name <> suffix <> ext)
        in (d <$ createDirectory d) `catch` \e -> if isAlreadyExistsError e then tryCreate (n + 1) else throwIO e
-
-candidatePath :: FilePath -> String -> Int -> FilePath
-candidatePath filePath fileName n = filePath </> (name <> suffix <> ext)
-  where
-    (name, ext) = splitExtensions $ safeFileNameStr fileName
-    suffix = if n == 0 then "" else "_" <> show n
 
 removePath :: MonadIO m => FilePath -> m ()
 removePath p = do
