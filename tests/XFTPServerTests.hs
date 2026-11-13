@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -8,13 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module XFTPServerTests
-  ( xftpServerTests,
-#if defined(dbServerPostgres)
-    xftpServerPostgresTests,
-#endif
-  )
-where
+module XFTPServerTests (xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
@@ -24,7 +17,6 @@ import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
 import Data.Bifunctor (first)
-import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -60,7 +52,8 @@ import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (unlessM)
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..), getSystemSeconds)
+import Simplex.Messaging.Util (bshow, unlessM, whenM)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (doesFileExist, listDirectory, removeFile)
 import System.FilePath ((</>))
@@ -70,15 +63,6 @@ import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
-#if defined(dbServerPostgres)
-import Data.Either (isRight)
-import Simplex.FileTransfer.Server.Env (AFStoreType (..))
-import Simplex.FileTransfer.Server.Store (FileStoreClass (addFile, closeFileStore, getFile, newFileStore), SFSType (..))
-import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
-import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
-import Simplex.Messaging.SystemTime (RoundedSystemTime (..), getSystemSeconds)
-import Simplex.Messaging.Util (bshow, whenM)
-#endif
 
 xftpServerTests :: SpecWith AFStoreType
 xftpServerTests = do
@@ -95,6 +79,7 @@ xftpServerTests = do
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should complete concurrent uploads of one chunk" testConcurrentChunkUpload
+      it "should remove a chunk uploaded while its file expires" testUploadDuringExpiration
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
@@ -135,7 +120,7 @@ createXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> FileInfo -> NonEmpty C.APu
 createXFTPChunk c spKey file rcps auth = (\(sId, rIds, _) -> (sId, rIds)) <$> A.createXFTPChunk c spKey file rcps auth Nothing
 
 readChunk :: HasTestEnv => XFTPFileId -> IO ByteString
-readChunk sId = B.readFile (xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId))
+readChunk sId = B.readFile (xftpServerFiles </> serverFileName sId)
 
 testFileChunkDelivery :: HasTestEnv => AFStoreType -> Expectation
 testFileChunkDelivery = xftpTest $ \c -> runRight_ $ runTestFileChunkDelivery c c
@@ -362,39 +347,30 @@ testConcurrentChunkUpload = xftpTest2 $ \c@XFTPClient {http2Client, thParams} c'
   runRight_ $ downloadXFTPChunk g c' rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
   B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
-#if defined(dbServerPostgres)
-xftpServerPostgresTests :: Spec
-xftpServerPostgresTests =
-  it "should remove a chunk uploaded while its file expires" testUploadDuringExpiration
-
-testUploadDuringExpiration :: HasTestEnv => Expectation
-testUploadDuringExpiration =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS $ AFSType SFSPostgres) $ \c -> c {fileExpiration}) $ \_ ->
-    bracket (newFileStore testXFTPPostgresCfg) closeFileStore $ \(st :: PostgresFileStore) -> do
-      g <- C.newRandom
-      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-      void $ createTestChunk testChunkPath
-      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
-      RoundedSystemTime now <- getSystemSeconds
-      let file = FileInfo {sndKey, size = chSize, digest}
-          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
-          fileId i = EntityId $ "expiring_file_" <> bshow (i :: Int)
-          sId = fileId 0
-          uploadedIds = map fileId [1 .. 20]
-          uploadedFiles = map ((xftpServerFiles </>) . serverFileName) uploadedIds
-          waitExpiration = whenM (and <$> mapM doesFileExist uploadedFiles) $ threadDelay 10000 >> waitExpiration
-          waitDeleted = whenM (isRight <$> getFile st SFSender sId) $ threadDelay 100000 >> waitDeleted
-      forM_ (sId : uploadedIds) $ \fId ->
-        addFile st fId file (RoundedSystemTime now) (Just $ RoundedSystemTime $ now + 5) EntityActive `shouldReturn` Right ()
-      testXFTPClient $ \c -> do
-        runRight_ $ forM_ uploadedIds $ \fId -> uploadXFTPChunk c spKey fId chunkSpec
-        timeout 10000000 waitExpiration `shouldReturn` Just ()
-        runRight_ $ uploadXFTPChunk c spKey sId chunkSpec
-      timeout 10000000 waitDeleted `shouldReturn` Just ()
-      listDirectory xftpServerFiles `shouldReturn` []
+testUploadDuringExpiration :: HasTestEnv => AFStoreType -> Expectation
+testUploadDuringExpiration fsType = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  void $ createTestChunk testChunkPath
+  digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+  RoundedSystemTime now <- getSystemSeconds
+  let file = FileInfo {sndKey, size = chSize, digest}
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      fileId i = EntityId $ "expiring_file_" <> bshow (i :: Int)
+      sId = fileId 0
+      uploadedIds = map fileId [1 .. 20]
+      uploadedFiles = map ((xftpServerFiles </>) . serverFileName) uploadedIds
+      waitExpiration = whenM (and <$> mapM doesFileExist uploadedFiles) $ threadDelay 10000 >> waitExpiration
+      waitRemoved = unlessM (null <$> listDirectory xftpServerFiles) $ threadDelay 10000 >> waitRemoved
+  addTestFiles fsType (sId : uploadedIds) file (RoundedSystemTime now) (Just $ RoundedSystemTime $ now + 5)
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFSTestFiles fsType) $ \c -> c {fileExpiration}) $ \_ -> do
+    testXFTPClient $ \c -> do
+      runRight_ $ forM_ uploadedIds $ \fId -> uploadXFTPChunk c spKey fId chunkSpec
+      timeout 10000000 waitExpiration `shouldReturn` Just ()
+      runRight_ $ uploadXFTPChunk c spKey sId chunkSpec
+    timeout 10000000 waitRemoved `shouldReturn` Just ()
   where
     fileExpiration = ExpirationConfig {ttl = 3600, checkInterval = 1}
-#endif
 
 testFileLog :: HasTestEnv => AFStoreType -> Expectation
 testFileLog _ = do
