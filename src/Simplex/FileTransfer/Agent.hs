@@ -287,8 +287,11 @@ rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ tmpPath err
 
 noFileError :: StoreError -> StoreError
 noFileError = \case
-  SEFileNotFound -> SEAgentError $ FILE NO_FILE
+  SEFileNotFound -> fileDeleted
   e -> e
+
+fileDeleted :: StoreError
+fileDeleted = SEAgentError $ FILE NO_FILE
 
 runXFTPRcvLocalWorker :: AgentClient -> Worker -> AM ()
 runXFTPRcvLocalWorker c Worker {doWork} = do
@@ -337,7 +340,10 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
               | otherwise -> pure fd
           liftIO $ waitUntilForeground c
           -- register and download chunks from the actual file
-          withStore c $ \db -> updateRcvFileComplete db rcvFileId >> updateRcvFileRedirect db redirectDbId next
+          withStore c $ \db -> do
+            lockRcvFileForUpdate db redirectDbId
+            ifM (getRcvFileDeleted db redirectDbId) (pure $ Left fileDeleted) $
+              updateRcvFileComplete db rcvFileId >> updateRcvFileRedirect db redirectDbId next
           forM_ nextChunks (downloadChunk c)
           flip catchAllErrors (\e -> logError $ "XFTP rcv worker error: " <> tshow e) $
             lift $ forM_ tmpPath (removePath <=< toFSFilePath)
@@ -447,7 +453,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
             (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
             withStore c $ \db -> do
               lockSndFileForUpdate db sndFileId
-              ifM (getSndFileDeleted db sndFileId) (pure $ Left $ SEAgentError $ FILE NO_FILE) $ do
+              ifM (getSndFileDeleted db sndFileId) (pure $ Left fileDeleted) $ do
                 updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
                 getSndFile db sndFileId
           else pure sndFile
@@ -491,7 +497,9 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
         createChunk numRecipients' storageHours ch = do
           liftIO $ assertUploadsAllowed c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
-          withStore' c $ \db -> createSndFileReplica db ch replica
+          withStore c $ \db -> do
+            lockSndFileForUpdate db sndFileId
+            ifM (getSndFileDeleted db sndFileId) (pure $ Left fileDeleted) (Right <$> createSndFileReplica db ch replica)
           pure srv
           where
             tryCreate = do
@@ -589,7 +597,9 @@ runXFTPSndWorker c srv Worker {doWork} = do
           | otherwise = do
               let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
               rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
-              cr' <- withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
+              cr' <- withStore c $ \db -> do
+                lockSndFileForUpdate db sndFileId
+                ifM (getSndFileDeleted db sndFileId) (pure $ Left fileDeleted) (Right <$> addSndChunkReplicaRecipients db cr (L.toList rcvIdsKeys'))
               addRecipients ch cr'
         sndFileToDescrs :: SndFile -> AM (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
         sndFileToDescrs SndFile {digest = Nothing} = throwE $ INTERNAL "snd file has no digest"

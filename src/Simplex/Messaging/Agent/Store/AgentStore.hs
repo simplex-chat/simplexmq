@@ -230,6 +230,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateRcvFileRedirect,
     updateRcvFileNoTmpPath,
     updateRcvFileDeleted,
+    getRcvFileDeleted,
     deleteRcvFile',
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
@@ -3444,6 +3445,11 @@ updateRcvFileDeleted :: DB.Connection -> DBRcvFileId -> IO ()
 updateRcvFileDeleted db rcvFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET deleted = 1, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
+
+getRcvFileDeleted :: DB.Connection -> DBRcvFileId -> IO Bool
+getRcvFileDeleted db rcvFileId =
+  maybeFirstRow' True fromOnlyBI $
+    DB.query db "SELECT deleted FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
 
 deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
