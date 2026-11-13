@@ -1005,16 +1005,21 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
   where
     enqueueAck :: AM ()
     enqueueAck = do
-      server <- setUserAck `catchAllErrors` \e -> ifM msgDeleted primaryRcvServer (throwE e)
-      enqueueCommand c corrId connId (Just server) . AClientCommand $ ACK msgId rcptInfo_
+      server <- setUserAck `catchAllErrors` \e -> ifM msgDeleted ackDeleted (throwE e)
+      lift . void $ getAsyncCmdWorker True c connId (Just server)
     setUserAck :: AM SMPServer
     setUserAck = do
       RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId mId
       when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwE $ CMD PROHIBITED "ackMessageAsync: receipt not allowed"
-      (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId mId
-      pure server
-    primaryRcvServer :: AM SMPServer
-    primaryRcvServer = qServer <$> withStore c (`getPrimaryRcvQueue` connId)
+      withStore c $ \db -> runExceptT $ do
+        (RcvQueue {server}, _) <- ExceptT $ setMsgUserAck db connId mId
+        server <$ ExceptT (createAck db server)
+    ackDeleted :: AM SMPServer
+    ackDeleted = do
+      server <- qServer <$> withStore c (`getPrimaryRcvQueue` connId)
+      server <$ withStore c (`createAck` server)
+    createAck :: DB.Connection -> SMPServer -> IO (Either StoreError ())
+    createAck db server = createCommand db corrId connId (Just server) . AClientCommand $ ACK msgId rcptInfo_
     msgDeleted :: AM Bool
     msgDeleted = withStore' c $ \db -> checkMsgDeleted db connId mId
     mId = InternalId msgId
