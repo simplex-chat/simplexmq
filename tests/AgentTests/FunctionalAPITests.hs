@@ -132,9 +132,12 @@ import Util
 import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 
 #if defined(dbPostgres)
+import Database.PostgreSQL.Simple (Only (..))
 import Fixtures
 import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
 import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
+#else
+import Database.SQLite.Simple (Only (..))
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -634,6 +637,7 @@ functionalAPITests ps = do
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps
+    it "should delete sent message after its receipt is acknowledged" $ withSmpServer ps testReceiptDeletesSentMessage
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
   describe "Connections with apps of earlier versions" $ do
     describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
@@ -4537,6 +4541,18 @@ testDuplicateReceipt ps = do
       ackMessage alice1 bobId 3 Nothing
     disposeAgentClient alice1
   disposeAgentClient bob
+
+testReceiptDeletesSentMessage :: (HasCallStack, HasTestEnv) => IO ()
+testReceiptDeletesSentMessage =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 2 $ Just ""
+    get a =##> \case ("", c, Rcvd 2) -> c == bId; _ -> False
+    ackMessage a bId 3 Nothing
+    liftIO $ withTransaction (store $ agentEnv a) (\db -> DB.query db "SELECT internal_id FROM messages WHERE conn_id = ? AND internal_id = ?" (bId, 2 :: Int64)) `shouldReturn` ([] :: [Only Int64])
 
 testDeliveryReceiptsConcurrent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =

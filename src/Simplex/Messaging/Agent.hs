@@ -3808,7 +3808,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                             pure ACKPending
                                           AgentMessage _ (A_RCVD rcpts) -> do
                                             sndMsgs <- withStore' c $ \db -> mapM (\AMessageReceipt {agentMsgId} -> getSndMsgViaRcpt db connId $ InternalSndId agentMsgId) rcpts
-                                            case L.nonEmpty $ mapMaybe (\SndMsg {msgReceipt} -> msgReceipt) $ rights $ L.toList sndMsgs of
+                                            case L.nonEmpty [MsgReceipt {agentMsgId = sndId, msgRcptStatus} | Right SndMsg {internalId = InternalId sndId, msgReceipt = Just MsgReceipt {agentMsgId = rcptId, msgRcptStatus}} <- L.toList sndMsgs, InternalId rcptId == internalId] of
                                               Just rs -> notify (RCVD msgMeta rs) $> ACKPending
                                               Nothing -> ack
                                           _ -> ack
@@ -4096,7 +4096,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
               Nothing -> qError "QCONT: queue address not found"
 
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> AM ACKd
-          messagesRcvd rcpts msgMeta@MsgMeta {broker = (srvMsgId, _)} _ = do
+          messagesRcvd rcpts msgMeta@MsgMeta {recipient = (rcptMsgId, _), broker = (srvMsgId, _)} _ = do
             logServer "<--" c srv rId $ "MSG <RCPT>:" <> logSecret' (SMP.unMsgId srvMsgId)
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
@@ -4115,9 +4115,8 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                     Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing -- already notified with MROk status
                     _ -> do
                       let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
-                          rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
-                      withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId rcpt
-                      pure $ Just rcpt
+                      withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId = rcptMsgId, msgRcptStatus}
+                      pure $ Just MsgReceipt {agentMsgId = msgId, msgRcptStatus}
 
           -- processed by queue sender
           qAddMsg :: SMP.MsgId -> NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> AM ()
