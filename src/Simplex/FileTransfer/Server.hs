@@ -336,12 +336,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       ss <- asks serverStats
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
+          saveMetrics = do
+            ts <- getCurrentTime
+            sm <- getFileServerMetrics ss rtsOpts
+            writeFileAtomic metricsFile (xftpPrometheusMetrics sm ts)
       liftIO $ forever $ do
         threadDelay interval
-        ts <- getCurrentTime
-        sm <- getFileServerMetrics ss rtsOpts
-        writeFileAtomic metricsFile (xftpPrometheusMetrics sm ts)
-          `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
+        saveMetrics `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
     getFileServerMetrics ss rtsOptions = do

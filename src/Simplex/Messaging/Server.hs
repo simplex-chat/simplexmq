@@ -667,13 +667,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       env <- ask
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
+          saveMetrics = do
+            ts <- getCurrentTime
+            sm <- getServerMetrics st ss rtsOpts
+            rtm <- getRealTimeMetrics env
+            writeFileAtomic metricsFile (prometheusMetrics sm rtm ts)
       liftIO $ forever $ do
         threadDelay interval
-        ts <- getCurrentTime
-        sm <- getServerMetrics st ss rtsOpts
-        rtm <- getRealTimeMetrics env
-        writeFileAtomic metricsFile (prometheusMetrics sm rtm ts)
-          `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
+        saveMetrics `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getServerMetrics :: s -> ServerStats -> Text -> IO ServerMetrics
     getServerMetrics st ss rtsOptions = do
