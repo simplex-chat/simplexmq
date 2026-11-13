@@ -5,6 +5,8 @@ module Simplex.Messaging.Transport.HTTP2
   ( HTTP2Body (..),
     HTTP2BodyChunk (..),
     defaultHTTP2BufferSize,
+    http2Settings,
+    http2WindowSize,
     withHTTP2,
     http2TLSParams,
     getHTTP2Body,
@@ -19,10 +21,9 @@ import Data.Default (def)
 import Data.Maybe (fromMaybe)
 import Foreign (mallocBytes)
 import Network.HPACK (BufferSize)
-import Network.HTTP2.Client (Config (..), defaultPositionReadMaker, freeSimpleConfig)
+import Network.HTTP2.Client (Config (..), defaultConfig, freeSimpleConfig)
 import qualified Network.HTTP2.Client as HC
 import qualified Network.HTTP2.Server as HS
-import Network.Socket (SockAddr (..))
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
 import Simplex.Messaging.Transport (ALPN, TLS, Transport (cGet, cPut))
@@ -40,16 +41,22 @@ allocHTTP2Config c sz = do
   buf <- mallocBytes sz
   tm <- TI.initialize $ 30 * 1000000
   pure
-    Config
+    defaultConfig
       { confWriteBuffer = buf,
         confBufferSize = sz,
         confSendAll = cPut c,
         confReadN = cGet c,
-        confPositionReadMaker = defaultPositionReadMaker,
         confTimeoutManager = tm,
-        confMySockAddr = SockAddrInet 0 0,
-        confPeerSockAddr = SockAddrInet 0 0
+        -- otherwise http2 closes a connection that receives no frames for the timeout above
+        confReadNTimeout = True
       }
+
+-- http2 4.2.2 advertised these limits; the received data is bounded by the connection window.
+http2Settings :: HS.Settings
+http2Settings = HS.defaultSettings {HS.maxConcurrentStreams = Just 100, HS.initialWindowSize = http2WindowSize}
+
+http2WindowSize :: Int
+http2WindowSize = 1048575
 
 http2TLSParams :: T.Supported
 http2TLSParams =

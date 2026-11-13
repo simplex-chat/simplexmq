@@ -29,8 +29,10 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
+import Network.HPACK (defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
+import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
 import qualified Network.TLS as T
 import SMPClient (withStallingServerOn')
 import ServerTests (logSize)
@@ -46,9 +48,9 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
@@ -88,6 +90,7 @@ xftpServerTests = do
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
+      it "should close connection when DATA exceeds the HTTP/2 flow-control window" testHTTP2FlowControl
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -301,7 +304,7 @@ testInterruptedUploadStorage fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
                 send $ byteString $ B.replicate 1024 'x'
                 flush
                 threadDelay maxBound
-          race_ (HC.sendRequest http2Client req Nothing) (threadDelay 20000)
+          race_ (HC.sendRequest http2Client req Nothing pure) (threadDelay 20000)
           sId <$ closeXFTPClient c
     sIds <- pooledReplicateConcurrentlyN 10 300 interruptUpload
     threadDelay 1000000
@@ -454,6 +457,39 @@ testOldServerHandshake _ = do
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
 
+testHTTP2FlowControl :: HasTestEnv => AFStoreType -> Expectation
+testHTTP2FlowControl _ =
+  withStallingXFTPServer $ \requested _ -> do
+    Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+    runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) -> do
+      cPut tls $ connectionPreface <> frame 0 id (SettingsFrame [])
+      SettingsFrame settings <- nextFrame tls $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
+      (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just 100, Just http2WindowSize)
+      cPut tls $ frame 0 setAck (SettingsFrame [])
+      nextFrame tls (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
+      dynTable <- newDynamicTableForEncoding 4096
+      hdrs <- encodeHeader defaultEncodeStrategy 4096 dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
+      cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
+      atomically $ takeTMVar requested
+      -- the stalling handler reads no body, so the server returns no window
+      let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
+      replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
+      cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
+      cPut tls $ frame 0 id $ PingFrame "flowctrl"
+      nextFrame tls (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
+      cPut tls $ frame 1 id $ DataFrame "x"
+      nextFrame tls (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
+  where
+    frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
+    nextFrame tls wanted = do
+      (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
+      payload <- either (error . show) pure . decodeFramePayload typ h =<< cGet tls (payloadLength h)
+      if wanted typ h
+        then pure payload
+        else case payload of
+          GoAwayFrame {} -> error $ "unexpected " <> show payload
+          _ -> nextFrame tls wanted
+
 -- SNI and CORS tests
 
 lookupResponseHeader :: B.ByteString -> H2.Response -> Maybe B.ByteString
@@ -506,7 +542,7 @@ testCORSHeaders =
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
-      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
       lookupResponseHeader "access-control-expose-headers" response `shouldBe` Just "*"
 
@@ -518,7 +554,7 @@ testCORSPreflight =
         cfg = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
     withH2Client defaultSupportedParamsHTTPS cfg caHTTP $ \h2 -> do
       let req = H2.requestNoBody "OPTIONS" "/" []
-      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Just "*"
       lookupResponseHeader "access-control-allow-methods" response `shouldBe` Just "POST, OPTIONS"
       lookupResponseHeader "access-control-allow-headers" response `shouldBe` Just "*"
@@ -532,7 +568,7 @@ testNoCORSWithoutSNI =
         cfg = defaultTransportClientConfig {clientALPN = Just ["xftp/1"], useSNI = False}
     withH2Client defaultSupportedParams cfg caXFTP $ \h2 -> do
       let req = H2.requestNoBody "POST" "/" []
-      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      HC.HTTP2Response {HC.response} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       lookupResponseHeader "access-control-allow-origin" response `shouldBe` Nothing
 
 testFileChunkDeliverySNI :: HasTestEnv => Expectation
@@ -553,7 +589,7 @@ testWebHandshake =
       challenge <- atomically $ C.randomBytes 32 g
       helloBody <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge})) xftpBlockSize
       let helloReq = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody
-      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000)
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq (Just 5000000) pure
       let serverHsBody = bodyHead (HC.respBody resp1)
       -- Decode server handshake
       serverHsDecoded <- either (error . show) pure $ C.unPad serverHsBody
@@ -575,7 +611,7 @@ testWebHandshake =
       let clientHs = XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash, entitlementProof = Nothing}
       clientHsPadded <- either (error . show) pure $ C.pad (smpEncode clientHs) xftpBlockSize
       let clientHsReq = H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded
-      resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000)
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 clientHsReq (Just 5000000) pure
       let ackBody = bodyHead (HC.respBody resp2)
       B.length ackBody `shouldBe` 0
 
@@ -593,22 +629,22 @@ testWebReHandshake =
       challenge1 <- atomically $ C.randomBytes 32 g
       helloBody1 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge1})) xftpBlockSize
       let helloReq1 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody1
-      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000)
+      resp1 <- either (error . show) pure =<< HC.sendRequest h2 helloReq1 (Just 5000000) pure
       serverHs1 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp1))
       XFTPServerHandshake {sessionId = sid1} <- either error pure $ smpDecode serverHs1
       clientHsPadded <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHandshake {xftpVersion = VersionXFTP 1, keyHash, entitlementProof = Nothing})) xftpBlockSize
-      resp1b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      resp1b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000) pure
       B.length (bodyHead (HC.respBody resp1b)) `shouldBe` 0
       -- Re-handshake on same connection with xftp-web-hello header
       challenge2 <- atomically $ C.randomBytes 32 g
       helloBody2 <- either (error . show) pure $ C.pad (smpEncode (XFTPClientHello {webChallenge = Just challenge2})) xftpBlockSize
       let helloReq2 = H2.requestBuilder "POST" "/" [("xftp-web-hello", "1")] $ byteString helloBody2
-      resp2 <- either (error . show) pure =<< HC.sendRequest h2 helloReq2 (Just 5000000)
+      resp2 <- either (error . show) pure =<< HC.sendRequest h2 helloReq2 (Just 5000000) pure
       serverHs2 <- either (error . show) pure $ C.unPad (bodyHead (HC.respBody resp2))
       XFTPServerHandshake {sessionId = sid2} <- either error pure $ smpDecode serverHs2
       sid2 `shouldBe` sid1
       -- Complete re-handshake
-      resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000)
+      resp2b <- either (error . show) pure =<< HC.sendRequest h2 (H2.requestBuilder "POST" "/" [] $ byteString clientHsPadded) (Just 5000000) pure
       B.length (bodyHead (HC.respBody resp2b)) `shouldBe` 0
 
 testStaleWebSession :: HasTestEnv => Expectation
@@ -621,7 +657,7 @@ testStaleWebSession =
       -- Send a command on web connection without doing hello (no xftp-web-hello header)
       dummyBody <- either (error . show) pure $ C.pad "PING" xftpBlockSize
       let req = H2.requestBuilder "POST" "/" [] $ byteString dummyBody
-      resp <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000)
+      resp <- either (error . show) pure =<< HC.sendRequest h2 req (Just 5000000) pure
       let respBody = bodyHead (HC.respBody resp)
       -- Server should return padded SESSION error
       B.length respBody `shouldBe` xftpBlockSize

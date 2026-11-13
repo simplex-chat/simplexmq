@@ -19,6 +19,7 @@ module Simplex.Messaging.Server.Web
   ) where
 
 import qualified Codec.Compression.GZip as GZip
+import Control.Concurrent.STM (newTVarIO)
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
@@ -99,7 +100,7 @@ attachStaticFiles path action = do
           WI.serveConnection conn ii th addr transport warpSettings app
   where
     -- from warp-tls
-    withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
+    withConnection socket cxt = bracket (WT.attachConn socket cxt =<< newTVarIO 0) (terminate . fst)
     -- from warp
     withTimeout ii =
       bracket
