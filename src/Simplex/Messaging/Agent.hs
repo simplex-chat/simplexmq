@@ -3750,18 +3750,16 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                 notify $ MSG msgMeta msgFlags body
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
-                              A_QCONT addr -> notifyIntegrity >> qDuplexAckDel conn'' "QCONT" (continueSending srvMsgId addr)
-                              QADD qs -> notifyIntegrity >> qDuplexAckDel conn'' "QADD" (qAddMsg srvMsgId qs)
-                              QKEY qs -> notifyIntegrity >> qDuplexAckDel conn'' "QKEY" (qKeyMsg srvMsgId qs)
-                              QUSE qs -> notifyIntegrity >> qDuplexAckDel conn'' "QUSE" (qUseMsg srvMsgId qs)
+                              A_QCONT addr -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QCONT" (continueSending srvMsgId addr)
+                              QADD qs -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QADD" (qAddMsg srvMsgId qs)
+                              QKEY qs -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QKEY" (qKeyMsg srvMsgId qs)
+                              QUSE qs -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QUSE" (qUseMsg srvMsgId qs)
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
-                              QTEST _ -> notifyIntegrity >> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' (SMP.unMsgId srvMsgId)) >> ackDel msgId
+                              QTEST _ -> notifyIntegrity msgMeta >> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' (SMP.unMsgId srvMsgId)) >> ackDel msgId
                               QEND addrs -> qDuplexAckDel conn'' "QEND" $ qEndMsg srvMsgId addrs
                               EREADY _ -> qDuplexAckDel conn'' "EREADY" $ ereadyMsg rcPrev
                             where
-                              notifyIntegrity :: AM ()
-                              notifyIntegrity = when (integrity msgMeta /= MsgOk) $ notify $ MSGERR msgMeta
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> AM ()) -> AM ACKd
                               qDuplexAckDel conn'' name a = qDuplex conn'' name a >> ackDel msgId
                               resetRatchetSync :: AM (Connection c)
@@ -3899,6 +3897,9 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
           prohibited s = do
             logError $ "prohibited: " <> s
             notify . ERR . AGENT $ A_PROHIBITED $ T.unpack s
+
+          notifyIntegrity :: MsgMeta -> AM ()
+          notifyIntegrity mm = when (integrity mm /= MsgOk) $ notify $ MSGERR mm
 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand
@@ -4086,7 +4087,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
-              Nothing -> when (integrity msgMeta /= MsgOk) (notify $ MSGERR msgMeta) >> ack
+              Nothing -> notifyIntegrity msgMeta >> ack
             where
               ack :: AM ACKd
               ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
