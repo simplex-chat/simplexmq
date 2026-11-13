@@ -285,8 +285,6 @@ module Simplex.Messaging.Agent.Store.AgentStore
     fromOnlyBI,
     getWorkItem,
     getWorkItems,
-    retryOnDeadlock,
-    isDeadlock,
   )
 where
 
@@ -351,7 +349,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
 import Data.List (sortOn)
-import Database.PostgreSQL.Simple (In (..), Only (..), Query, SqlError (..), (:.) (..))
+import Database.PostgreSQL.Simple (In (..), Only (..), Query, (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else
@@ -1124,17 +1122,13 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
       maybeFirstRow fromOnly $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT internal_id
             FROM snd_message_deliveries d
             WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
             ORDER BY internal_id ASC
             LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE"
-#endif
-          )
           (connId, dbQueueId)
     getMsgData :: InternalId -> IO (Either StoreError (Maybe RcvQueue, PendingMsgData))
     getMsgData msgId = runExceptT $ do
@@ -1176,34 +1170,20 @@ getWorkItems itemName getIds getItem markFailed =
   runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
 
 tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
-tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchAllErrors` \e -> mark >> throwE e
+tryGetItem itemName getItem markFailed itemId = ExceptT getItem' `catchE` \e -> mark >> throwE e
   where
+    getItem' = E.handleJust workItemError (pure . Left . fromSomeException) $ getItem itemId
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
 handleWrkErr :: forall e a. AnyStoreError e => String -> String -> IO a -> ExceptT e IO a
 handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust workItemError action
   where
-    workItemError e = if isDeadlock e then Nothing else Just e
     mkError :: E.SomeException -> e
     mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
 
-retryOnDeadlock :: Int -> IO a -> IO a
-retryOnDeadlock n action
-  | n > 0 = E.tryJust deadlock action >>= either retry pure
-  | otherwise = action
-  where
-    deadlock e = if isDeadlock e then Just e else Nothing
-    retry e = do
-      logWarn $ "transaction retried after " <> tshow e
-      retryOnDeadlock (n - 1) action
-
-isDeadlock :: E.SomeException -> Bool
-#if defined(dbPostgres)
-isDeadlock = maybe False ((== "40P01") . sqlState) . E.fromException
-#else
-isDeadlock _ = False
-#endif
+workItemError :: E.SomeException -> Maybe E.SomeException
+workItemError e = if isTransactionConflict e then Nothing else Just e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
@@ -1732,30 +1712,22 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
         Nothing ->
           DB.query
             db
-            ( [sql|
+            [sql|
               SELECT command_id FROM commands
               WHERE conn_id = ? AND host IS NULL AND port IS NULL AND failed = 0
               ORDER BY created_at ASC, command_id ASC
               LIMIT 1
             |]
-#if defined(dbPostgres)
-                <> " FOR UPDATE"
-#endif
-            )
             (Only connId)
         Just (SMPServer host port _) ->
           DB.query
             db
-            ( [sql|
+            [sql|
               SELECT command_id FROM commands
               WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
               ORDER BY created_at ASC, command_id ASC
               LIMIT 1
             |]
-#if defined(dbPostgres)
-                <> " FOR UPDATE"
-#endif
-            )
             (connId, host, port)
     getCommand :: Int64 -> IO (Either StoreError PendingCommand)
     getCommand cmdId =
@@ -1899,7 +1871,7 @@ getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
       maybeFirstRow fromOnly $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT ntf_token_to_delete_id
             FROM ntf_tokens_to_delete
             WHERE ntf_host = ? AND ntf_port = ?
@@ -1907,10 +1879,6 @@ getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
             ORDER BY created_at ASC
             LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE"
-#endif
-          )
           (ntfHost, ntfPort)
     getNtfTknToDelete :: Int64 -> IO (Either StoreError NtfTokenToDelete)
     getNtfTknToDelete tknDbId =
@@ -2097,7 +2065,7 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
       map fromOnly
         <$> DB.query
           db
-          ( [sql|
+          [sql|
             SELECT conn_id
             FROM ntf_subscriptions ns
             JOIN connections c USING (conn_id)
@@ -2106,10 +2074,6 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
             ORDER BY ntf_sub_action_ts ASC
             LIMIT ?
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE OF ns FOR KEY SHARE OF c"
-#endif
-          )
           (ntfHost, ntfPort, ntfBatchSize)
     getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubNTFAction, NtfSubscription, NtfActionTs))
     getNtfSubAction connId = do
@@ -2146,7 +2110,7 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
       map fromOnly
         <$> DB.query
           db
-          ( [sql|
+          [sql|
             SELECT conn_id
             FROM ntf_subscriptions ns
             JOIN connections c USING (conn_id)
@@ -2155,10 +2119,6 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
             ORDER BY ntf_sub_action_ts ASC
             LIMIT ?
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE OF ns FOR KEY SHARE OF c"
-#endif
-          )
           (smpHost, smpPort, ntfBatchSize)
     getNtfSubAction :: ConnId -> IO (Either StoreError (NtfSubSMPAction, NtfSubscription))
     getNtfSubAction connId = do
@@ -3469,7 +3429,7 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
       maybeFirstRow id $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT r.rcv_file_chunk_replica_id, f.rcv_file_id
             FROM rcv_file_chunk_replicas r
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -3482,10 +3442,6 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
             ORDER BY r.retries ASC, r.created_at ASC
             LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE OF f"
-#endif
-          )
           (host, port, keyHash, RFSReceiving, cutoffTs)
     getChunkData :: (Int64, DBRcvFileId) -> IO (Either StoreError (RcvFileChunk, Bool, Maybe RcvFileId))
     getChunkData (rcvFileChunkReplicaId, _fileId) =
@@ -3533,17 +3489,13 @@ getNextRcvFileToDecrypt db ttl =
       maybeFirstRow fromOnly $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT rcv_file_id
             FROM rcv_files
             WHERE status IN (?,?) AND deleted = 0 AND created_at >= ?
               AND failed = 0
             ORDER BY created_at ASC LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE"
-#endif
-          )
           (RFSReceived, RFSDecrypting, cutoffTs)
 
 markRcvFileFailed :: DB.Connection -> DBRcvFileId -> IO ()
@@ -3737,17 +3689,13 @@ getNextSndFileToPrepare db ttl =
       maybeFirstRow fromOnly $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT snd_file_id
             FROM snd_files
             WHERE status IN (?,?,?) AND deleted = 0 AND created_at >= ?
               AND failed = 0
             ORDER BY created_at ASC LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE"
-#endif
-          )
           (SFSNew, SFSEncrypting, SFSEncrypted, cutoffTs)
 
 markSndFileFailed :: DB.Connection -> DBSndFileId -> IO ()
@@ -3830,7 +3778,7 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
       maybeFirstRow id $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT r.snd_file_chunk_replica_id, f.snd_file_id
             FROM snd_file_chunk_replicas r
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -3843,10 +3791,6 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
             ORDER BY r.retries ASC, r.created_at ASC
             LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE OF f"
-#endif
-          )
           (host, port, keyHash, SFRSCreated, SFSEncrypted, SFSUploading, cutoffTs)
     getChunkData :: (Int64, DBSndFileId) -> IO (Either StoreError SndFileChunk)
     getChunkData (sndFileChunkReplicaId, _fileId) = do
@@ -4005,7 +3949,7 @@ getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl =
       maybeFirstRow fromOnly $
         DB.query
           db
-          ( [sql|
+          [sql|
             SELECT r.deleted_snd_chunk_replica_id
             FROM deleted_snd_chunk_replicas r
             JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
@@ -4015,10 +3959,6 @@ getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl =
             ORDER BY r.retries ASC, r.created_at ASC
             LIMIT 1
           |]
-#if defined(dbPostgres)
-              <> " FOR UPDATE OF r"
-#endif
-          )
           (host, port, keyHash, cutoffTs)
     markReplicaFailed :: Int64 -> IO ()
     markReplicaFailed replicaId = do

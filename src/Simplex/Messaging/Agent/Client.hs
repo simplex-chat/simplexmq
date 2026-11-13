@@ -166,6 +166,7 @@ module Simplex.Messaging.Agent.Client
     waitUntilUploadsAllowed,
     withStore,
     withStore',
+    withStoreIsolation',
     withStoreBatch,
     withStoreBatch',
     unsafeWithStore,
@@ -249,7 +250,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), isTransactionConflict, withTransactionIsolation)
 import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -2305,7 +2306,7 @@ waitForWork = void . atomically . readTMVar
 {-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
-withWork c doWork = withWork_ c doWork . withStore' c
+withWork c doWork = withWork_ c doWork . withStoreIsolation' c RepeatableRead
 {-# INLINE withWork #-}
 
 -- setting doWork flag to "no work" before getWork rather than after prevents race condition when flag is set to "has work" by another thread after getWork call.
@@ -2487,10 +2488,30 @@ withStore' c action = withStore c $ fmap Right . action
 {-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStore c action = do
+withStore c action = withStore_ c (`withTransaction` action)
+
+withStoreIsolation' :: AgentClient -> IsolationLevel -> (DB.Connection -> IO a) -> AM a
+withStoreIsolation' c isolation action = withStoreIsolation c isolation $ fmap Right . action
+{-# INLINE withStoreIsolation' #-}
+
+withStoreIsolation :: AgentClient -> IsolationLevel -> (DB.Connection -> IO (Either StoreError a)) -> AM a
+withStoreIsolation c isolation action = withStore_ c $ \st -> retryTransaction 3 $ withTransactionIsolation st isolation action
+
+retryTransaction :: Int -> IO a -> IO a
+retryTransaction n transaction
+  | n > 0 = E.tryJust conflict transaction >>= either retry pure
+  | otherwise = transaction
+  where
+    conflict e = if isTransactionConflict e then Just e else Nothing
+    retry e = do
+      logWarn $ "transaction retried after " <> tshow e
+      retryTransaction (n - 1) transaction
+
+withStore_ :: AgentClient -> (DBStore -> IO (Either StoreError a)) -> AM a
+withStore_ c transaction = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    retryOnDeadlock 3 (withTransaction st action) `E.catch` handleDBErrors
+    transaction st `E.catch` handleDBErrors
   where
     handleDBErrors :: E.SomeException -> IO (Either StoreError a)
     handleDBErrors e = pure $ Left $ case E.fromException e of
@@ -2513,10 +2534,9 @@ withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Eithe
 withStoreBatch c actions = do
   st <- asks store
   liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    retryOnDeadlock 3 . withTransaction st $
-      mapM (E.handleJust notDeadlock handleInternal) . actions
+    withTransaction st $
+      mapM (`E.catch` handleInternal) . actions
   where
-    notDeadlock e = if isDeadlock e then Nothing else Just e
     handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
     handleInternal = pure . Left . INTERNAL . show
 

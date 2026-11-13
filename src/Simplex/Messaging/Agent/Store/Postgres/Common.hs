@@ -9,12 +9,15 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
   ( DBStore (..),
     DBStorePool (..),
     DBOpts (..),
+    IsolationLevel (..),
     newDBStorePool,
     withConnection,
     withConnection',
     withTransaction,
     withTransaction',
     withTransactionPriority,
+    withTransactionIsolation,
+    isTransactionConflict,
     withSavepoint,
   )
 where
@@ -27,6 +30,7 @@ import Data.Bitraversable (bimapM)
 import Data.ByteString (ByteString)
 import Data.Functor (($>))
 import qualified Database.PostgreSQL.Simple as PSQL
+import qualified Database.PostgreSQL.Simple.Transaction as PSQL
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Store.Postgres.Options
 import Simplex.Messaging.Util (ifM)
@@ -96,6 +100,19 @@ withTransactionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
 withTransactionPriority st priority action = withConnectionPriority st priority transaction
   where
     transaction conn = PSQL.withTransaction conn $ action conn
+
+data IsolationLevel = ReadCommitted | RepeatableRead
+
+withTransactionIsolation :: DBStore -> IsolationLevel -> (PSQL.Connection -> IO a) -> IO a
+withTransactionIsolation st isolation action = withConnection st transaction
+  where
+    transaction conn = PSQL.withTransactionLevel level conn $ action conn
+    level = case isolation of
+      ReadCommitted -> PSQL.ReadCommitted
+      RepeatableRead -> PSQL.RepeatableRead
+
+isTransactionConflict :: E.SomeException -> Bool
+isTransactionConflict = maybe False ((`elem` ["40001", "40P01"]) . PSQL.sqlState) . E.fromException
 
 -- Execute an action within a savepoint.
 -- On success, releases the savepoint. On error, rolls back to the savepoint
