@@ -2491,9 +2491,6 @@ testAckDeletedMessage =
     ackMessage bob aliceId 2 Nothing
     ackMessage bob aliceId 2 Nothing
     ackMessageAsync bob "1" aliceId 2 Nothing
-    get bob =##> \case ("1", c, OK) -> c == aliceId; _ -> False
-    Left (A.INTERNAL _) <- tryError $ ackMessage bob aliceId 3 Nothing
-    Left (A.INTERNAL _) <- tryError $ ackMessage bob aliceId 0 Nothing
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
 testSkippedMessages :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
