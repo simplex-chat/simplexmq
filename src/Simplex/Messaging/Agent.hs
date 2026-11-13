@@ -4113,8 +4113,9 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                     Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing -- already notified with MROk status
                     _ -> do
                       let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
+                          rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
                       withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId = rcptMsgId, msgRcptStatus}
-                      pure $ Just MsgReceipt {agentMsgId = msgId, msgRcptStatus}
+                      pure $ Just rcpt
 
           -- processed by queue sender
           qAddMsg :: SMP.MsgId -> NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> AM ()
