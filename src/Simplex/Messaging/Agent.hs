@@ -3788,7 +3788,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                           Left e@(AGENT A_DUPLICATE {}) -> do
                             incSMPServerStat c userId srv recvDuplicates
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
-                              Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
+                              Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, msgReceipt, userAck}
                                 | userAck -> ackDel internalId
                                 | otherwise -> do
                                     attempts <- withStore' c $ \db -> incMsgRcvAttempts db connId internalId
@@ -3806,11 +3806,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
                                             notify $ MSG msgMeta msgFlags body
                                             pure ACKPending
-                                          AgentMessage _ (A_RCVD rcpts) -> do
-                                            sndMsgs <- withStore' c $ \db -> mapM (\AMessageReceipt {agentMsgId} -> getSndMsgViaRcpt db connId $ InternalSndId agentMsgId) rcpts
-                                            case L.nonEmpty [MsgReceipt {agentMsgId = sndId, msgRcptStatus} | Right SndMsg {internalId = InternalId sndId, msgReceipt = Just MsgReceipt {agentMsgId = rcptId, msgRcptStatus}} <- L.toList sndMsgs, InternalId rcptId == internalId] of
-                                              Just rs -> notify (RCVD msgMeta rs) $> ACKPending
-                                              Nothing -> ack
+                                          AgentMessage _ A_RCVD {} | Just rcpt <- msgReceipt -> notify (RCVD msgMeta [rcpt]) $> ACKPending
                                           _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
@@ -4098,13 +4094,15 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> AM ACKd
           messagesRcvd rcpts msgMeta@MsgMeta {recipient = (rcptMsgId, _), broker = (srvMsgId, _)} _ = do
             logServer "<--" c srv rId $ "MSG <RCPT>:" <> logSecret' (SMP.unMsgId srvMsgId)
-            rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> notify (ERR e) $> Nothing
+            rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> ifM (sndMsgDeleted rcpt) (pure Nothing) (notify (ERR e) $> Nothing)
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
               Nothing -> ack
             where
               ack :: AM ACKd
               ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
+              sndMsgDeleted :: AMessageReceipt -> AM Bool
+              sndMsgDeleted AMessageReceipt {agentMsgId} = withStore' c $ \db -> checkSndMsgDeleted db connId $ InternalSndId agentMsgId
               clientReceipt :: AMessageReceipt -> AM (Maybe MsgReceipt)
               clientReceipt AMessageReceipt {agentMsgId, msgHash} = do
                 let sndMsgId = InternalSndId agentMsgId

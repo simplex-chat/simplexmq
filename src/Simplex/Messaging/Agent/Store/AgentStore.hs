@@ -149,6 +149,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     incMsgRcvAttempts,
     checkRcvMsgHashExists,
     checkMsgDeleted,
+    checkSndMsgDeleted,
     getRcvMsgBrokerTs,
     deleteMsg,
     deleteDeliveredSndMsg,
@@ -1303,6 +1304,18 @@ checkMsgDeleted db connId msgId =
           AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conn_id = c.conn_id AND m.internal_id = ?)
       |]
       (connId, msgId, msgId)
+
+checkSndMsgDeleted :: DB.Connection -> ConnId -> InternalSndId -> IO Bool
+checkSndMsgDeleted db connId sndMsgId =
+  maybeFirstRow' False fromOnlyBI $
+    DB.query
+      db
+      [sql|
+        SELECT 1 FROM connections c
+        WHERE c.conn_id = ? AND ? BETWEEN 1 AND c.last_internal_snd_msg_id
+          AND NOT EXISTS (SELECT 1 FROM snd_messages s WHERE s.conn_id = c.conn_id AND s.internal_snd_id = ?)
+      |]
+      (connId, sndMsgId, sndMsgId)
 
 getRcvMsgBrokerTs :: DB.Connection -> ConnId -> SMP.MsgId -> IO (Either StoreError BrokerTs)
 getRcvMsgBrokerTs db connId msgId =

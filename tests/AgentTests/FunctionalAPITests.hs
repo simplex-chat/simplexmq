@@ -97,7 +97,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAg
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getConnIds, getRatchetX3dhKeys)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, deleteSndMsgsExpired, getConn, getConnIds, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -132,12 +132,9 @@ import Util
 import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 
 #if defined(dbPostgres)
-import Database.PostgreSQL.Simple (Only (..))
 import Fixtures
 import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
 import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
-#else
-import Database.SQLite.Simple (Only (..))
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -638,6 +635,7 @@ functionalAPITests ps = do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps
     it "should delete sent message after its receipt is acknowledged" $ withSmpServer ps testReceiptDeletesSentMessage
+    it "should accept receipt for deleted sent message" $ withSmpServer ps testReceiptForDeletedSentMessage
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
   describe "Connections with apps of earlier versions" $ do
     describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
@@ -4552,7 +4550,20 @@ testReceiptDeletesSentMessage =
     ackMessage b aId 2 $ Just ""
     get a =##> \case ("", c, Rcvd 2) -> c == bId; _ -> False
     ackMessage a bId 3 Nothing
-    liftIO $ withTransaction (store $ agentEnv a) (\db -> DB.query db "SELECT internal_id FROM messages WHERE conn_id = ? AND internal_id = ?" (bId, 2 :: Int64)) `shouldReturn` ([] :: [Only Int64])
+    liftIO $ sndMessages a >>= (`shouldNotContain` [(bId, 2)])
+
+testReceiptForDeletedSentMessage :: (HasCallStack, HasTestEnv) => IO ()
+testReceiptForDeletedSentMessage =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    liftIO $ withTransaction (store $ agentEnv a) $ \db -> deleteSndMsgsExpired db 0 100
+    ackMessage b aId 2 $ Just ""
+    mId <- sendMessage b aId SMP.noMsgFlags "hi"
+    get b ##> ("", aId, SENT mId)
+    get a =##> \case ("", c, Msg "hi") -> c == bId; _ -> False
 
 testDeliveryReceiptsConcurrent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =
