@@ -9,6 +9,7 @@
 module XFTPClient where
 
 import Control.Concurrent (ThreadId, threadDelay)
+import Control.Monad (forM_)
 import Data.String (fromString)
 import Data.Time.Clock (getCurrentTime)
 import Network.Socket (ServiceName)
@@ -17,13 +18,17 @@ import Simplex.FileTransfer.Client
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Server (runXFTPServerBlocking)
 import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig (..), AFStoreType (..), defaultFileExpiration, defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Server.Store (FileStoreClass, SFSType (..), STMFileStore)
+import Simplex.FileTransfer.Protocol (FileInfo)
+import Simplex.FileTransfer.Server.Store (FileStoreClass, RoundedFileTime, SFSType (..), STMFileStore)
+import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import Simplex.FileTransfer.Types (SndFileId)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Protocol (UserId)
 import Simplex.Messaging.Crypto.File (CryptoFile)
-import Simplex.Messaging.Protocol (XFTPServer)
+import Simplex.Messaging.Protocol (SenderId, XFTPServer)
+import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
+import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.Transport (defaultSupportedParams)
 import Simplex.Messaging.Transport.HTTP2 (defaultHTTP2BufferSize, httpALPN)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
@@ -37,6 +42,8 @@ import Control.Monad (void)
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple (ConnectInfo (..), defaultConnectInfo)
 import Database.PostgreSQL.Simple.Types (Query (..))
+import Simplex.FileTransfer.Server.Store (FileStoreClass (addFile, closeFileStore, newFileStore))
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..), defaultXFTPDBOpts)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
@@ -64,6 +71,26 @@ cfgFS2 (AFSType fs) = case fs of
   SFSMemory -> AXFTPSrvCfg testXFTPServerConfig2
 #if defined(dbServerPostgres)
   SFSPostgres -> AXFTPSrvCfg testXFTPServerConfig2 {serverStoreCfg = XSCDatabase testXFTPPostgresCfg}
+#else
+  SFSPostgres -> error "no postgres support"
+#endif
+
+cfgFSTestFiles :: HasTestEnv => AFStoreType -> AXFTPServerConfig
+cfgFSTestFiles fsType@(AFSType fs) = case fs of
+  SFSMemory -> AXFTPSrvCfg testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile}
+  SFSPostgres -> cfgFS fsType
+
+addTestFiles :: HasTestEnv => AFStoreType -> [SenderId] -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> IO ()
+addTestFiles (AFSType fs) sIds file createdAt expiresAt = case fs of
+  SFSMemory -> do
+    sl <- openWriteStoreLog False testXFTPLogFile
+    forM_ sIds $ \sId -> logAddFile sl sId file createdAt expiresAt EntityActive
+    closeStoreLog sl
+#if defined(dbServerPostgres)
+  SFSPostgres -> do
+    st <- newFileStore testXFTPPostgresCfg :: IO PostgresFileStore
+    forM_ sIds $ \sId -> addFile st sId file createdAt expiresAt EntityActive >>= either (error . show) pure
+    closeFileStore st
 #else
   SFSPostgres -> error "no postgres support"
 #endif
