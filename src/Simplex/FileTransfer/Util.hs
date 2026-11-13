@@ -7,7 +7,7 @@ module Simplex.FileTransfer.Util
 where
 
 import Control.Monad (guard)
-import Data.Either (isRight)
+import Data.Either (isLeft)
 import Simplex.Messaging.Util (ifM, whenM)
 import System.FilePath (makeValid, splitExtensions, takeFileName, (</>))
 import System.IO.Error (isAlreadyExistsError)
@@ -21,19 +21,19 @@ safeFileNameStr = notDots . makeValid . takeFileName
 
 -- | The file name is sanitized, so the combined path cannot escape the folder.
 uniqueCombine :: MonadIO m => FilePath -> String -> m FilePath
-uniqueCombine = uniqueCombineWith $ fmap not . doesPathExist
+uniqueCombine = uniqueCombineWith doesPathExist
 
 createUniqueDirectory :: MonadUnliftIO m => FilePath -> String -> m FilePath
-createUniqueDirectory = uniqueCombineWith $ fmap isRight . tryJust (guard . isAlreadyExistsError) . createDirectory
+createUniqueDirectory = uniqueCombineWith $ fmap isLeft . tryJust (guard . isAlreadyExistsError) . createDirectory
 
 uniqueCombineWith :: Monad m => (FilePath -> m Bool) -> FilePath -> String -> m FilePath
-uniqueCombineWith tryPath filePath fileName = tryCombine (0 :: Int)
+uniqueCombineWith taken filePath fileName = tryCombine (0 :: Int)
   where
     tryCombine n =
       let (name, ext) = splitExtensions $ safeFileNameStr fileName
           suffix = if n == 0 then "" else "_" <> show n
           f = filePath </> (name <> suffix <> ext)
-       in ifM (tryPath f) (pure f) (tryCombine $ n + 1)
+       in ifM (taken f) (tryCombine $ n + 1) (pure f)
 
 removePath :: MonadIO m => FilePath -> m ()
 removePath p = do
