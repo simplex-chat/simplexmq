@@ -757,10 +757,9 @@ periodicNtfsThread s = do
   UnliftIO unlift <- askUnliftIO
   liftIO $ forever $ do
     threadDelay interval
-    handleAny (\e -> logError $ "Periodic notifications error: " <> tshow e) $ do
-      now <- systemSeconds <$> getSystemTime
-      cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
-      logNote $ "Scheduled periodic notifications: " <> tshow cnt
+    now <- systemSeconds <$> getSystemTime
+    cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
+    logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do

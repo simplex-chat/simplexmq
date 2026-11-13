@@ -470,9 +470,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
         expire ms stats interval = do
           threadDelay' interval
           logNote "Started expiring messages..."
-          tryAny (compactQueues @(StoreQueue s) $ queueStore ms) >>= \case
-            Right n -> when (n > 0) $ logNote $ "Removed " <> tshow n <> " old deleted queues from the database."
-            Left e -> logError $ "STORE: compactQueues, error compacting queues, " <> tshow e
+          n <- compactQueues @(StoreQueue s) $ queueStore ms
+          when (n > 0) $ logNote $ "Removed " <> tshow n <> " old deleted queues from the database."
           now <- systemSeconds <$> getSystemTime
           tryAny (expireOldMessages False ms now ttl) >>= \case
             Right msgStats@MessageStats {storedMsgsCount = stored, expiredMsgsCount = expired} -> do
@@ -490,11 +489,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       liftIO $ forever $ do
         threadDelay' interval
         old <- expireBeforeEpoch expCfg
-        tryAny (deleteExpiredNtfs ns old) >>= \case
-          Right expired -> when (expired > 0) $ do
-            atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
-            atomicModifyIORef'_ (ntfCount stats) (subtract expired)
-          Left e -> logError $ "STORE: deleteExpiredNtfs, error expiring notifications, " <> tshow e
+        expired <- deleteExpiredNtfs ns old
+        when (expired > 0) $ do
+          atomicModifyIORef'_ (msgNtfExpired stats) (+ expired)
+          atomicModifyIORef'_ (ntfCount stats) (subtract expired)
 
     serverStatsThread_ :: ServerConfig s -> [M s ()]
     serverStatsThread_ ServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -510,12 +508,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices, rslvStats}
         <- asks serverStats
       st <- asks msgStore
-      EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
-        liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
       let interval = 1000000 * logInterval
       forever $ do
         handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
+          EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
+            getEntityCounts @(StoreQueue s) $ queueStore st
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
           qCreated' <- atomicSwapIORef qCreated 0

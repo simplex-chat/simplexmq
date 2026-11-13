@@ -277,7 +277,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       forever $ do
         liftIO $ threadDelay' interval
         expireServerFiles (Just 100000) expCfg
-          `catchAny` \e -> logError $ "STORE: expireServerFiles, error expiring files, " <> tshow e
+          `catchAny` \e -> logError $ "Expired files error: " <> tshow e
 
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -697,18 +697,19 @@ expireServerFiles itemDelay expCfg = do
     mbs bs = tshow (bs `div` 1048576) <> "mb"
     expireLoop st us now old = do
       expired <- liftIO $ expiredFiles st now old 10000
-      forM_ expired $ \(sId, filePath_, fileSize) -> do
+      forM_ expired $ \(_, filePath_, _) -> do
         mapM_ threadDelay itemDelay
         forM_ filePath_ $ \fp ->
           whenM (doesFileExist fp) $
             removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
-        forM_ filePath_ $ \_ ->
-          atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
-        incFileStat filesExpired
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
+        forM_ expired $ \(_, filePath_, fileSize) -> do
+          forM_ filePath_ $ \_ ->
+            atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
+          incFileStat filesExpired
         expireLoop st us now old
 
 randomId :: Int -> M s ByteString
