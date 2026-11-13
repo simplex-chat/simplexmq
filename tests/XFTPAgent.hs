@@ -1066,20 +1066,21 @@ testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $
 testXFTPAgentDeleteDuringUpload :: (HasCallStack, HasTestEnv) => IO ()
 testXFTPAgentDeleteDuringUpload = do
   filePath <- createRandomFile
-  withAgent 1 agentCfg {AEnv.xftpConsecutiveRetries = 100} initAgentServers testDB $ \sndr -> do
-    sfId <- withXFTPServerStoreLogOn $ \_ -> runRight $ do
+  sfId <- withXFTPServerStoreLogOn $ \_ ->
+    withAgent 1 agentCfg initAgentServers testDB $ \sndr -> runRight $ do
       xftpStartWorkers sndr (Just senderFiles)
       sfId <- xftpSendFile sndr 1 (CF.plain filePath) 1
       ("", sfId', SFPROG _ _) <- sfGet sndr
       liftIO $ sfId' `shouldBe` sfId
       pure sfId
+  withAgent 2 agentCfg {AEnv.xftpConsecutiveRetries = 100} initAgentServers testDB $ \sndr -> do
+    runRight_ $ xftpStartWorkers sndr (Just senderFiles)
     waitForAttempt sndr uploadAttempts
     withTransaction (agentClientStore sndr) (`DB.execute_` "DELETE FROM snd_files")
     withXFTPServerStoreLogOn $ \_ -> sndFileError sndr `shouldReturn` (sfId, FILE NO_FILE)
   where
     sndFileError sndr =
       sfGet sndr >>= \case
-        ("", _, SFPROG _ _) -> sndFileError sndr
         ("", _, SFWARN _) -> sndFileError sndr
         ("", sfId, SFERR e) -> pure (sfId, e)
         r -> error $ "unexpected event " <> show r
