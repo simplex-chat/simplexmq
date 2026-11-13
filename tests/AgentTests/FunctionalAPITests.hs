@@ -2681,28 +2681,25 @@ testExpireMessageBeforeQCONT (t, msType) = withSmpServerConfigOn t cfg' testPort
     3 <- sendMessage a bId SMP.noMsgFlags "2"
     get a =##> \case ("", c, MERR 3 (SMP _ QUOTA)) -> bId == c; _ -> False
     pure (aId, bId)
+  withAgent 3 agentCfg {messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB2 $ \b' -> runRight_ $ do
+    subscribeConnection b' aId
+    get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
+    3 <- sendMessage b' aId SMP.noMsgFlags "hello"
+    get b' ##> ("", aId, SENT 3)
+    get a =##> \case ("", c, Msg "hello") -> c == bId; _ -> False
+    4 <- sendMessage b' aId SMP.noMsgFlags "hello 2"
+    pGet' b' False =##> \case ("", c, AEvt _ (MWARN 4 (SMP _ QUOTA))) -> aId == c; _ -> False
+    ackMessage b' aId 2 Nothing
+    ackMessage a bId 4 Nothing
+    liftIO . getInAnyOrder b' $
+      [ \case ("", c, AEvt SAEConn (MSGERR MsgMeta {integrity = MsgError (MsgSkipped 3 3)})) -> c == aId; _ -> False,
+        \case ("", c, AEvt SAEConn QCONT) -> c == aId; _ -> False,
+        \case ("", c, AEvt SAEConn (SENT 4)) -> c == aId; _ -> False
+      ]
+    get a =##> \case ("", c, Msg "hello 2") -> c == bId; _ -> False
+    ackMessage a bId 6 Nothing
+    get a =##> \case ("", c, QCONT) -> c == bId; _ -> False
   disposeAgentClient a
-  withAgent 3 agentCfg {messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB2 $ \b' -> do
-    runRight_ $ do
-      subscribeConnection b' aId
-      get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
-      3 <- sendMessage b' aId SMP.noMsgFlags "hello"
-      get b' ##> ("", aId, SENT 3)
-      4 <- sendMessage b' aId SMP.noMsgFlags "hello 2"
-      pGet' b' False =##> \case ("", c, AEvt _ (MWARN 4 (SMP _ QUOTA))) -> aId == c; _ -> False
-      ackMessage b' aId 2 Nothing
-    withAgent 4 agentCfg {messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a' -> runRight_ $ do
-      subscribeConnection a' bId
-      get a' =##> \case ("", c, Msg "hello") -> c == bId; _ -> False
-      ackMessage a' bId 4 Nothing
-      liftIO . getInAnyOrder b' $
-        [ \case ("", c, AEvt SAEConn (MSGERR MsgMeta {integrity = MsgError (MsgSkipped 3 3)})) -> c == aId; _ -> False,
-          \case ("", c, AEvt SAEConn QCONT) -> c == aId; _ -> False,
-          \case ("", c, AEvt SAEConn (SENT 4)) -> c == aId; _ -> False
-        ]
-      get a' =##> \case ("", c, Msg "hello 2") -> c == bId; _ -> False
-      ackMessage a' bId 6 Nothing
-      get a' =##> \case ("", c, QCONT) -> c == bId; _ -> False
   where
     cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
 
