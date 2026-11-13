@@ -12,11 +12,13 @@
 
 module Simplex.FileTransfer.Client.Main
   ( SendOptions (..),
+    ReceiveOptions (..),
     CLIError (..),
     xftpClientCLI,
     xftpClientDeprecationNotice,
     cliSendFile,
     cliSendFileOpts,
+    cliReceiveFile,
     encodeWebURI,
     decodeWebURI,
     fileWebLink,
