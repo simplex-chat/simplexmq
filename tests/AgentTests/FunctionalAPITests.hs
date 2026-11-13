@@ -2467,7 +2467,7 @@ testDuplicateMessageAfterSent ps = do
     runRight_ $ do
       2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
       get alice ##> ("", bobId, SENT 2)
-      get bob =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aliceId; _ -> False
+      get bob =##> \case ("", c, MSG MsgMeta {integrity = MsgOk, recipient = (2, _), pqEncryption = PQEncOn, redelivered = False} _ "hello") -> c == aliceId; _ -> False
       3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
       get bob ##> ("", aliceId, SENT 3)
       liftIO $ waitDeleted (sndDeliveries bob) (aliceId, 3)
@@ -2476,7 +2476,7 @@ testDuplicateMessageAfterSent ps = do
     bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
     runRight_ $ do
       subscribeConnection bob1 aliceId
-      get bob1 =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aliceId; _ -> False
+      get bob1 =##> \case ("", c, MSG MsgMeta {integrity = MsgOk, recipient = (2, _), pqEncryption = PQEncOn, redelivered = True} _ "hello") -> c == aliceId; _ -> False
       ackMessage bob1 aliceId 2 Nothing
     disposeAgentClient bob1
   disposeAgentClient alice
@@ -4573,7 +4573,7 @@ testDuplicateReceipt ps statusLost sentAfter = do
       liftIO $ waitDeleted (sndDeliveries alice) (bobId, 2)
       get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
       ackMessage bob aliceId 2 $ Just ""
-      get alice =##> \case ("", c, Rcvd 2) -> c == bobId; _ -> False
+      get alice =##> \case ("", c, RCVD MsgMeta {integrity = MsgOk, redelivered = False} [MsgReceipt {agentMsgId = 2, msgRcptStatus = MROk}]) -> c == bobId; _ -> False
       when sentAfter $ do
         4 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
         get alice ##> ("", bobId, SENT 4)
@@ -4585,7 +4585,7 @@ testDuplicateReceipt ps statusLost sentAfter = do
     alice1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
     runRight_ $ do
       subscribeConnection alice1 bobId
-      get alice1 =##> \case ("", c, Rcvd 2) -> c == bobId; _ -> False
+      get alice1 =##> \case ("", c, RCVD MsgMeta {integrity = MsgOk, redelivered = True} [MsgReceipt {agentMsgId = 2, msgRcptStatus = MROk}]) -> c == bobId; _ -> False
       ackMessage alice1 bobId 3 Nothing
     disposeAgentClient alice1
   disposeAgentClient bob

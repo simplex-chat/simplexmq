@@ -3809,9 +3809,9 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                         liftEither (parse smpP (AGENT $ A_MESSAGE "parse msg body 1") agentMsgBody) >>= \case
                                           AgentMessage _ (A_MSG body) -> do
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
-                                            notify $ MSG msgMeta msgFlags body
+                                            notify $ MSG msgMeta {redelivered = True} msgFlags body
                                             pure ACKPending
-                                          AgentMessage _ (A_RCVD rcpts) -> qDuplex conn' "RCVD" $ messagesRcvd rcpts msgMeta
+                                          AgentMessage _ (A_RCVD rcpts) -> qDuplex conn' "RCVD" $ messagesRcvd rcpts msgMeta {redelivered = True}
                                           _ -> ackDel internalId
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
@@ -3851,7 +3851,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                 let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash prevMsgHash
                                     recipient = (unId internalId, internalTs)
                                     broker = (srvMsgId, systemToUTCTime srvTs)
-                                    msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
+                                    msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption, redelivered = False}
                                     rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash, encryptedMsgHash}
                                 liftIO $ createRcvMsg db connId rq rcvMsg
                                 pure $ Just (internalId, msgMeta, aMessage, rc)

@@ -836,7 +836,8 @@ data MsgMeta = MsgMeta
     recipient :: (AgentMsgId, UTCTime),
     broker :: (MsgId, UTCTime),
     sndMsgId :: AgentMsgId,
-    pqEncryption :: PQEncryption
+    pqEncryption :: PQEncryption,
+    redelivered :: Bool
   }
   deriving (Eq, Show)
 
