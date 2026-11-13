@@ -26,6 +26,7 @@ SMP agent:
 - save the ratchet state only after the message body is decrypted (#1892).
 - validate e2e encryption parameters: `kem_ct` requires `kem_key` (#1901).
 - validate the client version of confirmations against the agent version (#2053).
+- authorize sender commands with X25519 keys in new connections and rotated queues (#2054).
 - security codes that include post-quantum handshake keys (#1874).
 - API to get the security codes of multiple connections (#1874).
 - API to prepare a one-time invitation link without network requests, and to create it with one request (#1880).
