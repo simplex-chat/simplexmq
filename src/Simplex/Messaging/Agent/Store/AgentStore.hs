@@ -1299,7 +1299,7 @@ checkMsgDeleted db connId msgId =
       db
       [sql|
         SELECT 1 FROM connections c
-        WHERE c.conn_id = ? AND c.last_internal_msg_id >= ?
+        WHERE c.conn_id = ? AND ? BETWEEN 1 AND c.last_internal_msg_id
           AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.conn_id = c.conn_id AND m.internal_id = ?)
       |]
       (connId, msgId, msgId)
