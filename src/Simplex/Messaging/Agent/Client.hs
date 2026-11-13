@@ -1376,7 +1376,7 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
     X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (\_ -> pure Nothing) (\_ -> pure ()) >>= \case
-      Right xftp -> (`E.finally` removeTestFile rcvPath) . withTestChunk filePath $ do
+      Right xftp -> flip E.finally (removeTestFile rcvPath) . withTestChunk filePath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
