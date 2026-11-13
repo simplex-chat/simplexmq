@@ -4097,10 +4097,10 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> ifM (sndMsgDeleted rcpt) (pure Nothing) (notify (ERR e) $> Nothing)
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
-              Nothing -> ack
+              Nothing -> ackDel
             where
-              ack :: AM ACKd
-              ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
+              ackDel :: AM ACKd
+              ackDel = enqueueCmd (ICAckDel rId srvMsgId $ InternalId rcptMsgId) $> ACKd
               sndMsgDeleted :: AMessageReceipt -> AM Bool
               sndMsgDeleted AMessageReceipt {agentMsgId} = withStore' c $ \db -> checkSndMsgDeleted db connId $ InternalSndId agentMsgId
               clientReceipt :: AMessageReceipt -> AM (Maybe MsgReceipt)

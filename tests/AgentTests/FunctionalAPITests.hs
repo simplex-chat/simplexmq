@@ -636,7 +636,7 @@ functionalAPITests ps = do
     it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False
     it "should deliver receipt again after client restart before its status is saved" $ testDuplicateReceipt ps True
     it "should delete sent message after its receipt is acknowledged" $ withSmpServer ps testReceiptDeletesSentMessage
-    it "should accept receipt for deleted sent message" $ withSmpServer ps testReceiptForDeletedSentMessage
+    it "should accept and delete receipt for deleted sent message" $ withSmpServer ps testReceiptForDeletedSentMessage
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
   describe "Connections with apps of earlier versions" $ do
     describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
@@ -3057,6 +3057,19 @@ processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` 
 sndMessages :: AgentClient -> IO [(ConnId, Int64)]
 sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
 
+rcvMessages :: AgentClient -> IO [(ConnId, Int64)]
+rcvMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM rcv_messages ORDER BY conn_id, internal_id")
+
+waitDeleted :: HasCallStack => IO [(ConnId, Int64)] -> (ConnId, Int64) -> IO ()
+waitDeleted getMsgs msg = go (100 :: Int)
+  where
+    go n = do
+      msgs <- getMsgs
+      when (msg `elem` msgs) $
+        if n > 0
+          then threadDelay 100000 >> go (n - 1)
+          else expectationFailure $ "message was not deleted: " <> show msg
+
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
@@ -4566,7 +4579,8 @@ testReceiptForDeletedSentMessage =
     ackMessage b aId 2 $ Just ""
     mId <- sendMessage b aId SMP.noMsgFlags "hi"
     get b ##> ("", aId, SENT mId)
-    get a =##> \case ("", c, Msg "hi") -> c == bId; _ -> False
+    get a =##> \case ("", c, Msg' 4 PQEncOn "hi") -> c == bId; _ -> False
+    liftIO $ waitDeleted (rcvMessages a) (bId, 3)
 
 testDeliveryReceiptsConcurrent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =
