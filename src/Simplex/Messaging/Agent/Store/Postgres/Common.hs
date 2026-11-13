@@ -22,6 +22,7 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
   )
 where
 
+import Control.Logger.Simple (logWarn)
 import Control.Monad (void)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -33,7 +34,7 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import qualified Database.PostgreSQL.Simple.Transaction as PSQL
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Store.Postgres.Options
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (ifM, tshow)
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
@@ -106,13 +107,26 @@ data IsolationLevel = ReadCommitted | RepeatableRead
 withTransactionIsolation :: DBStore -> IsolationLevel -> (PSQL.Connection -> IO a) -> IO a
 withTransactionIsolation st isolation action = withConnection st transaction
   where
-    transaction conn = PSQL.withTransactionLevel level conn $ action conn
+    transaction conn = retryTransaction 3 $ PSQL.withTransactionLevel level conn $ action conn
     level = case isolation of
       ReadCommitted -> PSQL.ReadCommitted
       RepeatableRead -> PSQL.RepeatableRead
 
+retryTransaction :: Int -> IO a -> IO a
+retryTransaction n transaction
+  | n > 0 = E.tryJust conflict transaction >>= either retryAfter pure
+  | otherwise = transaction
+  where
+    conflict e = if conflictState e then Just e else Nothing
+    retryAfter e = do
+      logWarn $ "transaction retried after " <> tshow e
+      retryTransaction (n - 1) transaction
+
 isTransactionConflict :: E.SomeException -> Bool
-isTransactionConflict = maybe False ((`elem` ["40001", "40P01"]) . PSQL.sqlState) . E.fromException
+isTransactionConflict = maybe False conflictState . E.fromException
+
+conflictState :: PSQL.SqlError -> Bool
+conflictState = (`elem` ["40001", "40P01"]) . PSQL.sqlState
 
 -- Execute an action within a savepoint.
 -- On success, releases the savepoint. On error, rolls back to the savepoint

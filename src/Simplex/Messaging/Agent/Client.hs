@@ -167,7 +167,6 @@ module Simplex.Messaging.Agent.Client
     withStore,
     withStore',
     withStoreIsolation',
-    retryTransaction,
     withStoreBatch,
     withStoreBatch',
     unsafeWithStore,
@@ -251,7 +250,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), isTransactionConflict, withTransactionIsolation)
+import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), withTransactionIsolation)
 import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -2496,17 +2495,7 @@ withStoreIsolation' c isolation action = withStoreIsolation c isolation $ fmap R
 {-# INLINE withStoreIsolation' #-}
 
 withStoreIsolation :: AgentClient -> IsolationLevel -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStoreIsolation c isolation action = withStore_ c $ \st -> retryTransaction 3 $ withTransactionIsolation st isolation action
-
-retryTransaction :: Int -> IO a -> IO a
-retryTransaction n transaction
-  | n > 0 = E.tryJust conflict transaction >>= either retryAfter pure
-  | otherwise = transaction
-  where
-    conflict e = if isTransactionConflict e then Just e else Nothing
-    retryAfter e = do
-      logWarn $ "transaction retried after " <> tshow e
-      retryTransaction (n - 1) transaction
+withStoreIsolation c isolation action = withStore_ c $ \st -> withTransactionIsolation st isolation action
 
 withStore_ :: AgentClient -> (DBStore -> IO (Either StoreError a)) -> AM a
 withStore_ c transaction = do
