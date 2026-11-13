@@ -7,22 +7,27 @@
 module FileDescriptionTests where
 
 import Control.Exception (bracket_)
-import Control.Monad (zipWithM_)
+import Control.Monad (forM_, zipWithM_)
+import Control.Monad.Trans.Except (runExceptT)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isRight)
 import qualified Data.Yaml as Y
 import Simplex.FileTransfer.Chunks (chunkSize0, chunkSize3, serverChunkSizes)
 import Simplex.FileTransfer.Client (prepareChunkSizes)
-import Simplex.FileTransfer.Crypto (sha512HashChunks)
+import Simplex.FileTransfer.Crypto (decryptChunks, encryptFile, sha512HashChunks)
 import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
+import Simplex.FileTransfer.Types (FileHeader (..), authTagSize)
 import qualified Simplex.Messaging.Crypto as C
+import qualified Simplex.Messaging.Crypto.File as CF
 import qualified Simplex.Messaging.Crypto.Lazy as LC
+import Simplex.Messaging.Encoding (smpEncode)
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Protocol (EntityId (..))
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
-import System.Directory (removeFile)
+import System.Directory (getFileSize, removeFile)
+import System.IO (IOMode (..), withFile)
 import Test.Hspec hiding (fit, it)
 import Util
 
@@ -38,6 +43,7 @@ fileDescriptionTests = do
     it "limit chunk sizes, replicas and redirect description size" testFileDescriptionLimits
     it "serialize file description" testSerializeFileDescription
     it "hash chunk files one at a time" testHashChunks
+    it "decrypt chunk files into the original file" testDecryptChunks
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
@@ -252,6 +258,27 @@ testHashChunks = do
   zipWithM_ B.writeFile paths chunks
   digest <- sha512HashChunks paths
   digest `shouldBe` LC.sha512Hash (LB.fromStrict $ B.concat chunks)
+
+testDecryptChunks :: HasTestEnv => IO ()
+testDecryptChunks =
+  forM_ ([kb 128 .. kb 128 + 16] <> [mb 2 + 1, mb 2 + kb 512 + 15]) $ \payloadSize -> do
+    let fileHdr = smpEncode FileHeader {fileName = "testfile", fileExtra = Nothing}
+        fileSize' = payloadSize - fileSizeLen - authTagSize
+        content = B.replicate (fromIntegral fileSize' - B.length fileHdr) 'a'
+        chunkSizes = prepareChunkSizes payloadSize
+        encSize = sum $ map fromIntegral chunkSizes
+        chunkPaths = map (testPath . ("chunk" <>) . show) [1 .. length chunkSizes]
+    B.writeFile srcPath content
+    runExceptT (encryptFile (CF.plain srcPath) fileHdr testSbKey testCbNonce fileSize' encSize encPath) `shouldReturn` Right ()
+    withFile encPath ReadMode $ \h ->
+      zipWithM_ (\path sz -> B.writeFile path =<< B.hGet h (fromIntegral sz)) chunkPaths chunkSizes
+    runExceptT (decryptChunks encSize chunkPaths testSbKey testCbNonce $ \_ -> pure $ CF.plain dstPath) `shouldReturn` Right (CF.plain dstPath)
+    getFileSize dstPath `shouldReturn` fromIntegral (B.length content)
+    B.readFile dstPath `shouldReturn` content
+  where
+    srcPath = testPath "source"
+    encPath = testPath "encrypted"
+    dstPath = testPath "decrypted"
 
 withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =
