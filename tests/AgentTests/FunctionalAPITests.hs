@@ -366,6 +366,8 @@ functionalAPITests ps = do
       it "request without double ratchet, async accept" $ withSmpServer ps $ testDeleteAcceptedContactRequest False True
       it "request with double ratchet" $ withSmpServer ps $ testDeleteAcceptedContactRequest True False
       it "request with double ratchet, async accept" $ withSmpServer ps $ testDeleteAcceptedContactRequest True True
+      it "request without double ratchet, async accept retried after error" $ withSmpServer ps $ testAcceptContactAsyncRetry False
+      it "request with double ratchet, async accept retried after error" $ withSmpServer ps $ testAcceptContactAsyncRetry True
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ True True
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
@@ -1154,16 +1156,42 @@ testDeleteAcceptedContactRequest useDR asyncAccept =
     (bobId, _) <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
     if asyncAccept
       then do
+        liftIO $ setUserNetworkInfo alice $ UserNetworkInfo UNNone False
         acceptContactAsync alice "1" bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+        liftIO $ connInvitations alice `shouldReturn` []
+        liftIO $ setUserNetworkInfo alice $ UserNetworkInfo UNOther True
         get alice =##> \case ("1", c, A.JOINED _) -> c == bobId; _ -> False
-      else void $ acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
-    liftIO $ connInvitations alice `shouldReturn` []
+      else do
+        void $ acceptContact alice 1 bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+        liftIO $ connInvitations alice `shouldReturn` []
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConfirmGreet alice bobId bob aliceId confId IKPQOn $ PQEncryption $ pqConnectionMode IKPQOn PQSupportOn
   where
     isRatchet = \case
       CRBRatchet _ -> True
       CRBRequest _ -> False
+
+testAcceptContactAsyncRetry :: (HasCallStack, HasTestEnv) => Bool -> IO ()
+testAcceptContactAsyncRetry useDR = withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> do
+  (addrConnId, invId, aliceId) <- withAgent 1 agentCfg initAgentServers testDB $ \alice -> runRight $ do
+    (addrConnId, CCLink connReq Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn useDR SMSubscribe
+    (aliceId, _) <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo" _ _) <- get alice
+    pure (addrConnId, invId, aliceId)
+  withAgent 3 agentCfg initAgentServers testDB $ \alice -> do
+    (bobId, _) <- runRight $ A.prepareConnectionToAccept alice 1 True invId PQSupportOn
+    withTransaction (store $ agentEnv alice) (`DB.execute_` "ALTER TABLE commands RENAME TO commands_")
+    Left (A.INTERNAL e) <- runExceptT $ acceptContactAsync alice "1" bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+    e `shouldContain` "commands"
+    withTransaction (store $ agentEnv alice) (`DB.execute_` "ALTER TABLE commands_ RENAME TO commands")
+    connInvitations alice `shouldReturn` [(invId, Just addrConnId)]
+    runRight_ $ do
+      acceptContactAsync alice "1" bobId True invId "alice's connInfo" PQSupportOn SMSubscribe
+      liftIO $ connInvitations alice `shouldReturn` []
+      get alice =##> \case ("1", c, A.JOINED _) -> c == bobId; _ -> False
+      ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
+      allowConfirmGreet alice bobId bob aliceId confId IKPQOn $ PQEncryption $ pqConnectionMode IKPQOn PQSupportOn
 
 allowConfirmGreet :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ConfirmationId -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
 allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
