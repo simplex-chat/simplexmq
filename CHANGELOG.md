@@ -49,10 +49,13 @@ XFTP:
 - XFTP protocol v4: server information in the handshake, file storage time set by the sender, and longer storage for supporters, with `expire_files_hours_for_supporter` and `expire_files_hours_for_legend` in `[STORE_LOG]` section.
 - stricter validation of file descriptions and file names.
 - release the storage of interrupted uploads.
+- fix the size of received files with 3 or more chunks (#2067).
+- prevent work directory conflicts of concurrent file transfers.
 
 Servers:
 - serve web pages over HTTP/1.1 only.
 - retry accepting connections when file descriptors run out.
+- write metrics files atomically, and keep periodic tasks running after errors.
 
 Code:
 - stricter validation of certificate chains and keys.
