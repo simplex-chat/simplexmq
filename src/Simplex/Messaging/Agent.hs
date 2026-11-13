@@ -992,6 +992,7 @@ acceptContactAsync' c corrId connId enableNtfs invId ownConnInfo pqSupport subMo
   joinCmd `catchAllErrors` \err -> do
     withStore' c (`unacceptInvitation` invId)
     throwE err
+  withStore' c (`deleteInvitation` invId)
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
@@ -1749,7 +1750,7 @@ acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode
         DuplexConnection _ (rq@RcvQueue {status = New} :| _) (sq@SndQueue {status = sqStatus} :| _)
           | sqStatus == New || sqStatus == Secured -> doJoin (Just rq) (Just sq)
         _ -> throwE $ CMD PROHIBITED $ "acceptContact: bad connection " <> show cType
-  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  withStore' c (`deleteInvitation` invId)
   pure r
 
 rejectContact' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
