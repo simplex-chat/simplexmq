@@ -1376,8 +1376,9 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
     X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (\_ -> pure Nothing) (\_ -> pure ()) >>= \case
-      Right xftp ->
-        ( withTestChunk filePath $ do
+      Right xftp -> withTestChunk filePath test `E.finally` removeTestFile rcvPath
+        where
+          test = do
             (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
             (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
             digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
@@ -1392,8 +1393,6 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
               liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
             ok <- netTimeoutInt (tcpTimeout xftpNetworkConfig) nm `timeout` X.closeXFTPClient xftp
             pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (X.thParams xftp)) ok
-        )
-          `E.finally` removeTestFile rcvPath
       Left e -> pure $ Left (testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
