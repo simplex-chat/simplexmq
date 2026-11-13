@@ -140,7 +140,7 @@ import Fixtures
 import Simplex.Messaging.Agent.Client (withStoreIsolation', withWork, withWorkItems)
 import Simplex.Messaging.Agent.Env.SQLite (AM)
 import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
 import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
 import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
@@ -4816,7 +4816,8 @@ workItemReadTests = do
       g <- C.newRandom
       key <- atomically $ C.randomSbKey g
       nonce <- atomically $ C.randomCbNonce g
-      void $ createSndFile db g 1 (CryptoFile "testfile" Nothing) 1 "test.xftp" key nonce Nothing Nothing
+      Right sfId <- createSndFile db g 1 (CryptoFile "testfile" Nothing) 1 "test.xftp" key nonce Nothing Nothing
+      startPreparedSndFile db sfId `shouldReturn` Right ()
     readSndFile a doWork = withWork a doWork (`getNextSndFileToPrepare` 86400)
     createConn :: DB.Connection -> IO ()
     createConn db = DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
