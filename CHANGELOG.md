@@ -22,6 +22,7 @@ SMP agent:
 - stricter validation of connection handshakes.
 - private routing: stricter checks of protected IP addresses and of known servers, and name lookups via private routing.
 - APIs to prepare invitation links and file transfers in advance, and to get security codes of multiple connections.
+- delete contact requests after they are accepted (#2068).
 - more reliable file transfers and connection handling.
 - reduce memory usage of subscriptions.
 
