@@ -1,3 +1,217 @@
+# 7.1.0
+
+Version 7.1.0.18
+
+_Please note_: this version supports SMP protocol versions 15 to 23. Servers and clients before simplexmq 6.4.0 support only earlier versions. They cannot connect to servers and clients of this version. This includes SimpleX Chat apps before v6.3.3.
+
+SMP protocol:
+- version 21: server public information in the handshake (#1836, #1845, #1849).
+- version 22: RSLV queries by label hash, and RNAME answers with name availability, expiration, grace period, reservation and price (#1863).
+- version 23: the agreed version is bound to the nonce of forwarded commands, and forwarded responses use random nonces (#1915).
+- the earliest supported version is 15 (short links, 3/30/2025) (#1837, #1931).
+- require 24-byte correlation IDs where they are used as nonces, and message IDs of at least 24 bytes (#1925).
+
+SMP agent:
+- agent protocol version 8:
+  - double ratchet with post-quantum encryption from the first message to contact addresses (#1831, #1841).
+  - one-off requests to service addresses (RPC), and rejection of contact requests (#1831).
+  - fast queue rotation that does not require the current server to be online (#1847, #1932, #1933, #1934).
+- drop support of agent protocol versions before 6 and e2e encryption versions before 3 (before 07/2024) (#1841).
+- deliver messages to and from earlier app versions in connections with ratchets of e2e encryption versions before 3 (#2023).
+- improve double ratchet (#1922):
+  - keep the hashes of the last 100 processed ratchet keys of each connection after they expire (#1893).
+  - limit stored skipped message keys to 2000 per connection (#1903).
+  - a ratchet key sent in reply includes the hash of the answered key, and agents do not reply to such keys (#1923).
+  - prevent race conditions in double ratchet processing (#1923).
+- save the ratchet state only after the message body is decrypted (#1892).
+- validate e2e encryption parameters: `kem_ct` requires `kem_key` (#1901).
+- validate the client version of confirmations against the agent version (#2053).
+- security codes that include post-quantum handshake keys (#1874).
+- API to get the security codes of multiple connections (#1874).
+- API to prepare a one-time invitation link without network requests, and to create it with one request (#1880).
+- API to prepare file sending and receiving, and to start them separately (#1879).
+- file storage time and entitlement credentials for file uploads (#1856).
+- server tests return the server public information (#1836, #1846).
+- name lookups return name availability, expiration and price (#1863).
+- private routing:
+  - treat the IP address as protected only when the SOCKS proxy is used for the chosen host (#1895).
+  - treat a server as known only when the host used to connect to it is known (#1953).
+  - send name lookups via private routing also to known servers (#2002).
+  - report errors of connections to the destination server with the addresses of both servers (#1842).
+- report joining an already used one-time link as a duplicate connection (#1970).
+- retry asynchronous commands after QUOTA errors (#1881).
+- complete file uploads started in the foreground while the agent suspends (#2010).
+- receive files with many chunks within the default limit of open files (#2025).
+- report file receive errors also when temporary files cannot be removed (#1972, #2025).
+- take connection locks in one order when sending to multiple connections (#2019).
+- run a worker in one thread when concurrent calls start it (#1972).
+- fail pending requests when the server connection ends (#1972).
+- delete delivery receipts that fail with AUTH error without error events (#1972).
+- close interrupted connection attempts (#1967).
+- fail database transactions at once when the database is closed (#1885).
+- autoincrement IDs of commands and file records in SQLite database (#1885, #1951).
+- prevent race conditions when sending and receiving files (#1885, #1932).
+- reduce memory used by subscriptions (#1877).
+- reduce lock contention (#1989).
+
+XRCP (remote access protocol):
+- the controller validates the certificate chain of the host against the CA recorded at pairing (#2000).
+- the host accepts multicast announcements only with timestamps within about one hour of its time (#1899).
+
+SMP server:
+- remove journal message storage (#1919, #1946).
+- to migrate from journal storage, export messages with `smp-server journal export` using smp-server v7.1.0.11 or earlier, then set `store_messages` to `memory`, or set it to `database` and run `smp-server database import --table messages` (#1919).
+- process forwarded commands to different queues in parallel, with `forward_workers` in `[PROXY]` section (default 8) (#2047).
+- limit concurrent proxied commands and name resolutions of each client connection for their whole duration (#1944).
+- raise default `client_concurrency` in `[PROXY]` to 500, and `resolver_concurrency` in `[NAMES]` to 5000 (#1944).
+- respond with AUTH errors after a minimum delay, set by `auth_error_delay_ms` in `[TRANSPORT]` section (default 50 ms) (#1937).
+- deliver messages sent while the recipient subscribes (#2008).
+- deliver later messages after a repeated SUB while a delivery waits (#2006).
+- deliver message notifications to notification servers in transactions of up to 1000 notifiers (#1996).
+- validate the version of forwarded commands (#1890).
+- require the correlation ID of a forwarded transmission to match the forwarding request (#1954).
+- set the sender key with SKEY only when the queue has no sender key or the same key (PostgreSQL storage) (#1844).
+- set short link data only for contact queues and for messaging queues that are not secured (#1917).
+- compare server passwords in constant time (#1898).
+- log failed control port authentication (#1898).
+- keep queues blocked with a notice after restart and database import (#1971).
+- restore messages with empty body after restart (#1953).
+- remove notification store keys after delivery and expiration (#1907).
+- remove deleted queues from memory storage (#1947).
+- reduce memory used by subscriptions (#1906).
+- PostgreSQL storage:
+  - reduce database load of message expiration and Prometheus metrics (#1872, #1873).
+  - read one message per queue for SUB batches (#2007).
+- Prometheus metrics:
+  - queue count is estimated with PostgreSQL storage (#1872).
+  - forward worker queue length and command time (#2048).
+  - waits for command slots (#1944).
+  - responses with AUTH errors sent without delay (#1937).
+  - correct count of service subscriptions after DEL and SUBS (#2046).
+  - remove metrics of queue and notifier locks (#1946).
+- name resolver (scripts/resolver):
+  - /v2 endpoint with name availability and queries by label hash (#1863).
+  - batched reads, connection reuse, worker processes and structured logs (#1883).
+  - read `.simplex` reservations from the name policy (#1993).
+  - answer a subname only while the holder of its name holds it (#2013).
+
+Notification server:
+- the earliest supported notification protocol version is 3 (#1837).
+- validate the APNS server certificate and host name (#1998).
+- resume push notifications after APNS errors (#2020).
+- continue notifications when the SMP service subscription becomes unavailable (#1976).
+- require the key hash of the SMP server in subscriptions (#2027).
+- find subscriptions with one database connection (#1956).
+- stop without waiting for operations on the closed database (#2041).
+- save stats before closing the database (#2007).
+
+XFTP server:
+- XFTP protocol version 4 (#2021):
+  - server public information in the handshake (#1846).
+  - file storage time set by the sender (#1856).
+  - entitlement proofs in the handshake extend the maximum storage time, with `expire_files_hours_for_supporter` and `expire_files_hours_for_legend` in `[STORE_LOG]` section (#1856).
+- prohibit FACK command (#1871).
+- release the storage of interrupted uploads and deletions (#1977).
+- validate file paths in store log (#1894).
+
+XFTP client:
+- CLI sanitizes the names of received files (#1850).
+- close the connection after a failed handshake (#1974).
+- API to get the hash of the shared part of a file description (#1865).
+- validate file descriptions:
+  - prohibit YAML aliases (#1965).
+  - limit replicas to 16 per chunk and to 131,072 per description (#1965).
+  - require chunk sizes of 64 KB, 256 KB, 1 MB or 4 MB (#2001).
+  - limit redirect file descriptions to 4 MB (#2026).
+  - limit runs of digits and hexadecimal letters to 64 characters (#2018).
+
+Servers:
+- serve web pages over HTTP/1.1 only (#1999).
+- SMP server ports do not offer h2 in ALPN (#1999).
+- retry accepting connections when file descriptors run out (#1962).
+- cache open static files of web pages (#1962).
+- end inactive sessions in their own threads (#1972).
+- omit the database connection string from output (#2007).
+- fix stale commit hash in the printed version (#1859).
+
+Code:
+- validate each certificate of server and client chains against the next certificate (#1964).
+- limit certificate keys to Ed25519, Ed448, named-curve EC and RSA up to 4096 bits (#1964).
+- reject all-zero DH shared secrets in decryption (#1964).
+- limit sntrup761 key generation attempts (#1918).
+- parse IPv6 addresses with IPv4 suffix (#1969).
+- prohibit null bytes in host names (#2027).
+- evaluate updated state of random generators, counters and maps in their transactions, for better concurrency (#2031).
+- fail database operations on a closed PostgreSQL store (#2041).
+
+# 7.0.1
+
+Version 7.0.1.0
+
+SMP server:
+- prevent processing deadlock in SMP proxy (#1839).
+
+Notification server:
+- 8 push workers for each SMP server and push provider, selected by notification token (#1840).
+
+# 7.0.0
+
+Version 7.0.0.6
+
+SMP protocol:
+- version 19: message subscriptions of messaging services (#1667).
+- version 20: resolution of SimpleX names with RSLV command (#1784).
+
+SMP agent:
+- service certificates for message subscriptions: `setUserService`, `subscribeClientServices` and service events (#1667).
+- resolve SimpleX names via the servers with names role (#1784, #1786, #1788).
+- async API uses connections prepared with `prepareConnectionToCreate`, to prevent race conditions (#1792).
+- optional SMP server for `prepareConnectionLink` (#1771).
+
+SMP server:
+- message subscriptions of messaging services (#1667, #1790, #1820).
+- always accept service certificates (#1667).
+- remove `accept_service_credentials` option (#1667).
+- Prometheus metrics of service subscriptions (#1667).
+- resolve SimpleX names via an operator-run resolver, with `[NAMES]` section (#1784).
+- Prometheus metrics of name resolution (#1784).
+- fix SMP proxy not reconnecting to a destination server after it restarts (#1806).
+- fix memory leak of service subscription counters (#1827).
+- prohibit setting a short link ID that another queue uses (memory storage) (#1813).
+- name resolver service with docker-compose setup (scripts/resolver) (#1793, #1795, #1817).
+- disable embedded web in Linode and DigitalOcean setup scripts, as they do not provision web certificates (#1804).
+
+Notification server:
+- separate service certificate for each SMP server (#1667).
+- remove `database import` and `database export` commands (#1667).
+- prohibit tokens of APNS test push provider (#1808).
+
+XFTP server:
+- count only uploaded files in used storage (#1814).
+- remove debug logs from the web page (#1798).
+
+XFTP client:
+- deprecation notice in CLI (#1799).
+
+Servers:
+- `simplex-servers-update` script creates its directories before version checks (#1797).
+
+Code:
+- BBS signatures for anonymous credentials (#1794, #1809, #1810).
+- validate the lengths of sntrup761 keys and ciphertexts (#1811).
+- parse bracketed IPv6 server addresses (#1807).
+- API to decompress with a size limit (#1815).
+
+# 6.5.2
+
+Version 6.5.2.0
+
+Notification server:
+- deliver push notifications concurrently, with a worker for each SMP server and push provider (#1779, #1780).
+
+XFTP server:
+- web page to send and receive files (#1772).
+
 # 6.5.1
 
 Version 6.5.1.0
