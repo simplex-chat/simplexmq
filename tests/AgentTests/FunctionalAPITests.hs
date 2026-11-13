@@ -4796,17 +4796,25 @@ workItemReadTests = do
   it "should retry the read aborted by deadlock with ntf subscription deletion" $
     readWhileDeleting (createNtfSub $ NSANtf NSACreate) (lockTable "servers") "JOIN servers s ON s.host = ns.smp_host" "DELETE FROM ntf_subscriptions" (readNtfActions testNtfServer)
       `shouldReturn` False
-  it "should retry the read 3 times after serialization failures" $
-    readWithErrors 3 "40001" `shouldReturn` (Right (), 4)
-  it "should retry the read after deadlocks" $
-    readWithErrors 2 "40P01" `shouldReturn` (Right (), 3)
+  it "should retry the read 3 times on the same connection after serialization failures" $ do
+    (r, pids) <- readWithErrors 3 "40001"
+    r `shouldBe` Right ()
+    attemptsOn pids `shouldBe` (4, 1)
+  it "should retry the read after deadlocks" $ do
+    (r, pids) <- readWithErrors 2 "40P01"
+    r `shouldBe` Right ()
+    attemptsOn pids `shouldBe` (3, 1)
   it "should report INTERNAL when serialization failures continue after 3 retries" $ do
-    (Left (A.INTERNAL _), attempts) <- readWithErrors 4 "40001"
-    attempts `shouldBe` 4
+    (Left (A.INTERNAL e), pids) <- readWithErrors 4 "40001"
+    e `shouldContain` "40001"
+    attemptsOn pids `shouldBe` (4, 1)
   it "should not retry the read after other database errors" $ do
-    (Left (A.INTERNAL _), attempts) <- readWithErrors 1 "23505"
-    attempts `shouldBe` 1
+    (Left (A.INTERNAL e), pids) <- readWithErrors 1 "23505"
+    e `shouldContain` "23505"
+    attemptsOn pids `shouldBe` (1, 1)
   where
+    attemptsOn :: [Int] -> (Int, Int)
+    attemptsOn pids = (length pids, S.size $ S.fromList pids)
     createCmd :: DB.Connection -> IO ()
     createCmd db = do
       createConn db
@@ -4860,14 +4868,15 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
       ERRS _ -> True
       _ -> False
 
-readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), Int)
+readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), [Int])
 readWithErrors failures errCode = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-  attempts <- newIORef 0
-  r <- runReaderT (runExceptT $ withStoreIsolation' a RepeatableRead $ readItem attempts) (agentEnv a)
-  (r,) <$> readIORef attempts
+  pids <- newIORef []
+  r <- runReaderT (runExceptT $ withStoreIsolation' a RepeatableRead $ readItem pids) (agentEnv a)
+  (r,) <$> readIORef pids
   where
-    readItem attempts db = do
-      n <- atomicModifyIORef' attempts $ \n -> (n + 1, n)
+    readItem pids db = do
+      [Only pid] <- DB.query_ db "SELECT pg_backend_pid()"
+      n <- atomicModifyIORef' pids $ \ps -> (pid : ps, length ps)
       when (n < failures) $ DB.execute_ db $ "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '" <> errCode <> "'; END $$"
 
 waitForLock :: DBStore -> Int -> String -> IO ()
