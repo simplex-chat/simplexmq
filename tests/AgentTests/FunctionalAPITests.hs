@@ -454,6 +454,8 @@ functionalAPITests ps = do
       testDeliverClientRestart ps
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage ps
+    it "should acknowledge a message again after it is deleted" $
+      withSmpServer ps testAckDeletedMessage
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
     it "should connect to the server when server goes up if it initially was down" $
@@ -2448,6 +2450,20 @@ testDuplicateMessage ps = do
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
   disposeAgentClient alice2
   disposeAgentClient bob2
+
+testAckDeletedMessage :: (HasCallStack, HasTestEnv) => IO ()
+testAckDeletedMessage =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (aliceId, bobId) <- makeConnection alice bob
+    2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT 2)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 2 Nothing
+    ackMessage bob aliceId 2 Nothing
+    ackMessageAsync bob "1" aliceId 2 Nothing
+    get bob =##> \case ("1", c, OK) -> c == aliceId; _ -> False
+    Left (A.INTERNAL _) <- tryError $ ackMessage bob aliceId 3 Nothing
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
 
 testSkippedMessages :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testSkippedMessages (t, msType) = do
