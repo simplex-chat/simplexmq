@@ -4806,11 +4806,11 @@ workItemReadTests = do
     attemptsOn pids `shouldBe` (3, 1)
   it "should report INTERNAL when serialization failures continue after 3 retries" $ do
     (Left (A.INTERNAL e), pids) <- readWithErrors 4 "40001"
-    e `shouldContain` "40001"
+    e `shouldContain` "sqlState = \\\"40001\\\""
     attemptsOn pids `shouldBe` (4, 1)
   it "should not retry the read after other database errors" $ do
     (Left (A.INTERNAL e), pids) <- readWithErrors 1 "23505"
-    e `shouldContain` "23505"
+    e `shouldContain` "sqlState = \\\"23505\\\""
     attemptsOn pids `shouldBe` (1, 1)
   where
     attemptsOn :: [Int] -> (Int, Int)
