@@ -682,12 +682,11 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (mapM_ (removeServerFile stats) path)
   st <- asks fileStore
   path' <- ExceptT $ liftIO $ storeAction st
-  forM_ path' $ \_ -> do
+  lift $ incFileStat stat
+  forM_ path' $ \p -> do
     us <- asks usedStorage
     atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
-  lift $ incFileStat stat
-  when (path' /= path) $ forM_ path' $ \p ->
-    lift $ removeServerFile stats p `catch` \(e :: SomeException) -> logError $ "failed to remove file " <> tshow p <> ": " <> tshow e
+    when (path /= Just p) $ lift $ removeServerFile stats p `catch` \(e :: SomeException) -> logError $ "failed to remove file " <> tshow p <> ": " <> tshow e
   where
     removeServerFile stats p = (removeFile p >> deletedStats stats) `catch` \e -> unless (isDoesNotExistError e) $ throwIO e
     deletedStats stats = do
