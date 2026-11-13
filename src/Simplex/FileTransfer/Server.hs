@@ -277,6 +277,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       forever $ do
         liftIO $ threadDelay' interval
         expireServerFiles (Just 100000) expCfg
+          `catchAny` \e -> logError $ "STORE: expireServerFiles, error expiring files, " <> tshow e
 
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -291,7 +292,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts

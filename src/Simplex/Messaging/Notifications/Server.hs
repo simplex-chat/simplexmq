@@ -177,7 +177,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
@@ -757,9 +757,10 @@ periodicNtfsThread s = do
   UnliftIO unlift <- askUnliftIO
   liftIO $ forever $ do
     threadDelay interval
-    now <- systemSeconds <$> getSystemTime
-    cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
-    logNote $ "Scheduled periodic notifications: " <> tshow cnt
+    handleAny (\e -> logError $ "Periodic notifications error: " <> tshow e) $ do
+      now <- systemSeconds <$> getSystemTime
+      cnt <- withPeriodicNtfTokens st now $ \tkn -> unlift $ pushNotification s Nothing False tkn PNCheckMessages
+      logNote $ "Scheduled periodic notifications: " <> tshow cnt
 
 runNtfClientTransport :: Transport c => THandleNTF c 'TServer -> M ()
 runNtfClientTransport th@THandle {params} = do
