@@ -147,7 +147,7 @@ instance FileStoreClass STMFileStore where
   blockFile st senderId info _deleted = atomically $
     withFile st senderId $ \FileRec {fileStatus, filePath} -> do
       writeTVar fileStatus $! EntityBlocked info
-      Right <$> readTVar filePath
+      Right <$> swapTVar filePath Nothing
 
   deleteRecipient STMFileStore {recipients} rId FileRec {recipientIds} = atomically $ do
     TM.delete rId recipients

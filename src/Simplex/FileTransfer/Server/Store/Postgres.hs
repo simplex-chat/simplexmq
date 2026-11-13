@@ -125,7 +125,11 @@ instance FileStoreClass PostgresFileStore where
 
   blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
     path <- withDB "blockFile" st $ \db ->
-      firstRow fromOnly AUTH $ DB.query db "UPDATE files SET status = ? WHERE sender_id = ? RETURNING file_path" (EntityBlocked info, sId)
+      firstRow fromOnly AUTH $
+        DB.query
+          db
+          "UPDATE files f SET status = ?, file_path = NULL FROM (SELECT file_path FROM files WHERE sender_id = ? FOR UPDATE) old WHERE f.sender_id = ? RETURNING old.file_path"
+          (EntityBlocked info, sId, sId)
     withLog "blockFile" st $ \s -> logBlockFile s sId info
     pure path
 
