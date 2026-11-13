@@ -167,6 +167,7 @@ module Simplex.Messaging.Agent.Client
     withStore,
     withStore',
     withStoreIsolation',
+    retryTransaction,
     withStoreBatch,
     withStoreBatch',
     unsafeWithStore,
