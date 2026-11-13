@@ -1005,11 +1005,19 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
   where
     enqueueAck :: AM ()
     enqueueAck = do
-      let mId = InternalId msgId
+      server <- setUserAck `catchAllErrors` \e -> ifM msgDeleted primaryRcvServer (throwE e)
+      enqueueCommand c corrId connId (Just server) . AClientCommand $ ACK msgId rcptInfo_
+    setUserAck :: AM SMPServer
+    setUserAck = do
       RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId mId
       when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwE $ CMD PROHIBITED "ackMessageAsync: receipt not allowed"
       (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId mId
-      enqueueCommand c corrId connId (Just server) . AClientCommand $ ACK msgId rcptInfo_
+      pure server
+    primaryRcvServer :: AM SMPServer
+    primaryRcvServer = qServer <$> withStore c (`getPrimaryRcvQueue` connId)
+    msgDeleted :: AM Bool
+    msgDeleted = withStore' c $ \db -> checkMsgDeleted db connId mId
+    mId = InternalId msgId
 
 deleteConnectionAsync' :: AgentClient -> Bool -> ConnId -> AM ()
 deleteConnectionAsync' c waitDelivery connId = deleteConnectionsAsync' c waitDelivery [connId]
@@ -2836,12 +2844,12 @@ ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe 
 ackMessage' c cmdId_ connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
-    DuplexConnection {} -> do
+    DuplexConnection {} -> handleDeleted $ do
       t_ <- ack
       sendRcpt conn
       del
       pure t_
-    RcvConnection {} -> do
+    RcvConnection {} -> handleDeleted $ do
       t_ <- ack
       del
       pure t_
@@ -2849,6 +2857,10 @@ ackMessage' c cmdId_ connId msgId rcptInfo_ = withConnLockNotify c connId "ackMe
     ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
     NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   where
+    handleDeleted :: AM (Maybe ATransmission) -> AM (Maybe ATransmission)
+    handleDeleted = (`catchAllErrors` \e -> ifM msgDeleted (Nothing <$ del) (throwE e))
+    msgDeleted :: AM Bool
+    msgDeleted = withStore' c $ \db -> checkMsgDeleted db connId $ InternalId msgId
     ack :: AM (Maybe ATransmission)
     ack = do
       -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
