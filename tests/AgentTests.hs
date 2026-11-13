@@ -20,7 +20,7 @@ import Simplex.Messaging.Transport (ASrvTransport)
 import Test.Hspec hiding (fit, it)
 
 #if defined(dbPostgres)
-import AgentTests.FunctionalAPITests (workItemLockTests)
+import AgentTests.FunctionalAPITests (workItemReadTests)
 #else
 import AgentTests.SQLiteTests (storeTests)
 #endif
@@ -37,7 +37,7 @@ agentCoreTests = do
   describe "Short link tests" shortLinkTests
   describe "resolve names" resolveNameTests
 #if defined(dbPostgres)
-  describe "Work item locks" workItemLockTests
+  describe "Work item reads" workItemReadTests
 #endif
 
 agentTests :: (ASrvTransport, AStoreType) -> Spec
