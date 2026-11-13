@@ -1376,7 +1376,7 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
     X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (\_ -> pure Nothing) (\_ -> pure ()) >>= \case
-      Right xftp -> withTestChunk filePath $ do
+      Right xftp -> withTestChunk filePath rcvPath $ do
         (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
         digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
@@ -1403,11 +1403,13 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
       g <- asks random
       name <- atomically $ B.unpack . strEncode <$> C.randomBytes 12 g
       uniqueCombine workPath name
-    withTestChunk :: FilePath -> IO a -> IO a
-    withTestChunk fp =
+    withTestChunk :: FilePath -> FilePath -> IO a -> IO a
+    withTestChunk fp rcvFp =
       E.bracket_
         (createTestChunk fp)
-        (whenM (doesFileExist fp) $ removeFile fp `catchAll_` pure ())
+        (removeTestFile fp >> removeTestFile rcvFp)
+    removeTestFile :: FilePath -> IO ()
+    removeTestFile fp = whenM (doesFileExist fp) $ removeFile fp `catchAll_` pure ()
     -- this creates a new DRG on purpose to avoid blocking the one used in the agent
     createTestChunk :: FilePath -> IO ()
     createTestChunk fp = B.writeFile fp =<< atomically . C.randomBytes chSize =<< C.newRandom
