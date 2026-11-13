@@ -449,7 +449,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
           | otherwise -> throwE $ CLIError "Redirect chain too long"
         Nothing -> do
           liftIO $ printNoNewLine "Decrypting file..."
-          CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
+          CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . createFilePath
           whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
           liftIO $ do
             printNoNewLine $ "File downloaded: " <> path
@@ -470,8 +470,8 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
         when verbose $ putStrLn ""
       pure (chunkNo, chunkPath)
     downloadFileChunk _ _ _ _ _ _ = throwE $ CLIError "chunk has no replicas"
-    getFilePath :: Text -> ExceptT String IO FilePath
-    getFilePath name = case filePath of
+    createFilePath :: Text -> ExceptT String IO FilePath
+    createFilePath name = case filePath of
       Just path ->
         ifM (doesDirectoryExist path) (liftIO $ createUniqueFile path name') $
           ifM (doesFileExist path) (throwE "File already exists") (path <$ createNewFile path)
