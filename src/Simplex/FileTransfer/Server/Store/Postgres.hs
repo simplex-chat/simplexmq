@@ -120,7 +120,7 @@ instance FileStoreClass PostgresFileStore where
   deleteFiles st sIds = E.uninterruptibleMask_ $ do
     deleted <- withTransaction (dbStore st) $ \db ->
       DB.query db "DELETE FROM files WHERE sender_id IN ? RETURNING sender_id, file_path" (Only (In sIds))
-    withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s) sIds
+    withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s . fst) deleted
     pure deleted
 
   blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
