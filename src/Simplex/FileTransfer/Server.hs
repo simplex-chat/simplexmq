@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -83,7 +84,9 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
 import System.FilePath ((</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
+#ifdef slow_servers
 import System.Random (getStdRandom, randomR)
+#endif
 import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Directory (canonicalizePath, doesFileExist, removeFile, renameFile)
@@ -213,7 +216,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               serverInfoBytes = LB.toStrict . J.encode <$> information
           let hs = XFTPServerHandshake {xftpVersionRange = xftpServerVRange, sessionId, authPubKey, webIdentityProof, serverInfoBytes}
           shs <- encodeXftp hs
+#ifdef slow_servers
           lift randomDelay
+#endif
           liftIO . sendResponse $ H.responseBuilder N.ok200 (corsHeaders addCORS) shs
           pure Nothing
         processClientHandshake pk ent_ = do
@@ -230,7 +235,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
               let auth = THAuthServer {serverPrivKey = pk, peerClientService = Nothing, peerEntitlement = ent, sessSecret' = Nothing}
                   thParams = thParams0 {thAuth = Just auth, thVersion = v, thServerVRange = vr}
               atomically $ TM.insert sessionId (HandshakeAccepted thParams) sessions
+#ifdef slow_servers
               lift randomDelay
+#endif
               liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS)
               pure Nothing
             Nothing -> throwE HANDSHAKE
@@ -433,7 +440,9 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse t' serverFile_ = do
       let t_ = xftpEncodeTransmission thParams t'
+#ifdef slow_servers
       randomDelay
+#endif
       liftIO $ sendResponse $ H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody t_
       where
         streamBody t_ send done = do
@@ -448,12 +457,14 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
                 withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize
           done
 
+#ifdef slow_servers
 randomDelay :: M s ()
 randomDelay = do
   d <- asks $ responseDelay . config
   when (d > 0) $ do
     pc <- getStdRandom (randomR (-200, 200))
     threadDelay $ (d * (1000 + pc)) `div` 1000
+#endif
 
 data VerificationResult = VRVerified XFTPRequest | VRFailed XFTPErrorType
 

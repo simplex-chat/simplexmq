@@ -72,7 +72,11 @@ xftpAgentTests :: SpecWith AFStoreType
 xftpAgentTests =
   describe "agent XFTP API" $ do
       it "should send and receive file" $ withXFTPServer testXFTPAgentSendReceive
+#ifdef slow_servers
       it "should send and receive file with slow server responses" $ \_ ->
+#else
+      xit "should send and receive file with slow server responses" $ \_ ->
+#endif
         withXFTPServerCfg testXFTPServerConfig {responseDelay = 500000} $
           \_ -> testXFTPAgentSendReceive
       it "should send and receive with encrypted local files" testXFTPAgentSendReceiveEncrypted

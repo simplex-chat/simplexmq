@@ -290,7 +290,7 @@ jobs:
         if: matrix.should_run == true && matrix.client_postgres == true
         shell: docker exec -t builder sh -eu {0}
         run: |
-          cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres ${{ env.ghc_options }} simplexmq-test
+          cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers ${{ env.ghc_options }} simplexmq-test
           bin=$(find /project/dist-client-postgres -name simplexmq-test -type f -executable)
           cp "$bin" /out/simplexmq-test-client-postgres
 
@@ -495,7 +495,7 @@ jobs:
           cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres --ghc-options=-O0
           cabal build --jobs=$(nproc) --ghc-options=-O0
           if [ "${{ matrix.client_postgres }}" = true ]; then
-            cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres --ghc-options=-O0 simplexmq-test
+            cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers --ghc-options=-O0 simplexmq-test
           fi
 
       - name: Record source hashes for -O0 build (GHC 8.10.7)
