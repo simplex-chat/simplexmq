@@ -664,14 +664,16 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
 
 deleteServerFile_ :: FileStoreClass s => FileRec -> M s (Either XFTPErrorType ())
 deleteServerFile_ fr@FileRec {senderId} = do
-  withFileLog (`logDeleteFile` senderId)
-  deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
+  r <- deleteOrBlockServerFile_ fr filesDeleted (`deleteFile` senderId)
+  forM_ r $ \_ -> withFileLog (`logDeleteFile` senderId)
+  pure r
 
 -- this also deletes the file from storage, but doesn't include it in delete statistics
 blockServerFile :: FileStoreClass s => FileRec -> BlockingInfo -> M s (Either XFTPErrorType ())
 blockServerFile fr@FileRec {senderId} info = do
-  withFileLog $ \sl -> logBlockFile sl senderId info
-  deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
+  r <- deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
+  forM_ r $ \_ -> withFileLog $ \sl -> logBlockFile sl senderId info
+  pure r
 
 deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType (Maybe FilePath))) -> M s (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $ runExceptT $ do
