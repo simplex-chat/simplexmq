@@ -136,10 +136,12 @@ import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 
 #if defined(dbPostgres)
 import Fixtures
+import Simplex.FileTransfer.Client (XFTPChunkSpec (XFTPChunkSpec))
 import Simplex.FileTransfer.Description (ChunkReplicaId (ChunkReplicaId), FileChunkReplica (FileChunkReplica), FileDigest (FileDigest))
+import qualified Simplex.FileTransfer.Types as FT
 import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createDeletedSndChunkReplica, createNtfSubscription, createServer, deleteClientService, getNextDeletedSndChunkReplica, getNextNtfSubSMPActions, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
-import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSASMP), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
+import Simplex.Messaging.Agent.Store.AgentStore (addNtfTokenToDelete, createCommand, createDeletedSndChunkReplica, createNtfSubscription, createServer, createSndFile, createSndFileReplica, deleteClientService, getNextDeletedSndChunkReplica, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextNtfTokenToDelete, getNextSndChunkToUpload, getPendingServerCommand, getSndFile, getSndFileByEntityId, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, updateSndFileEncrypted)
+import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -4775,51 +4777,77 @@ testTwoUsers = withAgentClients2 $ \a b -> do
 #if defined(dbPostgres)
 workItemLockTests :: Spec
 workItemLockTests = do
-  it "should wait to delete a command read by its worker" testWaitDeleteCommand
-  it "should wait to delete a deleted chunk replica read by its worker" testWaitDeleteDeletedReplica
-  it "should wait to delete a connection whose ntf subscription is read by its worker" testWaitDeleteNtfSubConn
-
-testWaitDeleteCommand :: HasTestEnv => IO ()
-testWaitDeleteCommand = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-  let st = store $ agentEnv a
-  withTransaction st $ \db -> do
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
-    createCommand db "1" "conn1" Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False) `shouldReturn` Right ()
-  shouldWaitToDelete st readCommand (`DB.execute_` "DELETE FROM commands")
+  it "should wait to delete a command read by its worker" $
+    shouldWaitToDelete createCmd readCommand (`DB.execute_` "DELETE FROM commands")
+  it "should wait to delete a ntf token read by its worker" $
+    shouldWaitToDelete createTokenToDelete readToken (`DB.execute_` "DELETE FROM ntf_tokens_to_delete")
+  it "should wait to delete a connection whose ntf subscription is read by NTF worker" $
+    shouldWaitToDelete (createNtfSub $ NSANtf NSACreate) readNtfAction (`DB.execute_` "DELETE FROM connections")
+  it "should wait to delete a connection whose ntf subscription is read by SMP worker" $
+    shouldWaitToDelete (createNtfSub $ NSASMP NSASmpKey) readSMPAction (`DB.execute_` "DELETE FROM connections")
+  it "should wait to delete a file whose chunk is read by its worker" $
+    shouldWaitToDelete createSndChunk readSndChunk (`DB.execute_` "DELETE FROM snd_files")
+  it "should wait to delete a deleted chunk replica read by its worker" $
+    shouldWaitToDelete createDeletedReplica readDeletedReplica (`DB.execute_` "DELETE FROM deleted_snd_chunk_replicas")
   where
+    createCmd :: DB.Connection -> IO ()
+    createCmd db = do
+      createConn db
+      createCommand db "1" "conn1" Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False) `shouldReturn` Right ()
+    readCommand :: DB.Connection -> IO ()
     readCommand db = do
       Right (Just _) <- getPendingServerCommand db "conn1" Nothing
       pure ()
-
-testWaitDeleteDeletedReplica :: HasTestEnv => IO ()
-testWaitDeleteDeletedReplica = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-  let st = store $ agentEnv a
-      replicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
-  withTransaction st $ \db ->
-    createDeletedSndChunkReplica db 1 (FileChunkReplica testXFTPServer (ChunkReplicaId $ SMP.EntityId "abc") replicaKey) (FileDigest "ghi")
-  shouldWaitToDelete st readReplica (`DB.execute_` "DELETE FROM deleted_snd_chunk_replicas")
-  where
-    readReplica db = do
-      Right (Just _) <- getNextDeletedSndChunkReplica db testXFTPServer 86400
+    createTokenToDelete :: HasTestEnv => DB.Connection -> IO ()
+    createTokenToDelete db = addNtfTokenToDelete db testNtfServer testAuthKey (SMP.EntityId "tkn")
+    readToken :: HasTestEnv => DB.Connection -> IO ()
+    readToken db = do
+      Right (Just _) <- getNextNtfTokenToDelete db testNtfServer
       pure ()
-
-testWaitDeleteNtfSubConn :: HasTestEnv => IO ()
-testWaitDeleteNtfSubConn = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-  let st = store $ agentEnv a
-      ProtocolServer {host = ntfHost, port = ntfPort, keyHash = ntfKeyHash} = testNtfServer
-  withTransaction st $ \db -> do
-    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
-    void $ createServer db testSMPServer
-    DB.execute db "INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (?,?,?)" (ntfHost, ntfPort, ntfKeyHash)
-    createNtfSubscription db (newNtfSubscription 1 "conn1" testSMPServer Nothing testNtfServer NASNew) (NSASMP NSASmpKey) `shouldReturn` Right ()
-  shouldWaitToDelete st readSub (`DB.execute_` "DELETE FROM connections")
-  where
-    readSub db = do
+    createNtfSub :: HasTestEnv => NtfSubAction -> DB.Connection -> IO ()
+    createNtfSub action db = do
+      let ProtocolServer {host = ntfHost, port = ntfPort, keyHash = ntfKeyHash} = testNtfServer
+      createConn db
+      void $ createServer db testSMPServer
+      DB.execute db "INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (?,?,?)" (ntfHost, ntfPort, ntfKeyHash)
+      createNtfSubscription db (newNtfSubscription 1 "conn1" testSMPServer Nothing testNtfServer NASNew) action `shouldReturn` Right ()
+    readNtfAction :: HasTestEnv => DB.Connection -> IO ()
+    readNtfAction db = do
+      Right [Right _] <- getNextNtfSubNTFActions db testNtfServer 10
+      pure ()
+    readSMPAction :: HasTestEnv => DB.Connection -> IO ()
+    readSMPAction db = do
       Right [Right _] <- getNextNtfSubSMPActions db testSMPServer 10
       pure ()
+    createSndChunk :: HasTestEnv => DB.Connection -> IO ()
+    createSndChunk db = do
+      g <- C.newRandom
+      key <- atomically $ C.randomSbKey g
+      nonce <- atomically $ C.randomCbNonce g
+      Right sfId <- createSndFile db g 1 (CryptoFile "testfile" Nothing) 1 "test.xftp" key nonce Nothing Nothing
+      Right FT.SndFile {FT.sndFileId} <- getSndFileByEntityId db sfId
+      updateSndFileEncrypted db sndFileId (FileDigest "abc") [(XFTPChunkSpec "test.xftp/xftp.encrypted" 0 100, FileDigest "def")]
+      Right FT.SndFile {FT.chunks = [chunk]} <- getSndFile db sndFileId
+      createSndFileReplica db chunk FT.NewSndChunkReplica {FT.server = testXFTPServer, FT.replicaId = ChunkReplicaId $ SMP.EntityId "abc", FT.replicaKey = testAuthKey, FT.rcvIdsKeys = [], FT.expiresAt = Nothing}
+    readSndChunk :: HasTestEnv => DB.Connection -> IO ()
+    readSndChunk db = do
+      Right (Just _) <- getNextSndChunkToUpload db testXFTPServer 86400
+      pure ()
+    createDeletedReplica :: HasTestEnv => DB.Connection -> IO ()
+    createDeletedReplica db = createDeletedSndChunkReplica db 1 (FileChunkReplica testXFTPServer (ChunkReplicaId $ SMP.EntityId "abc") testAuthKey) (FileDigest "ghi")
+    readDeletedReplica :: HasTestEnv => DB.Connection -> IO ()
+    readDeletedReplica db = do
+      Right (Just _) <- getNextDeletedSndChunkReplica db testXFTPServer 86400
+      pure ()
+    createConn :: DB.Connection -> IO ()
+    createConn db = DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
+    testAuthKey :: C.APrivateAuthKey
+    testAuthKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
 
-shouldWaitToDelete :: DBStore -> (DB.Connection -> IO ()) -> (DB.Connection -> IO ()) -> Expectation
-shouldWaitToDelete st readItem deleteItem = do
+shouldWaitToDelete :: HasTestEnv => (DB.Connection -> IO ()) -> (DB.Connection -> IO ()) -> (DB.Connection -> IO ()) -> Expectation
+shouldWaitToDelete createItem readItem deleteItem = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+  withTransaction st createItem
   deleting <- withTransaction st $ \db -> do
     readItem db
     d <- async $ withTransaction st deleteItem
