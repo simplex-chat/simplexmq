@@ -65,7 +65,7 @@ import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import qualified Simplex.FileTransfer.Transport as XFTP
 import Simplex.FileTransfer.Types
 import qualified Simplex.FileTransfer.Types as FT
-import Simplex.FileTransfer.Util (removePath, uniqueCombine)
+import Simplex.FileTransfer.Util (createUniqueDirectory, removePath, uniqueCombine)
 import Simplex.Messaging.Agent.Client
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
@@ -139,8 +139,7 @@ xftpReceiveFile' c userId vfd cfArgs approvedRelays = do
 xftpPrepareReceiveFile' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Maybe CryptoFileArgs -> Bool -> AM RcvFileId
 xftpPrepareReceiveFile' c userId (ValidFileDescription fd@FileDescription {redirect}) cfArgs approvedRelays = do
   g <- asks random
-  prefixPath <- lift $ getPrefixPath "rcv.xftp"
-  createDirectory prefixPath
+  prefixPath <- lift $ createPrefixDirectory "rcv.xftp"
   let relPrefixPath = takeFileName prefixPath
       relTmpPath = relPrefixPath </> "xftp.encrypted"
       relSavePath = relPrefixPath </> "xftp.decrypted"
@@ -170,12 +169,12 @@ downloadChunk c FileChunk {replicas = (FileChunkReplica {server} : _)} = do
   lift . void $ getXFTPRcvWorker True c (Just server)
 downloadChunk _ _ = throwE $ INTERNAL "no replicas"
 
-getPrefixPath :: String -> AM' FilePath
-getPrefixPath suffix = do
+createPrefixDirectory :: String -> AM' FilePath
+createPrefixDirectory suffix = do
   workPath <- getXFTPWorkPath
   ts <- liftIO getCurrentTime
   let isoTime = formatTime defaultTimeLocale "%Y%m%d_%H%M%S_%6q" ts
-  uniqueCombine workPath (isoTime <> "_" <> suffix)
+  createUniqueDirectory workPath (isoTime <> "_" <> suffix)
 
 toFSFilePath :: FilePath -> AM' FilePath
 toFSFilePath f = (</> f) <$> getXFTPWorkPath
@@ -375,8 +374,7 @@ xftpSendFile' c userId file numRecipients storageHours = do
 xftpPrepareSendFile' :: AgentClient -> UserId -> CryptoFile -> Int -> Maybe Word32 -> AM SndFileId
 xftpPrepareSendFile' c userId file numRecipients storageHours = do
   g <- asks random
-  prefixPath <- lift $ getPrefixPath "snd.xftp"
-  createDirectory prefixPath
+  prefixPath <- lift $ createPrefixDirectory "snd.xftp"
   let relPrefixPath = takeFileName prefixPath
   key <- atomically $ C.randomSbKey g
   nonce <- atomically $ C.randomCbNonce g
@@ -391,8 +389,7 @@ xftpSendDescription' c userId vfd numRecipients = do
 xftpPrepareSendDescription' :: AgentClient -> UserId -> ValidFileDescription 'FRecipient -> Int -> AM SndFileId
 xftpPrepareSendDescription' c userId (ValidFileDescription fdDirect@FileDescription {size, digest}) numRecipients = do
   g <- asks random
-  prefixPath <- lift $ getPrefixPath "snd.xftp"
-  createDirectory prefixPath
+  prefixPath <- lift $ createPrefixDirectory "snd.xftp"
   let relPrefixPath = takeFileName prefixPath
   let directYaml = prefixPath </> "direct.yaml"
   cfArgs <- atomically $ CF.randomArgs g
