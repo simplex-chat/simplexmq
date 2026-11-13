@@ -3807,7 +3807,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                             notify $ MSG msgMeta msgFlags body
                                             pure ACKPending
                                           AgentMessage _ (A_RCVD rcpts) -> qDuplex conn' "RCVD" $ messagesRcvd rcpts msgMeta
-                                          _ -> ack
+                                          _ -> ackDel internalId
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             incSMPServerStat c userId srv recvCryptoErrs
