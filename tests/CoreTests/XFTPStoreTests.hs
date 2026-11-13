@@ -247,6 +247,8 @@ testStorageAndCountForStore st = do
   getUsedStorage st `shouldReturn` 128000
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
   getUsedStorage st `shouldReturn` 192000
+  void $ blockFile st fileA BlockingInfo {reason = BRSpam, notice = Nothing} True
+  getUsedStorage st `shouldReturn` 64000
 
 -- Migration round-trip test
 
