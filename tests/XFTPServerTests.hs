@@ -37,7 +37,7 @@ import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
+import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), FileResponse (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpDecodeTClient, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
@@ -53,10 +53,11 @@ import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (listDirectory, removeFile)
+import Simplex.Messaging.Util (unlessM)
+import System.Directory (doesFileExist, listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, wait)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
@@ -76,6 +77,7 @@ xftpServerTests = do
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
+      it "should complete concurrent uploads of one chunk" testConcurrentChunkUpload
       it "should store file records to log and restore them after server restart" testFileLog
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
@@ -307,6 +309,41 @@ testInterruptedUploadStorage fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
     threadDelay 1000000
     listDirectory xftpServerFiles `shouldReturn` []
     testXFTPClient $ \c -> runRight_ $ forM_ (take 10 sIds) $ \sId -> uploadXFTPChunk c spKey sId chunkSpec
+
+testConcurrentChunkUpload :: HasTestEnv => AFStoreType -> Expectation
+testConcurrentChunkUpload = xftpTest2 $ \c@XFTPClient {http2Client, thParams} c' -> do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  bytes <- createTestChunk testChunkPath
+  digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = chSize, digest}
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+  (sId, [rId]) <- runRight $ createXFTPChunk c spKey file [rcvKey] Nothing
+  t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+  resume <- newEmptyTMVarIO
+  let (part1, part2) = B.splitAt (chSize `div` 2) bytes
+      req = H2.requestStreaming "POST" "/" [] $ \send flush -> do
+        send $ byteString t
+        send $ byteString part1
+        flush
+        atomically $ takeTMVar resume
+        send $ byteString part2
+        flush
+      serverFile = xftpServerFiles </> B.unpack (B64.encode $ unEntityId sId)
+      waitServerFile = unlessM (doesFileExist serverFile) $ threadDelay 10000 >> waitServerFile
+  upload1 <- async $ HC.sendRequest http2Client req Nothing
+  timeout 5000000 waitServerFile `shouldReturn` Just ()
+  upload2 <- async $ runExceptT $ uploadXFTPChunk c' spKey sId chunkSpec
+  void $ timeout 1000000 $ wait upload2
+  atomically $ putTMVar resume ()
+  HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead}} <- either (error . show) pure =<< wait upload1
+  case xftpDecodeTClient thParams bodyHead of
+    Right (_, _, Right FROk) -> pure ()
+    r -> expectationFailure $ "unexpected response: " <> show r
+  wait upload2 `shouldReturn` Right ()
+  runRight_ $ downloadXFTPChunk g c' rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+  B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
 testFileLog :: HasTestEnv => AFStoreType -> Expectation
 testFileLog _ = do
