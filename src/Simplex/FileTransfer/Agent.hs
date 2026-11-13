@@ -235,17 +235,22 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
       liftIO $ waitUntilForeground c
-      (entityId, complete, progress) <- flip catchAllErrors (rcvFileError c rcvFileId) . withStore c $ \db -> runExceptT $ do
-        liftIO $ lockRcvFileForUpdate db rcvFileId
-        liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
-        RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
-        let rcvd = receivedSize chunks
-            complete = all chunkReceived chunks
-            (entityId, total) = case redirect of
-              Nothing -> (rcvFileEntityId, currentSize)
-              Just RcvFileRedirect {redirectFileInfo = RedirectFileInfo {size = FileSize finalSize}, redirectEntityId} -> (redirectEntityId, finalSize)
-        liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
-        pure (entityId, complete, RFPROG rcvd total)
+      (entityId, complete, progress) <-
+        withStore
+          c
+          ( \db -> runExceptT $ do
+              liftIO $ lockRcvFileForUpdate db rcvFileId
+              liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
+              RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
+              let rcvd = receivedSize chunks
+                  complete = all chunkReceived chunks
+                  (entityId, total) = case redirect of
+                    Nothing -> (rcvFileEntityId, currentSize)
+                    Just RcvFileRedirect {redirectFileInfo = RedirectFileInfo {size = FileSize finalSize}, redirectEntityId} -> (redirectEntityId, finalSize)
+              liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
+              pure (entityId, complete, RFPROG rcvd total)
+          )
+          `catchAllErrors` rcvFileError c rcvFileId
       incXFTPServerStat c userId srv downloads
       incXFTPServerSizeStat c userId srv downloadsSize (fromIntegral $ toKB chSize)
       notify c entityId progress
@@ -334,7 +339,7 @@ runXFTPRcvLocalWorker c Worker {doWork} = do
               | otherwise -> pure fd
           liftIO $ waitUntilForeground c
           -- register and download chunks from the actual file
-          flip catchAllErrors (rcvFileError c redirectDbId) . withStore c $ \db -> updateRcvFileComplete db rcvFileId >> updateRcvFileRedirect db redirectDbId next
+          withStore c (\db -> updateRcvFileComplete db rcvFileId >> updateRcvFileRedirect db redirectDbId next) `catchAllErrors` rcvFileError c redirectDbId
           forM_ nextChunks (downloadChunk c)
           flip catchAllErrors (\e -> logError $ "XFTP rcv worker error: " <> tshow e) $
             lift $ forM_ tmpPath (removePath <=< toFSFilePath)
@@ -442,10 +447,14 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               removeFile fsEncPath
             withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
             (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
-            flip catchAllErrors (sndFileError c sndFileId) . withStore c $ \db -> do
-              lockSndFileForUpdate db sndFileId
-              updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
-              getSndFile db sndFileId
+            withStore
+              c
+              ( \db -> do
+                  lockSndFileForUpdate db sndFileId
+                  updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
+                  getSndFile db sndFileId
+              )
+              `catchAllErrors` sndFileError c sndFileId
           else pure sndFile
       let numRecipients' = min numRecipients maxRecipients
       -- in case chunk preparation previously failed mid-way, some chunks may already be created -
@@ -487,7 +496,7 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
         createChunk numRecipients' storageHours ch = do
           liftIO $ assertUploadsAllowed c
           (replica, ProtoServerWithAuth srv _) <- tryCreate
-          flip catchAllErrors (sndFileError c sndFileId) . withStore' c $ \db -> createSndFileReplica db ch replica
+          withStore' c (\db -> createSndFileReplica db ch replica) `catchAllErrors` sndFileError c sndFileId
           pure srv
           where
             tryCreate = do
@@ -564,10 +573,15 @@ runXFTPSndWorker c srv Worker {doWork} = do
       liftIO $ assertUploadsAllowed c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       liftIO $ waitUntilUploadsAllowed c
-      sf@SndFile {sndFileEntityId, prefixPath, chunks} <- flip catchAllErrors (sndFileError c sndFileId) . withStore c $ \db -> do
-        lockSndFileForUpdate db sndFileId
-        updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
-        getSndFile db sndFileId
+      sf@SndFile {sndFileEntityId, prefixPath, chunks} <-
+        withStore
+          c
+          ( \db -> do
+              lockSndFileForUpdate db sndFileId
+              updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
+              getSndFile db sndFileId
+          )
+          `catchAllErrors` sndFileError c sndFileId
       let uploaded = uploadedSize chunks
           total = totalSize chunks
           complete = all chunkUploaded chunks
@@ -588,7 +602,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
           | otherwise = do
               let numRecipients' = min (numRecipients - length rcvIdsKeys) maxRecipients
               rcvIdsKeys' <- agentXFTPAddRecipients c userId chunkDigest cr numRecipients'
-              cr' <- flip catchAllErrors (sndFileError c sndFileId) . withStore' c $ \db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys'
+              cr' <- withStore' c (\db -> addSndChunkReplicaRecipients db cr $ L.toList rcvIdsKeys') `catchAllErrors` sndFileError c sndFileId
               addRecipients ch cr'
         sndFileToDescrs :: SndFile -> AM (ValidFileDescription 'FSender, [ValidFileDescription 'FRecipient])
         sndFileToDescrs SndFile {digest = Nothing} = throwE $ INTERNAL "snd file has no digest"
