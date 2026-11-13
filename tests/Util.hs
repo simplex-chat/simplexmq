@@ -129,7 +129,7 @@ instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
   evaluateExample (TestWrapper label action) params hooks state = do
     ci <- envCI
-    runTest `E.catches` [E.Handler (onTestFailure ci), E.Handler (onTestException ci)]
+    E.try runTest >>= either (\e -> maybe (onTestException ci e) (onTestFailure ci) (E.fromException e)) pure
     where
       tt = 300
       runTest =
