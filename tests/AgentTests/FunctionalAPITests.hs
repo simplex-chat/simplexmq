@@ -1148,7 +1148,8 @@ testDeleteAcceptedContactRequest useDR asyncAccept =
     (addrConnId, CCLink connReq Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn useDR SMSubscribe
     (aliceId, _) <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
     void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
-    ("", _, A.REQ invId _ _ "bob's connInfo" _ _) <- get alice
+    ("", _, A.REQ invId _ _ "bob's connInfo" binding _) <- get alice
+    liftIO $ isRatchet binding `shouldBe` useDR
     liftIO $ connInvitations alice `shouldReturn` [(invId, Just addrConnId)]
     (bobId, _) <- A.prepareConnectionToAccept alice 1 True invId PQSupportOn
     if asyncAccept
@@ -1159,6 +1160,10 @@ testDeleteAcceptedContactRequest useDR asyncAccept =
     liftIO $ connInvitations alice `shouldReturn` []
     ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
     allowConfirmGreet alice bobId bob aliceId confId IKPQOn $ PQEncryption $ pqConnectionMode IKPQOn PQSupportOn
+  where
+    isRatchet = \case
+      CRBRatchet _ -> True
+      CRBRequest _ -> False
 
 allowConfirmGreet :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ConfirmationId -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
 allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
