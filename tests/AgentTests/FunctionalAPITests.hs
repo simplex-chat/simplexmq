@@ -465,6 +465,7 @@ functionalAPITests ps = do
       it "should expire multiple messages" $ testExpireManyMessages ps
       it "should expire one message if quota is exceeded" $ testExpireMessageQuota ps
       it "should expire multiple messages if quota is exceeded" $ testExpireManyMessagesQuota ps
+      it "should report expired message when the next message is QCONT" $ testExpireMessageBeforeQCONT ps
     describe "joining a full contact address" $ do
       it "should retry joining until the address has space" $ testJoinFullContactAsync ps
       it "should fail joining after quota exceeded timeout" $ testJoinFullContactAsyncExpire ps
@@ -2665,6 +2666,43 @@ testExpireManyMessagesQuota (t, msType) = withSmpServerConfigOn t cfg' testPort 
     get b' =##> \case ("", c, MsgErr 4 (MsgSkipped 3 5) "5") -> c == aId; _ -> False
     ackMessage b' aId 4 Nothing
   disposeAgentClient a
+  where
+    cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
+
+testExpireMessageBeforeQCONT :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testExpireMessageBeforeQCONT (t, msType) = withSmpServerConfigOn t cfg' testPort $ \_ -> do
+  a <- getSMPAgentClient' 1 agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB
+  b <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  (aId, bId) <- runRight $ do
+    (aId, bId) <- makeConnection a b
+    liftIO $ threadDelay 500000 >> disposeAgentClient b
+    2 <- sendMessage a bId SMP.noMsgFlags "1"
+    get a ##> ("", bId, SENT 2)
+    3 <- sendMessage a bId SMP.noMsgFlags "2"
+    get a =##> \case ("", c, MERR 3 (SMP _ QUOTA)) -> bId == c; _ -> False
+    pure (aId, bId)
+  disposeAgentClient a
+  withAgent 3 agentCfg {messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB2 $ \b' -> do
+    runRight_ $ do
+      subscribeConnection b' aId
+      get b' =##> \case ("", c, Msg "1") -> c == aId; _ -> False
+      3 <- sendMessage b' aId SMP.noMsgFlags "hello"
+      get b' ##> ("", aId, SENT 3)
+      4 <- sendMessage b' aId SMP.noMsgFlags "hello 2"
+      pGet' b' False =##> \case ("", c, AEvt _ (MWARN 4 (SMP _ QUOTA))) -> aId == c; _ -> False
+      ackMessage b' aId 2 Nothing
+    withAgent 4 agentCfg {messageRetryInterval = fastMessageRetryInterval} initAgentServers testDB $ \a' -> runRight_ $ do
+      subscribeConnection a' bId
+      get a' =##> \case ("", c, Msg "hello") -> c == bId; _ -> False
+      ackMessage a' bId 4 Nothing
+      liftIO . getInAnyOrder b' $
+        [ \case ("", c, AEvt SAEConn (MSGERR MsgMeta {integrity = MsgError (MsgSkipped 3 3)})) -> c == aId; _ -> False,
+          \case ("", c, AEvt SAEConn QCONT) -> c == aId; _ -> False,
+          \case ("", c, AEvt SAEConn (SENT 4)) -> c == aId; _ -> False
+        ]
+      get a' =##> \case ("", c, Msg "hello 2") -> c == bId; _ -> False
+      ackMessage a' bId 6 Nothing
+      get a' =##> \case ("", c, QCONT) -> c == bId; _ -> False
   where
     cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 1}
 
