@@ -3788,7 +3788,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                           Left e@(AGENT A_DUPLICATE {}) -> do
                             incSMPServerStat c userId srv recvDuplicates
                             withStore' c (\db -> getLastMsg db connId srvMsgId) >>= \case
-                              Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, msgReceipt, userAck}
+                              Just RcvMsg {internalId, msgMeta, msgBody = agentMsgBody, userAck}
                                 | userAck -> ackDel internalId
                                 | otherwise -> do
                                     attempts <- withStore' c $ \db -> incMsgRcvAttempts db connId internalId
@@ -3806,7 +3806,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
                                             notify $ MSG msgMeta msgFlags body
                                             pure ACKPending
-                                          AgentMessage _ A_RCVD {} | Just rcpt <- msgReceipt -> notify (RCVD msgMeta [rcpt]) $> ACKPending
+                                          AgentMessage _ (A_RCVD rcpts) -> qDuplex conn' "RCVD" $ messagesRcvd rcpts msgMeta
                                           _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
@@ -4110,7 +4110,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                 if msgType /= AM_A_MSG_
                   then prohibited "receipt: not a msg" $> Nothing
                   else case msgReceipt of
-                    Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing -- already notified with MROk status
+                    Just MsgReceipt {agentMsgId = rcptId, msgRcptStatus = MROk} | rcptId /= rcptMsgId -> pure Nothing -- already notified with MROk status
                     _ -> do
                       let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
                           rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
