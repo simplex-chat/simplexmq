@@ -1005,10 +1005,10 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
   where
     enqueueAck :: AM ()
     enqueueAck = do
-      server <- setUserAck `catchAllErrors` \e -> ifM msgDeleted ackDeleted (throwE e)
+      server <- storeUserAck `catchAllErrors` \e -> ifM msgDeleted ackDeleted (throwE e)
       lift . void $ getAsyncCmdWorker True c connId (Just server)
-    setUserAck :: AM SMPServer
-    setUserAck = do
+    storeUserAck :: AM SMPServer
+    storeUserAck = do
       RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId mId
       when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwE $ CMD PROHIBITED "ackMessageAsync: receipt not allowed"
       withStore c $ \db -> runExceptT $ do
