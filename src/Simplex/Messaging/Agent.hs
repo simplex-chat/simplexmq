@@ -3806,6 +3806,11 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
                                             notify $ MSG msgMeta msgFlags body
                                             pure ACKPending
+                                          AgentMessage _ (A_RCVD rcpts) -> do
+                                            sndMsgs <- withStore' c $ \db -> mapM (\AMessageReceipt {agentMsgId} -> getSndMsgViaRcpt db connId $ InternalSndId agentMsgId) rcpts
+                                            case L.nonEmpty $ mapMaybe (\SndMsg {msgReceipt} -> msgReceipt) $ rights $ L.toList sndMsgs of
+                                              Just rs -> notify (RCVD msgMeta rs) $> ACKPending
+                                              Nothing -> ack
                                           _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do

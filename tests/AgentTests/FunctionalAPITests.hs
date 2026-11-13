@@ -633,6 +633,7 @@ functionalAPITests ps = do
       withSmpServer ps testConnectionVerifyCodes
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
+    it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
   describe "Connections with apps of earlier versions" $ do
     describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
@@ -4514,6 +4515,28 @@ testDeliveryReceipts =
     get b =##> \case ("", c, Rcvd 4) -> c == aId; _ -> False
     ackMessage b aId 5 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 5 Nothing
+
+testDuplicateReceipt :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testDuplicateReceipt ps = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 2 $ Just ""
+      get alice =##> \case ("", c, Rcvd 2) -> c == bobId; _ -> False
+    disposeAgentClient alice
+    threadDelay 250000
+    alice1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
+    runRight_ $ do
+      subscribeConnection alice1 bobId
+      get alice1 =##> \case ("", c, Rcvd 2) -> c == bobId; _ -> False
+      ackMessage alice1 bobId 3 Nothing
+    disposeAgentClient alice1
+  disposeAgentClient bob
 
 testDeliveryReceiptsConcurrent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =
