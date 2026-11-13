@@ -289,7 +289,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
     encryptFileForUpload g fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwE $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
-      encPath <- createEncPath createUniqueFile tempPath "xftp"
+      encPath <- liftIO $ getTempPath tempPath >>= (`createUniqueFile` "xftp.encrypted")
       key <- atomically $ C.randomSbKey g
       nonce <- atomically $ C.randomCbNonce g
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
@@ -421,7 +421,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       | otherwise = getFileDescription' fileDescription
     receive :: Int -> ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
     receive depth (ValidFileDescription FileDescription {size, digest, key, nonce, chunks, redirect}) = do
-      encPath <- createEncPath createUniqueDirectory tempPath "xftp"
+      encPath <- liftIO $ getTempPath tempPath >>= (`createUniqueDirectory` "xftp.encrypted")
       a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
       liftIO $ printNoNewLine "Downloading file..."
       downloadedChunks <- newTVarIO []
@@ -535,8 +535,8 @@ getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwE . CLIError) pure $ checkParty fd
 
-createEncPath :: MonadIO m => (FilePath -> String -> IO FilePath) -> Maybe FilePath -> String -> m FilePath
-createEncPath create path name = liftIO . (`create` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
+getTempPath :: Maybe FilePath -> IO FilePath
+getTempPath = maybe getCanonicalTemporaryDirectory pure
 
 withReconnect :: Show e => XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
 withReconnect a srv n run = withRetry n $ do

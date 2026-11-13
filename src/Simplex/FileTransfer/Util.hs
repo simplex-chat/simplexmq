@@ -13,7 +13,7 @@ import Foreign.C.Error (throwErrnoPathIfMinus1, throwErrnoPathIfMinus1_)
 import Simplex.Messaging.Util (ifM, whenM)
 import System.FilePath (makeValid, splitExtensions, takeFileName, (</>))
 import System.IO.Error (isAlreadyExistsError)
-import System.Posix.Internals (c_close, c_safe_open, o_CREAT, o_EXCL, o_WRONLY, withFilePath)
+import System.Posix.Internals (c_close, c_open, o_CREAT, o_EXCL, o_WRONLY, withFilePath)
 import UnliftIO
 import UnliftIO.Directory
 
@@ -46,7 +46,7 @@ createUniqueFile filePath fileName = tryCreate (0 :: Int)
 
 createNewFile :: MonadIO m => FilePath -> m ()
 createNewFile f = liftIO . mask_ $ do
-  fd <- withFilePath f $ \p -> throwErrnoPathIfMinus1 "createNewFile" f $ c_safe_open p (o_WRONLY .|. o_CREAT .|. o_EXCL) 0o666
+  fd <- withFilePath f $ \p -> throwErrnoPathIfMinus1 "createNewFile" f $ c_open p (o_WRONLY .|. o_CREAT .|. o_EXCL) 0o666
   throwErrnoPathIfMinus1_ "createNewFile" f $ c_close fd
 
 candidatePath :: FilePath -> String -> Int -> FilePath
