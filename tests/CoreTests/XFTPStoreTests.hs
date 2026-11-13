@@ -9,6 +9,7 @@ import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..))
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -39,6 +40,7 @@ xftpStoreTests = do
     it "should ack file reception" testAckFile
     it "should return expired files with limit" testExpiredFiles
     it "should expire files by stored expiration" testExpiredFilesStoredExpiration
+    it "should log each file deletion once" testDeleteFilesLog
     it "should compute committed used storage and file count" testStorageAndCount
 
 xftpMigrationTests :: Spec
@@ -218,6 +220,18 @@ testExpiredFilesStoredExpiration = withPgStore $ \st -> do
   addFile st (EntityId "stored_file_____") fileInfo oldTime (Just (RoundedSystemTime 900000)) EntityActive `shouldReturn` Right ()
   expired <- expiredFiles st (RoundedSystemTime 500000) 0 100
   map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
+
+testDeleteFilesLog :: HasTestEnv => Expectation
+testDeleteFilesLog = do
+  let storeLogPath = testPath "xftp-delete-files.log"
+  st <- newFileStore testXFTPPostgresCfg {dbStoreLogPath = Just storeLogPath} :: IO PostgresFileStore
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  void $ deleteFile st testSenderId
+  void $ deleteFiles st [testSenderId]
+  closeFileStore st
+  map (take 4) . lines <$> readFile storeLogPath `shouldReturn` ["FNEW", "FDEL"]
 
 testStorageAndCount :: HasTestEnv => Expectation
 testStorageAndCount = withPgStore $ \st -> do
