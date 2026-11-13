@@ -108,7 +108,8 @@ withTransactionPriority st@DBStore {dbClosed} priority action = withConnectionPr
   where
     transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
 
-data IsolationLevel = ReadCommitted | RepeatableRead
+-- isolation for agent transactions; postgresql-simple is not a dependency of SQLite builds
+data IsolationLevel = RepeatableRead
 
 withTransactionIsolation :: DBStore -> IsolationLevel -> (DB.Connection -> IO a) -> IO a
 withTransactionIsolation st _ = withTransaction st

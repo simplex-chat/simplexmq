@@ -102,14 +102,14 @@ withTransactionPriority st priority action = withConnectionPriority st priority 
   where
     transaction conn = PSQL.withTransaction conn $ action conn
 
-data IsolationLevel = ReadCommitted | RepeatableRead
+-- isolation for agent transactions; postgresql-simple is not a dependency of SQLite builds
+data IsolationLevel = RepeatableRead
 
 withTransactionIsolation :: DBStore -> IsolationLevel -> (PSQL.Connection -> IO a) -> IO a
 withTransactionIsolation st isolation action = withConnection st transaction
   where
     transaction conn = retryTransaction 3 $ PSQL.withTransactionLevel level conn $ action conn
     level = case isolation of
-      ReadCommitted -> PSQL.ReadCommitted
       RepeatableRead -> PSQL.RepeatableRead
 
 retryTransaction :: Int -> IO a -> IO a
