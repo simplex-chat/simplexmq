@@ -286,6 +286,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getWorkItem,
     getWorkItems,
     retryOnDeadlock,
+    isDeadlock,
   )
 where
 
@@ -1189,10 +1190,13 @@ handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust work
 
 retryOnDeadlock :: Int -> IO a -> IO a
 retryOnDeadlock n action
-  | n > 0 = E.catchJust deadlock action $ \_ -> retryOnDeadlock (n - 1) action
+  | n > 0 = E.tryJust deadlock action >>= either retry pure
   | otherwise = action
   where
-    deadlock e = if isDeadlock e then Just () else Nothing
+    deadlock e = if isDeadlock e then Just e else Nothing
+    retry e = do
+      logWarn $ "transaction retried after " <> tshow e
+      retryOnDeadlock (n - 1) action
 
 isDeadlock :: E.SomeException -> Bool
 #if defined(dbPostgres)
