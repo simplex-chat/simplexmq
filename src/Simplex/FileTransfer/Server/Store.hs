@@ -24,6 +24,7 @@ import Data.Kind (Type)
 import Control.Concurrent.STM
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Either (rights)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, isJust)
@@ -80,7 +81,7 @@ class FileStoreClass s where
   addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType (Maybe FilePath))
   deleteFiles :: s -> [SenderId] -> IO [(SenderId, Maybe FilePath)]
-  deleteFiles s = fmap catMaybes . mapM (\sId -> either (const Nothing) (Just . (sId,)) <$> deleteFile s sId)
+  deleteFiles s = fmap rights . mapM (\sId -> fmap (sId,) <$> deleteFile s sId)
   blockFile :: s -> SenderId -> BlockingInfo -> Bool -> IO (Either XFTPErrorType (Maybe FilePath))
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))

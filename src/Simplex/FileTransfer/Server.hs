@@ -679,11 +679,11 @@ deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $
   mapM_ (removeServerFile stats) path
   st <- asks fileStore
   path' <- ExceptT $ liftIO $ storeAction st
-  when (path' /= path) $ mapM_ (removeServerFile stats) path'
   forM_ path' $ \_ -> do
     us <- asks usedStorage
     atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
   lift $ incFileStat stat
+  when (path' /= path) $ mapM_ (removeServerFile stats) path'
   where
     removeServerFile stats p = ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     deletedStats stats = do
@@ -716,11 +716,12 @@ expireServerFiles itemDelay expCfg = do
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         deleted <- M.fromList <$> liftIO (deleteFiles st sIds)
-        forM_ expired $ \(sId, filePath_, fileSize) -> do
-          forM_ (join $ M.lookup sId deleted) $ \fp -> do
-            when (filePath_ /= Just fp) $ removeExpiredFile fp
-            atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
-          incFileStat filesExpired
+        forM_ expired $ \(sId, filePath_, fileSize) ->
+          forM_ (M.lookup sId deleted) $ \path -> do
+            forM_ path $ \fp -> do
+              when (filePath_ /= Just fp) $ removeExpiredFile fp
+              atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
+            incFileStat filesExpired
         expireLoop st us now old
     removeExpiredFile fp =
       whenM (doesFileExist fp) $
