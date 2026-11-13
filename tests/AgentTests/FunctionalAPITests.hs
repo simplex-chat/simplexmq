@@ -4834,8 +4834,9 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
   itemRead <- newTVarIO False
   reading <- withTransaction st $ \db -> do
     lockItem db
+    [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
     r <- async $ runReaderT (runExceptT $ readItem a doWork $ \_ -> atomically $ writeTVar itemRead True) (agentEnv a)
-    waitForLock st waitingQuery
+    waitForLock st holder waitingQuery
     DB.execute_ db deleteItem
     pure r
   wait reading `shouldReturn` Right ()
@@ -4849,13 +4850,13 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
       ERRS _ -> True
       _ -> False
 
-waitForLock :: DBStore -> String -> IO ()
-waitForLock st waitingQuery = timeout 5000000 waitLoop `shouldReturn` Just ()
+waitForLock :: DBStore -> Int -> String -> IO ()
+waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Just ()
   where
     waitLoop = do
       [Only waiting] <-
         withTransaction st $ \db ->
-          DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() AND position(? IN query) > 0)" (Only waitingQuery)
+          DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY (pg_blocking_pids(pid)) AND position(? IN query) > 0)" (holder, waitingQuery)
       unless waiting $ threadDelay 10000 >> waitLoop
 #endif
 
