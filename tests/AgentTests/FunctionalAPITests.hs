@@ -57,6 +57,9 @@ module AgentTests.FunctionalAPITests
     agentCfgVPrevPQ,
     agentCfgV7,
     testServerInformation,
+#if defined(dbPostgres)
+    workItemLockTests,
+#endif
   )
 where
 
@@ -133,8 +136,9 @@ import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 
 #if defined(dbPostgres)
 import Fixtures
-import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubSMPActions, getNextSndFileToPrepare, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
+import Simplex.FileTransfer.Description (ChunkReplicaId (ChunkReplicaId), FileChunkReplica (FileChunkReplica), FileDigest (FileDigest))
+import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createDeletedSndChunkReplica, createNtfSubscription, createServer, deleteClientService, getNextDeletedSndChunkReplica, getNextNtfSubSMPActions, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
 import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSASMP), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
@@ -561,11 +565,6 @@ functionalAPITests ps = do
       testUsersNoServer ps
     it "should connect two users and switch session mode" $
       withSmpServer ps testTwoUsers
-#if defined(dbPostgres)
-  describe "Work item locks" $ do
-    it "should wait to delete a file read by its worker" testWaitDeleteSndFile
-    it "should wait to delete a connection whose ntf subscription is read by its worker" testWaitDeleteNtfSubConn
-#endif
   describe "Client service certificates" $ do
     it "should connect, subscribe and reconnect as a service" $ testClientServiceConnection ps
     it "should re-subscribe when service ID changed" $ testClientServiceIDChange ps
@@ -4774,19 +4773,34 @@ testTwoUsers = withAgentClients2 $ \a b -> do
         up cId = \case ("", "", AEvt SAENone (UP _ [cId'])) -> cId' == cId; _ -> False
 
 #if defined(dbPostgres)
-testWaitDeleteSndFile :: HasTestEnv => IO ()
-testWaitDeleteSndFile = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+workItemLockTests :: Spec
+workItemLockTests = do
+  it "should wait to delete a command read by its worker" testWaitDeleteCommand
+  it "should wait to delete a deleted chunk replica read by its worker" testWaitDeleteDeletedReplica
+  it "should wait to delete a connection whose ntf subscription is read by its worker" testWaitDeleteNtfSubConn
+
+testWaitDeleteCommand :: HasTestEnv => IO ()
+testWaitDeleteCommand = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
   let st = store $ agentEnv a
-  g <- C.newRandom
-  key <- atomically $ C.randomSbKey g
-  nonce <- atomically $ C.randomCbNonce g
   withTransaction st $ \db -> do
-    Right sfId <- createSndFile db g 1 (CryptoFile "testfile" Nothing) 1 "test.xftp" key nonce Nothing Nothing
-    startPreparedSndFile db sfId `shouldReturn` Right ()
-  shouldWaitToDelete st readSndFile (`DB.execute_` "DELETE FROM snd_files")
+    DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
+    createCommand db "1" "conn1" Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False) `shouldReturn` Right ()
+  shouldWaitToDelete st readCommand (`DB.execute_` "DELETE FROM commands")
   where
-    readSndFile db = do
-      Right (Just _) <- getNextSndFileToPrepare db 86400
+    readCommand db = do
+      Right (Just _) <- getPendingServerCommand db "conn1" Nothing
+      pure ()
+
+testWaitDeleteDeletedReplica :: HasTestEnv => IO ()
+testWaitDeleteDeletedReplica = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+      replicaKey = C.APrivateAuthKey C.SEd25519 "MC4CAQAwBQYDK2VwBCIEIDfEfevydXXfKajz3sRkcQ7RPvfWUPoq6pu1TYHV1DEe"
+  withTransaction st $ \db ->
+    createDeletedSndChunkReplica db 1 (FileChunkReplica testXFTPServer (ChunkReplicaId $ SMP.EntityId "abc") replicaKey) (FileDigest "ghi")
+  shouldWaitToDelete st readReplica (`DB.execute_` "DELETE FROM deleted_snd_chunk_replicas")
+  where
+    readReplica db = do
+      Right (Just _) <- getNextDeletedSndChunkReplica db testXFTPServer 86400
       pure ()
 
 testWaitDeleteNtfSubConn :: HasTestEnv => IO ()
@@ -4806,12 +4820,12 @@ testWaitDeleteNtfSubConn = withAgent 1 agentCfg initAgentServers testDB $ \a -> 
 
 shouldWaitToDelete :: DBStore -> (DB.Connection -> IO ()) -> (DB.Connection -> IO ()) -> Expectation
 shouldWaitToDelete st readItem deleteItem = do
-  deleted <- newEmptyTMVarIO
-  withTransaction st $ \db -> do
+  deleting <- withTransaction st $ \db -> do
     readItem db
-    _ <- forkIO $ withTransaction st deleteItem >> atomically (putTMVar deleted ())
-    timeout 1000000 (atomically $ readTMVar deleted) `shouldReturn` Nothing
-  timeout 5000000 (atomically $ readTMVar deleted) `shouldReturn` Just ()
+    d <- async $ withTransaction st deleteItem
+    timeout 1000000 (wait d) `shouldReturn` Nothing
+    pure d
+  timeout 5000000 (wait deleting) `shouldReturn` Just ()
 #endif
 
 testClientServiceConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
