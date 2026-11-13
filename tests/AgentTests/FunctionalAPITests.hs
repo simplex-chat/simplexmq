@@ -4566,7 +4566,7 @@ testReceiptDeletesSentMessage =
     ackMessage b aId 2 $ Just ""
     get a =##> \case ("", c, Rcvd 2) -> c == bId; _ -> False
     ackMessage a bId 3 Nothing
-    liftIO $ sndMessages a >>= (`shouldNotContain` [(bId, 2)])
+    liftIO $ waitDeleted (sndMessages a) (bId, 2)
 
 testReceiptForDeletedSentMessage :: (HasCallStack, HasTestEnv) => IO ()
 testReceiptForDeletedSentMessage =
