@@ -152,7 +152,7 @@ testDeleteFileCascade = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
-  deleteFile st testSenderId `shouldReturn` Right ()
+  deleteFile st testSenderId `shouldReturn` Right Nothing
   -- File and recipient should both be gone
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
@@ -164,7 +164,7 @@ testBlockFile = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
-  blockFile st testSenderId blockInfo False `shouldReturn` Right ()
+  blockFile st testSenderId blockInfo False `shouldReturn` Right Nothing
   result <- getFile st SFSender testSenderId
   case result of
     Right (FileRec {fileStatus}, _) -> readTVarIO fileStatus `shouldReturn` EntityBlocked blockInfo

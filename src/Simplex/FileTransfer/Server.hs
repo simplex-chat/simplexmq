@@ -672,18 +672,20 @@ blockServerFile fr@FileRec {senderId} info = do
   withFileLog $ \sl -> logBlockFile sl senderId info
   deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
 
-deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType ())) -> M s (Either XFTPErrorType ())
+deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType (Maybe FilePath))) -> M s (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $ runExceptT $ do
   path <- readTVarIO filePath
   stats <- asks serverStats
-  ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
+  mapM_ (removeServerFile stats) path
   st <- asks fileStore
-  ExceptT $ liftIO $ storeAction st
-  forM_ path $ \_ -> do
+  path' <- ExceptT $ liftIO $ storeAction st
+  when (path' /= path) $ mapM_ (removeServerFile stats) path'
+  forM_ path' $ \_ -> do
     us <- asks usedStorage
     atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
   lift $ incFileStat stat
   where
+    removeServerFile stats p = ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (whenM (doesFileExist p) (removeFile p >> deletedStats stats))
     deletedStats stats = do
       liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
       liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
@@ -709,18 +711,20 @@ expireServerFiles itemDelay expCfg = do
       expired <- liftIO $ expiredFiles st now old 10000
       forM_ expired $ \(_, filePath_, _) -> do
         mapM_ threadDelay itemDelay
-        forM_ filePath_ $ \fp ->
-          whenM (doesFileExist fp) $
-            removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+        mapM_ removeExpiredFile filePath_
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
-        liftIO $ deleteFiles st sIds
-        forM_ expired $ \(_, filePath_, fileSize) -> do
-          forM_ filePath_ $ \_ ->
+        deleted <- M.fromList <$> liftIO (deleteFiles st sIds)
+        forM_ expired $ \(sId, filePath_, fileSize) -> do
+          forM_ (join $ M.lookup sId deleted) $ \fp -> do
+            when (filePath_ /= Just fp) $ removeExpiredFile fp
             atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
           incFileStat filesExpired
         expireLoop st us now old
+    removeExpiredFile fp =
+      whenM (doesFileExist fp) $
+        removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
