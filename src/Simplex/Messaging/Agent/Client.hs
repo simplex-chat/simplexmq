@@ -166,6 +166,7 @@ module Simplex.Messaging.Agent.Client
     waitUntilUploadsAllowed,
     withStore,
     withStore',
+    withWorkStore,
     withStoreBatch,
     withStoreBatch',
     unsafeWithStore,
@@ -2305,7 +2306,7 @@ waitForWork = void . atomically . readTMVar
 {-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
-withWork c doWork = withWork_ c doWork . withStore' c
+withWork c doWork = withWork_ c doWork . withWorkStore c
 {-# INLINE withWork #-}
 
 -- setting doWork flag to "no work" before getWork rather than after prevents race condition when flag is set to "has work" by another thread after getWork call.
@@ -2487,10 +2488,16 @@ withStore' c action = withStore c $ fmap Right . action
 {-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStore c action = do
+withStore c = withStore_ c withTransaction
+
+withWorkStore :: AgentClient -> (DB.Connection -> IO a) -> AM a
+withWorkStore c action = withStore_ c (\st -> retryOnDeadlock 3 . withTransaction st) $ fmap Right . action
+
+withStore_ :: AgentClient -> (DBStore -> (DB.Connection -> IO (Either StoreError a)) -> IO (Either StoreError a)) -> (DB.Connection -> IO (Either StoreError a)) -> AM a
+withStore_ c transaction action = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catch` handleDBErrors
+    transaction st action `E.catch` handleDBErrors
   where
     handleDBErrors :: E.SomeException -> IO (Either StoreError a)
     handleDBErrors e = pure $ Left $ case E.fromException e of

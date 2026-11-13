@@ -214,7 +214,7 @@ runNtfWorker c srv Worker {doWork} =
     runNtfOperation :: AM ()
     runNtfOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (withStore' c $ \db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems c doWork (withWorkStore c $ \db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
         currTs <- liftIO getCurrentTime
         let (creates, checks, deletes, rotates) = splitActions currTs nextSubs
@@ -382,7 +382,7 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (withStore' c $ \db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems c doWork (withWorkStore c $ \db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
         let (creates, deletes) = splitActions nextSubs
         retrySubActions c creates createNotifierKeys

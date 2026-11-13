@@ -284,6 +284,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     fromOnlyBI,
     getWorkItem,
     getWorkItems,
+    retryOnDeadlock,
   )
 where
 
@@ -348,7 +349,7 @@ import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if defined(dbPostgres)
 import Data.List (sortOn)
-import Database.PostgreSQL.Simple (In (..), Only (..), Query, (:.) (..))
+import Database.PostgreSQL.Simple (In (..), Only (..), Query, SqlError (..), (:.) (..))
 import Database.PostgreSQL.Simple.Errors (constraintViolation)
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 #else
@@ -1179,10 +1180,25 @@ tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchA
 
 -- Errors caught by this function will suspend worker as if there is no more work,
 handleWrkErr :: forall e a. AnyStoreError e => String -> String -> IO a -> ExceptT e IO a
-handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
+handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust workItemError action
   where
+    workItemError e = if isDeadlock e then Nothing else Just e
     mkError :: E.SomeException -> e
     mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
+
+retryOnDeadlock :: Int -> IO a -> IO a
+retryOnDeadlock n action
+  | n > 0 = E.catchJust deadlock action $ \_ -> retryOnDeadlock (n - 1) action
+  | otherwise = action
+  where
+    deadlock e = if isDeadlock e then Just () else Nothing
+
+isDeadlock :: E.SomeException -> Bool
+#if defined(dbPostgres)
+isDeadlock = maybe False ((== "40P01") . sqlState) . E.fromException
+#else
+isDeadlock _ = False
+#endif
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
