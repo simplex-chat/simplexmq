@@ -50,8 +50,9 @@ import GHC.IO.Exception (ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts, setSocketKeepAlive)
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (catchAll_, labelMyThread, stateTVar', tshow, unlessM)
+import Simplex.Messaging.Util (catchAll, catchAll_, labelMyThread, stateTVar', tshow, unlessM)
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -66,7 +67,13 @@ data TransportServerConfig = TransportServerConfig
     askClientCert :: Bool,
     addCORSHeaders :: Bool,
     tlsSetupTimeout :: Int,
-    transportTimeout :: Int
+    transportTimeout :: Int,
+    -- | HTTP/2 connections are closed when no request starts within this time, microseconds
+    firstRequestTimeout :: Int,
+    -- | TCP keep-alive for accepted connections
+    tcpKeepAlive :: Maybe KeepAliveOpts,
+    -- | TCP_USER_TIMEOUT for accepted connections, milliseconds
+    tcpUserTimeout :: Maybe Int
   }
   deriving (Eq, Show)
 
@@ -96,7 +103,10 @@ mkTransportServerConfig logTLSErrors serverALPN askClientCert =
       askClientCert,
       addCORSHeaders = False,
       tlsSetupTimeout = 60000000,
-      transportTimeout = 40000000
+      transportTimeout = 40000000,
+      firstRequestTimeout = 60000000,
+      tcpKeepAlive = Nothing,
+      tcpUserTimeout = Nothing
     }
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
@@ -128,6 +138,7 @@ runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
   where
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
+      setServerSocketOptions cfg conn
       tls <- connectTLS Nothing tCfg srvParams conn
       (False,) <$> getTransportConnection tCfg True (X.CertificateChain []) tls
 
@@ -137,6 +148,7 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
   where
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
+      setServerSocketOptions cfg conn
       sniUsed <- newTVarIO False
       let srvParams = supportedTLSServerParams srvSupported srvCreds sniUsed $ serverALPN cfg
       h <- setupTLS_ srvParams
@@ -152,6 +164,11 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
           | otherwise = do
               tls <- connectTLS Nothing tCfg srvParams conn
               getTransportConnection tCfg True (X.CertificateChain []) tls
+
+setServerSocketOptions :: TransportServerConfig -> Socket -> IO ()
+setServerSocketOptions TransportServerConfig {tcpKeepAlive, tcpUserTimeout} conn = do
+  mapM_ (setSocketKeepAlive conn) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive " <> tshow e)
+  mapM_ (setSocketOption conn UserTimeout) tcpUserTimeout `catchAll` \e -> logError ("Error setting TCP user timeout " <> tshow e)
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (SNICredentialUsed, c 'TServer)) -> (Socket -> (SNICredentialUsed, c 'TServer) -> IO ()) -> IO ()

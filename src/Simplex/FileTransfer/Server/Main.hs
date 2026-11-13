@@ -32,7 +32,7 @@ import Options.Applicative
 import Simplex.FileTransfer.Chunks
 import Simplex.FileTransfer.Description (FileSize (..))
 import Simplex.FileTransfer.Server (runXFTPServer)
-import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, readFileStoreType, runWithStoreConfig, checkFileStoreMode, importToDatabase, exportFromDatabase)
+import Simplex.FileTransfer.Server.Env (XFTPServerConfig (..), XFTPStoreConfig, AFStoreType (..), defFileExpirationHours, defaultFileExpiration, defaultInactiveClientExpiration, defaultXFTPKeepAlive, defaultXFTPUserTimeout, readFileStoreType, runWithStoreConfig, migrateFileStore, checkFileStoreMode, importToDatabase, exportFromDatabase)
 import Simplex.FileTransfer.Transport (alpnSupportedXFTPhandshakes, supportedFileServerVRange)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Entitlement (entitlementIssuerKeys)
@@ -50,6 +50,7 @@ import Simplex.Messaging.Transport.HTTP2 (httpALPN)
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Exit (exitSuccess)
 import System.FilePath (combine)
 import System.IO (BufferMode (..), hSetBuffering, stderr, stdout)
 import Text.Read (readMaybe)
@@ -201,9 +202,9 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
             <> "\n\
                \[INACTIVE_CLIENTS]\n\
                \# TTL and interval to check inactive clients\n\
-               \disconnect = off\n"
-            <> ("# ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
-            <> ("# check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
+               \disconnect = on\n"
+            <> ("ttl = " <> tshow (ttl defaultInactiveClientExpiration) <> "\n")
+            <> ("check_interval = " <> tshow (checkInterval defaultInactiveClientExpiration) <> "\n")
             <> "\n\
                \[WEB]\n\
                \# Set path to generate static mini-site for server information\n"
@@ -213,7 +214,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                \# TLS credentials for HTTPS web server on the same port as XFTP.\n\
                \# cert = " <> T.pack (cfgPath `combine` "web.crt") <> "\n\
                \# key = " <> T.pack (cfgPath `combine` "web.key") <> "\n"
-    runServer StartOptions {confirmMigrations} ini = do
+    runServer StartOptions {maintenance, confirmMigrations} ini = do
       hSetBuffering stdout LineBuffering
       hSetBuffering stderr LineBuffering
       fp <- checkSavedFingerprint cfgPath defaultX509Config
@@ -228,6 +229,10 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
         Right fsType -> do
           checkFileStoreMode ini fsType storeLogFilePath
           runWithStoreConfig fsType ini storeLogFilePath confirmMigrations $ \storeCfg -> do
+            when maintenance $ do
+              migrateFileStore storeCfg
+              putStrLn "Server started in 'maintenance' mode, exiting"
+              exitSuccess
             let cfg = serverConfig storeCfg
             printXFTPConfig cfg
             case webStaticPath' of
@@ -331,7 +336,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                         (fromMaybe False $ iniOnOff "TRANSPORT" "log_tls_errors" ini)
                         (Just $ alpnSupportedXFTPhandshakes <> httpALPN)
                         False
-                 in cfg {addCORSHeaders = isJust httpCredentials_},
+                 in cfg {addCORSHeaders = isJust httpCredentials_, tcpKeepAlive = Just defaultXFTPKeepAlive, tcpUserTimeout = Just defaultXFTPUserTimeout},
               responseDelay = 0,
               webStaticPath = webStaticPath'
             }
@@ -345,8 +350,9 @@ data CliCommand
 
 data StoreCmd = SCImport | SCExport
 
-newtype StartOptions = StartOptions
-  { confirmMigrations :: MigrationConfirmation
+data StartOptions = StartOptions
+  { maintenance :: Bool,
+    confirmMigrations :: MigrationConfirmation
   }
 
 data InitOptions = InitOptions
@@ -435,6 +441,12 @@ cliCommandP cfgPath logPath iniFile =
       pure InitOptions {enableStoreLog, signAlgorithm, ip, fqdn, filesPath, fileSizeQuota, webStaticPath}
     startOptsP :: Parser StartOptions
     startOptsP = do
+      maintenance <-
+        switch
+          ( long "maintenance"
+              <> short 'm'
+              <> help "Do not start the server, only apply database migrations"
+          )
       confirmMigrations <-
         option
           parseConfirmMigrations
@@ -443,7 +455,7 @@ cliCommandP cfgPath logPath iniFile =
               <> help "Confirm PostgreSQL database migration: up, down (default is manual confirmation)"
               <> value MCConsole
           )
-      pure StartOptions {confirmMigrations}
+      pure StartOptions {maintenance, confirmMigrations}
     storeCmdP :: Parser StoreCmd
     storeCmdP =
       hsubparser

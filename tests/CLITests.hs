@@ -36,7 +36,7 @@ import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
-import System.IO.Silently (capture_)
+import System.IO.Silently (capture, capture_)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Main (withStdin)
@@ -51,6 +51,7 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Types (Query (..))
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBConnstr, ntfTestServerDBOpts)
 import SMPClient (postgressBracket)
+import XFTPClient (testXFTPDBConnectInfo)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Notifications.Server.Main
 #endif
@@ -95,6 +96,12 @@ cliTests = do
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
+    it "should exit in maintenance mode without starting the server" xftpServerMaintenanceTest
+#if defined(dbServerPostgres)
+  around_ (postgressBracket testXFTPDBConnectInfo) $
+    describe "XFTP server CLI with PostgreSQL" $
+      it "should apply database migrations in maintenance mode" xftpServerMaintenanceDBTest
+#endif
 
 smpServerTest :: HasTestEnv => Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -268,6 +275,9 @@ xftpServerTest storeLog = do
   lookupValue "STORE_LOG" "enable" ini `shouldBe` Right (if storeLog then "on" else "off")
   lookupValue "STORE_LOG" "log_stats" ini `shouldBe` Right "off"
   lookupValue "TRANSPORT" "port" ini `shouldBe` Right "443"
+  lookupValue "INACTIVE_CLIENTS" "disconnect" ini `shouldBe` Right "on"
+  lookupValue "INACTIVE_CLIENTS" "ttl" ini `shouldBe` Right "21600"
+  lookupValue "INACTIVE_CLIENTS" "check_interval" ini `shouldBe` Right "3600"
   doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` True
   r <- lines <$> capture_ (withArgs ["start"] $ (100000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
   r `shouldContain` ["SimpleX XFTP server v" <> simplexmqVersionCommit]
@@ -276,3 +286,51 @@ xftpServerTest storeLog = do
   capture_ (withStdin "Y" . withArgs ["delete"] $ xftpServerCLI fileCfgPath fileLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
+
+xftpMaintenanceMessage :: String
+xftpMaintenanceMessage = "Server started in 'maintenance' mode, exiting"
+
+xftpServerInit :: HasTestEnv => IO ()
+xftpServerInit =
+  capture_ (withArgs ["init", "-p", testDir, "-q", "10gb", "--disable-store-log"] $ xftpServerCLI fileCfgPath fileLogPath)
+    >>= (`shouldSatisfy` (("Server initialized, you can modify configuration in " <> fileCfgPath <> "/file-server.ini") `isPrefixOf`))
+
+xftpServerMaintenance :: HasTestEnv => [String] -> IO [String]
+xftpServerMaintenance opts = do
+  (out, r) <- capture (withArgs (["start", "--maintenance"] <> opts) (5000000 `timeout` xftpServerCLI fileCfgPath fileLogPath) `catchAll_` pure (Just ()))
+  r `shouldBe` Just ()
+  let ls = lines out
+  ls `shouldContain` [xftpMaintenanceMessage]
+  ls `shouldNotContain` ["Listening on port 443..."]
+  pure ls
+
+xftpServerDelete :: HasTestEnv => IO ()
+xftpServerDelete = do
+  capture_ (withStdin "Y" . withArgs ["delete"] $ xftpServerCLI fileCfgPath fileLogPath)
+    >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
+  doesFileExist (fileCfgPath <> "/ca.key") `shouldReturn` False
+
+xftpServerMaintenanceTest :: HasTestEnv => IO ()
+xftpServerMaintenanceTest = do
+  xftpServerInit
+  void $ xftpServerMaintenance []
+  xftpServerDelete
+
+#if defined(dbServerPostgres)
+xftpServerMaintenanceDBTest :: HasTestEnv => IO ()
+xftpServerMaintenanceDBTest = do
+  xftpServerInit
+  let iniFile = fileCfgPath <> "/file-server.ini"
+      schema = "xftp_server_cli"
+      dbSettings = [("store_files", "database"), ("db_connection", "postgresql://test_xftp_server_user@/test_xftp_server_db"), ("db_schema", T.pack schema)]
+      setDB = (<> dbSettings) . filter ((/= "store_files") . fst)
+  Right ini <- readIniFile iniFile
+  writeIniFile iniFile ini {iniSections = HM.adjust setDB "STORE_LOG" (iniSections ini)}
+  db <- PSQL.connect testXFTPDBConnectInfo
+  void $ PSQL.execute_ db $ Query $ "CREATE SCHEMA " <> B.pack schema
+  void $ xftpServerMaintenance ["--confirm-migrations", "up"]
+  [PSQL.Only migrations] <- PSQL.query_ db $ Query $ "SELECT count(*) FROM " <> B.pack schema <> ".migrations"
+  migrations `shouldSatisfy` (> (0 :: Int))
+  PSQL.close db
+  xftpServerDelete
+#endif

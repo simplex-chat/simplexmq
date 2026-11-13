@@ -76,7 +76,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, SocketState, TransportServerConfig (..), getSocketStats, runLocalTCPServer)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -99,6 +99,7 @@ data XFTPTransportRequest = XFTPTransportRequest
     reqBody :: HTTP2Body,
     request :: H.Request,
     sendResponse :: H.Response -> IO (),
+    closeSession :: IO (),
     sniUsed :: SNICredentialUsed,
     addCORS :: Bool
   }
@@ -156,25 +157,29 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
+      ss <- asks sockets
+      liftIO . runHTTP2Server ss started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed closeSession sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
           Just "GET" | sniUsed -> forM_ webCanonicalRoot_ $ \root -> serveStaticPageH2 root r sendResponse
-          _ -> do
-            reqBody <- getHTTP2Body r xftpBlockSize
-            let v = VersionXFTP 1
-                thServerVRange = versionToRange v
-                thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfo = Nothing}
-                req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, sniUsed, addCORS = addCORS'}
-            flip runReaderT env $ case sessionALPN of
-              Nothing -> processRequest req0
-              Just alpn
-                | alpn == xftpALPNv1 || alpn == httpALPN11 || (sniUsed && alpn == "h2") ->
-                    xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
-                      Nothing -> pure ()
-                      Just thParams -> processRequest req0 {thParams}
-                | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
+          _ ->
+            -- requests in flight keep the connection from expiring, so a stalled request body must close it
+            timeout (fileTimeout cfg) (getHTTP2Body r xftpBlockSize) >>= \case
+              Nothing -> logWarn "request receiving timeout, closing connection" >> closeSession
+              Just reqBody -> do
+                let v = VersionXFTP 1
+                    thServerVRange = versionToRange v
+                    thParams0 = THandleParams {sessionId, blockSize = xftpBlockSize, thVersion = v, thServerVRange, thAuth = Nothing, implySessId = False, encryptBlock = Nothing, serviceAuth = False, serverInfo = Nothing}
+                    req0 = XFTPTransportRequest {thParams = thParams0, request = r, reqBody, sendResponse, closeSession, sniUsed, addCORS = addCORS'}
+                flip runReaderT env $ case sessionALPN of
+                  Nothing -> processRequest req0
+                  Just alpn
+                    | alpn == xftpALPNv1 || alpn == httpALPN11 || (sniUsed && alpn == "h2") ->
+                        xftpServerHandshakeV1 chain signKey sessions req0 >>= \case
+                          Nothing -> pure ()
+                          Just thParams -> processRequest req0 {thParams}
+                    | otherwise -> liftIO . sendResponse $ H.responseNoBody N.ok200 (corsHeaders addCORS')
     xftpServerHandshakeV1 :: X.CertificateChain -> C.APrivateSignKey -> TMap SessionId Handshake -> XFTPTransportRequest -> M s (Maybe (THandleParams XFTPVersion 'TServer))
     xftpServerHandshakeV1 chain serverSignKey sessions XFTPTransportRequest {thParams = thParams0@THandleParams {sessionId}, request, reqBody = HTTP2Body {bodyHead}, sendResponse, sniUsed, addCORS} = do
       s <- atomically $ TM.lookup sessionId sessions
@@ -278,16 +283,30 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         liftIO $ threadDelay' interval
         expireServerFiles (Just 100000) expCfg
 
+    -- period stats are reset by the stats log, without it they are reset separately
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
-    serverStatsThread_ _ = []
+    serverStatsThread_ XFTPServerConfig {logStatsStartTime} = [resetPeriodStats logStatsStartTime]
+
+    delayUntilDayTime :: Int64 -> IO ()
+    delayUntilDayTime startAt = do
+      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> getCurrentTime
+      threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+
+    resetPeriodStats :: Int64 -> M s ()
+    resetPeriodStats startAt = do
+      FileServerStats {filesDownloaded} <- asks serverStats
+      liftIO $ do
+        delayUntilDayTime startAt
+        forever $ do
+          void . periodStatCounts filesDownloaded =<< getCurrentTime
+          threadDelay' $ 1_000_000 * periodStatsInterval
 
     logServerStats :: Int64 -> Int64 -> FilePath -> M s ()
     logServerStats startAt logInterval statsFilePath = do
-      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
+      liftIO $ delayUntilDayTime startAt
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
@@ -334,19 +353,21 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       labelMyThread "savePrometheusMetrics"
       liftIO $ putStrLn $ "Prometheus metrics saved every " <> show saveInterval <> " seconds to " <> metricsFile
       ss <- asks serverStats
+      socketState <- asks sockets
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
       liftIO $ forever $ do
         threadDelay interval
         ts <- getCurrentTime
-        sm <- getFileServerMetrics ss rtsOpts
+        sm <- getFileServerMetrics ss socketState rtsOpts
         T.writeFile metricsFile $ xftpPrometheusMetrics sm ts
 
-    getFileServerMetrics :: FileServerStats -> T.Text -> IO FileServerMetrics
-    getFileServerMetrics ss rtsOptions = do
+    getFileServerMetrics :: FileServerStats -> SocketState -> T.Text -> IO FileServerMetrics
+    getFileServerMetrics ss socketState rtsOptions = do
       d <- getFileServerStatsData ss
+      socketStats <- (xftpPort,) <$> getSocketStats socketState
       let fd = periodStatDataCounts $ _filesDownloaded d
-      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
+      pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, socketStats, rtsOptions}
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]
@@ -420,7 +441,7 @@ data ServerFile = ServerFile
   }
 
 processRequest :: FileStoreClass s => XFTPTransportRequest -> M s ()
-processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, addCORS}
+processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHead}, sendResponse, closeSession, addCORS}
   | B.length bodyHead /= xftpBlockSize = sendXFTPResponse ("", NoEntity, FRErr BLOCK) Nothing
   | otherwise =
       case xftpDecodeTServer thParams bodyHead of
@@ -437,21 +458,26 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
   where
     sendXFTPResponse t' serverFile_ = do
       let t_ = xftpEncodeTransmission thParams t'
+      sendTimeout <- asks $ fileTimeout . config
 #ifdef slow_servers
       randomDelay
 #endif
-      liftIO $ sendResponse $ H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody t_
+      liftIO . sendResponse $ case serverFile_ of
+        Nothing -> H.responseBuilder N.ok200 (corsHeaders addCORS) $ either (const paddingError) byteString t_
+        Just serverFile -> H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody sendTimeout t_ serverFile
       where
-        streamBody t_ send done = do
+        paddingError = "padding error" -- TODO respond with BLOCK error?
+        streamBody sendTimeout t_ ServerFile {filePath, fileSize, sbState} send done = do
           case t_ of
-            Left _ -> do
-              send "padding error" -- TODO respond with BLOCK error?
-              done
+            Left _ -> send paddingError
             Right t -> do
               send $ byteString t
-              -- timeout sending file in the same way as receiving
-              forM_ serverFile_ $ \ServerFile {filePath, fileSize, sbState} -> do
-                withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize
+              timeout sendTimeout (withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize) >>= \case
+                Just () -> pure ()
+                Nothing -> do
+                  -- http2 cannot reset a stream while its send queue is full, so the connection is closed instead
+                  logWarn "file sending timeout, closing connection"
+                  closeSession
           done
 
 #ifdef slow_servers
@@ -497,7 +523,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
         XFTPServerConfig {allowNewFiles, newFileBasicAuth} <- asks config
         pure $ allowNewFiles && maybe True ((== auth) . Just) newFileBasicAuth
   XFTPReqCmd fId fr (FileCmd _ cmd) -> case cmd of
-    FADD rks -> noFile =<< addRecipients fId rks
+    FADD rks -> noFile =<< addFileRecipients fId rks
     FPUT -> noFile =<< receiveServerFile fr
     FDEL -> noFile =<< deleteServerFile fr
     FGET rDhKey -> sendServerFile fr rDhKey
@@ -524,7 +550,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
             fileExpiresAt = RoundedSystemTime $ ((nowSeconds + secs + fileTimePrecision - 1) `div` fileTimePrecision) * fileTimePrecision
         -- TODO validate body empty
         sId <- ExceptT $ addFileRetry st file 3 ts (Just fileExpiresAt)
-        rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
+        rcps <- ExceptT $ addRecipientsRetry st 3 sId rks
         lift $ withFileLog $ \sl -> do
           logAddFile sl sId file ts (Just fileExpiresAt) EntityActive
           logAddRecipients sl sId rcps
@@ -545,12 +571,13 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
       retryAdd n $ \sId -> runExceptT $ do
         ExceptT $ addFile st sId file ts expiresAt EntityActive
         pure sId
-    addRecipientRetry :: s -> Int -> XFTPFileId -> RcvPublicAuthKey -> M s (Either XFTPErrorType FileRecipient)
-    addRecipientRetry st n sId rpk =
-      retryAdd n $ \rId -> runExceptT $ do
-        let rcp = FileRecipient rId rpk
-        ExceptT $ addRecipient st sId rcp
-        pure rcp
+    addRecipientsRetry :: s -> Int -> XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s (Either XFTPErrorType (NonEmpty FileRecipient))
+    addRecipientsRetry _ 0 _ _ = pure $ Left INTERNAL
+    addRecipientsRetry st n sId rks = do
+      rcps <- mapM (\rpk -> (`FileRecipient` rpk) <$> getFileId) rks
+      liftIO (addRecipients st sId rcps) >>= \case
+        Left DUPLICATE_ -> addRecipientsRetry st (n - 1) sId rks
+        r -> pure $ rcps <$ r
     retryAdd :: Int -> (XFTPFileId -> IO (Either XFTPErrorType a)) -> M s (Either XFTPErrorType a)
     retryAdd 0 _ = pure $ Left INTERNAL
     retryAdd n add = do
@@ -558,11 +585,11 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
       liftIO (add fId) >>= \case
         Left DUPLICATE_ -> retryAdd (n - 1) add
         r -> pure r
-    addRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s FileResponse
-    addRecipients sId rks = do
+    addFileRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s FileResponse
+    addFileRecipients sId rks = do
       st <- asks fileStore
       r <- runExceptT $ do
-        rcps <- mapM (ExceptT . addRecipientRetry st 3 sId) rks
+        rcps <- ExceptT $ addRecipientsRetry st 3 sId rks
         lift $ withFileLog $ \sl -> logAddRecipients sl sId rcps
         stats <- asks serverStats
         liftIO $ atomicModifyIORef'_ (fileRecipients stats) (+ length rks)
@@ -694,11 +721,10 @@ expireServerFiles itemDelay expCfg = do
     mbs bs = tshow (bs `div` 1048576) <> "mb"
     expireLoop st us now old = do
       expired <- liftIO $ expiredFiles st now old 10000
-      forM_ expired $ \(sId, filePath_, fileSize) -> do
-        mapM_ threadDelay itemDelay
+      forM_ expired $ \(_, filePath_, fileSize) -> do
         forM_ filePath_ $ \fp ->
           whenM (doesFileExist fp) $
-            removeFile fp `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+            (removeFile fp >> mapM_ threadDelay itemDelay) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
         forM_ filePath_ $ \_ ->
           atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
         incFileStat filesExpired
@@ -707,6 +733,10 @@ expireServerFiles itemDelay expCfg = do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
         expireLoop st us now old
+
+-- | periodStatCounts resets day, week and month stats when called once a day
+periodStatsInterval :: Int64
+periodStatsInterval = 86400
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random

@@ -22,11 +22,14 @@ module Simplex.FileTransfer.Server.Env
     fileStore,
     fromFileStore,
     defaultInactiveClientExpiration,
+    defaultXFTPKeepAlive,
+    defaultXFTPUserTimeout,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
     readFileStoreType,
     runWithStoreConfig,
+    migrateFileStore,
     checkFileStoreMode,
     importToDatabase,
     exportFromDatabase,
@@ -70,7 +73,8 @@ import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts (..))
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), SocketState, TransportServerConfig (..), loadFingerprint, loadServerCredential, newSocketState)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -127,6 +131,19 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
+-- | an idle peer that vanished is detected after keepIdle + keepCnt * keepIntvl = 120 seconds
+defaultXFTPKeepAlive :: KeepAliveOpts
+defaultXFTPKeepAlive =
+  KeepAliveOpts
+    { keepIdle = 60, -- seconds
+      keepIntvl = 10, -- seconds
+      keepCnt = 6
+    }
+
+-- | a peer that stops acknowledging sent data is detected after 3 minutes, as keep-alive does not run while data is unacknowledged
+defaultXFTPUserTimeout :: Int
+defaultXFTPUserTimeout = 180000 -- milliseconds
+
 data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,
     store :: FileStore s,
@@ -136,7 +153,8 @@ data XFTPEnv s = XFTPEnv
     serverIdentity :: C.KeyHash,
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe T.Credential,
-    serverStats :: FileServerStats
+    serverStats :: FileServerStats,
+    sockets :: SocketState
   }
 
 fileStore :: XFTPEnv s -> s
@@ -210,7 +228,8 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   httpServerCreds <- mapM loadServerCredential httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  sockets <- newSocketState
+  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats, sockets}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)
@@ -245,6 +264,13 @@ runWithStoreConfig (AFSType SFSPostgres) ini storeLogFilePath confirmMigrations 
     dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
 #else
   error "server binary is compiled without support for PostgreSQL database"
+#endif
+
+migrateFileStore :: XFTPStoreConfig s -> IO ()
+migrateFileStore = \case
+  XSCMemory _ -> pure ()
+#if defined(dbServerPostgres)
+  XSCDatabase dbCfg -> (newFileStore dbCfg :: IO PostgresFileStore) >>= closeFileStore
 #endif
 
 -- | Validate startup config when store_files=database.

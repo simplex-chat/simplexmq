@@ -25,6 +25,8 @@ import Control.Concurrent.STM
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, isJust)
 import Data.Set (Set)
@@ -41,7 +43,7 @@ import System.IO (IOMode (..))
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (ifM)
+import Simplex.Messaging.Util (anyM, ifM)
 
 data FSType = FSMemory | FSPostgres
 
@@ -78,6 +80,9 @@ class FileStoreClass s where
   addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
+  addRecipient s sId rcp = addRecipients s sId (rcp :| [])
+  -- | adds either all recipients or none of them
+  addRecipients :: s -> SenderId -> NonEmpty FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
   deleteFiles :: s -> [SenderId] -> IO ()
   deleteFiles s = mapM_ (void . deleteFile s)
@@ -125,15 +130,17 @@ instance FileStoreClass STMFileStore where
               pure $ Right ()
             _ -> pure $ Left AUTH
 
-  addRecipient st@STMFileStore {recipients} senderId (FileRecipient rId rKey) = atomically $
+  addRecipients st@STMFileStore {recipients} senderId rcps = atomically $
     withFile st senderId $ \FileRec {recipientIds} -> do
       rIds <- readTVar recipientIds
-      mem <- TM.member rId recipients
-      if rId `S.member` rIds || mem
+      let newIds = map (\(FileRecipient rId _) -> rId) $ L.toList rcps
+          newIdSet = S.fromList newIds
+      stored <- anyM $ map (`TM.member` recipients) newIds
+      if S.size newIdSet /= length newIds || not (S.disjoint newIdSet rIds) || stored
         then pure $ Left DUPLICATE_
         else do
-          writeTVar recipientIds $! S.insert rId rIds
-          TM.insert rId (senderId, rKey) recipients
+          writeTVar recipientIds $! S.union newIdSet rIds
+          forM_ rcps $ \(FileRecipient rId rKey) -> TM.insert rId (senderId, rKey) recipients
           pure $ Right ()
 
   deleteFile STMFileStore {files, recipients} senderId = atomically $ do

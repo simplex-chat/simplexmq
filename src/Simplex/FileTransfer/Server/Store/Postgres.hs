@@ -100,16 +100,16 @@ instance FileStoreClass PostgresFileStore where
       DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
     withLog "setFilePath" st $ \s -> logPutFile s sId fPath
 
-  addRecipient st senderId (FileRecipient rId rKey) = E.uninterruptibleMask_ $ runExceptT $ do
-    void $ withDB "addRecipient" st $ \db ->
+  addRecipients st senderId rcps = E.uninterruptibleMask_ $ runExceptT $ do
+    void $ withDB "addRecipients" st $ \db ->
       E.try
-        ( DB.execute
+        ( DB.executeMany
             db
             "INSERT INTO recipients (recipient_id, sender_id, recipient_key) VALUES (?,?,?)"
-            (rId, senderId, Binary (C.encodePubKey rKey))
+            (map (\(FileRecipient rId rKey) -> (rId, senderId, Binary (C.encodePubKey rKey))) $ L.toList rcps)
         )
         >>= either handleDuplicate (pure . Right)
-    withLog "addRecipient" st $ \s -> logAddRecipients s senderId (pure $ FileRecipient rId rKey)
+    withLog "addRecipients" st $ \s -> forM_ rcps $ logAddRecipients s senderId . pure
 
   deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "deleteFile" st $ \db ->
@@ -157,8 +157,8 @@ instance FileStoreClass PostgresFileStore where
     fmap toResult $ withTransaction (dbStore st) $ \db ->
       DB.query
         db
-        "(SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)"
-        (roundedSeconds now, limit, old - fileTimePrecision, limit)
+        "SELECT sender_id, file_path, file_size FROM ((SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)) expired LIMIT ?"
+        (roundedSeconds now, limit, old - fileTimePrecision, limit, limit)
     where
       toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
       toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))
