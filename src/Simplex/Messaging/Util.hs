@@ -33,6 +33,7 @@ module Simplex.Messaging.Util
     tryAllErrors,
     tryAllErrors',
     catchAllErrors,
+    handleAllErrors,
     catchAllErrors',
     catchThrow,
     allFinally,
@@ -292,6 +293,10 @@ tryAllErrors' action = runExceptT action `UE.catch` (pure . Left . fromSomeExcep
 catchAllErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> ExceptT e m a) -> ExceptT e m a
 catchAllErrors action handler = tryAllErrors action >>= either handler pure
 {-# INLINE catchAllErrors #-}
+
+handleAllErrors :: (AnyError e, MonadUnliftIO m) => (e -> ExceptT e m a) -> ExceptT e m a -> ExceptT e m a
+handleAllErrors handler action = action `catchAllErrors` handler
+{-# INLINE handleAllErrors #-}
 
 catchAllErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> m a) -> m a
 catchAllErrors' action handler = tryAllErrors' action >>= either handler pure

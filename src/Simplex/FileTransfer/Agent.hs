@@ -81,7 +81,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (ProtocolServer, ProtocolType (..), XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, ifM, liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, handleAllErrors, ifM, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -235,22 +235,17 @@ runXFTPRcvWorker c srv Worker {doWork} = do
           relChunkPath = fileTmpPath </> takeFileName chunkPath
       agentXFTPDownloadChunk c userId digest replica chunkSpec
       liftIO $ waitUntilForeground c
-      (entityId, complete, progress) <-
-        withStore
-          c
-          ( \db -> runExceptT $ do
-              liftIO $ lockRcvFileForUpdate db rcvFileId
-              liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
-              RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
-              let rcvd = receivedSize chunks
-                  complete = all chunkReceived chunks
-                  (entityId, total) = case redirect of
-                    Nothing -> (rcvFileEntityId, currentSize)
-                    Just RcvFileRedirect {redirectFileInfo = RedirectFileInfo {size = FileSize finalSize}, redirectEntityId} -> (redirectEntityId, finalSize)
-              liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
-              pure (entityId, complete, RFPROG rcvd total)
-          )
-          `catchAllErrors` rcvFileError c rcvFileId
+      (entityId, complete, progress) <- handleAllErrors (rcvFileError c rcvFileId) . withStore c $ \db -> runExceptT $ do
+        liftIO $ lockRcvFileForUpdate db rcvFileId
+        liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
+        RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
+        let rcvd = receivedSize chunks
+            complete = all chunkReceived chunks
+            (entityId, total) = case redirect of
+              Nothing -> (rcvFileEntityId, currentSize)
+              Just RcvFileRedirect {redirectFileInfo = RedirectFileInfo {size = FileSize finalSize}, redirectEntityId} -> (redirectEntityId, finalSize)
+        liftIO . when complete $ updateRcvFileStatus db rcvFileId RFSReceived
+        pure (entityId, complete, RFPROG rcvd total)
       incXFTPServerStat c userId srv downloads
       incXFTPServerSizeStat c userId srv downloadsSize (fromIntegral $ toKB chSize)
       notify c entityId progress
@@ -447,14 +442,10 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
               removeFile fsEncPath
             withStore' c $ \db -> updateSndFileStatus db sndFileId SFSEncrypting
             (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
-            withStore
-              c
-              ( \db -> do
-                  lockSndFileForUpdate db sndFileId
-                  updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
-                  getSndFile db sndFileId
-              )
-              `catchAllErrors` sndFileError c sndFileId
+            handleAllErrors (sndFileError c sndFileId) . withStore c $ \db -> do
+              lockSndFileForUpdate db sndFileId
+              updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
+              getSndFile db sndFileId
           else pure sndFile
       let numRecipients' = min numRecipients maxRecipients
       -- in case chunk preparation previously failed mid-way, some chunks may already be created -
@@ -573,15 +564,10 @@ runXFTPSndWorker c srv Worker {doWork} = do
       liftIO $ assertUploadsAllowed c
       agentXFTPUploadChunk c userId chunkDigest replica' chunkSpec'
       liftIO $ waitUntilUploadsAllowed c
-      sf@SndFile {sndFileEntityId, prefixPath, chunks} <-
-        withStore
-          c
-          ( \db -> do
-              lockSndFileForUpdate db sndFileId
-              updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
-              getSndFile db sndFileId
-          )
-          `catchAllErrors` sndFileError c sndFileId
+      sf@SndFile {sndFileEntityId, prefixPath, chunks} <- handleAllErrors (sndFileError c sndFileId) . withStore c $ \db -> do
+        lockSndFileForUpdate db sndFileId
+        updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
+        getSndFile db sndFileId
       let uploaded = uploadedSize chunks
           total = totalSize chunks
           complete = all chunkUploaded chunks
