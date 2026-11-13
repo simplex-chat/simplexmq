@@ -3747,7 +3747,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
-                                notify $ MSG msgMeta msgFlags body
+                                notify $ MSG msgMeta (Just (msgFlags, body))
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
                               A_QCONT addr -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QCONT" (continueSending srvMsgId addr)
@@ -3792,7 +3792,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                         liftEither (parse smpP (AGENT $ A_MESSAGE "parse msg body 1") agentMsgBody) >>= \case
                                           AgentMessage _ (A_MSG body) -> do
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
-                                            notify $ MSG msgMeta msgFlags body
+                                            notify $ MSG msgMeta (Just (msgFlags, body))
                                             pure ACKPending
                                           _ -> ack
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
@@ -3899,7 +3899,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             notify . ERR . AGENT $ A_PROHIBITED $ T.unpack s
 
           notifyIntegrity :: MsgMeta -> AM ()
-          notifyIntegrity mm = when (integrity mm /= MsgOk) $ notify $ MSGERR mm
+          notifyIntegrity mm = when (integrity mm /= MsgOk) $ notify $ MSG mm Nothing
 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand

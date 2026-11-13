@@ -215,16 +215,16 @@ pattern CON :: AEvent 'AEConn
 pattern CON = A.CON PQEncOn
 
 pattern Msg :: MsgBody -> AEvent e
-pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = PQEncOn} _ msgBody
+pattern Msg msgBody <- MSG MsgMeta {integrity = MsgOk, pqEncryption = PQEncOn} (Just (_, msgBody))
 
 pattern Msg' :: AgentMsgId -> PQEncryption -> MsgBody -> AEvent e
-pattern Msg' aMsgId pq msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption = pq} _ msgBody
+pattern Msg' aMsgId pq msgBody <- MSG MsgMeta {integrity = MsgOk, recipient = (aMsgId, _), pqEncryption = pq} (Just (_, msgBody))
 
 pattern MsgErr :: AgentMsgId -> MsgErrorType -> MsgBody -> AEvent 'AEConn
-pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} _ msgBody
+pattern MsgErr msgId err msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err} (Just (_, msgBody))
 
 pattern MsgErr' :: AgentMsgId -> MsgErrorType -> PQEncryption -> MsgBody -> AEvent 'AEConn
-pattern MsgErr' msgId err pq msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err, pqEncryption = pq} _ msgBody
+pattern MsgErr' msgId err pq msgBody <- MSG MsgMeta {recipient = (msgId, _), integrity = MsgError err, pqEncryption = pq} (Just (_, msgBody))
 
 pattern SENT :: AgentMsgId -> AEvent 'AEConn
 pattern SENT msgId = A.SENT msgId Nothing
@@ -2489,7 +2489,7 @@ testSkippedMessages (t, msType) = do
 
       6 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 5"
       get alice2 ##> ("", bobId, SENT 6)
-      get bob2 =##> \case ("", c, MSG MsgMeta {integrity = MsgError {errorInfo = MsgSkipped {fromMsgId = 3, toMsgId = 5}}} _ "hello 5") -> c == aliceId; _ -> False
+      get bob2 =##> \case ("", c, MSG MsgMeta {integrity = MsgError {errorInfo = MsgSkipped {fromMsgId = 3, toMsgId = 5}}} (Just (_, "hello 5"))) -> c == aliceId; _ -> False
       ackMessage bob2 aliceId 3 Nothing
 
       7 <- sendMessage alice2 bobId SMP.noMsgFlags "hello 6"
@@ -2692,7 +2692,7 @@ testExpireMessageBeforeQCONT (t, msType) = withSmpServerConfigOn t cfg' testPort
     ackMessage b' aId 2 Nothing
     ackMessage a bId 4 Nothing
     liftIO . getInAnyOrder b' $
-      [ \case ("", c, AEvt SAEConn (MSGERR MsgMeta {integrity = MsgError (MsgSkipped 3 3)})) -> c == aId; _ -> False,
+      [ \case ("", c, AEvt SAEConn (MSG MsgMeta {integrity = MsgError (MsgSkipped 3 3)} Nothing)) -> c == aId; _ -> False,
         \case ("", c, AEvt SAEConn QCONT) -> c == aId; _ -> False,
         \case ("", c, AEvt SAEConn (SENT 4)) -> c == aId; _ -> False
       ]
@@ -4060,18 +4060,18 @@ endSwitchOnNewQueue a b = do
 
 drainOldQueue :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ExceptT AgentErrorType IO ()
 drainOldQueue a bId b aId = do
-  ("", c, MSG MsgMeta {recipient = (aM2Id, _)} _ "m2") <- get a
+  ("", c, MSG MsgMeta {recipient = (aM2Id, _)} (Just (_, "m2"))) <- get a
   liftIO $ c `shouldBe` bId
   ackMessage a bId aM2Id Nothing
   waitOneRcvQueue a bId
   bMsgId <- sendMessage b aId SMP.noMsgFlags "hello"
   get b ##> ("", aId, SENT bMsgId)
-  ("", c', MSG MsgMeta {recipient = (aMsgId, _)} _ "hello") <- get a
+  ("", c', MSG MsgMeta {recipient = (aMsgId, _)} (Just (_, "hello"))) <- get a
   liftIO $ c' `shouldBe` bId
   ackMessage a bId aMsgId Nothing
   aMsgId' <- sendMessage a bId SMP.noMsgFlags "hello too"
   get a ##> ("", bId, SENT aMsgId')
-  ("", c'', MSG MsgMeta {recipient = (bMsgId', _)} _ "hello too") <- get b
+  ("", c'', MSG MsgMeta {recipient = (bMsgId', _)} (Just (_, "hello too"))) <- get b
   liftIO $ c'' `shouldBe` aId
   ackMessage b aId bMsgId' Nothing
   liftIO $ noMessages a "nothing else should be delivered to alice"
@@ -4567,7 +4567,7 @@ testDeliveryReceiptsConcurrent (t, msType) =
             (_, _, SENT _) -> do
               -- liftIO $ print $ cName <> ": SENT"
               pure ()
-            (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} _ _) -> do
+            (_, _, MSG MsgMeta {recipient = (msgId, _), integrity = MsgOk} (Just _)) -> do
               -- liftIO $ print $ cName <> ": MSG " <> show msgId
               ackMessageAsync client (B.pack . show $ n) connId msgId (Just "")
             (_, _, RCVD MsgMeta {recipient = (msgId, _), integrity = MsgOk} _) -> do
@@ -5331,7 +5331,7 @@ testServerQueueInfo = do
     liftIO $ threadDelay 200000
     Just srvMsgId <- checkMsgQ bob aliceId 1
     get bob =##> \case
-      ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} _ "hello") ->
+      ("", c, MSG MsgMeta {integrity = MsgOk, broker = (smId, _), recipient = (mId, _), pqEncryption = PQEncOn} (Just (_, "hello"))) ->
         c == aliceId && decodeLatin1 (B64.encode $ SMP.unMsgId smId) == srvMsgId && mId == msgId
       _ -> False
     ackMessage bob aliceId msgId Nothing
