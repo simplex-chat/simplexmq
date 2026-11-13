@@ -3742,11 +3742,8 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                         tryAllErrors (agentClientMsg g encryptedMsgHash) >>= \case
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
-                            case aMessage of
-                              A_MSG _ -> pure ()
-                              A_RCVD _ -> pure ()
-                              EREADY _ -> pure ()
-                              _ -> when (integrity msgMeta /= MsgOk) $ notify $ MSGERR msgMeta
+                            when (integrity msgMeta /= MsgOk && aMessageType aMessage `notElem` ([AM_A_MSG_, AM_A_RCVD_, AM_HELLO_, AM_QEND_, AM_EREADY_] :: [AgentMessageType])) $
+                              notify $ MSGERR msgMeta
                             case aMessage of
                               HELLO -> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
