@@ -128,7 +128,7 @@ instance FileStoreClass PostgresFileStore where
       firstRow fromOnly AUTH $
         DB.query
           db
-          "UPDATE files f SET status = ?, file_path = NULL FROM (SELECT file_path FROM files WHERE sender_id = ? FOR UPDATE) old WHERE f.sender_id = ? RETURNING old.file_path"
+          "UPDATE files f SET status = ?, file_path = NULL FROM (SELECT file_path FROM files WHERE sender_id = ? FOR NO KEY UPDATE) old WHERE f.sender_id = ? RETURNING old.file_path"
           (EntityBlocked info, sId, sId)
     withLog "blockFile" st $ \s -> logBlockFile s sId info
     pure path
