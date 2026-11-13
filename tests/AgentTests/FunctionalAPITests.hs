@@ -4801,10 +4801,10 @@ workItemReadTests = do
   it "should retry the read after deadlocks" $
     readWithErrors 2 "40P01" `shouldReturn` (Right (), 3)
   it "should report INTERNAL when serialization failures continue after 3 retries" $ do
-    (Left (INTERNAL _), attempts) <- readWithErrors 4 "40001"
+    (Left (A.INTERNAL _), attempts) <- readWithErrors 4 "40001"
     attempts `shouldBe` 4
   it "should not retry the read after other database errors" $ do
-    (Left (INTERNAL _), attempts) <- readWithErrors 1 "23505"
+    (Left (A.INTERNAL _), attempts) <- readWithErrors 1 "23505"
     attempts `shouldBe` 1
   where
     createCmd :: DB.Connection -> IO ()
