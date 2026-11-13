@@ -3743,21 +3743,26 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                           Right (Just (msgId, msgMeta, aMessage, rcPrev)) -> do
                             conn'' <- resetRatchetSync
                             case aMessage of
-                              HELLO -> notifyMsgError msgMeta >> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
+                              A_MSG _ -> pure ()
+                              A_RCVD _ -> pure ()
+                              EREADY _ -> pure ()
+                              _ -> when (integrity msgMeta /= MsgOk) $ notify $ MSGERR msgMeta
+                            case aMessage of
+                              HELLO -> helloMsg srvMsgId msgMeta conn'' >> ackDel msgId
                               -- note that there is no ACK sent for A_MSG, it is sent with agent's user ACK command
                               A_MSG body -> do
                                 logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
                                 notify $ MSG msgMeta msgFlags body
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
-                              A_QCONT addr -> notifyMsgError msgMeta >> qDuplexAckDel conn'' "QCONT" (continueSending srvMsgId addr)
-                              QADD qs -> notifyMsgError msgMeta >> qDuplexAckDel conn'' "QADD" (qAddMsg srvMsgId qs)
-                              QKEY qs -> notifyMsgError msgMeta >> qDuplexAckDel conn'' "QKEY" (qKeyMsg srvMsgId qs)
-                              QUSE qs -> notifyMsgError msgMeta >> qDuplexAckDel conn'' "QUSE" (qUseMsg srvMsgId qs)
+                              A_QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
+                              QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg srvMsgId qs
+                              QKEY qs -> qDuplexAckDel conn'' "QKEY" $ qKeyMsg srvMsgId qs
+                              QUSE qs -> qDuplexAckDel conn'' "QUSE" $ qUseMsg srvMsgId qs
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
-                              QTEST _ -> notifyMsgError msgMeta >> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' (SMP.unMsgId srvMsgId)) >> ackDel msgId
-                              QEND addrs -> notifyMsgError msgMeta >> qDuplexAckDel conn'' "QEND" (qEndMsg srvMsgId addrs)
+                              QTEST _ -> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' (SMP.unMsgId srvMsgId)) >> ackDel msgId
+                              QEND addrs -> qDuplexAckDel conn'' "QEND" $ qEndMsg srvMsgId addrs
                               EREADY _ -> qDuplexAckDel conn'' "EREADY" $ ereadyMsg rcPrev
                             where
                               qDuplexAckDel :: Connection c -> String -> (Connection 'CDuplex -> AM ()) -> AM ACKd
@@ -3897,11 +3902,6 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
           prohibited s = do
             logError $ "prohibited: " <> s
             notify . ERR . AGENT $ A_PROHIBITED $ T.unpack s
-
-          notifyMsgError :: MsgMeta -> AM ()
-          notifyMsgError msgMeta = case integrity msgMeta of
-            MsgError _ -> notify $ MSGERR msgMeta
-            MsgOk -> pure ()
 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand
@@ -4089,7 +4089,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
-              Nothing -> notifyMsgError msgMeta >> ack
+              Nothing -> when (integrity msgMeta /= MsgOk) (notify $ MSGERR msgMeta) >> ack
             where
               ack :: AM ACKd
               ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
