@@ -4796,6 +4796,15 @@ workItemReadTests = do
   it "should retry the read aborted by deadlock with ntf subscription deletion" $
     readWhileDeleting (createNtfSub $ NSANtf NSACreate) (lockTable "servers") "JOIN servers s ON s.host = ns.smp_host" "DELETE FROM ntf_subscriptions" (readNtfActions testNtfServer)
       `shouldReturn` False
+  it "should mark a command failed when its read fails" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> createCmd db >> DB.execute_ db "UPDATE commands SET command = 'bad'::bytea"
+      doWork <- newTMVarIO ()
+      runReaderT (runExceptT $ readCommand a doWork $ \_ -> pure ()) (agentEnv a) `shouldReturn` Right ()
+      events <- atomically $ flushTBQueue $ subQ a
+      length (filter workerError events) `shouldBe` 1
+      withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
   it "should retry the read 3 times on the same connection after serialization failures" $ do
     (r, pids) <- readWithErrors 3 "40001"
     r `shouldBe` Right ()
@@ -4861,12 +4870,12 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
   events <- atomically $ flushTBQueue $ subQ a
   filter workerError events `shouldBe` []
   readTVarIO itemRead
-  where
-    workerError :: ATransmission -> Bool
-    workerError (_, _, AEvt _ e) = case e of
-      ERR _ -> True
-      ERRS _ -> True
-      _ -> False
+
+workerError :: ATransmission -> Bool
+workerError (_, _, AEvt _ e) = case e of
+  ERR _ -> True
+  ERRS _ -> True
+  _ -> False
 
 readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), [Int])
 readWithErrors failures errCode = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
