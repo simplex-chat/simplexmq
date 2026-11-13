@@ -576,17 +576,21 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> withUploadLock $ skipCommitted $ mask $ \restore -> ifM reserve (receive restore) (pure $ FRErr QUOTA)
+      Just getBody -> withUploadLock receiveUncommitted >>= maybe skipCommitted pure
         where
           withUploadLock a = do
             uploads <- asks uploadingFiles
             bracket_ (atomically $ ifM (TM.member senderId uploads) retrySTM (TM.insert senderId () uploads)) (atomically $ TM.delete senderId uploads) a
           -- having a filePath means the file is already uploaded and committed, must not change anything
-          skipCommitted = ifM committed (liftIO $ drain $ fromIntegral size)
+          receiveUncommitted = do
+            st <- asks fileStore
+            liftIO (getFile st SFSender senderId) >>= \case
+              Right (FileRec {filePath}, _) ->
+                ifM (isJust <$> readTVarIO filePath) (pure Nothing) $
+                  Just <$> mask (\restore -> ifM reserve (receive restore) (pure $ FRErr QUOTA))
+              Left e -> pure $ Just $ FRErr e
+          skipCommitted = liftIO $ drain $ fromIntegral size
             where
-              committed = do
-                st <- asks fileStore
-                liftIO $ getFile st SFSender senderId >>= either (const $ pure False) (\(FileRec {filePath}, _) -> isJust <$> readTVarIO filePath)
               -- can't send FROk without reading the request body or a client will block on sending it
               -- can't send any old error as the client would fail or restart indefinitely
               drain s = do
