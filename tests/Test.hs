@@ -58,6 +58,7 @@ import SMPProxyTests (smpProxyPostgresTests)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 import XFTPClient (testXFTPDBConnectInfo)
+import XFTPServerTests (xftpServerPostgresTests)
 #endif
 
 #if defined(dbPostgres) || defined(dbServerPostgres)
@@ -134,8 +135,9 @@ main = do
 #if defined(dbServerPostgres)
           describe "XFTP Postgres store operations" xftpStoreTests
           describe "XFTP migration round-trip" xftpMigrationTests
-          describe "XFTP server (PostgreSQL)" $
+          describe "XFTP server (PostgreSQL)" $ do
             before (pure $ AFSType SFSPostgres) xftpServerTests
+            xftpServerPostgresTests
           describe "XFTP agent (PostgreSQL)" $
             before (pure $ AFSType SFSPostgres) xftpAgentTests
 #endif
