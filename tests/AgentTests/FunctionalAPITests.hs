@@ -2469,6 +2469,7 @@ testDuplicateMessageAfterSent ps = do
       get bob =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aliceId; _ -> False
       3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
       get bob ##> ("", aliceId, SENT 3)
+      liftIO $ waitDeleted (sndDeliveries bob) (aliceId, 3)
     disposeAgentClient bob
     threadDelay 250000
     bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
