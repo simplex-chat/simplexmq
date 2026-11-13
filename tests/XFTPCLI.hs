@@ -1,6 +1,6 @@
 {-# LANGUAGE DisambiguateRecordFields #-}
 
-module XFTPCLI (xftpCLIFileTests, xftpCLI) where
+module XFTPCLI (xftpCLIFileTests, xftpCLIConcurrentTests, xftpCLI) where
 
 import Control.Concurrent (yield)
 import Control.Concurrent.Async (forConcurrently_)
@@ -48,16 +48,19 @@ xftpCLIFileTests = do
       filter (not . bareName) fileNames `shouldBe` []
     it "combines a sanitized name inside the destination folder" $ \_ ->
       testReceivedFileNameCombine
-  describe "concurrent transfers" $ do
-    it "should send files with one temporary folder" $ withXFTPServer testXFTPCLISendSharedTemp
-    it "should save file descriptions in one folder" $ withXFTPServer testXFTPCLISendSharedOutput
-    it "should receive files with one temporary folder" $ withXFTPServer testXFTPCLIReceiveSharedTemp
-    it "should save received files in one folder" $ withXFTPServer testXFTPCLIReceiveSharedOutput
   where
     fileNames :: [FilePath]
     fileNames = ["", ".", "..", "...", "../x", "../../etc/passwd", "/etc/cron.d/x", "a/b", "x/", "test.pdf", ".hidden", "a b.tar.gz"]
     sanitized n = let n' = safeFileNameStr n in n' /= "" && n' /= "." && n' /= ".."
     bareName n = let n' = safeFileNameStr n in n' == takeFileName n'
+
+xftpCLIConcurrentTests :: SpecWith AFStoreType
+xftpCLIConcurrentTests =
+  describe "concurrent transfers" $ do
+    it "should send files with one temporary folder" $ withXFTPServer testXFTPCLISendSharedTemp
+    it "should save file descriptions in one folder" $ withXFTPServer testXFTPCLISendSharedOutput
+    it "should receive files with one temporary folder" $ withXFTPServer testXFTPCLIReceiveSharedTemp
+    it "should save received files in one folder" $ withXFTPServer testXFTPCLIReceiveSharedOutput
 
 xftpCLI :: [String] -> IO [String]
 xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
@@ -179,16 +182,25 @@ testXFTPCLIDelete_ = do
 
 testXFTPCLISendSharedTemp :: HasTestEnv => IO ()
 testXFTPCLISendSharedTemp = do
-  filePath <- createTestFile
   let tmpPath = testPath "xftp-tmp"
+      sndPath r i = senderFiles </> show r </> show i
+      rcvPath r i = recipientFiles </> show r </> show i
   createDirectory tmpPath
-  silence $ forM_ [1 .. rounds] $ \r ->
-    atOnce $ \i -> sendFile (\_ _ -> pure ()) filePath (senderFiles </> show r </> show i) tmpPath
+  forM_ [1 .. rounds] $ \r -> do
+    forM_ [1 .. transfers] $ \i -> do
+      createDirectoryIfMissing True $ sndPath r i
+      createDirectoryIfMissing True $ rcvPath r i
+      createTestFile $ sndPath r i
+    silence $ atOnce $ \i -> sendFile (\_ _ -> pure ()) (sndPath r i </> "testfile") (sndPath r i) tmpPath
+    forM_ [1 .. transfers] $ \i -> do
+      silence $ receiveFile (sndPath r i </> "testfile.xftp" </> "rcv1.xftp") (rcvPath r i) testDir
+      file <- LB.readFile $ sndPath r i </> "testfile"
+      LB.readFile (rcvPath r i </> "testfile") `shouldReturn` file
   listDirectory tmpPath `shouldReturn` []
 
 testXFTPCLISendSharedOutput :: HasTestEnv => IO ()
 testXFTPCLISendSharedOutput = do
-  filePath <- createTestFile
+  filePath <- createTestFile senderFiles
   let tmpPath i = testPath "xftp-tmp" </> show i
   forM_ [1 .. transfers] $ createDirectoryIfMissing True . tmpPath
   silence $ forM_ [1 .. rounds] $ \r -> do
@@ -263,15 +275,15 @@ transfers = 8
 rounds :: Int
 rounds = 20
 
-createTestFile :: HasTestEnv => IO FilePath
-createTestFile = do
-  let filePath = senderFiles </> "testfile"
+createTestFile :: FilePath -> IO FilePath
+createTestFile dir = do
+  let filePath = dir </> "testfile"
   xftpCLI ["rand", filePath, "1kb"] `shouldReturn` ["File created: " <> filePath]
   pure filePath
 
 sendTestFile :: HasTestEnv => IO (LB.ByteString, FilePath)
 sendTestFile = do
-  filePath <- createTestFile
+  filePath <- createTestFile senderFiles
   silence $ sendFile (\_ _ -> pure ()) filePath senderFiles testDir
   file <- LB.readFile filePath
   pure (file, filePath <> ".xftp" </> "rcv1.xftp")
