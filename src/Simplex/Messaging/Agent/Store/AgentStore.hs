@@ -1124,12 +1124,12 @@ getPendingQueueMsg db connId SndQueue {dbQueueId} =
         DB.query
           db
           ( [sql|
-              SELECT internal_id
-              FROM snd_message_deliveries d
-              WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
-              ORDER BY internal_id ASC
-              LIMIT 1
-            |]
+            SELECT internal_id
+            FROM snd_message_deliveries d
+            WHERE conn_id = ? AND snd_queue_id = ? AND failed = 0
+            ORDER BY internal_id ASC
+            LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE"
 #endif
@@ -1729,11 +1729,11 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
           DB.query
             db
             ( [sql|
-                SELECT command_id FROM commands
-                WHERE conn_id = ? AND host IS NULL AND port IS NULL AND failed = 0
-                ORDER BY created_at ASC, command_id ASC
-                LIMIT 1
-              |]
+              SELECT command_id FROM commands
+              WHERE conn_id = ? AND host IS NULL AND port IS NULL AND failed = 0
+              ORDER BY created_at ASC, command_id ASC
+              LIMIT 1
+            |]
 #if defined(dbPostgres)
                 <> " FOR UPDATE"
 #endif
@@ -1743,11 +1743,11 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
           DB.query
             db
             ( [sql|
-                SELECT command_id FROM commands
-                WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
-                ORDER BY created_at ASC, command_id ASC
-                LIMIT 1
-              |]
+              SELECT command_id FROM commands
+              WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0
+              ORDER BY created_at ASC, command_id ASC
+              LIMIT 1
+            |]
 #if defined(dbPostgres)
                 <> " FOR UPDATE"
 #endif
@@ -1896,13 +1896,13 @@ getNextNtfTokenToDelete db (NtfServer ntfHost ntfPort _) =
         DB.query
           db
           ( [sql|
-              SELECT ntf_token_to_delete_id
-              FROM ntf_tokens_to_delete
-              WHERE ntf_host = ? AND ntf_port = ?
-                AND del_failed = 0
-              ORDER BY created_at ASC
-              LIMIT 1
-            |]
+            SELECT ntf_token_to_delete_id
+            FROM ntf_tokens_to_delete
+            WHERE ntf_host = ? AND ntf_port = ?
+              AND del_failed = 0
+            ORDER BY created_at ASC
+            LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE"
 #endif
@@ -2094,14 +2094,14 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
         <$> DB.query
           db
           ( [sql|
-              SELECT conn_id
-              FROM ntf_subscriptions ns
-              JOIN connections c USING (conn_id)
-              WHERE ntf_host = ? AND ntf_port = ? AND ntf_sub_action IS NOT NULL
-                AND (ntf_failed = 0 OR updated_by_supervisor = 1)
-              ORDER BY ntf_sub_action_ts ASC
-              LIMIT ?
-            |]
+            SELECT conn_id
+            FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
+            WHERE ntf_host = ? AND ntf_port = ? AND ntf_sub_action IS NOT NULL
+              AND (ntf_failed = 0 OR updated_by_supervisor = 1)
+            ORDER BY ntf_sub_action_ts ASC
+            LIMIT ?
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE OF ns FOR KEY SHARE OF c"
 #endif
@@ -2143,14 +2143,14 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
         <$> DB.query
           db
           ( [sql|
-              SELECT conn_id
-              FROM ntf_subscriptions ns
-              JOIN connections c USING (conn_id)
-              WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
-                AND (smp_failed = 0 OR updated_by_supervisor = 1)
-              ORDER BY ntf_sub_action_ts ASC
-              LIMIT ?
-            |]
+            SELECT conn_id
+            FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
+            WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
+              AND (smp_failed = 0 OR updated_by_supervisor = 1)
+            ORDER BY ntf_sub_action_ts ASC
+            LIMIT ?
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE OF ns FOR KEY SHARE OF c"
 #endif
@@ -3466,18 +3466,18 @@ getNextRcvChunkToDownload db server@ProtocolServer {host, port, keyHash} ttl = d
         DB.query
           db
           ( [sql|
-              SELECT r.rcv_file_chunk_replica_id, f.rcv_file_id
-              FROM rcv_file_chunk_replicas r
-              JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-              JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
-              JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
-              WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-                AND r.received = 0 AND r.replica_number = 1
-                AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
-                AND f.failed = 0
-              ORDER BY r.retries ASC, r.created_at ASC
-              LIMIT 1
-            |]
+            SELECT r.rcv_file_chunk_replica_id, f.rcv_file_id
+            FROM rcv_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN rcv_file_chunks c ON c.rcv_file_chunk_id = r.rcv_file_chunk_id
+            JOIN rcv_files f ON f.rcv_file_id = c.rcv_file_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.received = 0 AND r.replica_number = 1
+              AND f.status = ? AND f.deleted = 0 AND f.created_at >= ?
+              AND f.failed = 0
+            ORDER BY r.retries ASC, r.created_at ASC
+            LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE OF f"
 #endif
@@ -3530,12 +3530,12 @@ getNextRcvFileToDecrypt db ttl =
         DB.query
           db
           ( [sql|
-              SELECT rcv_file_id
-              FROM rcv_files
-              WHERE status IN (?,?) AND deleted = 0 AND created_at >= ?
-                AND failed = 0
-              ORDER BY created_at ASC LIMIT 1
-            |]
+            SELECT rcv_file_id
+            FROM rcv_files
+            WHERE status IN (?,?) AND deleted = 0 AND created_at >= ?
+              AND failed = 0
+            ORDER BY created_at ASC LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE"
 #endif
@@ -3734,12 +3734,12 @@ getNextSndFileToPrepare db ttl =
         DB.query
           db
           ( [sql|
-              SELECT snd_file_id
-              FROM snd_files
-              WHERE status IN (?,?,?) AND deleted = 0 AND created_at >= ?
-                AND failed = 0
-              ORDER BY created_at ASC LIMIT 1
-            |]
+            SELECT snd_file_id
+            FROM snd_files
+            WHERE status IN (?,?,?) AND deleted = 0 AND created_at >= ?
+              AND failed = 0
+            ORDER BY created_at ASC LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE"
 #endif
@@ -3827,18 +3827,18 @@ getNextSndChunkToUpload db server@ProtocolServer {host, port, keyHash} ttl = do
         DB.query
           db
           ( [sql|
-              SELECT r.snd_file_chunk_replica_id, f.snd_file_id
-              FROM snd_file_chunk_replicas r
-              JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-              JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
-              JOIN snd_files f ON f.snd_file_id = c.snd_file_id
-              WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-                AND r.replica_status = ? AND r.replica_number = 1
-                AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
-                AND f.failed = 0
-              ORDER BY r.retries ASC, r.created_at ASC
-              LIMIT 1
-            |]
+            SELECT r.snd_file_chunk_replica_id, f.snd_file_id
+            FROM snd_file_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            JOIN snd_file_chunks c ON c.snd_file_chunk_id = r.snd_file_chunk_id
+            JOIN snd_files f ON f.snd_file_id = c.snd_file_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.replica_status = ? AND r.replica_number = 1
+              AND (f.status = ? OR f.status = ?) AND f.deleted = 0 AND f.created_at >= ?
+              AND f.failed = 0
+            ORDER BY r.retries ASC, r.created_at ASC
+            LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE OF f"
 #endif
@@ -4002,15 +4002,15 @@ getNextDeletedSndChunkReplica db ProtocolServer {host, port, keyHash} ttl =
         DB.query
           db
           ( [sql|
-              SELECT r.deleted_snd_chunk_replica_id
-              FROM deleted_snd_chunk_replicas r
-              JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
-              WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
-                AND r.created_at >= ?
-                AND failed = 0
-              ORDER BY r.retries ASC, r.created_at ASC
-              LIMIT 1
-            |]
+            SELECT r.deleted_snd_chunk_replica_id
+            FROM deleted_snd_chunk_replicas r
+            JOIN xftp_servers s ON s.xftp_server_id = r.xftp_server_id
+            WHERE s.xftp_host = ? AND s.xftp_port = ? AND s.xftp_key_hash = ?
+              AND r.created_at >= ?
+              AND failed = 0
+            ORDER BY r.retries ASC, r.created_at ASC
+            LIMIT 1
+          |]
 #if defined(dbPostgres)
               <> " FOR UPDATE OF r"
 #endif
