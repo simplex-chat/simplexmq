@@ -71,6 +71,7 @@ import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Protocol
 import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
+import Simplex.Messaging.Agent.Store (StoreError (..))
 import Simplex.Messaging.Agent.Store.AgentStore
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import qualified Simplex.Messaging.Crypto as C
@@ -81,7 +82,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (ProtocolServer, ProtocolType (..), XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, ifM, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -238,7 +239,7 @@ runXFTPRcvWorker c srv Worker {doWork} = do
       (entityId, complete, progress) <- withStore c $ \db -> runExceptT $ do
         liftIO $ lockRcvFileForUpdate db rcvFileId
         liftIO $ updateRcvFileChunkReceived db (rcvChunkReplicaId replica) rcvChunkId relChunkPath
-        RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ getRcvFile db rcvFileId
+        RcvFile {size = FileSize currentSize, chunks, redirect} <- ExceptT $ first noFileError <$> getRcvFile db rcvFileId
         let rcvd = receivedSize chunks
             complete = all chunkReceived chunks
             (entityId, total) = case redirect of
@@ -283,6 +284,11 @@ rcvWorkerInternalError c rcvFileId rcvFileEntityId redirectEntityId_ tmpPath err
     lift $ forM_ tmpPath (removePath <=< toFSFilePath)
   withStore' c $ \db -> updateRcvFileError db rcvFileId (show err)
   notify c (fromMaybe rcvFileEntityId redirectEntityId_) (RFERR err)
+
+noFileError :: StoreError -> StoreError
+noFileError = \case
+  SEFileNotFound -> SEAgentError $ FILE NO_FILE
+  e -> e
 
 runXFTPRcvLocalWorker :: AgentClient -> Worker -> AM ()
 runXFTPRcvLocalWorker c Worker {doWork} = do
@@ -441,8 +447,9 @@ runXFTPSndPrepareWorker c Worker {doWork} = do
             (digest, chunkSpecsDigests) <- encryptFileForUpload sndFile fsEncPath
             withStore c $ \db -> do
               lockSndFileForUpdate db sndFileId
-              updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
-              getSndFile db sndFileId
+              ifM (getSndFileDeleted db sndFileId) (pure $ Left $ SEAgentError $ FILE NO_FILE) $ do
+                updateSndFileEncrypted db sndFileId digest chunkSpecsDigests
+                getSndFile db sndFileId
           else pure sndFile
       let numRecipients' = min numRecipients maxRecipients
       -- in case chunk preparation previously failed mid-way, some chunks may already be created -
@@ -561,7 +568,7 @@ runXFTPSndWorker c srv Worker {doWork} = do
       sf@SndFile {sndFileEntityId, prefixPath, chunks} <- withStore c $ \db -> do
         lockSndFileForUpdate db sndFileId
         updateSndChunkReplicaStatus db sndChunkReplicaId SFRSUploaded
-        getSndFile db sndFileId
+        first noFileError <$> getSndFile db sndFileId
       let uploaded = uploadedSize chunks
           total = totalSize chunks
           complete = all chunkUploaded chunks
