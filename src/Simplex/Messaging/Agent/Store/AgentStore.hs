@@ -1263,7 +1263,7 @@ getLastMsg db connId msgId =
           m.msg_type, m.msg_body, m.pq_encryption, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
-        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
+        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_rcv_msg_id = r.internal_rcv_id
         LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
@@ -1271,7 +1271,7 @@ getLastMsg db connId msgId =
 
 toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, BoolInt) -> RcvMsg
 toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, BI userAck)) =
-  let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
+  let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption, redelivered = False}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
 

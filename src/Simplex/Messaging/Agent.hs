@@ -1009,12 +1009,18 @@ ackMessageAsync' c corrId connId msgId rcptInfo_ = do
     SCNew -> throwE $ CMD PROHIBITED "ackMessageAsync: SCNew"
   where
     enqueueAck :: AM ()
-    enqueueAck = do
+    enqueueAck =
+      withStore' c storeUserAck >>= \case
+        Right server -> lift . void $ getAsyncCmdWorker True c connId (Just server)
+        Left (SEMsgNotFound _) -> pure ()
+        Left e -> throwE $ storeError e
+    storeUserAck :: DB.Connection -> IO (Either StoreError SMPServer)
+    storeUserAck db = runExceptT $ do
       let mId = InternalId msgId
-      RcvMsg {msgType} <- withStore c $ \db -> getRcvMsg db connId mId
-      when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwE $ CMD PROHIBITED "ackMessageAsync: receipt not allowed"
-      (RcvQueue {server}, _) <- withStore c $ \db -> setMsgUserAck db connId mId
-      enqueueCommand c corrId connId (Just server) . AClientCommand $ ACK msgId rcptInfo_
+      RcvMsg {msgType} <- ExceptT $ getRcvMsg db connId mId
+      when (isJust rcptInfo_ && msgType /= AM_A_MSG_) $ throwE $ SEAgentError $ CMD PROHIBITED "ackMessageAsync: receipt not allowed"
+      (RcvQueue {server}, _) <- ExceptT $ setMsgUserAck db connId mId
+      server <$ ExceptT (createCommand db corrId connId (Just server) . AClientCommand $ ACK msgId rcptInfo_)
 
 deleteConnectionAsync' :: AgentClient -> Bool -> ConnId -> AM ()
 deleteConnectionAsync' c waitDelivery connId = deleteConnectionsAsync' c waitDelivery [connId]
@@ -2841,24 +2847,22 @@ ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe 
 ackMessage' c cmdId_ connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
   SomeConn _ conn <- withStore c (`getConn` connId)
   case conn of
-    DuplexConnection {} -> do
-      t_ <- ack
-      sendRcpt conn
-      del
-      pure t_
-    RcvConnection {} -> do
-      t_ <- ack
-      del
-      pure t_
+    DuplexConnection {} -> ack $ sendRcpt conn
+    RcvConnection {} -> ack $ pure ()
     SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
     ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
     NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
   where
-    ack :: AM (Maybe ATransmission)
-    ack = do
+    ack :: AM () -> AM (Maybe ATransmission)
+    ack afterAck =
       -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
-      (rq, srvMsgId) <- withStore c $ \db -> setMsgUserAck db connId $ InternalId msgId
-      ackQueueMessage c rq srvMsgId
+      withStore' c (\db -> setMsgUserAck db connId $ InternalId msgId) >>= \case
+        Right (rq, srvMsgId) -> do
+          t_ <- ackQueueMessage c rq srvMsgId
+          afterAck
+          t_ <$ del
+        Left (SEMsgNotFound _) -> Nothing <$ del
+        Left e -> throwE $ storeError e
     del :: AM ()
     del = withStore' c $ \db -> deleteMsg db connId (InternalId msgId) >> mapM_ (deleteCommand db) cmdId_
     sendRcpt :: Connection 'CDuplex -> AM ()
@@ -3797,9 +3801,10 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                         liftEither (parse smpP (AGENT $ A_MESSAGE "parse msg body 1") agentMsgBody) >>= \case
                                           AgentMessage _ (A_MSG body) -> do
                                             logServer "<--" c srv rId $ "MSG <MSG>:" <> logSecret' (SMP.unMsgId srvMsgId)
-                                            notify $ MSG msgMeta msgFlags body
+                                            notify $ MSG msgMeta {redelivered = True} msgFlags body
                                             pure ACKPending
-                                          _ -> ack
+                                          AgentMessage _ (A_RCVD rcpts) -> qDuplex conn' "RCVD" $ messagesRcvd rcpts msgMeta {redelivered = True}
+                                          _ -> ackDel internalId
                               _ -> checkDuplicateHash e encryptedMsgHash >> ack
                           Left (AGENT (A_CRYPTO e)) -> do
                             incSMPServerStat c userId srv recvCryptoErrs
@@ -3838,7 +3843,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                 let integrity = checkMsgIntegrity prevExtSndId sndMsgId prevRcvMsgHash prevMsgHash
                                     recipient = (unId internalId, internalTs)
                                     broker = (srvMsgId, systemToUTCTime srvTs)
-                                    msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption}
+                                    msgMeta = MsgMeta {integrity, recipient, broker, sndMsgId, pqEncryption, redelivered = False}
                                     rcvMsg = RcvMsgData {msgMeta, msgType, msgFlags, msgBody = agentMsgBody, internalRcvId, internalHash, externalPrevSndHash = prevMsgHash, encryptedMsgHash}
                                 liftIO $ createRcvMsg db connId rq rcvMsg
                                 pure $ Just (internalId, msgMeta, aMessage, rc)
@@ -4087,28 +4092,30 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
               Nothing -> qError "QCONT: queue address not found"
 
           messagesRcvd :: NonEmpty AMessageReceipt -> MsgMeta -> Connection 'CDuplex -> AM ACKd
-          messagesRcvd rcpts msgMeta@MsgMeta {broker = (srvMsgId, _)} _ = do
+          messagesRcvd rcpts msgMeta@MsgMeta {recipient = (rcptMsgId, _), broker = (srvMsgId, _)} _ = do
             logServer "<--" c srv rId $ "MSG <RCPT>:" <> logSecret' (SMP.unMsgId srvMsgId)
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
-              Nothing -> notifyIntegrity msgMeta >> ack
+              Nothing -> notifyIntegrity msgMeta >> ackDel
             where
-              ack :: AM ACKd
-              ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
+              ackDel :: AM ACKd
+              ackDel = enqueueCmd (ICAckDel rId srvMsgId $ InternalId rcptMsgId) $> ACKd
               clientReceipt :: AMessageReceipt -> AM (Maybe MsgReceipt)
               clientReceipt AMessageReceipt {agentMsgId, msgHash} = do
                 let sndMsgId = InternalSndId agentMsgId
-                SndMsg {internalId = InternalId msgId, msgType, internalHash, msgReceipt} <- withStore c $ \db -> getSndMsgViaRcpt db connId sndMsgId
-                if msgType /= AM_A_MSG_
-                  then prohibited "receipt: not a msg" $> Nothing
-                  else case msgReceipt of
-                    Just MsgReceipt {msgRcptStatus = MROk} -> pure Nothing -- already notified with MROk status
-                    _ -> do
-                      let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
-                          rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
-                      withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId rcpt
-                      pure $ Just rcpt
+                withStore' c (\db -> getSndMsgViaRcpt db connId sndMsgId) >>= \case
+                  Right SndMsg {internalId = InternalId msgId, msgType, internalHash, msgReceipt}
+                    | msgType /= AM_A_MSG_ -> prohibited "receipt: not a msg" $> Nothing
+                    | otherwise -> case msgReceipt of
+                        Just MsgReceipt {agentMsgId = rcptId, msgRcptStatus = MROk} | rcptId /= rcptMsgId -> pure Nothing -- already notified with MROk status
+                        _ -> do
+                          let msgRcptStatus = if msgHash == internalHash then MROk else MRBadMsgHash
+                              rcpt = MsgReceipt {agentMsgId = msgId, msgRcptStatus}
+                          withStore' c $ \db -> updateSndMsgRcpt db connId sndMsgId MsgReceipt {agentMsgId = rcptMsgId, msgRcptStatus}
+                          pure $ Just rcpt
+                  Left (SEMsgNotFound _) -> pure Nothing
+                  Left e -> throwE $ storeError e
 
           -- processed by queue sender
           qAddMsg :: SMP.MsgId -> NonEmpty (SMPQueueUri, Maybe SndQAddr) -> Connection 'CDuplex -> AM ()
