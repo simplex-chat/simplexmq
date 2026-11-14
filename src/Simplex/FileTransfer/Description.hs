@@ -234,6 +234,7 @@ instance StrEncoding AFileDescription where
 
 validateFileDescription :: FileDescription p -> Either String (ValidFileDescription p)
 validateFileDescription fd@FileDescription {size, chunks, redirect}
+  | null chunks = Left "no chunks"
   | chunkNos /= [1 .. length chunks] = Left "chunk numbers are not sequential"
   | chunksSize chunks /= unFileSize size = Left "chunks total size is different than file size"
   | any incorrectChunkSize chunks = Left "incorrect chunk size"
