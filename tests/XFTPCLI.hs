@@ -1,20 +1,31 @@
-module XFTPCLI (xftpCLIFileTests, xftpCLI) where
+{-# LANGUAGE DisambiguateRecordFields #-}
 
+module XFTPCLI (xftpCLIFileTests, xftpCLIConcurrentTests, xftpCLI) where
+
+import Control.Concurrent (yield)
+import Control.Concurrent.Async (forConcurrently_)
+import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVarIO)
 import Control.Exception (try)
+import Control.Monad (forM_, when)
+import Control.Monad.Trans.Except (runExceptT)
 import qualified Data.ByteString as LB
+import Data.Int (Int64)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
+import Data.String (fromString)
 import Simplex.FileTransfer.Client.Main
   ( prepareChunkSizes,
     xftpClientCLI,
     xftpClientDeprecationNotice,
   )
+import qualified Simplex.FileTransfer.Client.Main as CLI
 import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Util (safeFileNameStr, uniqueCombine)
-import System.Directory (getFileSize, listDirectory)
+import Simplex.Messaging.Util (unlessM)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, getFileSize, listDirectory)
 import System.Environment (withArgs)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeFileName, (</>))
-import System.IO.Silently (capture, capture_)
+import System.IO.Silently (capture, capture_, silence)
 import Test.Hspec hiding (fit, it)
 import Util
 import Simplex.FileTransfer.Server.Env (AFStoreType)
@@ -42,6 +53,14 @@ xftpCLIFileTests = do
     fileNames = ["", ".", "..", "...", "../x", "../../etc/passwd", "/etc/cron.d/x", "a/b", "x/", "test.pdf", ".hidden", "a b.tar.gz"]
     sanitized n = let n' = safeFileNameStr n in n' /= "" && n' /= "." && n' /= ".."
     bareName n = let n' = safeFileNameStr n in n' == takeFileName n'
+
+xftpCLIConcurrentTests :: SpecWith AFStoreType
+xftpCLIConcurrentTests =
+  describe "concurrent transfers" $ do
+    it "should send files with one temporary folder" $ withXFTPServer testXFTPCLISendSharedTemp
+    it "should save file descriptions in one folder" $ withXFTPServer testXFTPCLISendSharedOutput
+    it "should receive files with one temporary folder" $ withXFTPServer testXFTPCLIReceiveSharedTemp
+    it "should save received files in one folder" $ withXFTPServer testXFTPCLIReceiveSharedOutput
 
 xftpCLI :: [String] -> IO [String]
 xftpCLI params = lines <$> capture_ (withArgs params xftpClientCLI)
@@ -161,6 +180,62 @@ testXFTPCLIDelete_ = do
   xftpCLI ["recv", fdRcv2, recipientFiles, "--tmp=" <> testDir]
     `shouldThrow` anyException
 
+testXFTPCLISendSharedTemp :: HasTestEnv => IO ()
+testXFTPCLISendSharedTemp = do
+  let tmpPath = testPath "xftp-tmp"
+      sndPath r i = senderFiles </> show r </> show i
+      rcvPath r i = recipientFiles </> show r </> show i
+  createDirectory tmpPath
+  forM_ [1 .. rounds] $ \r -> do
+    forM_ [1 .. transfers] $ \i -> do
+      createDirectoryIfMissing True $ sndPath r i
+      createDirectoryIfMissing True $ rcvPath r i
+      createTestFile $ sndPath r i
+    silence $ atOnce $ \i -> sendFile (\_ _ -> pure ()) (sndPath r i </> "testfile") (sndPath r i) tmpPath
+    silence $ forConcurrently_ [1 .. transfers] $ \i -> receiveFile (sndPath r i </> "testfile.xftp" </> "rcv1.xftp") (rcvPath r i) (rcvPath r i)
+    forM_ [1 .. transfers] $ \i -> do
+      file <- LB.readFile $ sndPath r i </> "testfile"
+      LB.readFile (rcvPath r i </> "testfile") `shouldReturn` file
+  listDirectory tmpPath `shouldReturn` []
+
+testXFTPCLISendSharedOutput :: HasTestEnv => IO ()
+testXFTPCLISendSharedOutput = do
+  filePath <- createTestFile senderFiles
+  let tmpPath i = testPath "xftp-tmp" </> show i
+  forM_ [1 .. transfers] $ createDirectoryIfMissing True . tmpPath
+  silence $ forM_ [1 .. rounds] $ \r -> do
+    let outPath = senderFiles </> show r
+    uploaded <- newBarrier transfers
+    forConcurrently_ [1 .. transfers] $ \i ->
+      sendFile (\sent total -> when (sent == total) uploaded) filePath outPath (tmpPath i)
+    length <$> listDirectory outPath `shouldReturn` transfers
+
+testXFTPCLIReceiveSharedTemp :: HasTestEnv => IO ()
+testXFTPCLIReceiveSharedTemp = do
+  (file, fdRcv) <- sendTestFile
+  let tmpPath = testPath "xftp-tmp"
+      outPath r i = recipientFiles </> show r </> show i
+  createDirectory tmpPath
+  silence $ forM_ [1 .. rounds] $ \r -> do
+    forM_ [1 .. transfers] $ \i -> copyFile fdRcv (fdCopy i) >> createDirectoryIfMissing True (outPath r i)
+    atOnce $ \i -> receiveFile (fdCopy i) (outPath r i) tmpPath
+    forM_ [1 .. transfers] $ \i -> LB.readFile (outPath r i </> "testfile") `shouldReturn` file
+  listDirectory tmpPath `shouldReturn` []
+
+testXFTPCLIReceiveSharedOutput :: HasTestEnv => IO ()
+testXFTPCLIReceiveSharedOutput = do
+  (file, fdRcv) <- sendTestFile
+  let tmpPath i = testPath "xftp-tmp" </> show i
+  forM_ [1 .. transfers] $ createDirectoryIfMissing True . tmpPath
+  silence $ forM_ [1 .. rounds] $ \r -> do
+    let outPath = recipientFiles </> show r
+    createDirectory outPath
+    forM_ [1 .. transfers] $ \i -> copyFile fdRcv (fdCopy i)
+    atOnce $ \i -> receiveFile (fdCopy i) outPath (tmpPath i)
+    files <- listDirectory outPath
+    length files `shouldBe` transfers
+    forM_ files $ \f -> LB.readFile (outPath </> f) `shouldReturn` file
+
 testReceivedFileNameCombine :: HasTestEnv => IO ()
 testReceivedFileNameCombine =
   uniqueCombine recipientFiles "../../escaped.txt" `shouldReturn` (recipientFiles </> "escaped.txt")
@@ -193,3 +268,65 @@ downloadProgress fileName s =
   "Downloading file..." `isPrefixOf` s
     && "Decrypting file..." `isInfixOf` s
     && ("File downloaded: " <> recipientFiles </> fileName <> "\r") `isSuffixOf` s
+
+transfers :: Int
+transfers = 8
+
+rounds :: Int
+rounds = 20
+
+createTestFile :: FilePath -> IO FilePath
+createTestFile dir = do
+  let filePath = dir </> "testfile"
+  xftpCLI ["rand", filePath, "1kb"] `shouldReturn` ["File created: " <> filePath]
+  pure filePath
+
+sendTestFile :: HasTestEnv => IO (LB.ByteString, FilePath)
+sendTestFile = do
+  filePath <- createTestFile senderFiles
+  silence $ sendFile (\_ _ -> pure ()) filePath senderFiles testDir
+  file <- LB.readFile filePath
+  pure (file, filePath <> ".xftp" </> "rcv1.xftp")
+
+sendFile :: HasTestEnv => (Int64 -> Int64 -> IO ()) -> FilePath -> FilePath -> FilePath -> IO ()
+sendFile notifyProgress src outPath tmpPath =
+  runExceptT (CLI.cliSendFileOpts opts False notifyProgress) `shouldReturn` Right ()
+  where
+    opts =
+      CLI.SendOptions
+        { filePath = src,
+          outputDir = Just outPath,
+          numRecipients = 1,
+          xftpServers = [fromString testXFTPServerStr],
+          retryCount = 3,
+          tempPath = Just tmpPath,
+          verbose = False
+        }
+
+receiveFile :: FilePath -> FilePath -> FilePath -> IO ()
+receiveFile fd outPath tmpPath =
+  runExceptT (CLI.cliReceiveFile opts) `shouldReturn` Right ()
+  where
+    opts =
+      CLI.ReceiveOptions
+        { fileDescription = fd,
+          filePath = Just outPath,
+          retryCount = 3,
+          tempPath = Just tmpPath,
+          verbose = False,
+          yes = True
+        }
+
+fdCopy :: HasTestEnv => Int -> FilePath
+fdCopy i = testPath $ "rcv" <> show i <> ".xftp"
+
+atOnce :: (Int -> IO ()) -> IO ()
+atOnce action = do
+  started <- newBarrier transfers
+  forConcurrently_ [1 .. transfers] $ \i -> started >> action i
+
+newBarrier :: Int -> IO (IO ())
+newBarrier n = do
+  arrived <- newTVarIO 0
+  let waitAll = unlessM ((== n) <$> readTVarIO arrived) $ yield >> waitAll
+  pure $ atomically (modifyTVar' arrived (+ 1)) >> waitAll
