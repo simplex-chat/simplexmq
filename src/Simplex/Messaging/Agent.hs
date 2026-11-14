@@ -80,6 +80,7 @@ module Simplex.Messaging.Agent
     acceptContact,
     rejectContact,
     rejectContactAsync,
+    deleteRequestInvitation,
     sendServiceRequest,
     sendServiceRequestAsync,
     sendServiceReply,
@@ -543,6 +544,9 @@ rejectContactAsync :: AgentClient -> ACorrId -> UserId -> ConfirmationId -> Mayb
 rejectContactAsync c = withAgentEnv c .:: rejectContactAsync' c
 {-# INLINE rejectContactAsync #-}
 
+deleteRequestInvitation :: AgentClient -> InvitationId -> AE ()
+deleteRequestInvitation c invId = withAgentEnv c $ withStore' c (`deleteInvitation` invId)
+
 sendServiceReply :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> MsgBody -> AE ConnId
 sendServiceReply c = withAgentEnv c .:: sendServiceReply' c
 {-# INLINE sendServiceReply #-}
@@ -992,6 +996,7 @@ acceptContactAsync' c corrId connId enableNtfs invId ownConnInfo pqSupport subMo
   joinCmd `catchAllErrors` \err -> do
     withStore' c (`unacceptInvitation` invId)
     throwE err
+  withStore' c (`deleteInvitation` invId)
 
 ackMessageAsync' :: AgentClient -> ACorrId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessageAsync' c corrId connId msgId rcptInfo_ = do
@@ -1749,7 +1754,7 @@ acceptContact' c nm userId connId enableNtfs invId ownConnInfo pqSupport subMode
         DuplexConnection _ (rq@RcvQueue {status = New} :| _) (sq@SndQueue {status = sqStatus} :| _)
           | sqStatus == New || sqStatus == Secured -> doJoin (Just rq) (Just sq)
         _ -> throwE $ CMD PROHIBITED $ "acceptContact: bad connection " <> show cType
-  withStore' c $ \db -> acceptInvitation db invId ownConnInfo
+  withStore' c (`deleteInvitation` invId)
   pure r
 
 rejectContact' :: AgentClient -> NetworkRequestMode -> UserId -> InvitationId -> Maybe ByteString -> AM ()
@@ -3750,13 +3755,13 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                                 notify $ MSG msgMeta msgFlags body
                                 pure ACKPending
                               A_RCVD rcpts -> qDuplex conn'' "RCVD" $ messagesRcvd rcpts msgMeta
-                              A_QCONT addr -> qDuplexAckDel conn'' "QCONT" $ continueSending srvMsgId addr
-                              QADD qs -> qDuplexAckDel conn'' "QADD" $ qAddMsg srvMsgId qs
-                              QKEY qs -> qDuplexAckDel conn'' "QKEY" $ qKeyMsg srvMsgId qs
-                              QUSE qs -> qDuplexAckDel conn'' "QUSE" $ qUseMsg srvMsgId qs
+                              A_QCONT addr -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QCONT" (continueSending srvMsgId addr)
+                              QADD qs -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QADD" (qAddMsg srvMsgId qs)
+                              QKEY qs -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QKEY" (qKeyMsg srvMsgId qs)
+                              QUSE qs -> notifyIntegrity msgMeta >> qDuplexAckDel conn'' "QUSE" (qUseMsg srvMsgId qs)
                               -- no action needed for QTEST
                               -- any message in the new queue will mark it active and trigger deletion of the old queue
-                              QTEST _ -> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' (SMP.unMsgId srvMsgId)) >> ackDel msgId
+                              QTEST _ -> notifyIntegrity msgMeta >> logServer "<--" c srv rId ("MSG <QTEST>:" <> logSecret' (SMP.unMsgId srvMsgId)) >> ackDel msgId
                               QEND addrs -> qDuplexAckDel conn'' "QEND" $ qEndMsg srvMsgId addrs
                               EREADY _ -> qDuplexAckDel conn'' "EREADY" $ ereadyMsg rcPrev
                             where
@@ -3897,6 +3902,9 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
           prohibited s = do
             logError $ "prohibited: " <> s
             notify . ERR . AGENT $ A_PROHIBITED $ T.unpack s
+
+          notifyIntegrity :: MsgMeta -> AM ()
+          notifyIntegrity mm = when (integrity mm /= MsgOk) $ notify $ MSGERR mm
 
           enqueueCmd :: InternalCommand -> AM ()
           enqueueCmd = enqueueCommand c "" connId (Just srv) . AInternalCommand
@@ -4084,7 +4092,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
             rs <- forM rcpts $ \rcpt -> clientReceipt rcpt `catchAllErrors` \e -> notify (ERR e) $> Nothing
             case L.nonEmpty . catMaybes $ L.toList rs of
               Just rs' -> notify (RCVD msgMeta rs') $> ACKPending
-              Nothing -> ack
+              Nothing -> notifyIntegrity msgMeta >> ack
             where
               ack :: AM ACKd
               ack = enqueueCmd (ICAck rId srvMsgId) $> ACKd
