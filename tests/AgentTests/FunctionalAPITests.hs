@@ -359,9 +359,9 @@ functionalAPITests ps = do
       withSmpServer ps testX25519SndKeys
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
-    xdescribe "one way (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 1000
+    describe "one way (200)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 200
     describe "two way concurrently (50)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 50
-    xdescribe "two way concurrently (1000)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 1000
+    describe "two way concurrently (200)" $ testMatrix2Stress ps $ runAgentClientStressTestConc 200
   describe "Establishing duplex connection, different PQ settings" $ do
     testPQMatrix2 ps $ runAgentClientTestPQ True
   describe "Establishing duplex connection v2, different Ratchet versions" $
@@ -530,12 +530,10 @@ functionalAPITests ps = do
     it "should send messages queued after file is sent before agent is suspended" $
       testSuspendingAgentCompleteSendingFile ps
   describe "Batching SMP commands" $ do
-    -- disable this and enable the following test to run tests with coverage
     it "should subscribe to multiple (200) subscriptions with batching" $
       testBatchedSubscriptions 200 20 ps
-    skip "faster version of the previous test (200 subscriptions gets very slow with test coverage)" $
-      it "should subscribe to multiple (6) subscriptions with batching" $
-        testBatchedSubscriptions 6 3 ps
+    it "should subscribe to multiple (6) subscriptions with batching" $
+      testBatchedSubscriptions 6 3 ps
     it "should subscribe to multiple connections with pending messages" $
       withSmpServer ps $
         testBatchedPendingMessages 10 5
@@ -668,10 +666,11 @@ functionalAPITimingTests ps = do
   describe "SMP queue info" $ do
     it "server should respond with queue and subscription information" $
       withSmpServer ps testServerQueueInfo
-#if !defined(dbServerPostgres)
-  describe "Client notices" $ do
-    it "should create client notice" $ testClientNotice ps
-#endif
+  case ps of
+    (_, ASType SQSMemory _) ->
+      describe "Client notices" $ do
+        it "should create client notice" $ testClientNotice ps
+    _ -> pure ()
 
 testBasicAuth :: HasTestEnv => (ASrvTransport, AStoreType) -> Bool -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> (Maybe BasicAuth, VersionSMP) -> SndQueueSecured -> AgentMsgId -> IO Int
 testBasicAuth (t, msType) allowNewQueues srv@(srvAuth, srvVersion) clnt1 clnt2 sqSecured baseId = do
@@ -3394,14 +3393,20 @@ testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do
       deleteFail a bIds'
       deleteFail b aIds'
   where
-    down c cs = do
-      ("", "", DOWN _ cs1) <- nGet c
-      ("", "", DOWN _ cs2) <- nGet c
-      liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
-    up c cs = do
-      ("", "", UP _ cs1) <- nGet c
-      ("", "", UP _ cs2) <- nGet c
-      liftIO $ S.fromList (cs1 ++ cs2) `shouldBe` S.fromList cs
+    down c = receivedFor $ do
+      ("", "", DOWN _ cs') <- nGet c
+      pure cs'
+    up c = receivedFor $ do
+      ("", "", UP _ cs') <- nGet c
+      pure cs'
+    receivedFor getConns cs = go S.empty
+      where
+        go received
+          | received == S.fromList cs = pure ()
+          | otherwise = do
+              cs' <- getConns
+              liftIO $ S.fromList cs' `S.isSubsetOf` S.fromList cs `shouldBe` True
+              go $ received <> S.fromList cs'
     subscribe :: AgentClient -> [ConnId] -> ExceptT AgentErrorType IO ()
     subscribe c cs = do
       subscribeAllConnections c False Nothing

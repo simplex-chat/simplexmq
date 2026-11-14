@@ -39,10 +39,9 @@ import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (ifM, unlessM)
+import Simplex.Messaging.Util (unlessM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.Info (os)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -139,15 +138,6 @@ testPrometheusMetricsFile = testPath "smp-server-metrics.txt"
 
 testServerStatsBackupFile :: HasTestEnv => FilePath
 testServerStatsBackupFile = testPath "smp-server-stats.log"
-
-xit' :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
-xit' d t = if os == "linux" then skip "skipped on Linux" $ it d t else it d t
-
-xit'' :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
-xit'' d t = skipOnCI $ it d t
-
-skipOnCI :: SpecWith a -> SpecWith a
-skipOnCI t = ifM (runIO envCI) (skip "skipped on CI" t) t
 
 testSMPClient :: (HasTestEnv, Transport c) => (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
