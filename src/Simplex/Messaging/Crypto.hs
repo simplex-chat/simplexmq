@@ -261,7 +261,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
-import Simplex.Messaging.Util (packZipWith, stateTVar', (<$?>))
+import Simplex.Messaging.Util (forceDecoded, packZipWith, stateTVar', (<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -1267,9 +1267,9 @@ newtype SignedObject a = SignedObject {getSignedExact :: X.SignedExact a}
 
 instance (Typeable a, Eq a, Show a, ASN1Object a) => FromField (SignedObject a) where
 #if defined(dbPostgres)
-  fromField f dat = SignedObject <$> blobFieldDecoder X.decodeSignedObject f dat
+  fromField f dat = SignedObject <$> blobFieldDecoder decodeSignedObject f dat
 #else
-  fromField = fmap SignedObject . blobFieldDecoder X.decodeSignedObject
+  fromField = fmap SignedObject . blobFieldDecoder decodeSignedObject
 #endif
 
 instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
@@ -1277,7 +1277,10 @@ instance (Eq a, Show a, ASN1Object a) => ToField (SignedObject a) where
 
 instance (Eq a, Show a, ASN1Object a) => Encoding (SignedObject a) where
   smpEncode (SignedObject exact) = smpEncode . Large $ X.encodeSignedObject exact
-  smpP = fmap SignedObject . X.decodeSignedObject . unLarge <$?> smpP
+  smpP = fmap SignedObject . decodeSignedObject . unLarge <$?> smpP
+
+decodeSignedObject :: (Eq a, Show a, ASN1Object a) => ByteString -> Either String (X.SignedExact a)
+decodeSignedObject = forceDecoded (length . show) . X.decodeSignedObject
 
 encodeCertChain :: X.CertificateChain -> L.NonEmpty Large
 encodeCertChain cc = L.fromList $ map Large blobs
@@ -1287,7 +1290,7 @@ encodeCertChain cc = L.fromList $ map Large blobs
 certChainP :: A.Parser X.CertificateChain
 certChainP = do
   rawChain <- X.CertificateChainRaw . map unLarge . L.toList <$> smpP
-  either (fail . show) pure $ X.decodeCertificateChain rawChain
+  either fail pure . forceDecoded (length . show) . first show $ X.decodeCertificateChain rawChain
 
 -- | Signature verification.
 --
@@ -1578,7 +1581,7 @@ x509ToPrivate' pk = x509ToPrivate (pk, []) >>= privKey
 {-# INLINE x509ToPrivate' #-}
 
 decodeASNKey :: ASN1Object a => ByteString -> Either String (a, [ASN1])
-decodeASNKey = fromASN1 <=< first show . decodeASN1 DER . fromStrict
+decodeASNKey = forceDecoded (length . snd) . fromASN1 <=< first show . decodeASN1 DER . fromStrict
 
 asnKeyError :: (a, [ASN1]) -> Either String b
 asnKeyError = \case

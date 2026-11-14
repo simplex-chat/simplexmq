@@ -30,6 +30,7 @@ import qualified Data.Aeson.Encoding as JE
 import qualified Data.Aeson.Types as JT
 import Data.Attoparsec.ByteString.Char8 (Parser)
 import qualified Data.Attoparsec.ByteString.Char8 as A
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as U
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -52,7 +53,7 @@ import qualified Data.X509.Validation as XV
 import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
+import Simplex.Messaging.Util (bshow, forceDecoded, safeDecodeUtf8, (<$?>))
 
 class TextEncoding a where
   textEncode :: a -> Text
@@ -164,7 +165,7 @@ instance StrEncoding UTCTime where
 instance StrEncoding X.CertificateChain where
   strEncode = (\(X.CertificateChainRaw blobs) -> strEncodeList blobs) . X.encodeCertificateChain
   {-# INLINE strEncode #-}
-  strP = either (fail . show) pure . X.decodeCertificateChain . X.CertificateChainRaw =<< strListP
+  strP = forceDecoded (length . show) . first show . X.decodeCertificateChain . X.CertificateChainRaw <$?> strListP
   {-# INLINE strP #-}
 
 instance StrEncoding XV.Fingerprint where
