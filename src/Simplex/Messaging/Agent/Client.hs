@@ -166,6 +166,7 @@ module Simplex.Messaging.Agent.Client
     waitUntilUploadsAllowed,
     withStore,
     withStore',
+    withStoreIsolation',
     withStoreBatch,
     withStoreBatch',
     unsafeWithStore,
@@ -249,7 +250,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), withTransactionIsolation)
 import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -2305,7 +2306,7 @@ waitForWork = void . atomically . readTMVar
 {-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
-withWork c doWork = withWork_ c doWork . withStore' c
+withWork c doWork = withWork_ c doWork . withStoreIsolation' c RepeatableRead
 {-# INLINE withWork #-}
 
 -- setting doWork flag to "no work" before getWork rather than after prevents race condition when flag is set to "has work" by another thread after getWork call.
@@ -2487,10 +2488,20 @@ withStore' c action = withStore c $ fmap Right . action
 {-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStore c action = do
+withStore c action = withStore_ c (`withTransaction` action)
+
+withStoreIsolation' :: AgentClient -> IsolationLevel -> (DB.Connection -> IO a) -> AM a
+withStoreIsolation' c isolation action = withStoreIsolation c isolation $ fmap Right . action
+{-# INLINE withStoreIsolation' #-}
+
+withStoreIsolation :: AgentClient -> IsolationLevel -> (DB.Connection -> IO (Either StoreError a)) -> AM a
+withStoreIsolation c isolation action = withStore_ c $ \st -> withTransactionIsolation st isolation action
+
+withStore_ :: AgentClient -> (DBStore -> IO (Either StoreError a)) -> AM a
+withStore_ c transaction = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catch` handleDBErrors
+    transaction st `E.catch` handleDBErrors
   where
     handleDBErrors :: E.SomeException -> IO (Either StoreError a)
     handleDBErrors e = pure $ Left $ case E.fromException e of

@@ -34,14 +34,15 @@ import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..))
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), defaultFileExpiration)
 import Simplex.FileTransfer.Server.Store (STMFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (AUTH))
-import Simplex.FileTransfer.Types (RcvFileId, SndFileId)
+import Simplex.FileTransfer.Types (FileErrorType (NO_FILE), RcvFileId, SndFileId)
 import Simplex.Messaging.Agent (AgentClient, testProtocolServer, xftpDeleteRcvFile, xftpDeleteSndFileInternal, xftpDeleteSndFileRemote, xftpPrepareReceiveFile, xftpPrepareSendFile, xftpReceiveFile, xftpSendDescription, xftpStartReceiveFile, xftpStartSendFile, xftpStartWorkers)
 import qualified Simplex.Messaging.Agent as XA
-import Simplex.Messaging.Agent.Client (AgentOpState (..), AgentOperation (..), ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, beginAgentOperation, endAgentOperation)
+import Simplex.Messaging.Agent.Client (AgentClient (xftpServersStats), AgentOpState (..), AgentOperation (..), ProtocolTestFailure (..), ProtocolTestStep (..), agentClientStore, beginAgentOperation, endAgentOperation)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, xftpCfg)
 import qualified Simplex.Messaging.Agent.Env.SQLite as AEnv
 import Simplex.Messaging.Agent.Protocol hiding (SFDONE)
 import qualified Simplex.Messaging.Agent.Protocol as A
+import Simplex.Messaging.Agent.Stats (AgentXFTPServerStats (downloadAttempts, uploadAttempts))
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore)
@@ -97,6 +98,10 @@ xftpAgentTests =
       -- TODO when server is fixed to correctly send AUTH error, this test has to be modified to expect AUTH error
       it "if file is deleted on server, should limit retries and continue receiving next file" testXFTPAgentDeleteOnServer
       it "if file is expired on server, should report error and continue receiving next file" testXFTPAgentExpiredOnServer
+      it "should report NO_FILE when file is deleted from database during upload" $ \_ -> testXFTPAgentDeleteDuringUpload agentCfg 1
+      it "should report NO_FILE when file is deleted from database while adding recipients" $ \_ ->
+        testXFTPAgentDeleteDuringUpload agentCfg {AEnv.xftpMaxRecipientsPerRequest = 1} 2
+      it "should report NO_FILE when file is deleted from database during download" $ \_ -> testXFTPAgentDeleteDuringDownload
       it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
       it "should complete sending file while agent is suspending" testXFTPAgentSuspendSending
       it "should suspend on timeout when file is not sent" $ \_ -> testXFTPAgentSuspendTimeout
@@ -1061,6 +1066,50 @@ testXFTPAgentExpiredOnServer fsType = withGlobalLogging logCfgNoLogs $
         runRight_ . void $ testReceive' rcp rfd2 filePath2
   where
     fastExpiration = ExpirationConfig {ttl = 2, checkInterval = 1}
+
+testXFTPAgentDeleteDuringUpload :: (HasCallStack, HasTestEnv) => AgentConfig -> Int -> IO ()
+testXFTPAgentDeleteDuringUpload cfg numRecipients = do
+  filePath <- createRandomFile
+  sfId <- withXFTPServerStoreLogOn $ \_ ->
+    withAgent 1 cfg initAgentServers testDB $ \sndr -> runRight $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      sfId <- xftpSendFile sndr 1 (CF.plain filePath) numRecipients
+      ("", sfId', SFPROG _ _) <- sfGet sndr
+      liftIO $ sfId' `shouldBe` sfId
+      pure sfId
+  withAgent 2 cfg {AEnv.xftpConsecutiveRetries = 100} initAgentServers testDB $ \sndr -> do
+    runRight_ $ xftpStartWorkers sndr (Just senderFiles)
+    waitForAttempt sndr uploadAttempts
+    withTransaction (agentClientStore sndr) (`DB.execute_` "DELETE FROM snd_files")
+    withXFTPServerStoreLogOn $ \_ ->
+      timeout 30000000 (sfGet sndr) >>= \case
+        Just ("", sfId', SFERR e) -> (sfId', e) `shouldBe` (sfId, FILE NO_FILE)
+        r -> expectationFailure $ "unexpected event " <> show r
+
+testXFTPAgentDeleteDuringDownload :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentDeleteDuringDownload = do
+  filePath <- createRandomFile
+  rfd <- withXFTPServerStoreLogOn $ \_ ->
+    withAgent 1 agentCfg initAgentServers testDB $ \sndr -> do
+      (_, _, rfd, _) <- runRight $ testSend sndr filePath
+      pure rfd
+  withAgent 2 agentCfg {AEnv.xftpConsecutiveRetries = 100} initAgentServers testDB2 $ \rcp -> do
+    rfId <- runRight $ do
+      xftpStartWorkers rcp (Just recipientFiles)
+      xftpReceiveFile rcp 1 rfd Nothing True
+    waitForAttempt rcp downloadAttempts
+    withTransaction (agentClientStore rcp) (`DB.execute_` "DELETE FROM rcv_files")
+    withXFTPServerStoreLogOn $ \_ ->
+      timeout 30000000 (rfGet rcp) >>= \case
+        Just ("", rfId', RFERR e) -> (rfId', e) `shouldBe` (rfId, FILE NO_FILE)
+        r -> expectationFailure $ "unexpected event " <> show r
+
+waitForAttempt :: HasCallStack => AgentClient -> (AgentXFTPServerStats -> TVar Int) -> IO ()
+waitForAttempt c attempts = do
+  n <- atomically count
+  timeout 10000000 (atomically $ count >>= checkSTM . (> n)) `shouldReturn` Just ()
+  where
+    count = readTVar (xftpServersStats c) >>= fmap sum . mapM (readTVar . attempts) . M.elems
 
 testXFTPAgentRequestAdditionalRecipientIDs :: (HasCallStack, HasTestEnv) => AFStoreType -> IO ()
 testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do

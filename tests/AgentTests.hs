@@ -19,7 +19,9 @@ import Simplex.Messaging.Server.Env.STM (AStoreType (..))
 import Simplex.Messaging.Transport (ASrvTransport)
 import Test.Hspec hiding (fit, it)
 
-#if !defined(dbPostgres)
+#if defined(dbPostgres)
+import AgentTests.FunctionalAPITests (workItemReadTests)
+#else
 import AgentTests.SQLiteTests (storeTests)
 #endif
 
@@ -34,6 +36,9 @@ agentCoreTests = do
   describe "Double ratchet tests" doubleRatchetTests
   describe "Short link tests" shortLinkTests
   describe "resolve names" resolveNameTests
+#if defined(dbPostgres)
+  describe "Work item reads" workItemReadTests
+#endif
 
 agentTests :: (ASrvTransport, AStoreType) -> Spec
 agentTests ps = do
