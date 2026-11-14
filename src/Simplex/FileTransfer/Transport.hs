@@ -67,7 +67,8 @@ import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, tshow, (<$?>), (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.IO (Handle, IOMode (..), withFile)
+import System.IO (Handle, IOMode (..), hClose, openFile)
+import qualified UnliftIO.Exception as UE
 
 data XFTPRcvChunkSpec = XFTPRcvChunkSpec
   { filePath :: FilePath,
@@ -237,7 +238,7 @@ receiveSbFile getBody h = receive
 
 receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
-  ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
+  ExceptT $ UE.bracket (openFile filePath WriteMode) hClose (`receive` chunkSize)
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
   when (digest' /= chunkDigest) $ throwE DIGEST
 
