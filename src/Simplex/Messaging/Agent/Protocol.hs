@@ -438,6 +438,7 @@ data AEvent (e :: AEntity) where
   MSG :: MsgMeta -> MsgFlags -> MsgBody -> AEvent AEConn
   MSGNTF :: MsgId -> Maybe UTCTime -> AEvent AEConn
   RCVD :: MsgMeta -> NonEmpty MsgReceipt -> AEvent AEConn
+  MSGERR :: MsgMeta -> AEvent AEConn
   QCONT :: AEvent AEConn
   DEL_RCVQS :: NonEmpty (ConnId, SMPServer, SMP.RecipientId, Maybe AgentErrorType) -> AEvent AEConn
   DEL_CONNS :: NonEmpty ConnId -> AEvent AEConn
@@ -522,6 +523,7 @@ data AEventTag (e :: AEntity) where
   MSG_ :: AEventTag AEConn
   MSGNTF_ :: AEventTag AEConn
   RCVD_ :: AEventTag AEConn
+  MSGERR_ :: AEventTag AEConn
   QCONT_ :: AEventTag AEConn
   DEL_RCVQS_ :: AEventTag AEConn
   DEL_CONNS_ :: AEventTag AEConn
@@ -588,6 +590,7 @@ aEventTag = \case
   MSG {} -> MSG_
   MSGNTF {} -> MSGNTF_
   RCVD {} -> RCVD_
+  MSGERR _ -> MSGERR_
   QCONT -> QCONT_
   DEL_RCVQS _ -> DEL_RCVQS_
   DEL_CONNS _ -> DEL_CONNS_
