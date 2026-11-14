@@ -2908,9 +2908,11 @@ tsIntegrationTests = describe "integration" $ do
   it "agent redirect: upload with redirect, download" $
     agentRedirectTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "agent download: accept only chunks of the size in the description" $
-    agentChunkSizeTest "null" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+    agentChunkSizeTest "r.server" "null" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent download: download chunks of one server in sequence for all its addresses" $
+    agentChunkSizeTest "r.server + ',' + chunkNo" "null" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "agent redirect: accept only chunks of the size in the description" $
-    agentChunkSizeTest "{size: 1024, digest: new Uint8Array(64)}" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+    agentChunkSizeTest "r.server" "{size: 1024, digest: new Uint8Array(64)}" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "cross-language: TS upload, Haskell download" $
     tsUploadHaskellDownloadTest testXFTPServerConfigSNI "tests/fixtures/ca.crt"
   it "cross-language: TS upload with redirect, Haskell download" $
@@ -3158,8 +3160,8 @@ agentRedirectTest cfg caFile = do
           <> jsOut "new Uint8Array([hasRedirect, nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1, 1]
 
-agentChunkSizeTest :: HasTestEnv => String -> XFTPServerConfig STMFileStore -> FilePath -> Expectation
-agentChunkSizeTest redirect cfg caFile = do
+agentChunkSizeTest :: HasTestEnv => String -> String -> XFTPServerConfig STMFileStore -> FilePath -> Expectation
+agentChunkSizeTest replicaServer redirect cfg caFile = do
   withXFTPServerCfg cfg $ \_ -> do
     Fingerprint fp <- loadFileFingerprint caFile
     let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
@@ -3179,7 +3181,11 @@ agentChunkSizeTest redirect cfg caFile = do
              \const {rcvDescription} = await Agent.uploadFile(uploadAgent, [server], encrypted);\
              \Agent.closeXFTPAgent(uploadAgent);\
              \const [chunk] = rcvDescription.chunks;\
-             \const chunks = [1, 2, 3, 4].map(chunkNo => ({...chunk, chunkNo, chunkSize: 65536}));\
+             \const chunks = [1, 2, 3, 4].map(chunkNo => ({\
+             \  ...chunk, chunkNo, chunkSize: 65536, replicas: chunk.replicas.map(r => ({...r, server: "
+          <> replicaServer
+          <> "}))\
+             \}));\
              \const fd = {...rcvDescription, size: 262144, chunkSize: 65536, chunks, redirect: "
           <> redirect
           <> "};\
