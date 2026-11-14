@@ -54,6 +54,7 @@ XFTP:
 - release the storage of interrupted uploads.
 - fix the size of received files with 3 or more chunks (#2067).
 - prevent work directory conflicts of concurrent file transfers.
+- prevent stuck network IO after interrupted transfers in builds with GHC 8.10 (#2070).
 
 Servers:
 - serve web pages over HTTP/1.1 only.
