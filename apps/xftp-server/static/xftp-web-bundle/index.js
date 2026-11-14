@@ -625,6 +625,7 @@ function parseReplicaField(entry, lines, nextIdx, group) {
   return nextIdx;
 }
 function validateFileDescription(fd) {
+  if (fd.chunks.length === 0) return "no chunks";
   for (let i = 0; i < fd.chunks.length; i++) {
     if (fd.chunks[i].chunkNo !== i + 1) return "chunk numbers are not sequential";
   }
