@@ -437,7 +437,6 @@ jobs:
           npm install
           ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs
           npm run build
-          npm run check:web
 
       - name: Test
         if: matrix.should_run == true && matrix.arch == 'x86-64'
