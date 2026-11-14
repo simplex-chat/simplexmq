@@ -63,10 +63,6 @@ export function base64urlDecode(s: string): Uint8Array {
 
 // -- FileSize encoding/decoding
 
-export const kb = (n: number): number => n * 1024
-export const mb = (n: number): number => n * 1048576
-export const gb = (n: number): number => n * 1073741824
-
 export function encodeFileSize(bytes: number): string {
   const ks = Math.floor(bytes / 1024)
   if (bytes % 1024 !== 0) return String(bytes)
