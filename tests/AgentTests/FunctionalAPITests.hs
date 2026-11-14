@@ -57,6 +57,9 @@ module AgentTests.FunctionalAPITests
     agentCfgVPrevPQ,
     agentCfgV7,
     testServerInformation,
+#if defined(dbPostgres)
+    workItemReadTests,
+#endif
   )
 where
 
@@ -132,9 +135,14 @@ import Util
 import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 
 #if defined(dbPostgres)
+import Database.PostgreSQL.Simple (Only (..), Query)
 import Fixtures
-import Simplex.Messaging.Agent.Store (RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (deleteClientService, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs)
+import Simplex.Messaging.Agent.Client (withStoreIsolation', withWork, withWorkItems)
+import Simplex.Messaging.Agent.Env.SQLite (AM)
+import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
+import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
+import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
 import qualified Database.PostgreSQL.Simple as PSQL
@@ -4860,6 +4868,129 @@ testTwoUsers = withAgentClients2 $ \a b -> do
         down cs = \case ("", "", AEvt SAENone (DOWN _ cs')) -> S.fromList cs' == S.fromList cs; _ -> False
         up :: ConnId -> ATransmission -> Bool
         up cId = \case ("", "", AEvt SAENone (UP _ [cId'])) -> cId' == cId; _ -> False
+
+#if defined(dbPostgres)
+workItemReadTests :: Spec
+workItemReadTests = do
+  it "should read a command deleted after its ID query" $
+    readWhileDeleting createCmd (lockTable "connections") "JOIN connections cs USING (conn_id)" "DELETE FROM commands" readCommand
+      `shouldReturn` True
+  it "should read a ntf subscription whose connection is deleted after its ID query" $
+    readWhileDeleting (createNtfSub $ NSANtf NSACreate) (lockTable "servers") "JOIN servers s ON s.host = ns.smp_host" "DELETE FROM connections" (readNtfActions testNtfServer)
+      `shouldReturn` True
+  it "should read a ntf SMP action whose connection is deleted after its ID query" $
+    readWhileDeleting (createNtfSub $ NSASMP NSASmpKey) (lockTable "ntf_servers") "JOIN ntf_servers s USING (ntf_host, ntf_port)" "DELETE FROM connections" (readSMPActions testSMPServer)
+      `shouldReturn` True
+  it "should retry the read when a file is deleted while its lock is awaited" $
+    readWhileDeleting createSndFile' (lockRows "snd_files") "redirect_size, redirect_digest, storage_time" "DELETE FROM snd_files" readSndFile
+      `shouldReturn` False
+  it "should retry the read when a ntf subscription is deleted while its update waits" $
+    readWhileDeleting (createNtfSub $ NSANtf NSACreate) (lockRows "ntf_subscriptions") "SET updated_by_supervisor = 0" "DELETE FROM ntf_subscriptions" (readNtfActions testNtfServer)
+      `shouldReturn` False
+  it "should retry the read aborted by deadlock with ntf subscription deletion" $
+    readWhileDeleting (createNtfSub $ NSANtf NSACreate) (lockTable "servers") "JOIN servers s ON s.host = ns.smp_host" "DELETE FROM ntf_subscriptions" (readNtfActions testNtfServer)
+      `shouldReturn` False
+  it "should mark a command failed when its read fails" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> createCmd db >> DB.execute_ db "UPDATE commands SET command = 'bad'::bytea"
+      doWork <- newTMVarIO ()
+      runReaderT (runExceptT $ readCommand a doWork $ \_ -> pure ()) (agentEnv a) `shouldReturn` Right ()
+      events <- atomically $ flushTBQueue $ subQ a
+      length (filter workerError events) `shouldBe` 1
+      withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
+  it "should retry the read 3 times on the same connection after serialization failures" $ do
+    (r, pids) <- readWithErrors 3 "40001"
+    r `shouldBe` Right ()
+    attemptsOn pids `shouldBe` (4, 1)
+  it "should retry the read after deadlocks" $ do
+    (r, pids) <- readWithErrors 2 "40P01"
+    r `shouldBe` Right ()
+    attemptsOn pids `shouldBe` (3, 1)
+  it "should report INTERNAL when serialization failures continue after 3 retries" $ do
+    (Left (A.INTERNAL e), pids) <- readWithErrors 4 "40001"
+    e `shouldContain` "sqlState = \\\"40001\\\""
+    attemptsOn pids `shouldBe` (4, 1)
+  it "should not retry the read after other database errors" $ do
+    (Left (A.INTERNAL e), pids) <- readWithErrors 1 "23505"
+    e `shouldContain` "sqlState = \\\"23505\\\""
+    attemptsOn pids `shouldBe` (1, 1)
+  where
+    attemptsOn :: [Int] -> (Int, Int)
+    attemptsOn pids = (length pids, S.size $ S.fromList pids)
+    createCmd :: DB.Connection -> IO ()
+    createCmd db = do
+      createConn db
+      createCommand db "1" "conn1" Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False) `shouldReturn` Right ()
+    readCommand a doWork = withWork a doWork $ \db -> getPendingServerCommand db "conn1" Nothing
+    createNtfSub :: HasTestEnv => NtfSubAction -> DB.Connection -> IO ()
+    createNtfSub action db = do
+      let ProtocolServer {host = ntfHost, port = ntfPort, keyHash = ntfKeyHash} = testNtfServer
+      createConn db
+      void $ createServer db testSMPServer
+      DB.execute db "INSERT INTO ntf_servers (ntf_host, ntf_port, ntf_key_hash) VALUES (?,?,?)" (ntfHost, ntfPort, ntfKeyHash)
+      createNtfSubscription db (newNtfSubscription 1 "conn1" testSMPServer Nothing testNtfServer NASNew) action `shouldReturn` Right ()
+    readNtfActions srv a doWork = withWorkItems a doWork $ withStoreIsolation' a RepeatableRead $ \db -> getNextNtfSubNTFActions db srv 10
+    readSMPActions srv a doWork = withWorkItems a doWork $ withStoreIsolation' a RepeatableRead $ \db -> getNextNtfSubSMPActions db srv 10
+    createSndFile' :: DB.Connection -> IO ()
+    createSndFile' db = do
+      g <- C.newRandom
+      key <- atomically $ C.randomSbKey g
+      nonce <- atomically $ C.randomCbNonce g
+      Right sfId <- createSndFile db g 1 (CryptoFile "testfile" Nothing) 1 "test.xftp" key nonce Nothing Nothing
+      startPreparedSndFile db sfId `shouldReturn` Right ()
+    readSndFile a doWork = withWork a doWork (`getNextSndFileToPrepare` 86400)
+    createConn :: DB.Connection -> IO ()
+    createConn db = DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn1" :: ConnId, SCMInvitation)
+    lockTable :: Query -> DB.Connection -> IO ()
+    lockTable table db = DB.execute_ db $ "LOCK TABLE " <> table <> " IN ACCESS EXCLUSIVE MODE"
+    lockRows :: Query -> DB.Connection -> IO ()
+    lockRows table db = void (DB.query_ db ("SELECT 1 FROM " <> table <> " FOR UPDATE") :: IO [Only Int])
+
+readWhileDeleting :: HasTestEnv => (DB.Connection -> IO ()) -> (DB.Connection -> IO ()) -> String -> Query -> (AgentClient -> TMVar () -> (a -> AM ()) -> AM ()) -> IO Bool
+readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+  withTransaction st createItem
+  doWork <- newTMVarIO ()
+  itemRead <- newTVarIO False
+  reading <- withTransaction st $ \db -> do
+    lockItem db
+    [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
+    r <- async $ runReaderT (runExceptT $ readItem a doWork $ \_ -> atomically $ writeTVar itemRead True) (agentEnv a)
+    waitForLock st holder waitingQuery
+    DB.execute_ db deleteItem
+    pure r
+  wait reading `shouldReturn` Right ()
+  events <- atomically $ flushTBQueue $ subQ a
+  filter workerError events `shouldBe` []
+  readTVarIO itemRead
+
+workerError :: ATransmission -> Bool
+workerError (_, _, AEvt _ e) = case e of
+  ERR _ -> True
+  ERRS _ -> True
+  _ -> False
+
+readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), [Int])
+readWithErrors failures errCode = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  pids <- newIORef []
+  r <- runReaderT (runExceptT $ withStoreIsolation' a RepeatableRead $ readItem pids) (agentEnv a)
+  (r,) <$> readIORef pids
+  where
+    readItem pids db = do
+      [Only pid] <- DB.query_ db "SELECT pg_backend_pid()"
+      n <- atomicModifyIORef' pids $ \ps -> (pid : ps, length ps)
+      when (n < failures) $ DB.execute_ db $ "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '" <> errCode <> "'; END $$"
+
+waitForLock :: DBStore -> Int -> String -> IO ()
+waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Just ()
+  where
+    waitLoop = do
+      [Only waiting] <-
+        withTransaction st $ \db ->
+          DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY (pg_blocking_pids(pid)) AND position(? IN query) > 0)" (holder, waitingQuery)
+      unless waiting $ threadDelay 10000 >> waitLoop
+#endif
 
 testClientServiceConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testClientServiceConnection ps = do
