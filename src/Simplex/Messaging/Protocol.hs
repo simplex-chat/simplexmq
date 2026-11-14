@@ -71,6 +71,7 @@ module Simplex.Messaging.Protocol
     QueueParty,
     BatchParty,
     ServiceParty,
+    ForwardParty,
     ASubscriberParty (..),
     BrokerMsg (..),
     SParty (..),
@@ -183,6 +184,7 @@ module Simplex.Messaging.Protocol
     queueParty,
     batchParty,
     serviceParty,
+    forwardParty,
     partyClientRole,
     partyServiceRole,
     userProtocol,
@@ -458,6 +460,21 @@ serviceParty = \case
   SNotifierService -> Just Dict
   _ -> Nothing
 {-# INLINE serviceParty #-}
+
+type family ForwardParty (p :: Party) :: Constraint where
+  ForwardParty Sender = ()
+  ForwardParty LinkClient = ()
+  ForwardParty Resolver = ()
+  ForwardParty p =
+    (Int ~ Bool, TypeError (Type.Text "Party " :<>: ShowType p :<>: Type.Text " is not ForwardParty"))
+
+forwardParty :: SParty p -> Maybe (Dict (PartyI p, ForwardParty p))
+forwardParty = \case
+  SSender -> Just Dict
+  SSenderLink -> Just Dict
+  SResolver -> Just Dict
+  _ -> Nothing
+{-# INLINE forwardParty #-}
 
 data ASubscriberParty = forall p. (PartyI p, ServiceParty p) => ASP (SParty p)
 

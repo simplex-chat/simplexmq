@@ -49,6 +49,17 @@ import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
 import Util
 
+#if defined(dbServerPostgres)
+import qualified Data.ByteString.Char8 as B
+import Data.Hashable (hash)
+import Data.Int (Int64)
+import Database.PostgreSQL.Simple (Binary (..), Only (..))
+import qualified Database.PostgreSQL.Simple as PSQL
+import Database.PostgreSQL.Simple.Types (Query (..))
+import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
+import Simplex.Messaging.Server.Env.STM (defaultForwardWorkers)
+#endif
+
 smpProxyTests :: SpecWith AStoreType
 smpProxyTests = do
   describe "server configuration" $ do
@@ -65,12 +76,6 @@ smpProxyTests = do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
   describe "proxy requests" $ do
-    describe "bad relay URIs" $ do
-      xit "host not resolved" todo
-      xit "when SMP port blackholed" todo
-      xit "no SMP service at host/port" todo
-      xit "bad SMP fingerprint" todo
-    xit "batching proxy requests" todo
     it "relay rejects forwarded command with changed version" $ \_ ->
       testChangedFwdVersion
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
@@ -111,21 +116,16 @@ smpProxyTests = do
         it "1x1000" $ twoServersFirstProxy $ deliver 1000
         it "5x200" $ twoServersFirstProxy $ 5 `inParrallel` deliver 200
         it "10x100" $ twoServersFirstProxy $ 10 `inParrallel` deliver 100
+        it "100x10 N1" $ twoServersFirstProxy $ withNumCapabilities 1 $ 100 `inParrallel` deliver 10
+        it "100x10 N4 C1" $ twoServersNoConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 10
+        it "100x10 N4 C2" $ twoServersFirstProxy $ withNumCapabilities 4 $ 100 `inParrallel` deliver 10
+        it "100x10 N4 C16" $ twoServersMoreConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 10
+        it "100x10 N" $ twoServersFirstProxy $ withNCPUCapabilities $ 100 `inParrallel` deliver 10
+        it "500x20" $ twoServersFirstProxy $ 500 `inParrallel` deliver 20
       describe "stress test - no host" $ do
         it "1x1000, no delay" $ oneServer $ proxyConnectDeadRelay 1000 0 srv1
-        xit "1x1000, 100ms" $ oneServer $ proxyConnectDeadRelay 1000 100000 srv1
-        xit "100x1000, 100ms" $ oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 1000 100000 srv1)
-      xdescribe "stress test 10k" $ do
-        let deliver n = deliverMessagesViaProxy srv1 srv2 C.SEd448 [] (map bshow [1 :: Int .. n])
-        it "1x10000" $ twoServersFirstProxy $ deliver 10000
-        it "5x2000" $ twoServersFirstProxy $ 5 `inParrallel` deliver 2000
-        it "10x1000" $ twoServersFirstProxy $ 10 `inParrallel` deliver 1000
-        it "100x100 N1" $ twoServersFirstProxy $ withNumCapabilities 1 $ 100 `inParrallel` deliver 100
-        it "100x100 N4 C1" $ twoServersNoConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
-        it "100x100 N4 C2" $ twoServersFirstProxy $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
-        it "100x100 N4 C16" $ twoServersMoreConc $ withNumCapabilities 4 $ 100 `inParrallel` deliver 100
-        it "100x100 N" $ twoServersFirstProxy $ withNCPUCapabilities $ 100 `inParrallel` deliver 100
-        it "500x20" $ twoServersFirstProxy $ 500 `inParrallel` deliver 20
+        it "1x100, 100ms" $ oneServer $ proxyConnectDeadRelay 100 100000 srv1
+        it "100x100, 100ms" $ oneServer $ 100 `inParrallel` (randomRIO (0, 1000000) >>= threadDelay >> proxyConnectDeadRelay 100 100000 srv1)
     describe "agent API" $ do
       describe "one server" $ do
         it "always via proxy" $ oneServer $
@@ -155,9 +155,7 @@ smpProxyTests = do
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
-      xdescribe "stress test 10k" $ do
-        let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
-        it "25 agents, 300 pairs, 17 messages" $ oneServer $ withNumCapabilities 4 $ deliver 25 17
+        it "10 agents, 45 pairs, 11 messages" $ oneServer $ withNumCapabilities 4 $ deliver 10 11
   where
     twoServers test msType = twoServers_ (proxyCfgMS msType) (proxyCfgMS msType) test msType
     twoServersFirstProxy test msType = twoServers_ (proxyCfgMS msType) (updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {msgQueueQuota = 128}) test msType
@@ -512,6 +510,66 @@ testForwardedAuthErrorDelay =
       sendTime `shouldSatisfy` (>= 0.5)
       getLinkTime `shouldSatisfy` (>= 0.5)
 
+#if defined(dbServerPostgres)
+smpProxyPostgresTests :: Spec
+smpProxyPostgresTests =
+  it "relay processes forwarded messages to other queues while one queue is locked" testForwardedQueueLocked
+
+testForwardedQueueLocked :: HasTestEnv => IO ()
+testForwardedQueueLocked =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) (updateCfg (cfgS2QS SQSPostgres) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}) testPort2 $ \_ -> do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (2, testSMPServer2, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      let newQueue = do
+            (rPub, rPriv) <- atomically $ C.generateAuthKeyPair C.SEd448 g
+            (rdhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+            SMP.QIK {rcvId, sndId} <- runExceptT' $ createSMPQueue rc NRMInteractive Nothing (rPub, rPriv) rdhPub Nothing SMOnlyCreate (QRMessaging Nothing) Nothing
+            pure (rcvId, sndId)
+          queueWorker (SMP.EntityId sId) = hash sId `mod` defaultForwardWorkers
+      (SMP.EntityId rIdA, sIdA) <- newQueue
+      let newQueueB = newQueue >>= \(_, sId) -> if queueWorker sId == queueWorker sIdA then newQueueB else pure sId
+      sIdB <- newQueueB
+      pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+      sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer2 Nothing
+      let proxySend sId = runExceptT' $ proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hello"
+      withPostgres $ \locker -> withPostgres $ \db -> do
+        PSQL.begin locker
+        [Only (1 :: Int)] <- PSQL.query locker "SELECT 1 FROM msg_queues WHERE recipient_id = ? FOR UPDATE" (Only $ Binary rIdA)
+        [Only (lockerPid :: Int)] <- PSQL.query_ locker "SELECT pg_backend_pid()"
+        withAsync (proxySend sIdA) $ \sendA -> do
+          let waitBlocked =
+                PSQL.query db "SELECT count(*) FROM pg_locks WHERE NOT granted AND ? = ANY(pg_blocking_pids(pid))" (Only lockerPid) >>= \case
+                  [Only (n :: Int64)] | n > 0 -> pure ()
+                  _ -> threadDelay 10000 >> waitBlocked
+          timeout 10000000 waitBlocked `shouldReturn` Just ()
+          timeout 10000000 (proxySend sIdB) `shouldReturn` Just (Right ())
+          withAsync (proxySend sIdA) $ \sendA' -> do
+            threadDelay 1500000
+            metric "simplex_smp_forward_worker_queue_length" `shouldReturn` 1
+            Nothing <- poll sendA
+            PSQL.rollback locker
+            wait sendA `shouldReturn` Right ()
+            wait sendA' `shouldReturn` Right ()
+        threadDelay 1500000
+        metric "simplex_smp_forward_worker_cmd_ms_count" `shouldReturn` 3
+        maxMs <- metric "simplex_smp_forward_worker_cmd_ms_max"
+        maxMs `shouldSatisfy` (>= 1500)
+        metric "simplex_smp_forward_worker_cmd_ms_sum" >>= (`shouldSatisfy` (>= maxMs + 1000))
+  where
+    metric name = do
+      ms <- map B.words . B.lines <$> B.readFile testPrometheusMetricsFile
+      case [v | n : v : _ <- ms, n == name] of
+        [v] -> pure (read $ B.unpack v :: Int)
+        _ -> fail $ "no metric " <> B.unpack name
+    withPostgres = bracket connectPostgres PSQL.close
+    connectPostgres = do
+      db <- PSQL.connectPostgreSQL testServerDBConnstr
+      _ <- PSQL.execute_ db $ Query $ "SET search_path TO " <> schema testStoreDBOpts2
+      pure db
+#endif
+
 -- Shared "phase 2" of the reconnection tests: start a healthy relay, confirm it is reachable
 -- directly (PING, not via the proxy) so a proxy failure can only mean the proxy didn't reconnect,
 -- let any stored connection error expire, then require the proxy to establish the session (PKEY).
@@ -594,9 +652,6 @@ testAgentClientReconnectAfterCancel =
         { smp = userServers [testSMPServer2],
           netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 4000000 4000000}
         }
-
-todo :: AStoreType -> IO ()
-todo _ = fail "TODO"
 
 runExceptT' :: Exception e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either throwIO pure

@@ -158,7 +158,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               unless msgsFileExists $ putStrLn $ storeMsgsFilePath <> " file does not exist."
               exitFailure
         (SCImport, DTQueues)
-          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | schemaExists && storeLogExists -> exitConfigureQueueStore schema
           | schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " already exists in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
@@ -216,7 +216,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               when msgsFileExists $ putStrLn $ storeMsgsFilePath <> " file already exists."
               exitFailure
         (SCExport, DTQueues)
-          | schemaExists && storeLogExists -> exitConfigureQueueStore connstr schema
+          | schemaExists && storeLogExists -> exitConfigureQueueStore schema
           | not schemaExists -> do
               putStrLn $ "Schema " <> B.unpack schema <> " does not exist in PostrgreSQL database: " <> B.unpack connstr
               exitFailure
@@ -499,6 +499,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
               ntfDeliveryInterval = 1500000, -- 1.5 second
+              ntfDeliveryChunk = 1000,
               authErrorDelay = 1000 * readIniDefault defaultAuthErrorDelayMs "TRANSPORT" "auth_error_delay_ms" ini,
               smpServerVRange = supportedServerSMPRelayVRange,
               transportConfig =
@@ -530,6 +531,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
               serverResolverConcurrency = readIniDefault defaultNameResolverConcurrency "NAMES" "resolver_concurrency" ini,
+              serverForwardWorkers = readIniDefault defaultForwardWorkers "PROXY" "forward_workers" ini,
               maxClientCmdWait = defaultMaxClientCmdWait,
               namesConfig = readNamesConfig ini,
               information = serverPublicInfo ini,
@@ -589,26 +591,26 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
       schemaExists <- checkSchemaExists connstr schema
       case enableDbStoreLog' ini of
         Just ()
-          | not schemaExists -> noDatabaseSchema connstr schema
+          | not schemaExists -> noDatabaseSchema schema
           | not storeLogExists -> do
               putStrLn $ "Error: db_store_log is `on`, " <> storeLogFilePath <> " does not exist"
               exitFailure
           | otherwise -> pure ()
         Nothing
-          | storeLogExists && schemaExists -> exitConfigureQueueStore connstr schema
+          | storeLogExists && schemaExists -> exitConfigureQueueStore schema
           | storeLogExists -> do
               putStrLn $ "Error: store_queues is `database` with " <> storeLogFilePath <> " file present."
               putStrLn "Set store_queues to `memory` or use `smp-server database import` to migrate."
               exitFailure
-          | not schemaExists -> noDatabaseSchema connstr schema
+          | not schemaExists -> noDatabaseSchema schema
           | otherwise -> pure ()
       where
-        noDatabaseSchema connstr schema = do
-          putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database " <> B.unpack connstr
+        noDatabaseSchema schema = do
+          putStrLn $ "Error: store_queues is `database`, create schema " <> B.unpack schema <> " in PostgreSQL database"
           exitFailure
 
-    exitConfigureQueueStore connstr schema = do
-      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present (database: " <> B.unpack connstr <> ")."
+    exitConfigureQueueStore schema = do
+      putStrLn $ "Error: both " <> storeLogFilePath <> " file and " <> B.unpack schema <> " schema are present."
       putStrLn "Configure queue storage."
       exitFailure
 

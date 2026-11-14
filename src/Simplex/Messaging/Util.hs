@@ -33,6 +33,7 @@ module Simplex.Messaging.Util
     tryAllErrors,
     tryAllErrors',
     catchAllErrors,
+    handleAllErrors,
     catchAllErrors',
     catchThrow,
     allFinally,
@@ -66,6 +67,7 @@ module Simplex.Messaging.Util
     encodeJSON,
     decodeJSON,
     traverseWithKey_,
+    writeFileAtomic,
   ) where
 
 import Control.Exception (AllocationLimitExceeded (..), AsyncException (..))
@@ -93,12 +95,14 @@ import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
+import qualified Data.Text.IO as T
 import Data.Time (NominalDiffTime)
 import Data.Tuple (swap)
 import Data.Word (Word8)
 import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Storable (peekByteOff, pokeByteOff)
 import GHC.Conc (labelThread, myThreadId, threadDelay)
+import System.Directory (renameFile)
 import UnliftIO hiding (atomicModifyIORef')
 import qualified UnliftIO.Exception as UE
 
@@ -291,6 +295,10 @@ catchAllErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> Except
 catchAllErrors action handler = tryAllErrors action >>= either handler pure
 {-# INLINE catchAllErrors #-}
 
+handleAllErrors :: (AnyError e, MonadUnliftIO m) => (e -> ExceptT e m a) -> ExceptT e m a -> ExceptT e m a
+handleAllErrors handler action = action `catchAllErrors` handler
+{-# INLINE handleAllErrors #-}
+
 catchAllErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> m a) -> m a
 catchAllErrors' action handler = tryAllErrors' action >>= either handler pure
 {-# INLINE catchAllErrors' #-}
@@ -436,3 +444,8 @@ decodeJSON = J.decodeStrict . encodeUtf8
 traverseWithKey_ :: Monad m => (k -> v -> m ()) -> Map k v -> m ()
 traverseWithKey_ f = M.foldrWithKey (\k v -> (f k v >>)) (pure ())
 {-# INLINE traverseWithKey_ #-}
+
+writeFileAtomic :: FilePath -> Text -> IO ()
+writeFileAtomic f s = T.writeFile tmp s >> renameFile tmp f
+  where
+    tmp = f <> ".tmp"

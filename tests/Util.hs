@@ -31,9 +31,6 @@ import Test.Hspec hiding (fit, it, xit)
 import qualified Test.Hspec as Hspec
 import Test.Hspec.Core.Spec (Example (..), Result (..), ResultStatus (..))
 
-skip :: String -> SpecWith a -> SpecWith a
-skip = before_ . pendingWith
-
 withNumCapabilities :: Int -> IO a -> IO a
 withNumCapabilities new a = getNumCapabilities >>= \old -> bracket_ (setNumCapabilities new) (setNumCapabilities old) a
 
@@ -129,7 +126,7 @@ instance Example a => Example (TestWrapper a) where
   type Arg (TestWrapper a) = Arg a
   evaluateExample (TestWrapper label action) params hooks state = do
     ci <- envCI
-    runTest `E.catches` [E.Handler (onTestFailure ci), E.Handler (onTestException ci)]
+    E.try runTest >>= either (\e -> maybe (onTestException ci e) (onTestFailure ci) (E.fromException e)) pure
     where
       tt = 300
       runTest =

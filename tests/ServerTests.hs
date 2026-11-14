@@ -28,12 +28,13 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
-import Data.Foldable (foldrM)
+import Data.Foldable (foldrM, toList)
 import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, isJust)
+import qualified Data.Set as S
 import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
@@ -52,7 +53,6 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..), QueueInfo (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
 import System.Directory (doesFileExist, removeFile)
@@ -118,6 +118,7 @@ serverTests = do
     testNotifierSubTwice
     testMessageServiceNotifications
     testServiceNotificationsTwoRestarts
+    testNotificationsInChunks
   describe "Message expiration" $ do
     testMsgExpireOnSend
     testMsgExpireOnInterval
@@ -1655,11 +1656,24 @@ testRestoreExpireMessages =
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
-testPrometheusMetrics =
+testPrometheusMetrics = do
   it "should save Prometheus metrics" $ \(at, msType) -> do
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
     withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1000000
     doesFileExist testPrometheusMetricsFile `shouldReturn` True
+  it "should save Prometheus metrics while they are read" $ \(at, msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        metricsTime = B.takeWhile (/= '\n') <$> B.readFile testPrometheusMetricsFile
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      recordedAt <- metricsTime
+      _ <- timeout 3000000 $ forever metricsTime
+      metricsTime `shouldNotReturn` recordedAt
+  it "should continue when Prometheus metrics cannot be saved" $ \(at@(ATransport t), msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1, prometheusMetricsFile = testPath "missing/smp-server-metrics.txt"}
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      runSMPClient t $ \_ -> pure ()
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
@@ -1994,6 +2008,49 @@ testServiceNotificationsTwoRestarts =
         Resp "" _ (NMSG _ _) <- tGet1 nh
         pure ()
 
+testNotificationsInChunks :: SpecWith (ASrvTransport, AStoreType)
+testNotificationsInChunks = do
+  it "should deliver pending notifications in chunks to queue subscriber" $ \(ATransport t, msType) ->
+    smpTest2Cfg (ntfChunkCfg msType) supportedClientSMPRelayVRange t $ \rh sh -> do
+      ntfs <- replicateM 5 $ createQueueWithPendingNtf rh sh
+      runSMPClient t $ \nh -> subscribeNotifiers nh Nothing ntfs
+  it "should deliver pending notifications in chunks to service subscriber" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    smpTest2Cfg (ntfChunkCfg msType) supportedClientSMPRelayVRange t $ \rh sh -> do
+      ntfs <- replicateM 5 $ createQueueWithPendingNtf rh sh
+      testNtfServiceClient t serviceKeys $ \nh -> subscribeNotifiers nh (Just servicePK) ntfs
+  where
+    ntfChunkCfg :: HasTestEnv => AStoreType -> AServerConfig
+    ntfChunkCfg msType = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {ntfDeliveryChunk = 2}
+    createQueueWithPendingNtf :: Transport c => THandleSMP c 'TClient -> THandleSMP c 'TClient -> IO (NotifierId, C.APrivateAuthKey)
+    createQueueWithPendingNtf rh sh = do
+      g <- C.newRandom
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      Resp "2" _ OK <- signSendRecv sh sKey ("2", sId, _SEND' "hello")
+      Resp "" _ (Msg _ _) <- tGet1 rh
+      pure (nId, nKey)
+    subscribeNotifiers :: Transport c => THandleSMP c 'TClient -> Maybe C.PrivateKeyEd25519 -> [(NotifierId, C.APrivateAuthKey)] -> IO ()
+    subscribeNotifiers nh serviceKey_ ntfs = do
+      forM_ ntfs $ \(nId, nKey) -> signSend_ nh nKey serviceKey_ ("3", nId, NSUB)
+      blocks <- receiveBlocks nh $ 2 * length ntfs
+      let ts = concat blocks
+          nIds = S.fromList $ map fst ntfs
+          nmsgIds b = [nId | Resp "" nId (NMSG _ _) <- b]
+      S.fromList [nId | Resp "3" nId (SOK _) <- ts] `shouldBe` nIds
+      S.fromList (nmsgIds ts) `shouldBe` nIds
+      map (length . nmsgIds) blocks `shouldSatisfy` all (<= 2)
+    receiveBlocks :: Transport c => THandleSMP c 'TClient -> Int -> IO [[Transmission (Either ErrorType BrokerMsg)]]
+    receiveBlocks h n
+      | n <= 0 = pure []
+      | otherwise = do
+          ts <- 5000000 `timeout` tGetClient h >>= maybe (error "receive timeout") (pure . toList)
+          (ts :) <$> receiveBlocks h (n - length ts)
+
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
@@ -2054,18 +2111,18 @@ testMsgNOTExpireOnInterval =
 
 testBlockMessageQueue :: SpecWith (ASrvTransport, AStoreType)
 testBlockMessageQueue =
-  -- TODO [postgres]
-  xit "should return BLOCKED error when queue is blocked" $ \ps@(ATransport (t :: TProxy c 'TServer), _) -> do
+  it "should return BLOCKED error when queue is blocked" $ \ps@(at@(ATransport (t :: TProxy c 'TServer)), msType) -> do
     g <- C.newRandom
-    (rId, sId) <- withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
+    let cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+    sId <- withSmpServerConfigOn at cfg' testPort $ runTest t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
       (rId1, NoEntity) #== "creates queue"
-      pure (rId, sId)
-
-    -- TODO [postgres] block via control port
-    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent Nothing
+      [_, blocked] <- controlPortCommands cpPort ["auth admin", "block " <> B.unpack (strEncode sId) <> " " <> B.unpack (strEncode $ BlockingInfo BRContent Nothing)]
+      blocked `shouldStartWith` "ok, queue blocked"
+      pure sId
 
     withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g

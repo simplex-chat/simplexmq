@@ -84,6 +84,11 @@ flag client_postgres
   manual: True
   default: False
 
+flag slow_servers
+  description: Delay XFTP server responses by responseDelay, for tests.
+  manual: True
+  default: False
+
 flag server_postgres
   description: Build server with support of PostgreSQL.
   manual: True
@@ -402,6 +407,8 @@ library
   default-language: Haskell2010
   if flag(swift)
     cpp-options: -DswiftJSON
+  if flag(slow_servers)
+    cpp-options: -Dslow_servers
   if !flag(client_library)
     build-depends:
         case-insensitive ==1.2.*
@@ -653,6 +660,8 @@ test-suite simplexmq-test
   default-language: Haskell2010
   if flag(server_postgres)
     cpp-options: -DdbServerPostgres
+  if flag(slow_servers)
+    cpp-options: -Dslow_servers
   if flag(client_postgres)
     cpp-options: -DdbPostgres
   else

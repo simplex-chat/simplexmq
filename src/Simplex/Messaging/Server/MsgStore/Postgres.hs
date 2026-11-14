@@ -39,11 +39,12 @@ import Data.Int (Int64)
 import Data.List (intersperse)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..))
-import Database.PostgreSQL.Simple (Binary (..), In (..), Only (..), (:.) (..))
+import Database.PostgreSQL.Simple (Binary (..), Only (..), (:.) (..))
 import qualified Database.PostgreSQL.Simple as DB
 import qualified Database.PostgreSQL.Simple.Copy as DB
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 import Database.PostgreSQL.Simple.ToField (ToField (..))
+import Database.PostgreSQL.Simple.Types (PGArray (..))
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol
@@ -203,13 +204,17 @@ instance MsgStoreClass PostgresMsgStore where
           DB.query
             db
             [sql|
-              SELECT DISTINCT ON (recipient_id)
-                recipient_id, msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
-              FROM messages
-              WHERE recipient_id IN ?
-              ORDER BY recipient_id, message_id ASC
+              SELECT r.recipient_id, m.msg_id, m.msg_ts, m.msg_quota, m.msg_ntf_flag, m.msg_body
+              FROM unnest(?::bytea[]) AS r(recipient_id)
+              CROSS JOIN LATERAL (
+                SELECT msg_id, msg_ts, msg_quota, msg_ntf_flag, msg_body
+                FROM messages
+                WHERE recipient_id = r.recipient_id
+                ORDER BY message_id ASC
+                LIMIT 1
+              ) m
             |]
-            (Only (In (map recipientId' qs)))
+            (Only (PGArray (map recipientId' qs)))
     where
       toRcvMsg (Only rId :. msg) = (rId, toMessage msg)
 

@@ -254,6 +254,7 @@ ntfServerTest storeLog = do
   r `shouldContain` ["SMP notifications server v" <> simplexmqVersionCommit]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Serving NTF protocol on port 443 (TLS)..."]
+  r `shouldNotSatisfy` any (B.unpack ntfTestServerDBConnstr `isInfixOf`)
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False
