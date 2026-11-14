@@ -20,7 +20,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (intercalate)
@@ -219,7 +219,7 @@ xftpWebSourceHygieneTests = describe "source hygiene" $ do
         messageAsHTML line = "innerHTML" `B.isInfixOf` line && any (`B.isInfixOf` line) ["msg", "message"]
     forM_ files $ \path -> do
       contents <- B.readFile path
-      (path, filter messageAsHTML $ B8.lines contents) `shouldBe` (path, [])
+      (path, filter messageAsHTML $ BC.lines contents) `shouldBe` (path, [])
 
 -- ── protocol/encoding ──────────────────────────────────────────────
 
