@@ -351,6 +351,8 @@ functionalAPITests ps = do
       withSmpServer ps testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer ps testEnablePQEncryption
+    it "should not store messages that are too large" $
+      withSmpServer ps testLargeMessageNotStored
     it "should refuse joining already used invitation and keep connection" $
       withSmpServer ps testJoinUsedInvitation
     it "should refuse confirmation with client version below the version of its agent" $
@@ -472,8 +474,6 @@ functionalAPITests ps = do
       testDuplicateMessage ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
-    it "should not store messages that are too large" $
-      withSmpServer ps testLargeMessageNotStored
     it "should connect to the server when server goes up if it initially was down" $
       testDeliveryAfterSubscriptionError ps
     it "should deliver messages if one of connections has quota exceeded" $
@@ -1052,6 +1052,18 @@ sndRcv pqEnc pqEnc' ((c1, id1), mId, msg) (c2, id2) = do
   get c1 =##> \case ("", connId, SENT mId') -> connId == id2 && mId' == mId; _ -> False
   get c2 =##> \case ("", connId, Msg' mId' pq msg') -> connId == id1 && mId' == mId && msg' == msg && pq == pqEnc; _ -> False
   ackMessage c2 id1 mId Nothing
+
+testLargeMessageNotStored :: (HasCallStack, HasTestEnv) => IO ()
+testLargeMessageNotStored =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage a bId PQEncOn SMP.noMsgFlags $ B.replicate (e2eEncAgentMsgLength PQSupportOn) 'a'
+    liftIO $ unreferencedMsgBodies a `shouldReturn` []
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    get b =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aId; _ -> False
+    ackMessage b aId 2 Nothing
+    liftIO $ skippedMsgKeys b `shouldReturn` []
 
 testAgentClient3 :: (HasCallStack, HasTestEnv) => IO ()
 testAgentClient3 =
@@ -2573,18 +2585,6 @@ testSkippedMessages (t, msType) = do
   where
     cfg' = withServerCfg (cfgMS msType) $ \cfg_ -> ASrvCfg SQSMemory SMSMemory cfg_ {serverStoreCfg = SSCMemory $ Just $ StorePaths testStoreLogFile Nothing}
 
-testLargeMessageNotStored :: (HasCallStack, HasTestEnv) => IO ()
-testLargeMessageNotStored =
-  withAgentClients2 $ \a b -> runRight_ $ do
-    (aId, bId) <- makeConnection a b
-    Left (A.CMD LARGE _) <- tryError $ A.sendMessage a bId PQEncOn SMP.noMsgFlags $ B.replicate (e2eEncAgentMsgLength PQSupportOn) 'a'
-    liftIO $ unreferencedMsgBodies a `shouldReturn` []
-    2 <- sendMessage a bId SMP.noMsgFlags "hello"
-    get a ##> ("", bId, SENT 2)
-    get b =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aId; _ -> False
-    ackMessage b aId 2 Nothing
-    liftIO $ skippedMsgKeys b `shouldReturn` []
-
 testDeliveryAfterSubscriptionError :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryAfterSubscriptionError ps = do
   (aId, bId) <- withAgentClients2 $ \a b -> do
@@ -3155,14 +3155,14 @@ processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` 
 sndMessages :: AgentClient -> IO [(ConnId, Int64)]
 sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
 
-unreferencedMsgBodies :: AgentClient -> IO [(Int64, ByteString)]
-unreferencedMsgBodies c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT snd_message_body_id, agent_msg FROM snd_message_bodies b WHERE NOT EXISTS (SELECT 1 FROM snd_messages m WHERE m.snd_message_body_id = b.snd_message_body_id)")
+connInvitations :: AgentClient -> IO [(InvitationId, Maybe ConnId)]
+connInvitations c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT invitation_id, contact_conn_id FROM conn_invitations")
+
+unreferencedMsgBodies :: AgentClient -> IO [(Int64, Int64)]
+unreferencedMsgBodies c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT snd_message_body_id, length(agent_msg) FROM snd_message_bodies b WHERE NOT EXISTS (SELECT 1 FROM snd_messages m WHERE m.snd_message_body_id = b.snd_message_body_id)")
 
 skippedMsgKeys :: AgentClient -> IO [(ConnId, Int64)]
 skippedMsgKeys c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, msg_n FROM skipped_messages")
-
-connInvitations :: AgentClient -> IO [(InvitationId, Maybe ConnId)]
-connInvitations c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT invitation_id, contact_conn_id FROM conn_invitations")
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
