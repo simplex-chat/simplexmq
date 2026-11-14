@@ -3017,11 +3017,11 @@ fullRoundTripTest cfg caFile = do
              \const rcvKeys = [K.encodePubKeyEd25519(rcvKp1.publicKey)];\
              \const {senderId, recipientIds} = await createXFTPChunk(agent, server, sndKp.privateKey, file, rcvKeys, null);\
              \await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData);\
-             \const dl1 = await downloadXFTPChunk(agent, server, rcvKp1.privateKey, recipientIds[0], digest);\
+             \const dl1 = await downloadXFTPChunk(agent, server, rcvKp1.privateKey, recipientIds[0], chunkData.length, digest);\
              \const match1 = dl1.length === chunkData.length && dl1.every((b, i) => b === chunkData[i]);\
              \const newIds = await addXFTPRecipients(agent, server, sndKp.privateKey, senderId,\
              \  [K.encodePubKeyEd25519(rcvKp2.publicKey)]);\
-             \const dl2 = await downloadXFTPChunk(agent, server, rcvKp2.privateKey, newIds[0], digest);\
+             \const dl2 = await downloadXFTPChunk(agent, server, rcvKp2.privateKey, newIds[0], chunkData.length, digest);\
              \const match2 = dl2.length === chunkData.length && dl2.every((b, i) => b === chunkData[i]);\
              \await deleteXFTPChunk(agent, server, sndKp.privateKey, senderId);\
              \closeXFTPAgent(agent);"

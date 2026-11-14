@@ -297,7 +297,7 @@ export async function downloadFileRaw(
       if (!replica) throw new Error("downloadFileRaw: chunk has no replicas")
       const seed = decodePrivKeyEd25519(replica.replicaKey)
       const kp = ed25519KeyPairFromSeed(seed)
-      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId)
+      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId, chunk.chunkSize)
       await onRawChunk({
         chunkNo: chunk.chunkNo,
         dhSecret: raw.dhSecret,
@@ -341,7 +341,7 @@ async function resolveRedirect(
     const server = parseXFTPServer(replica.server)
     const seed = decodePrivKeyEd25519(replica.replicaKey)
     const kp = ed25519KeyPairFromSeed(seed)
-    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.digest)
+    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.chunkSize, chunk.digest)
     plaintextChunks[chunk.chunkNo - 1] = data
   }
   const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0)
