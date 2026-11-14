@@ -11165,12 +11165,12 @@ async function downloadFileRaw(agent, fd, onRawChunk, options) {
   let downloaded = 0;
   const byServer = /* @__PURE__ */ new Map();
   for (const chunk of resolvedFd.chunks) {
-    const srv = chunk.replicas[0]?.server ?? "";
-    if (!byServer.has(srv)) byServer.set(srv, []);
-    byServer.get(srv).push(chunk);
+    const server = parseXFTPServer(chunk.replicas[0]?.server ?? "");
+    const key = formatXFTPServer(server);
+    if (!byServer.has(key)) byServer.set(key, { server, chunks: [] });
+    byServer.get(key).chunks.push(chunk);
   }
-  await Promise.all([...byServer.entries()].map(async ([srv, chunks]) => {
-    const server = parseXFTPServer(srv);
+  await Promise.all([...byServer.values()].map(async ({ server, chunks }) => {
     for (const chunk of chunks) {
       const replica = chunk.replicas[0];
       if (!replica) throw new Error("downloadFileRaw: chunk has no replicas");
