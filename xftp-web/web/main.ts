@@ -48,7 +48,8 @@ function initApp() {
 main().catch(err => {
   const app = getAppElement()
   if (app) {
-    app.innerHTML = `<div class="error"><p>${t('initError', 'Failed to initialize: %error%').replace('%error%', err.message)}</p></div>`
+    app.innerHTML = '<div class="error"><p></p></div>'
+    app.querySelector('p')!.textContent = t('initError', 'Failed to initialize: %error%').replace('%error%', err.message)
   }
   console.error(err)
 })
