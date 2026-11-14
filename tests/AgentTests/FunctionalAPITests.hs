@@ -376,6 +376,7 @@ functionalAPITests ps = do
       it "request with double ratchet, async accept" $ withSmpServer ps $ testDeleteAcceptedContactRequest True True
       it "request without double ratchet, async accept retried after error" $ withSmpServer ps $ testAcceptContactAsyncRetry False
       it "request with double ratchet, async accept retried after error" $ withSmpServer ps $ testAcceptContactAsyncRetry True
+    it "should delete contact request without sending rejection" $ withSmpServer ps testDeleteRequestInvitation
   describe "Establish duplex connection via contact address, different PQ settings" $ do
     testPQMatrix2NoInv ps $ runAgentClientContactTestPQ True True
   describe "Establish duplex connection via contact address v2, different Ratchet versions" $
@@ -1201,6 +1202,19 @@ testAcceptContactAsyncRetry useDR = withAgent 2 agentCfg initAgentServers testDB
       get alice =##> \case ("1", c, A.JOINED _) -> c == bobId; _ -> False
       ("", _, A.CONF confId _ _ "alice's connInfo") <- get bob
       allowConfirmGreet alice bobId bob aliceId confId IKPQOn $ PQEncryption $ pqConnectionMode IKPQOn PQSupportOn
+
+testDeleteRequestInvitation :: (HasCallStack, HasTestEnv) => IO ()
+testDeleteRequestInvitation =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (addrConnId, CCLink connReq Nothing) <- A.createConnection alice NRMInteractive 1 True True SCMContact Nothing Nothing IKPQOn True SMSubscribe
+    (aliceId, _) <- A.prepareConnectionToJoin bob 1 True connReq PQSupportOn
+    void $ A.joinConnection bob NRMInteractive 1 aliceId True connReq "bob's connInfo" PQSupportOn SMSubscribe
+    ("", _, A.REQ invId _ _ "bob's connInfo" _ True) <- get alice
+    liftIO $ connInvitations alice `shouldReturn` [(invId, Just addrConnId)]
+    deleteRequestInvitation alice invId
+    liftIO $ connInvitations alice `shouldReturn` []
+    deleteRequestInvitation alice invId
+    liftIO $ noMessages bob "nothing delivered to bob"
 
 allowConfirmGreet :: HasCallStack => AgentClient -> ConnId -> AgentClient -> ConnId -> ConfirmationId -> InitialKeys -> PQEncryption -> ExceptT AgentErrorType IO ()
 allowConfirmGreet alice bobId bob aliceId confId addrIK pqEnc = do
