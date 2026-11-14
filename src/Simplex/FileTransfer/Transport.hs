@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
@@ -67,7 +68,12 @@ import Simplex.Messaging.Transport.HTTP2.File
 import Simplex.Messaging.Util (bshow, tshow, (<$?>), (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+#if __GLASGOW_HASKELL__ == 810
+import System.IO (Handle, IOMode (..), hClose, openFile)
+import qualified UnliftIO.Exception as UE
+#else
 import System.IO (Handle, IOMode (..), withFile)
+#endif
 
 data XFTPRcvChunkSpec = XFTPRcvChunkSpec
   { filePath :: FilePath,
@@ -237,7 +243,11 @@ receiveSbFile getBody h = receive
 
 receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
+#if __GLASGOW_HASKELL__ == 810
+  ExceptT $ UE.bracket (openFile filePath WriteMode) hClose (`receive` chunkSize)
+#else
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
+#endif
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
   when (digest' /= chunkDigest) $ throwE DIGEST
 
