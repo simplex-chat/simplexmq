@@ -98,7 +98,12 @@ export function initUpload(app: HTMLElement) {
   }
 
   function showError(msg: string) {
-    errorMsg.innerHTML = msg
+    errorMsg.textContent = msg
+    showStage(errorStage)
+  }
+
+  function showErrorHTML(html: string) {
+    errorMsg.innerHTML = html
     showStage(errorStage)
   }
 
@@ -107,11 +112,11 @@ export function initUpload(app: HTMLElement) {
     aborted = false
 
     if (file.size > MAX_SIZE) {
-      showError(t('fileTooLarge', 'File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.').replace('%size%', formatSize(file.size)))
+      showErrorHTML(t('fileTooLarge', 'File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.').replace('%size%', formatSize(file.size)))
       return
     }
     if (file.size === 0) {
-      showError(t('fileEmpty', 'File is empty.'))
+      showErrorHTML(t('fileEmpty', 'File is empty.'))
       return
     }
 

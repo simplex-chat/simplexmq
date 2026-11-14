@@ -11301,17 +11301,21 @@ function initUpload(app) {
     stage.hidden = false;
   }
   function showError(msg) {
-    errorMsg.innerHTML = msg;
+    errorMsg.textContent = msg;
+    showStage(errorStage);
+  }
+  function showErrorHTML(html) {
+    errorMsg.innerHTML = html;
     showStage(errorStage);
   }
   async function startUpload(file) {
     aborted = false;
     if (file.size > MAX_SIZE) {
-      showError(t("fileTooLarge", "File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.").replace("%size%", formatSize$1(file.size)));
+      showErrorHTML(t("fileTooLarge", "File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.").replace("%size%", formatSize$1(file.size)));
       return;
     }
     if (file.size === 0) {
-      showError(t("fileEmpty", "File is empty."));
+      showErrorHTML(t("fileEmpty", "File is empty."));
       return;
     }
     showStage(progressStage);
@@ -11449,7 +11453,7 @@ function initDownload(app, hash) {
     stage.hidden = false;
   }
   function showError(msg) {
-    errorMsg.innerHTML = msg;
+    errorMsg.textContent = msg;
     showStage(errorStage);
   }
   if (wrongServer) {
@@ -11584,7 +11588,8 @@ window.__xftp_initApp = async () => {
 main().catch((err) => {
   const app = getAppElement();
   if (app) {
-    app.innerHTML = `<div class="error"><p>${t("initError", "Failed to initialize: %error%").replace("%error%", err.message)}</p></div>`;
+    app.innerHTML = '<div class="error"><p></p></div>';
+    app.querySelector("p").textContent = t("initError", "Failed to initialize: %error%").replace("%error%", err.message);
   }
   console.error(err);
 });
