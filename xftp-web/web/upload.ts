@@ -116,7 +116,7 @@ export function initUpload(app: HTMLElement) {
       return
     }
     if (file.size === 0) {
-      showErrorHTML(t('fileEmpty', 'File is empty.'))
+      showError(t('fileEmpty', 'File is empty.'))
       return
     }
 
