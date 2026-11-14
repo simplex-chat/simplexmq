@@ -2278,6 +2278,21 @@ tsDescriptionTests = describe "protocol/description" $ do
             <> jsOut "new TextEncoder().encode([tooLarge || 'ok', atLimit || 'ok'].join(','))"
       tsResult `shouldBe` "redirect file description is too large,ok"
 
+    it "no chunks" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "fd.chunks = [];"
+            <> "fd.size = 0;"
+            <> "const r = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(r || 'ok')"
+      tsResult `shouldBe` "no chunks"
+
 -- ── protocol/chunks ───────────────────────────────────────────────
 
 tsChunkTests :: Spec
