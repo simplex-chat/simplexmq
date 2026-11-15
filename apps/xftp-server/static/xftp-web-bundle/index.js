@@ -625,12 +625,15 @@ function parseReplicaField(entry, lines, nextIdx, group) {
   return nextIdx;
 }
 function validateFileDescription(fd) {
+  if (fd.chunks.length === 0) return "no chunks";
   for (let i = 0; i < fd.chunks.length; i++) {
     if (fd.chunks[i].chunkNo !== i + 1) return "chunk numbers are not sequential";
   }
   let total = 0;
   for (const c of fd.chunks) total += c.chunkSize;
   if (total !== fd.size) return "chunks total size is different than file size";
+  if (fd.chunks.some((c) => !serverChunkSizes.includes(c.chunkSize))) return "incorrect chunk size";
+  if (fd.redirect !== null && fd.size > chunkSize3) return "redirect file description is too large";
   return null;
 }
 
@@ -10279,6 +10282,7 @@ const chunkSize0 = kb(64);
 const chunkSize1 = kb(256);
 const chunkSize2 = mb(1);
 const chunkSize3 = mb(4);
+const serverChunkSizes = [chunkSize0, chunkSize1, chunkSize2, chunkSize3];
 const fileSizeLen = 8;
 const authTagSize = 16;
 function size34(sz) {
@@ -10961,16 +10965,17 @@ async function uploadXFTPChunk(agent, server, spKey, fId, chunkData) {
   const { response } = await sendXFTPCommand(agent, server, spKey, fId, encodeFPUT(), chunkData);
   if (response.type !== "FROk") throw new Error("unexpected response: " + response.type);
 }
-async function downloadXFTPChunkRaw(agent, server, rpKey, fId) {
+async function downloadXFTPChunkRaw(agent, server, rpKey, fId, chunkSize) {
   const { publicKey, privateKey } = generateX25519KeyPair();
   const cmd = encodeFGET(encodePubKeyX25519(publicKey));
   const { response, body } = await sendXFTPCommand(agent, server, rpKey, fId, cmd);
   if (response.type !== "FRFile") throw new Error("unexpected response: " + response.type);
+  if (body.length !== chunkSize + authTagSize) throw new Error("chunk size mismatch");
   const dhSecret = dh(response.rcvDhKey, privateKey);
   return { dhSecret, nonce: response.nonce, body };
 }
-async function downloadXFTPChunk(agent, server, rpKey, fId, digest) {
-  const { dhSecret, nonce, body } = await downloadXFTPChunkRaw(agent, server, rpKey, fId);
+async function downloadXFTPChunk(agent, server, rpKey, fId, chunkSize, digest) {
+  const { dhSecret, nonce, body } = await downloadXFTPChunkRaw(agent, server, rpKey, fId, chunkSize);
   return decryptReceivedChunk(dhSecret, nonce, body, digest ?? null);
 }
 
@@ -11161,18 +11166,18 @@ async function downloadFileRaw(agent, fd, onRawChunk, options) {
   let downloaded = 0;
   const byServer = /* @__PURE__ */ new Map();
   for (const chunk of resolvedFd.chunks) {
-    const srv = chunk.replicas[0]?.server ?? "";
-    if (!byServer.has(srv)) byServer.set(srv, []);
-    byServer.get(srv).push(chunk);
+    const server = parseXFTPServer(chunk.replicas[0]?.server ?? "");
+    const key = formatXFTPServer(server);
+    if (!byServer.has(key)) byServer.set(key, { server, chunks: [] });
+    byServer.get(key).chunks.push(chunk);
   }
-  await Promise.all([...byServer.entries()].map(async ([srv, chunks]) => {
-    const server = parseXFTPServer(srv);
+  await Promise.all([...byServer.values()].map(async ({ server, chunks }) => {
     for (const chunk of chunks) {
       const replica = chunk.replicas[0];
       if (!replica) throw new Error("downloadFileRaw: chunk has no replicas");
       const seed = decodePrivKeyEd25519(replica.replicaKey);
       const kp = ed25519KeyPairFromSeed(seed);
-      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId);
+      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId, chunk.chunkSize);
       await onRawChunk({
         chunkNo: chunk.chunkNo,
         dhSecret: raw.dhSecret,
@@ -11194,7 +11199,7 @@ async function resolveRedirect(agent, fd) {
     const server = parseXFTPServer(replica.server);
     const seed = decodePrivKeyEd25519(replica.replicaKey);
     const kp = ed25519KeyPairFromSeed(seed);
-    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.digest);
+    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.chunkSize, chunk.digest);
     plaintextChunks[chunk.chunkNo - 1] = data;
   }
   const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0);
@@ -11301,13 +11306,17 @@ function initUpload(app) {
     stage.hidden = false;
   }
   function showError(msg) {
-    errorMsg.innerHTML = msg;
+    errorMsg.textContent = msg;
+    showStage(errorStage);
+  }
+  function showErrorHTML(html) {
+    errorMsg.innerHTML = html;
     showStage(errorStage);
   }
   async function startUpload(file) {
     aborted = false;
     if (file.size > MAX_SIZE) {
-      showError(t("fileTooLarge", "File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.").replace("%size%", formatSize$1(file.size)));
+      showErrorHTML(t("fileTooLarge", "File too large (%size%). Maximum is 100 MB. The SimpleX app supports files up to 1 GB.").replace("%size%", formatSize$1(file.size)));
       return;
     }
     if (file.size === 0) {
@@ -11449,7 +11458,7 @@ function initDownload(app, hash) {
     stage.hidden = false;
   }
   function showError(msg) {
-    errorMsg.innerHTML = msg;
+    errorMsg.textContent = msg;
     showStage(errorStage);
   }
   if (wrongServer) {
@@ -11584,7 +11593,8 @@ window.__xftp_initApp = async () => {
 main().catch((err) => {
   const app = getAppElement();
   if (app) {
-    app.innerHTML = `<div class="error"><p>${t("initError", "Failed to initialize: %error%").replace("%error%", err.message)}</p></div>`;
+    app.innerHTML = '<div class="error"><p></p></div>';
+    app.querySelector("p").textContent = t("initError", "Failed to initialize: %error%").replace("%error%", err.message);
   }
   console.error(err);
 });

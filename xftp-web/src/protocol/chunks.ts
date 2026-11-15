@@ -3,10 +3,13 @@
 // Computes chunk sizes for file uploads, chunk specifications with offsets,
 // and per-chunk SHA-256 digests.
 
-import {kb, mb} from "./description.js"
 import {sha256} from "../crypto/digest.js"
 
 // -- Chunk size constants (Simplex.FileTransfer.Chunks)
+
+export const kb = (n: number): number => n * 1024
+export const mb = (n: number): number => n * 1048576
+export const gb = (n: number): number => n * 1073741824
 
 export const chunkSize0 = kb(64)   // 65536
 export const chunkSize1 = kb(256)  // 262144

@@ -64,7 +64,7 @@ export function initDownload(app: HTMLElement, hash: string) {
   }
 
   function showError(msg: string) {
-    errorMsg.innerHTML = msg
+    errorMsg.textContent = msg
     showStage(errorStage)
   }
 
