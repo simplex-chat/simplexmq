@@ -104,6 +104,7 @@ xftpServerTests = do
       it "should count stored files after restart without stats backup" $ testFileStatsRestart False
       it "should count stored files after restart with stats backup" $ testFileStatsRestart True
       it "should count stored files after deletion" testFileStatsDelete
+      it "should remove files without stored chunks when the server starts" testRemoveUnstoredFiles
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False

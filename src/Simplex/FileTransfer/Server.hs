@@ -139,6 +139,7 @@ xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> 
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
   expireServerFiles Nothing fileExpiration
   removeTmpUploads
+  removeUnstoredFiles
   restoreServerStats
   expireServerFiles Nothing fileExpiration `onException` stopServer
   raceAny_
@@ -758,6 +759,22 @@ expireServerFiles itemDelay expCfg = do
 
 periodStatsInterval :: Int64
 periodStatsInterval = 86400
+
+removeUnstoredFiles :: FileStoreClass s => M s ()
+removeUnstoredFiles = do
+  dir <- asks $ filesPath . config
+  st <- asks fileStore
+  whenM ((> 0) <$> liftIO (getFileCount st)) $ do
+    removed <- filterM (unstored st) =<< listDirectory dir
+    forM_ removed $ \f -> removeFile (dir </> f) `catchAny` \_ -> pure ()
+    unless (null removed) $ logNote $ "Removed " <> tshow (length removed) <> " files without records"
+  where
+    unstored st name = case B64.decode $ B.pack name of
+      Right sId ->
+        liftIO (getFile st SFSender $ EntityId sId) >>= \case
+          Right (FileRec {filePath}, _) -> isNothing <$> readTVarIO filePath
+          Left e -> pure $ e == AUTH
+      Left _ -> pure False
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random
