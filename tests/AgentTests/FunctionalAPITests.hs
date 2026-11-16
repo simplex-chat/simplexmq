@@ -123,7 +123,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, VersionSMP, currentServerSMPRelayVersion, minClientSMPRelayVersion, minServerSMPRelayVersion, alpnSupportedSMPHandshakes)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
-import Simplex.Messaging.Util (bshow, diffToMicroseconds)
+import Simplex.Messaging.Util (bshow, diffToMicroseconds, unlessM)
 import Simplex.Messaging.Version (VersionRange (..))
 import qualified Simplex.Messaging.Version as V
 import Simplex.Messaging.Version.Internal (Version (..))
@@ -557,6 +557,8 @@ functionalAPITests ps = do
       testBasicMatrix2 ps testAcceptContactAsync
     it "should delete connections using async command when server connection fails" $
       testDeleteConnectionAsync ps
+    it "should delete connection without receive queue when event queue is full" $
+      testDeleteConnectionAsyncFullQueue
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError ps
     describe "delete connection waiting for delivery" $ do
@@ -575,6 +577,8 @@ functionalAPITests ps = do
       withSmpServer ps testUsers
     it "should create and delete user without connections" $
       withSmpServer ps testDeleteUserQuietly
+    it "should delete user without connections when event queue is full" $
+      testDeleteUserFullQueue
     it "should create and delete user with connections when server connection fails" $
       testUsersNoServer ps
     it "should connect two users and switch session mode" $
@@ -3760,6 +3764,20 @@ testDeleteConnectionAsync ps =
       get a =##> \case ("", "", DEL_CONNS cs) -> length cs == 3 && all (`elem` connIds) cs; _ -> False
       liftIO $ noMessages a "nothing else should be delivered to alice"
 
+testDeleteConnectionAsyncFullQueue :: HasTestEnv => IO ()
+testDeleteConnectionAsyncFullQueue =
+  withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+    (connId, _) <- runRight $ A.prepareConnectionToJoin a 1 True (CRInvitationUri connReqData testE2ERatchetParams12) PQSupportOn
+    fillSubQ a
+    timeout 5000000 (runExceptT $ deleteConnectionsAsync a False [connId]) `shouldReturn` Just (Right ())
+    void . atomically . flushTBQueue $ subQ a
+    get a =##> \case ("", "", DEL_CONNS [c]) -> c == connId; _ -> False
+
+fillSubQ :: AgentClient -> IO ()
+fillSubQ c = atomically fill
+  where
+    fill = unlessM (isFullTBQueue $ subQ c) $ writeTBQueue (subQ c) ("", "", AEvt SAENone SUSPENDED) >> fill
+
 testWaitDeliveryNoPending :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
 testWaitDeliveryNoPending ps = withAgentClients2 $ \alice bob ->
   withSmpServerStoreLogOn ps testPort $ \_ -> runRight_ $ do
@@ -4050,6 +4068,15 @@ testDeleteUserQuietly =
     deleteUser a auId False
     exchangeGreetingsMsgId 4 a bId b aId
     liftIO $ noMessages a "nothing else should be delivered to alice"
+
+testDeleteUserFullQueue :: HasTestEnv => IO ()
+testDeleteUserFullQueue =
+  withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+    auId <- runRight $ createUser a False [noAuthSrvCfg testSMPServer] [noAuthSrvCfg testXFTPServer]
+    fillSubQ a
+    timeout 5000000 (runExceptT $ deleteUser a auId True) `shouldReturn` Just (Right ())
+    void . atomically . flushTBQueue $ subQ a
+    nGet a =##> \case ("", "", DEL_USER u) -> u == auId; _ -> False
 
 testUsersNoServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testUsersNoServer ps = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
