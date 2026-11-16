@@ -9,6 +9,8 @@ module Simplex.Messaging.Crypto.Secp256k1
     Secp256k1Context,
     PubKeyFormat (..),
     RecoverableSignature (..),
+    serializeSignature,
+    deserializeSignature,
     mkPrivateKey,
     unPrivateKey,
     withContext,
@@ -33,6 +35,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Foreign hiding (void)
 import Foreign.C
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -81,6 +84,21 @@ data RecoverableSignature = RecoverableSignature
     rsRecId :: Word8
   }
   deriving (Eq, Show)
+
+serializeSignature :: RecoverableSignature -> ByteString
+serializeSignature RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)
+
+deserializeSignature :: ByteString -> Either String RecoverableSignature
+deserializeSignature s = case B.unpack v of
+  [v'] | v' == 27 || v' == 28 -> Right RecoverableSignature {rsR, rsS, rsRecId = v' - 27}
+  _ -> Left "signature: expected r, s and v of 27 or 28"
+  where
+    (rsR, (rsS, v)) = B.splitAt compactScalarSize <$> B.splitAt compactScalarSize s
+    compactScalarSize = compactSigSize `div` 2
+
+instance ToField RecoverableSignature where toField = toField . Binary . serializeSignature
+
+instance FromField RecoverableSignature where fromField = blobFieldDecoder deserializeSignature
 
 -- FFI
 

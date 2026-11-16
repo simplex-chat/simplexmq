@@ -32,7 +32,7 @@ import Data.Functor (($>))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
-import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..), fromTextField_)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder, fromTextField_)
 import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
@@ -79,7 +79,7 @@ nameLabelP = do
 
 -- | The registry's key for a label: 32 bytes, as labelOf takes it.
 newtype LabelHash = LabelHash ByteString
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 -- | keccak-256 of the lowercased label, as the registry keys it.
 labelHash :: Text -> LabelHash
@@ -89,7 +89,14 @@ instance StrEncoding LabelHash where
   strEncode (LabelHash h) = '[' `B.cons` (BAE.convertToBase BAE.Base16 h `B.snoc` ']')
   strP = do
     h <- BAE.convertFromBase BAE.Base16 <$?> (A.char '[' *> A.takeWhile (/= ']') <* A.char ']')
-    if B.length h == 32 then pure $ LabelHash h else fail "bad LabelHash"
+    either fail pure $ labelHashBytes h
+
+labelHashBytes :: ByteString -> Either String LabelHash
+labelHashBytes h = if B.length h == 32 then Right $ LabelHash h else Left "bad LabelHash"
+
+instance ToField LabelHash where toField (LabelHash h) = toField $ Binary h
+
+instance FromField LabelHash where fromField = blobFieldDecoder labelHashBytes
 
 -- | Cap the name at 253 bytes (DNS full-domain limit)
 boundedNonSpace :: A.Parser ByteString

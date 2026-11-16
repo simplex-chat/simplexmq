@@ -16,7 +16,7 @@ import qualified Data.ByteString as B
 import Data.WideWord.Word256 (Word256)
 import Data.Word (Word64)
 import Simplex.Messaging.Crypto (keccak256)
-import Simplex.Messaging.Crypto.Secp256k1 (RecoverableSignature (..))
+import Simplex.Messaging.Crypto.Secp256k1 (serializeSignature)
 import Simplex.Messaging.Eth.Address (Address, unAddress)
 
 data Eip712Domain = Eip712Domain
@@ -50,6 +50,3 @@ domainSeparator Eip712Domain {edName, edVersion, edChainId, edVerifyingContract}
 
 hashTypedData :: Eip712Domain -> ByteString -> [Eip712Value] -> ByteString
 hashTypedData domain typeString members = keccak256 $ "\x19\x01" <> domainSeparator domain <> hashStruct typeString members
-
-serializeSignature :: RecoverableSignature -> ByteString
-serializeSignature RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)
