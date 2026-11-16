@@ -248,11 +248,11 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
 
 testCancelledClientConnect :: HasTestEnv => Expectation
 testCancelledClientConnect =
-  withStallingServerOn' xftpTestPort $ \accepted closed -> do
+  withStallingServerOn' xftpTestPort $ \accepted closed -> replicateM_ 1000 $ do
     ts <- getCurrentTime
     a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
-    cancel a
+    timeout 5000000 (cancel a) `shouldReturn` Just ()
     timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
