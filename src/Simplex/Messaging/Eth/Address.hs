@@ -6,6 +6,7 @@
 module Simplex.Messaging.Eth.Address
   ( Address,
     unAddress,
+    addressFromBytes,
     addressFromPublicKey,
     addressFromPrivateKey,
     recoverAddress,
@@ -50,14 +51,18 @@ instance StrEncoding Address where
 
 instance ToField Address where toField (Address a) = toField $ Binary a
 
-instance FromField Address where
-  fromField = blobFieldDecoder $ \a -> if B.length a == addressSize then Right $ Address a else Left "address: expected 20 bytes"
+instance FromField Address where fromField = blobFieldDecoder addressFromBytes
 
 addressSize :: Int
 addressSize = 20
 
 unAddress :: Address -> ByteString
 unAddress (Address bs) = bs
+
+addressFromBytes :: ByteString -> Either String Address
+addressFromBytes a
+  | B.length a == addressSize = Right $ Address a
+  | otherwise = Left "address: expected 20 bytes"
 
 -- | The last 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
 addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address

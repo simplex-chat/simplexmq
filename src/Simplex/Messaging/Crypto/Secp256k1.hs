@@ -11,6 +11,7 @@ module Simplex.Messaging.Crypto.Secp256k1
     RecoverableSignature (..),
     serializeSignature,
     deserializeSignature,
+    lowS,
     mkPrivateKey,
     unPrivateKey,
     withContext,
@@ -26,7 +27,7 @@ where
 import Control.Concurrent.STM
 import Control.Exception (bracket, throwIO)
 import Control.Monad (void, when)
-import Crypto.Number.Serialize (i2ospOf_)
+import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
@@ -95,6 +96,9 @@ deserializeSignature s = case B.unpack v of
   where
     (rsR, (rsS, v)) = B.splitAt compactScalarSize <$> B.splitAt compactScalarSize s
     compactScalarSize = compactSigSize `div` 2
+
+lowS :: RecoverableSignature -> Bool
+lowS RecoverableSignature {rsS} = os2ip rsS <= ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) `div` 2
 
 instance ToField RecoverableSignature where toField = toField . Binary . serializeSignature
 

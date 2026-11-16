@@ -9,6 +9,7 @@ import Control.Monad (forM_)
 import Crypto.Number.Serialize (i2osp)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
+import qualified Data.Attoparsec.ByteString as A
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
@@ -324,6 +325,10 @@ rlpTests = do
     toHex (rlpEncode $ scalarItem $ B.replicate 32 0) `shouldBe` "80"
     toHex (rlpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
     toHex (rlpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
+  it "decodes each encoding, and refuses one the encoder does not produce" $ do
+    forM_ rlpVectors $ \(_, item, expected) -> (rlpEncode <$> A.parseOnly (rlpP <* A.endOfInput) (hx expected)) `shouldBe` Right (rlpEncode item)
+    forM_ ["8100", "817f", "b801ff", "b90038" <> B.concat (replicate 56 "61"), "c1", "83646f"] $ \encoded ->
+      (encoded, isLeft $ A.parseOnly (rlpP <* A.endOfInput) (hx encoded)) `shouldBe` (encoded, True)
   where
     rlpVectors =
       [ ("the empty string", RLPBytes "", "80"),
@@ -383,6 +388,15 @@ transactionTests g = do
   it "encodes every word of fields wider than 64 bits" $
     (B.isInfixOf wideFields . toHex <$$> signEip1559Tx g txKey wide)
       `shouldReturn` Right True
+  it "decodes a signed transaction to its fields and the signature its signer recovers from" $
+    forM_ [contractCall, transfer, wide] $ \tx -> do
+      (decoded, sig) <- right . decodeEip1559Tx . right <$> signEip1559Tx g txKey tx
+      decoded `shouldBe` tx
+      (strEncode <$$> recoverAddress sig (eip1559SigningHash decoded)) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+  it "refuses another transaction type and trailing bytes" $ do
+    raw <- right <$> signEip1559Tx g txKey transfer
+    isLeft (decodeEip1559Tx $ B.cons 0x01 $ B.drop 1 raw) `shouldBe` True
+    isLeft (decodeEip1559Tx $ raw <> "\0") `shouldBe` True
   where
     to = right $ strDecode "0x3535353535353535353535353535353535353535"
     contractCall = Eip1559Tx {txChainId = 11155111, txNonce = 9, txMaxPriorityFeePerGas = 1000000000, txMaxFeePerGas = 30000000000, txGasLimit = 100000, txTo = to, txValue = 0, txData = hx "f14fcbc8" <> B.replicate 32 0x11}
