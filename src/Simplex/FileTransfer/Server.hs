@@ -25,6 +25,7 @@ import Control.Monad.Reader
 import Control.Monad.Trans.Except
 import qualified Data.Aeson as J
 import Data.Bifunctor (first)
+import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -34,7 +35,7 @@ import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
@@ -91,7 +92,7 @@ import System.Random (getStdRandom, randomR)
 #endif
 import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
-import UnliftIO.Directory (canonicalizePath, doesFileExist, removeFile, renameFile)
+import UnliftIO.Directory (canonicalizePath, doesFileExist, listDirectory, removeFile, renameFile)
 import qualified UnliftIO.Exception as E
 
 type M s a = ReaderT (XFTPEnv s) IO a
@@ -136,6 +137,7 @@ data EntitlementChecked = EntNotChecked | EntChecked (Maybe SessionEntitlement)
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
   expireServerFiles Nothing fileExpiration
+  removeUnstoredFiles
   restoreServerStats
   raceAny_
     ( runServer
@@ -734,6 +736,22 @@ expireServerFiles itemDelay expCfg = do
         expireLoop st us now old
     removeExpiredFile fp =
       removeFile fp `catch` \e -> unless (isDoesNotExistError e) $ logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+
+removeUnstoredFiles :: FileStoreClass s => M s ()
+removeUnstoredFiles = do
+  dir <- asks $ filesPath . config
+  st <- asks fileStore
+  whenM ((> 0) <$> liftIO (getFileCount st)) $ do
+    removed <- filterM (unstored st) =<< listDirectory dir
+    forM_ removed $ \f -> removeFile (dir </> f) `catchAny` \_ -> pure ()
+    unless (null removed) $ logNote $ "Removed " <> tshow (length removed) <> " files without records"
+  where
+    unstored st name = case B64.decode $ B.pack name of
+      Right sId ->
+        liftIO (getFile st SFSender $ EntityId sId) >>= \case
+          Right (FileRec {filePath}, _) -> isNothing <$> readTVarIO filePath
+          Left e -> pure $ e == AUTH
+      Left _ -> pure False
 
 randomId :: Int -> M s ByteString
 randomId n = atomically . C.randomBytes n =<< asks random

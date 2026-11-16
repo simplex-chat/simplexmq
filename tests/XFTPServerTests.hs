@@ -82,6 +82,7 @@ xftpServerTests = do
       it "should cancel a stalled upload and release its storage when its chunk is uploaded again" testCancelStalledChunkUpload
       it "should remove a chunk uploaded while its file expires" testUploadDuringExpiration
       it "should store file records to log and restore them after server restart" testFileLog
+      it "should remove files without stored chunks when the server starts" testRemoveUnstoredFiles
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -398,6 +399,26 @@ testUploadDuringExpiration fsType = do
     timeout 10000000 waitRemoved `shouldReturn` Just ()
   where
     fileExpiration = ExpirationConfig {ttl = 3600, checkInterval = 1}
+
+testRemoveUnstoredFiles :: HasTestEnv => AFStoreType -> Expectation
+testRemoveUnstoredFiles fsType = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  bytes <- createTestChunk testChunkPath
+  digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+  let file = FileInfo {sndKey, size = chSize, digest}
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+  (sId, rId, partialId) <- withXFTPServerConfigOn (cfgFSTestFiles fsType) $ \_ -> testXFTPClient $ \c -> runRight $ do
+    (sId, [rId]) <- createXFTPChunk c spKey file [rcvKey] Nothing
+    uploadXFTPChunk c spKey sId chunkSpec
+    (partialId, _) <- createXFTPChunk c spKey file [rcvKey] Nothing
+    pure (sId, rId, partialId)
+  forM_ ([partialId, EntityId "orphan_file_0000"] :: [SenderId]) $ \fId -> B.writeFile (xftpServerFiles </> serverFileName fId) "partial"
+  withXFTPServerConfigOn (cfgFSTestFiles fsType) $ \_ -> do
+    listDirectory xftpServerFiles `shouldReturn` [serverFileName sId]
+    testXFTPClient $ \c -> runRight_ $ downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
+  B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
 testFileLog :: HasTestEnv => AFStoreType -> Expectation
 testFileLog _ = do
