@@ -927,8 +927,8 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
   lift $ saveServersStats c
   where
     delUser =
-      whenM (withStore' c (`deleteUserWithoutConns` userId)) . atomically $
-        writeTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
+      whenM (withStore' c (`deleteUserWithoutConns` userId)) . liftIO $
+        nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
 
 setUserService' :: AgentClient -> UserId -> Bool -> AM ()
 setUserService' c userId enable = do
@@ -3063,7 +3063,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
     unsubNtfConnIds connIds' = do
       ns <- asks ntfSupervisor
       atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
-    notify = atomically . writeTBQueue (subQ c)
+    notify = liftIO . nonBlockingWriteTBQueue (subQ c)
 
 deleteConnQueues :: AgentClient -> NetworkRequestMode -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c nm waitDelivery ntf rqs = do
