@@ -203,7 +203,8 @@ receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E
   where
     receive h sz = hReceiveFile getBody h sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
     handlers =
-      [ E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
+      [ E.Handler $ \(e :: E.SomeAsyncException) -> E.throwIO e,
+        E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
         E.Handler $ \(e :: E.SomeException) -> logError (err e) $> Left FILE_IO
       ]
     err e = "receiveFile error: " <> tshow e

@@ -29,6 +29,7 @@ import Data.ByteString.Builder (Builder, byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
+import Data.Either (fromRight)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
@@ -577,11 +578,16 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> withUploadLock receiveUncommitted >>= maybe skipCommitted pure
+      Just getBody -> replaceUpload $ receiveUncommitted >>= maybe skipCommitted pure
         where
-          withUploadLock a = do
+          replaceUpload upload = do
             uploads <- asks uploadingFiles
-            bracket_ (atomically $ ifM (TM.member senderId uploads) retrySTM (TM.insert senderId () uploads)) (atomically $ TM.delete senderId uploads) a
+            prevUpload <- newEmptyTMVarIO
+            let startUpload = do
+                  a <- asyncWithUnmask $ \unmask -> uninterruptibleMask_ (atomically $ readTMVar prevUpload) >>= mapM_ uninterruptibleCancel >> unmask upload
+                  a <$ atomically (TM.lookupInsert senderId a uploads >>= putTMVar prevUpload)
+                removeUpload a = uninterruptibleCancel a >> atomically (TM.alter (mfilter (/= a)) senderId uploads)
+            fromRight (FRErr TIMEOUT) <$> bracket startUpload removeUpload waitCatch
           -- having a filePath means the file is already uploaded and committed, must not change anything
           receiveUncommitted = do
             st <- asks fileStore

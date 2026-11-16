@@ -32,6 +32,7 @@ module Simplex.FileTransfer.Server.Env
     exportFromDatabase,
   ) where
 
+import Control.Concurrent.Async (Async)
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
@@ -45,7 +46,7 @@ import Data.Word (Word16, Word32)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), FileResponse, XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
@@ -133,7 +134,7 @@ data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,
     store :: FileStore s,
     usedStorage :: TVar Int64,
-    uploadingFiles :: TMap SenderId (),
+    uploadingFiles :: TMap SenderId (Async FileResponse),
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
