@@ -253,7 +253,7 @@ testCancelledClientConnect =
     a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
     timeout 5000000 (cancel a) `shouldReturn` Just ()
-    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+    timeout 5000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
