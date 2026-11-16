@@ -1,3 +1,117 @@
+# 7.1.0
+
+Version 7.1.0.18
+
+_Please note_: this version supports SMP protocol versions 15 to 23. Servers and clients before simplexmq 6.4.0 cannot connect to servers and clients of this version. This includes SimpleX Chat apps before v6.3.3.
+
+SMP protocol:
+- server information in the handshake (v21).
+- SimpleX names: lookups by label hash, name availability and prices (v22).
+- forwarded commands use nonces bound to the protocol version (v23).
+- the minimum supported version is 15.
+
+SMP agent:
+- agent protocol v8:
+  - post-quantum encryption from the first message to contact addresses.
+  - requests to service addresses.
+  - faster queue rotation, also when the current server is offline.
+- drop support for agent protocol versions before 6 and e2e encryption versions before 3.
+- authorize sender commands with X25519 keys, for deniability (#2054).
+- improve double ratchet: limit skipped message keys, prevent replay of ratchet keys, more reliable ratchet synchronization (#1922).
+- security codes include post-quantum handshake keys (#1874).
+- stricter validation of connection handshakes.
+- private routing: stricter checks of protected IP addresses and of known servers, and name lookups via private routing.
+- APIs to prepare invitation links and file transfers in advance, and to get security codes of multiple connections.
+- delete contact requests after they are accepted (#2068), API to delete contact requests without rejection (#2069).
+- report skipped messages also when an agent message follows them, with MSGERR event (#2066).
+- read work items in one database snapshot and retry PostgreSQL serialization failures; report files deleted during transfer as NO_FILE (#2060).
+- more reliable file transfers and connection handling.
+- reduce memory usage of subscriptions.
+
+Remote control (XRCP):
+- validate the certificate chain of the host.
+- accept multicast announcements only with current timestamps.
+
+SMP server:
+- journal message storage is removed (#1919). To migrate, export messages with `smp-server journal export` using smp-server v7.1.0.11 or earlier. Then set `store_messages` to `memory`, or set it to `database` and run `smp-server database import --table messages`.
+- process forwarded commands in parallel, with `forward_workers` in `[PROXY]` section (default 8).
+- limit concurrent proxy commands and name resolutions of each client, with new defaults: `client_concurrency` 500 in `[PROXY]` and `resolver_concurrency` 5000 in `[NAMES]`.
+- delay AUTH error responses, with `auth_error_delay_ms` in `[TRANSPORT]` section (default 50 ms).
+- more reliable message delivery after subscription.
+- stricter validation of forwarded commands, queue keys and short link data.
+- lower PostgreSQL load and memory usage.
+- additional Prometheus metrics.
+- name resolver: v2 API with name availability, better performance.
+
+Notification server:
+- the minimum supported protocol version is 3.
+- validate the APNS server certificate, and recover after APNS errors.
+- more reliable notifications with SMP service subscriptions.
+
+XFTP:
+- XFTP protocol v4: server information in the handshake, file storage time set by the sender, and longer storage for supporters, with `expire_files_hours_for_supporter` and `expire_files_hours_for_legend` in `[STORE_LOG]` section.
+- stricter validation of file descriptions and file names.
+- release the storage of interrupted uploads.
+- fix the size of received files with 3 or more chunks (#2067).
+- prevent work directory conflicts of concurrent file transfers.
+- prevent stuck network IO after interrupted transfers in builds with GHC 8.10 (#2070).
+
+Servers:
+- serve web pages over HTTP/1.1 only.
+- retry accepting connections when file descriptors run out.
+- write metrics files atomically, and keep periodic tasks running after errors.
+
+Code:
+- stricter validation of certificate chains and keys.
+
+# 7.0.1
+
+Version 7.0.1.0
+
+SMP server:
+- fix deadlock in SMP proxy.
+
+Notification server:
+- more push workers for each SMP server and push provider.
+
+# 7.0.0
+
+Version 7.0.0.6
+
+SMP protocol:
+- message subscriptions of messaging services (v19).
+- resolution of SimpleX names (v20).
+
+SMP agent:
+- service certificates for message subscriptions.
+- resolve SimpleX names.
+
+SMP server:
+- message subscriptions of messaging services (#1667).
+- service certificates are always accepted, and `accept_service_credentials` option is removed.
+- resolve SimpleX names via an operator-run resolver, with `[NAMES]` section; the resolver is in scripts/resolver (#1784).
+- fix SMP proxy reconnection to a restarted server, and a memory leak.
+
+Notification server:
+- a service certificate for each SMP server.
+- `database import` and `database export` commands are removed.
+
+XFTP client:
+- deprecation notice in CLI.
+
+Code:
+- BBS signatures for anonymous credentials.
+
+# 6.5.2
+
+Version 6.5.2.0
+
+Notification server:
+- deliver push notifications concurrently.
+
+XFTP server:
+- web page to send and receive files.
+
 # 6.5.1
 
 Version 6.5.1.0

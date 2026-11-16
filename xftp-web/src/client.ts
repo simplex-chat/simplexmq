@@ -24,6 +24,7 @@ import type {XFTPServer} from "./protocol/address.js"
 import {formatXFTPServer} from "./protocol/address.js"
 import {concatBytes} from "./protocol/encoding.js"
 import {blockUnpad} from "./protocol/transmission.js"
+import {authTagSize} from "./protocol/chunks.js"
 
 // -- Error types
 
@@ -401,20 +402,21 @@ export interface RawChunkResponse {
 }
 
 export async function downloadXFTPChunkRaw(
-  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array
+  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array, chunkSize: number
 ): Promise<RawChunkResponse> {
   const {publicKey, privateKey} = generateX25519KeyPair()
   const cmd = encodeFGET(encodePubKeyX25519(publicKey))
   const {response, body} = await sendXFTPCommand(agent, server, rpKey, fId, cmd)
   if (response.type !== "FRFile") throw new Error("unexpected response: " + response.type)
+  if (body.length !== chunkSize + authTagSize) throw new Error("chunk size mismatch")
   const dhSecret = dh(response.rcvDhKey, privateKey)
   return {dhSecret, nonce: response.nonce, body}
 }
 
 export async function downloadXFTPChunk(
-  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array, digest?: Uint8Array
+  agent: XFTPClientAgent, server: XFTPServer, rpKey: Uint8Array, fId: Uint8Array, chunkSize: number, digest?: Uint8Array
 ): Promise<Uint8Array> {
-  const {dhSecret, nonce, body} = await downloadXFTPChunkRaw(agent, server, rpKey, fId)
+  const {dhSecret, nonce, body} = await downloadXFTPChunkRaw(agent, server, rpKey, fId, chunkSize)
   return decryptReceivedChunk(dhSecret, nonce, body, digest ?? null)
 }
 
