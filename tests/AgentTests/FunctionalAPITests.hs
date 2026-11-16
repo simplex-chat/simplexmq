@@ -1922,6 +1922,7 @@ testContactErrors ps restart = do
             Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
     loopSend
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo" _ _) <- get a
+    waitAck a contactId
     pure invId
   ("", "", DOWN _ [_]) <- nGet a
   (bId, _) <- runRight $ A.prepareConnectionToAccept a 1 True invId PQSupportOn
