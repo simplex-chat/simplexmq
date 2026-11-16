@@ -100,7 +100,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAg
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getConnIds, getRatchetX3dhKeys)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, deleteSndMsgsExpired, getConn, getConnIds, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -470,6 +470,10 @@ functionalAPITests ps = do
       testDeliverClientRestart ps
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage ps
+    it "should deliver message again after client restart when a message was sent after it" $
+      testDuplicateMessageAfterSent ps
+    it "should acknowledge a message again after it is deleted" $
+      withSmpServer ps testAckDeletedMessage
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
     it "should connect to the server when server goes up if it initially was down" $
@@ -646,6 +650,11 @@ functionalAPITests ps = do
       withSmpServer ps testConnectionVerifyCodes
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
+    it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False False
+    it "should deliver receipt again after client restart before its status is saved" $ testDuplicateReceipt ps True False
+    it "should deliver receipt again after client restart when a message was sent after it" $ testDuplicateReceipt ps False True
+    it "should delete sent message after its receipt is acknowledged" $ withSmpServer ps testReceiptDeletesSentMessage
+    it "should accept and delete receipt for deleted sent message" $ withSmpServer ps testReceiptForDeletedSentMessage
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
   describe "Connections with apps of earlier versions" $ do
     describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
@@ -2527,6 +2536,41 @@ testDuplicateMessage ps = do
   disposeAgentClient alice2
   disposeAgentClient bob2
 
+testDuplicateMessageAfterSent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testDuplicateMessageAfterSent ps = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      get bob =##> \case ("", c, MSG MsgMeta {integrity = MsgOk, recipient = (2, _), pqEncryption = PQEncOn, redelivered = False} _ "hello") -> c == aliceId; _ -> False
+      3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+      get bob ##> ("", aliceId, SENT 3)
+      liftIO $ waitDeleted (sndDeliveries bob) (aliceId, 3)
+    disposeAgentClient bob
+    threadDelay 250000
+    bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob1 aliceId
+      get bob1 =##> \case ("", c, MSG MsgMeta {integrity = MsgOk, recipient = (2, _), pqEncryption = PQEncOn, redelivered = True} _ "hello") -> c == aliceId; _ -> False
+      ackMessage bob1 aliceId 2 Nothing
+    disposeAgentClient bob1
+  disposeAgentClient alice
+
+testAckDeletedMessage :: (HasCallStack, HasTestEnv) => IO ()
+testAckDeletedMessage =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (aliceId, bobId) <- makeConnection alice bob
+    2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT 2)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 2 Nothing
+    ackMessage bob aliceId 2 Nothing
+    ackMessageAsync bob "1" aliceId 2 Nothing
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
+
 testSkippedMessages :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testSkippedMessages (t, msType) = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
@@ -3147,6 +3191,22 @@ processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` 
 
 sndMessages :: AgentClient -> IO [(ConnId, Int64)]
 sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
+
+rcvMessages :: AgentClient -> IO [(ConnId, Int64)]
+rcvMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM rcv_messages ORDER BY conn_id, internal_id")
+
+sndDeliveries :: AgentClient -> IO [(ConnId, Int64)]
+sndDeliveries c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_message_deliveries ORDER BY conn_id, internal_id")
+
+waitDeleted :: HasCallStack => IO [(ConnId, Int64)] -> (ConnId, Int64) -> IO ()
+waitDeleted getMsgs msg = go (100 :: Int)
+  where
+    go n = do
+      msgs <- getMsgs
+      when (msg `elem` msgs) $
+        if n > 0
+          then threadDelay 100000 >> go (n - 1)
+          else expectationFailure $ "message was not deleted: " <> show msg
 
 connInvitations :: AgentClient -> IO [(InvitationId, Maybe ConnId)]
 connInvitations c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT invitation_id, contact_conn_id FROM conn_invitations")
@@ -4618,6 +4678,63 @@ testDeliveryReceipts =
     get b =##> \case ("", c, Rcvd 4) -> c == aId; _ -> False
     ackMessage b aId 5 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 5 Nothing
+
+testDuplicateReceipt :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> Bool -> IO ()
+testDuplicateReceipt ps statusLost sentAfter = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      liftIO $ waitDeleted (sndDeliveries alice) (bobId, 2)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 2 $ Just ""
+      get alice =##> \case ("", c, RCVD MsgMeta {integrity = MsgOk, redelivered = False} [MsgReceipt {agentMsgId = 2, msgRcptStatus = MROk}]) -> c == bobId; _ -> False
+      when sentAfter $ do
+        4 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+        get alice ##> ("", bobId, SENT 4)
+        liftIO $ waitDeleted (sndDeliveries alice) (bobId, 4)
+    when statusLost $
+      withTransaction (store $ agentEnv alice) (`DB.execute_` "UPDATE snd_messages SET rcpt_internal_id = NULL, rcpt_status = NULL")
+    disposeAgentClient alice
+    threadDelay 250000
+    alice1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
+    runRight_ $ do
+      subscribeConnection alice1 bobId
+      get alice1 =##> \case ("", c, RCVD MsgMeta {integrity = MsgOk, redelivered = True} [MsgReceipt {agentMsgId = 2, msgRcptStatus = MROk}]) -> c == bobId; _ -> False
+      ackMessage alice1 bobId 3 Nothing
+    disposeAgentClient alice1
+  disposeAgentClient bob
+
+testReceiptDeletesSentMessage :: (HasCallStack, HasTestEnv) => IO ()
+testReceiptDeletesSentMessage =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    liftIO $ waitDeleted (sndDeliveries a) (bId, 2)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 2 $ Just ""
+    get a =##> \case ("", c, Rcvd 2) -> c == bId; _ -> False
+    ackMessage a bId 3 Nothing
+    liftIO $ sndMessages a >>= (`shouldNotContain` [(bId, 2)])
+
+testReceiptForDeletedSentMessage :: (HasCallStack, HasTestEnv) => IO ()
+testReceiptForDeletedSentMessage =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    liftIO $ waitDeleted (sndDeliveries a) (bId, 2)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    liftIO $ withTransaction (store $ agentEnv a) $ \db -> deleteSndMsgsExpired db 0 100
+    ackMessage b aId 2 $ Just ""
+    mId <- sendMessage b aId SMP.noMsgFlags "hi"
+    get b ##> ("", aId, SENT mId)
+    get a =##> \case ("", c, Msg' 4 PQEncOn "hi") -> c == bId; _ -> False
+    liftIO $ rcvMessages a >>= (`shouldNotContain` [(bId, 3)])
 
 testDeliveryReceiptsConcurrent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =
