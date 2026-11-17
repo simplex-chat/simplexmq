@@ -32,6 +32,7 @@ export function createProgressRing(): ProgressRing {
     const appEl = document.querySelector('[data-xftp-app]') ?? document.getElementById('app')
     const s = appEl ? getComputedStyle(appEl) : null
     return {
+      // embedding customization  
       bg: s?.getPropertyValue('--xftp-ring-bg').trim() || '#e0e0e0',
       fg: s?.getPropertyValue('--xftp-ring-fg').trim() || '#3b82f6',
       text: s?.getPropertyValue('--xftp-ring-text').trim() || '#333',
