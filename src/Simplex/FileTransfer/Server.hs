@@ -48,6 +48,7 @@ import qualified Network.HTTP.Types as N
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Server as H
 import Network.Socket
+import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Control (ControlProtocol (..))
 import Simplex.FileTransfer.Server.Env
@@ -135,13 +136,14 @@ xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> 
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
   expireServerFiles Nothing fileExpiration
   restoreServerStats
+  httpCreds_ <- asks httpServerCreds
   raceAny_
     ( runServer
         : expireFiles fileExpiration
         : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
           <> controlPortThread_ cfg
-          <> reloadHTTPCredentialThread_ cfg
+          <> reloadHTTPCredentialThread_ cfg httpCreds_
     )
     `finally` stopServer
   where
@@ -352,10 +354,10 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let fd = periodStatDataCounts $ _filesDownloaded d
       pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
 
-    reloadHTTPCredentialThread_ :: XFTPServerConfig s -> [M s ()]
-    reloadHTTPCredentialThread_ XFTPServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}} =
-      [asks httpServerCreds >>= mapM_ (liftIO . reloadCredential (const True) credentialCheckInterval creds)]
-    reloadHTTPCredentialThread_ _ = []
+    reloadHTTPCredentialThread_ :: XFTPServerConfig s -> Maybe (TVar TLS.Credential) -> [M s ()]
+    reloadHTTPCredentialThread_ XFTPServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}} (Just credVar) =
+      [liftIO $ reloadCredential (const True) credentialCheckInterval creds credVar]
+    reloadHTTPCredentialThread_ _ _ = []
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]

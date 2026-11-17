@@ -175,6 +175,7 @@ smpServer :: forall s. MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe 
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
   s <- asks server
   pa <- asks proxyAgent
+  httpCreds_ <- asks httpServerCreds
   msgStats_ <- processServerMessages startOptions
   ntfStats <- restoreServerNtfs
   liftIO $ mapM_ (printMessageStats "messages") msgStats_
@@ -195,7 +196,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
-            <> reloadHTTPCredentialThread_ cfg
+            <> reloadHTTPCredentialThread_ cfg httpCreds_
     )
     `finally` stopServer s
   where
@@ -746,10 +747,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
         getCreateService @(StoreQueue s) (queueStore ms) sr
 
-    reloadHTTPCredentialThread_ :: ServerConfig s -> [M s ()]
-    reloadHTTPCredentialThread_ ServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}}
-      | isJust attachHTTP_ = [asks httpServerCreds >>= mapM_ (liftIO . reloadCredential supportedHTTPSCredential credentialCheckInterval creds)]
-    reloadHTTPCredentialThread_ _ = []
+    reloadHTTPCredentialThread_ :: ServerConfig s -> Maybe (TVar TLS.Credential) -> [M s ()]
+    reloadHTTPCredentialThread_ ServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}} (Just credVar)
+      | isJust attachHTTP_ = [liftIO $ reloadCredential supportedHTTPSCredential credentialCheckInterval creds credVar]
+    reloadHTTPCredentialThread_ _ _ = []
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
