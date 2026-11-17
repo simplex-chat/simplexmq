@@ -1,5 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | FFI bindings to libsecp256k1.
@@ -26,18 +27,22 @@ where
 
 import Control.Concurrent.STM
 import Control.Exception (bracket, throwIO)
-import Control.Monad (void, when)
+import Control.Monad (unless, void, when)
 import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import Data.Char (isDigit)
 import Foreign hiding (void)
 import Foreign.C
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- Sizes
@@ -99,6 +104,17 @@ deserializeSignature s = case B.unpack v of
 
 lowS :: RecoverableSignature -> Bool
 lowS RecoverableSignature {rsS} = os2ip rsS <= ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) `div` 2
+
+instance StrEncoding RecoverableSignature where
+  strEncode = ("0x" <>) . BAE.convertToBase BAE.Base16 . serializeSignature
+  strP = do
+    digits <- A.string "0x" *> A.takeWhile lowerHexDigit
+    unless (B.length digits == 2 * (compactSigSize + 1)) $ fail "signature: expected 0x and 130 lowercase hex digits"
+    sig <- either fail pure $ deserializeSignature =<< BAE.convertFromBase BAE.Base16 digits
+    unless (lowS sig) $ fail "signature: s is not in the lower half of the group order"
+    pure sig
+    where
+      lowerHexDigit c = isDigit c || (c >= 'a' && c <= 'f')
 
 instance ToField RecoverableSignature where toField = toField . Binary . serializeSignature
 

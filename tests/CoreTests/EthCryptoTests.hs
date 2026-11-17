@@ -6,7 +6,8 @@ module CoreTests.EthCryptoTests (ethCryptoTests) where
 
 import Control.Concurrent.STM (TVar, atomically)
 import Control.Monad (forM_)
-import Crypto.Number.Serialize (i2osp)
+import Crypto.Number.Serialize (i2osp, os2ip)
+import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString as A
@@ -15,7 +16,7 @@ import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
-import Data.Char (toLower)
+import Data.Char (toLower, toUpper)
 import Data.Either (isLeft, isRight)
 import Data.FileEmbed (embedFile)
 import Data.List (elemIndex, foldl', nub)
@@ -364,6 +365,13 @@ signingTests g = do
     (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
   it "serializes a signature as r, s and v, as viem does" $
     serializeSignature viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
+  it "reads and writes a signature as 0x and 130 lowercase hex digits, refusing another form or v and a high s" $ do
+    strEncode viemSig `shouldBe` viemSigHex
+    strDecode viemSigHex `shouldBe` Right viemSig
+    forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00", B.take 130 viemSigHex <> "1d"] $ \s ->
+      (s, isLeft (strDecode s :: Either String S.RecoverableSignature)) `shouldBe` (s, True)
+    let highS = viemSig {S.rsS = i2osp $ ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) - os2ip (S.rsS viemSig), S.rsRecId = 0}
+    (isLeft (strDecode (strEncode highS) :: Either String S.RecoverableSignature)) `shouldBe` True
   it "recovers the address that signed a digest" $
     (strEncode <$$> recoverAddress viemSig digest) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
   it "refuses a recovery id above 3" $
@@ -378,6 +386,7 @@ signingTests g = do
     (isLeft <$> S.recoverPublicKey viemSig "digest") `shouldReturn` True
   where
     digest = C.keccak256 "simplex"
+    viemSigHex = "0x8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
     viemSig =
       S.RecoverableSignature
         { S.rsR = hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b0",
