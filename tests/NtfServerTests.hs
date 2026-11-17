@@ -14,7 +14,8 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM, unless, void)
+import Control.Exception (bracket)
+import Control.Monad (forM, replicateM, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
@@ -49,7 +50,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
+import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, getEntityCounts, newNtfDbStore, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
@@ -72,6 +73,7 @@ ntfServerTests ps@(t, _) = do
   describe "APNS push delivery" $ do
     it "resumes sending notifications after the push provider is unreachable" $ testPushWorkerResumesAfterOutage t
     it "does not connect to the push provider when the key file is not configured" testNoConnectWithoutKeyFile
+    it "receives notifications from other servers when one server's push queue is full" $ testFullPushQueue ps
   describe "Database pool" $ do
     it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
@@ -151,6 +153,36 @@ testNoConnectWithoutKeyFile =
     NtfServerConfig {apnsConfig} = ntfServerCfg
     apnsCfgMissingKey = apnsConfig {authKeyFileEnv = "APNS_KEY_FILE_MISSING"}
     keyFileError (e :: IOError) = "APNS_KEY_FILE_MISSING" `isInfixOf` show e
+
+testFullPushQueue :: HasTestEnv => (ASrvTransport, AStoreType) -> Expectation
+testFullPushQueue (ATransport t, msType) = do
+  g <- C.newRandom
+  (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  withAPNSMockServer $ \apns ->
+    smpTest2 t msType $ \rh sh ->
+      ntfTest t $ \nh -> bracket (newNtfDbStore ntfTestDBCfg) closeNtfDbStore $ \st -> do
+        (tknKey, _, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "1" _ NROk <- signSendRecvNtf nh tknKey ("1", tId, TVFY regCode)
+        (tknKey2, _, tId2, regCode2) <- registerToken nh apns "efgh"
+        RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey2 ("2", tId2, TVFY regCode2)
+        let subscribe key tknId srv = do
+              ((sId, _, _, _), nId, _) <- createNtfQueueNKEY rh sPub nPub
+              RespNtf "3" NoEntity (NRSubId _) <- signSendRecvNtf nh key ("3", NoEntity, SNEW $ NewNtfSub tknId (SMPQueueNtf srv nId) nKey)
+              pure sId
+            sendMsg sId = do
+              Resp "4" _ OK <- signSendRecv sh sKey ("4", sId, _SEND' "hello")
+              pure ()
+            checkLastNtfs n = do
+              (_, _, cnt) <- getEntityCounts st
+              unless (cnt == n) $ threadDelay 100000 >> checkLastNtfs n
+            waitLastNtfs n = timeout 5000000 (checkLastNtfs n) `shouldReturn` Just ()
+        sIds <- replicateM 6 $ subscribe tknKey tId $ SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+        sId2 <- subscribe tknKey2 tId2 $ SMPServer SMP.testHost2 SMP.testPort SMP.testKeyHash
+        mapM_ sendMsg sIds
+        waitLastNtfs 6
+        sendMsg sId2
+        waitLastNtfs 7
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do

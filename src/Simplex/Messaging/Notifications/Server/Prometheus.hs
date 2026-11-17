@@ -86,6 +86,7 @@ ntfPrometheusMetrics sm rtm ts =
         _ntfReceivedAuth,
         _ntfDelivered,
         _ntfFailed,
+        _ntfDropped,
         _ntfReceivedOwn,
         _ntfReceivedAuthOwn,
         _ntfDeliveredOwn,
@@ -188,6 +189,10 @@ ntfPrometheusMetrics sm rtm ts =
       \# HELP simplex_ntf_notifications_failed Failed notifications\n\
       \# TYPE simplex_ntf_notifications_failed counter\n\
       \simplex_ntf_notifications_failed " <> mshow _ntfFailed <> "\n# ntfFailed\n\
+      \\n\
+      \# HELP simplex_ntf_notifications_dropped Notifications not pushed because the push queue is full\n\
+      \# TYPE simplex_ntf_notifications_dropped counter\n\
+      \simplex_ntf_notifications_dropped " <> mshow _ntfDropped <> "\n# ntfDropped\n\
       \\n\
       \# HELP simplex_ntf_notifications_periodic_delivered Delivered periodic notifications\n\
       \# TYPE simplex_ntf_notifications_periodic_delivered counter\n\
