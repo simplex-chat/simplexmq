@@ -360,7 +360,7 @@ import Database.SQLite.Simple.QQ (sql)
 #endif
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
-checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
+checkConstraint err action = action `catchNonConflict` (pure . Left . handleSQLError err)
 
 handleSQLError :: StoreError -> SQLError -> StoreError
 #if defined(dbPostgres)
@@ -1173,7 +1173,7 @@ getWorkItems itemName getIds getItem markFailed =
 tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
 tryGetItem itemName getItem markFailed itemId = ExceptT getItem' `catchE` \e -> mark >> throwE e
   where
-    getItem' = E.handleJust workItemError (pure . Left . fromSomeException) $ getItem itemId
+    getItem' = getItem itemId `catchNonConflict` (pure . Left . fromSomeException)
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
@@ -1183,10 +1183,10 @@ handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust work
     mkError :: E.SomeException -> e
     mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
 
-workItemError :: E.SomeException -> Maybe E.SomeException
-workItemError e = if isTransactionConflict e then Nothing else Just e
+workItemError :: E.Exception e => e -> Maybe e
+workItemError e = if isTransactionConflict (E.toException e) then Nothing else Just e
 
-catchNonConflict :: IO a -> (E.SomeException -> IO a) -> IO a
+catchNonConflict :: E.Exception e => IO a -> (e -> IO a) -> IO a
 catchNonConflict = E.catchJust workItemError
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
@@ -3160,7 +3160,9 @@ createWithRandomId' db gVar create = tryCreate 3
 #if defined(dbPostgres)
     handleErr n e = case constraintViolation e of
       Just _ -> tryCreate (n - 1)
-      Nothing -> pure . Left . SEInternal $ bshow e
+      Nothing
+        | isTransactionConflict (E.toException e) -> E.throwIO e
+        | otherwise -> pure . Left . SEInternal $ bshow e
 #else
     handleErr n e
       | SQL.sqlError e == SQL.ErrorConstraint = tryCreate (n - 1)
