@@ -5052,6 +5052,16 @@ workItemReadTests = do
       events <- atomically $ flushTBQueue $ subQ a
       filter workerError events `shouldBe` []
       withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
+  it "should report INTERNAL when a server error aborts the read of a command that stays unmarked" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> do
+        createCmd db
+        DB.execute_ db "CREATE FUNCTION fail_read() RETURNS BOOLEAN LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = 'XX001'; END $$; ALTER TABLE connections ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY; CREATE POLICY fail_read ON connections FOR SELECT USING (fail_read())"
+        DB.execute_ db "CREATE FUNCTION skip_update() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_update BEFORE UPDATE ON commands FOR EACH ROW EXECUTE FUNCTION skip_update()"
+      doWork <- newTMVarIO ()
+      Just (Left (A.INTERNAL e)) <- timeout 5000000 $ runAM a (readCommand a doWork $ \_ -> pure ())
+      e `shouldContain` "sqlState = \\\"XX001\\\""
   it "should mark a ntf subscription failed when a server error aborts its read in a batch" $
     readBatchAfterServerError (NSANtf NSACreate) "ntf_failed" (readNtfActions testNtfServer)
   it "should mark a ntf SMP action failed when a server error aborts its read in a batch" $
