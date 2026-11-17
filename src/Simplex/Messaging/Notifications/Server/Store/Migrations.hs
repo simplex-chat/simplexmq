@@ -18,7 +18,8 @@ ntfServerSchemaMigrations =
   [ ("20250417_initial", m20250417_initial, Nothing),
     ("20250517_service_cert", m20250517_service_cert, Just down_m20250517_service_cert),
     ("20250830_queue_ids_hash", m20250830_queue_ids_hash, Just down_m20250830_queue_ids_hash),
-    ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server)
+    ("20251219_service_cert_per_server", m20251219_service_cert_per_server, Just down_m20251219_service_cert_per_server),
+    ("20261112_status_counts_autovacuum", m20261112_status_counts_autovacuum, Just down_m20261112_status_counts_autovacuum)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -249,6 +250,32 @@ ALTER TABLE smp_servers
   DROP COLUMN ntf_service_priv_key;
   |]
   <> resetNtfServices
+
+m20261112_status_counts_autovacuum :: Text
+m20261112_status_counts_autovacuum =
+  [r|
+CREATE INDEX idx_subscriptions_uncommon_status ON subscriptions(status) WHERE status NOT IN ('ACTIVE', 'DELETED', 'AUTH');
+
+ALTER TABLE subscriptions SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_analyze_scale_factor = 0.01,
+  autovacuum_vacuum_cost_limit = 1000
+);
+
+ALTER TABLE last_notifications SET (
+  autovacuum_vacuum_scale_factor = 0.02,
+  autovacuum_analyze_scale_factor = 0.01
+);
+  |]
+
+down_m20261112_status_counts_autovacuum :: Text
+down_m20261112_status_counts_autovacuum =
+  [r|
+ALTER TABLE last_notifications RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor);
+ALTER TABLE subscriptions RESET (autovacuum_vacuum_scale_factor, autovacuum_analyze_scale_factor, autovacuum_vacuum_cost_limit);
+
+DROP INDEX idx_subscriptions_uncommon_status;
+  |]
 
 resetNtfServices :: Text
 resetNtfServices =

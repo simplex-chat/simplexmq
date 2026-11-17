@@ -31,7 +31,9 @@ data NtfServerMetrics = NtfServerMetrics
     activeTokensCounts :: PeriodStatCounts,
     activeSubsCounts :: PeriodStatCounts,
     tokenCount :: Int64,
+    tokenStatusCounts :: [(Text, Int64)],
     approxSubCount :: Int64,
+    subStatusCounts :: [(Text, Int64)],
     lastNtfCount :: Int64,
     rtsOptions :: Text
   }
@@ -61,7 +63,7 @@ ntfPrometheusMetrics :: NtfServerMetrics -> NtfRealTimeMetrics -> UTCTime -> Tex
 ntfPrometheusMetrics sm rtm ts =
   time <> tokens <> subscriptions <> notifications <> info
   where
-    NtfServerMetrics {statsData, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions} = sm
+    NtfServerMetrics {statsData, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, tokenStatusCounts, approxSubCount, subStatusCounts, lastNtfCount, rtsOptions} = sm
     NtfRealTimeMetrics
       { threadsCount,
         srvSubscribers,
@@ -137,6 +139,7 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_tokens_total gauge\n\
       \simplex_ntf_tokens_total " <> mshow tokenCount <> "\n# tokenCount\n\
       \\n"
+      <> gaugeMetrics "simplex_pg_ntf_token_status_total" (statusMetrics tokenStatusCounts) "Total count of each token status" "tokenStatusCounts"
     subscriptions =
       "# Subscriptions\n\
       \# -------------\n\
@@ -165,6 +168,7 @@ ntfPrometheusMetrics sm rtm ts =
       \# TYPE simplex_ntf_subscriptions_approx_total gauge\n\
       \simplex_ntf_subscriptions_approx_total " <> mshow approxSubCount <> "\n# approxSubCount\n\
       \\n"
+      <> gaugeMetrics "simplex_pg_ntf_subscription_status_total" (statusMetrics subStatusCounts) "Total count of each subscription status, approximate for ACTIVE, DELETED and AUTH" "subStatusCounts"
       <> showSubMetric ntfActiveServiceSubs "simplex_ntf_smp_service_subscription_active_" "Active"
       <> showSubMetric ntfActiveQueueSubs "simplex_ntf_smp_subscription_active_" "Active"
       <> showSubMetric ntfPendingServiceSubs "simplex_ntf_smp_service_subscription_pending_" "Pending"
@@ -284,6 +288,7 @@ ntfPrometheusMetrics sm rtm ts =
       <> T.concat (map (\(param, value) -> name <> param <> " " <> mshow value <> "\n") subMetrics)
       <> "# " <> codeRef <> "\n\n"
     metricHost host = "{server=\"" <> host <> "\"}"
+    statusMetrics = map (\(status, cnt) -> ("{status=\"" <> status <> "\"}", fromIntegral cnt))
     mstr a = a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
     mshow = mstr . tshow

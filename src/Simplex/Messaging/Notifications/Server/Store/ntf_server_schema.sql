@@ -140,7 +140,8 @@ CREATE TABLE ntf_server.last_notifications (
     sent_at timestamp with time zone NOT NULL,
     nmsg_nonce bytea NOT NULL,
     nmsg_data bytea NOT NULL
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01');
 
 
 
@@ -197,7 +198,8 @@ CREATE TABLE ntf_server.subscriptions (
     smp_notifier_key bytea NOT NULL,
     status text NOT NULL,
     ntf_service_assoc boolean DEFAULT false NOT NULL
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', autovacuum_vacuum_cost_limit='1000');
 
 
 
@@ -267,6 +269,10 @@ CREATE INDEX idx_subscriptions_smp_server_id_ntf_service_status ON ntf_server.su
 
 
 CREATE INDEX idx_subscriptions_token_id ON ntf_server.subscriptions USING btree (token_id);
+
+
+
+CREATE INDEX idx_subscriptions_uncommon_status ON ntf_server.subscriptions USING btree (status) WHERE (status <> ALL (ARRAY['ACTIVE'::text, 'DELETED'::text, 'AUTH'::text]));
 
 
 
