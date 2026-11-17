@@ -49,7 +49,7 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadServerCredential, reloadCredential)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), acceptCredential, loadCredential, reloadCredential)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
@@ -92,7 +92,8 @@ runHTTPSServer :: WebHttpsParams -> Application -> IO ()
 runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheckInterval} app = do
   logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
   let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
-  credVar <- newTVarIO =<< loadServerCredential creds
+  cred <- loadCredential acceptCredential creds >>= either (\e -> fail $ "invalid credential: " <> T.unpack e) pure
+  credVar <- newTVarIO cred
   race_ (reloadCredential checkCredential credentialCheckInterval creds credVar) $
     WT.runTLS (tlsSettings credVar) (mkSettings port) app
   where

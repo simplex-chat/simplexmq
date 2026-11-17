@@ -581,7 +581,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- forM httpCredentials $ \creds -> do
     cred <- getCredentials "HTTPS" creds
-    checkHTTPSCredentials cred
+    either exitUnsupportedHTTPS pure $ checkHTTPSCredential cred
     credVar <- newTVarIO cred
     pure (creds, credVar)
   Fingerprint fp <- loadFingerprint smpCredentials
@@ -650,8 +650,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         missingCreds = do
           let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
            in concat <$> mapM missingfile files
-    checkHTTPSCredentials cred =
-      either (\e -> putStrLn ("Error: " <> T.unpack e <> "\n" <> letsEncrypt) >> exitFailure) pure $ checkHTTPSCredential cred
+    exitUnsupportedHTTPS e = putStrLn ("Error: " <> T.unpack e <> "\n" <> letsEncrypt) >> exitFailure
     letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096\n----------"
     serverInfo =
       ServerInformation

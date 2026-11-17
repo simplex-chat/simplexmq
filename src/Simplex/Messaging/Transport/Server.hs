@@ -26,6 +26,7 @@ module Simplex.Messaging.Transport.Server
     runLocalTCPServer,
     startTCPServer,
     loadServerCredential,
+    loadCredential,
     reloadCredential,
     acceptCredential,
     checkKeyPair,
@@ -280,22 +281,22 @@ acceptCredential :: T.Credential -> Either Text ()
 acceptCredential _ = Right ()
 
 loadCredential :: (T.Credential -> Either Text ()) -> ServerCredentials -> IO (Either Text T.Credential)
-loadCredential checkCredential ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
+loadCredential check ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
   either (Left . tshow) id <$> E.tryAny (validCredential <$!> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
   where
     validCredential = \case
       Left e -> Left $ T.pack e
-      Right cred -> cred <$ checkCredential cred
+      Right cred -> cred <$ check cred
 
 reloadCredential :: (T.Credential -> Either Text ()) -> Int -> ServerCredentials -> TVar T.Credential -> IO ()
-reloadCredential checkSupported interval creds@ServerCredentials {certificateFile} credVar = do
+reloadCredential checkCredential interval creds@ServerCredentials {certificateFile} credVar = do
   labelMyThread "reloadCredential"
   checkFiles Nothing
   where
     checkFiles rejected = do
       threadDelay interval
       current <- readTVarIO credVar
-      loadCredential (\cred -> checkKeyPair cred >> checkSupported cred) creds >>= \case
+      loadCredential (\cred -> checkKeyPair cred >> checkCredential cred) creds >>= \case
         Right cred
           | cred == current -> checkFiles Nothing
           | otherwise -> do
