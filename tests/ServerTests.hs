@@ -19,7 +19,7 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
-import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.Async (concurrently_, race_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
@@ -55,7 +55,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
+import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, mkTransportServerConfig, newSocketState, reloadCredential, runTransportServerState_)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -1678,7 +1678,18 @@ testPrometheusMetrics = do
       runSMPClient t $ \_ -> pure ()
 
 testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
-testWebCredentialReloadSMP =
+testWebCredentialReloadSMP = do
+  it "should serve the replaced SNI certificate in transport server without restart" $ \_ -> do
+    copyWebCredential
+    credential <- loadServerCredential ntfTestServerCredentials
+    sniCredential <- newTVarIO =<< loadServerCredential testWebCredentials
+    ss <- newSocketState
+    let srvCreds = TLSServerCredential {credential, sniCredential = Just sniCredential}
+        runServer started =
+          race_
+            (reloadCredential (const True) testCredentialCheckInterval testWebCredentials sniCredential)
+            (runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ())
+    serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
   it "should serve the replaced web certificate on the shared port without restart" $ \(at, msType) -> do
     copyWebCredential
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ ->

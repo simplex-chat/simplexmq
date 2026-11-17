@@ -26,6 +26,7 @@ import Data.ByteString.Builder (byteString, lazyByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (toUpper)
+import Data.Default (def)
 import Data.IORef (readIORef)
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
@@ -35,6 +36,7 @@ import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
+import qualified Network.TLS as TLS
 import Network.Wai (Application, Request (..), responseLBS)
 import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
@@ -46,11 +48,14 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadServerCredential, reloadCredential)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
+import UnliftIO.Async (race_)
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
+import UnliftIO.STM (newTVarIO, readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
 data EmbeddedWebParams = EmbeddedWebParams
@@ -74,16 +79,24 @@ data EmbeddedContent = EmbeddedContent
   }
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
-serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
+serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams, credentialCheckInterval} = do
   app <- staticFiles webStaticPath
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
   forM_ webHttpsParams $ \WebHttpsParams {port, cert, key} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
-    WT.runTLS (WT.tlsSettings cert key) (mkSettings port) app
+    let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
+    credVar <- newTVarIO =<< loadServerCredential creds
+    race_ (reloadCredential (const True) credentialCheckInterval creds credVar) $
+      WT.runTLS (tlsSettings credVar) (mkSettings port) app
   where
     mkSettings port = W.setPort port warpSettings
+    tlsSettings credVar =
+      WT.defaultTlsSettings
+        { WT.tlsCredentials = Just mempty,
+          WT.tlsServerHooks = def {TLS.onServerNameIndication = \_ -> (\cred -> TLS.Credentials [cred]) <$> readTVarIO credVar}
+        }
 
 -- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
 attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()

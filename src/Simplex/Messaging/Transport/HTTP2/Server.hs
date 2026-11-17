@@ -63,7 +63,7 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> HTTP2ServerFunc) -> IO ()
+runHTTP2Server :: TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe (TVar T.Credential) -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> HTTP2ServerFunc) -> IO ()
 runHTTP2Server started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ clientFinished bufferSize setup
   where
     setup handler = do

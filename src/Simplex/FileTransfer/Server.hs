@@ -76,7 +76,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), reloadCredential, runLocalTCPServer)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -141,6 +141,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
           <> controlPortThread_ cfg
+          <> reloadHTTPCredentialThread_ cfg
     )
     `finally` stopServer
   where
@@ -350,6 +351,11 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       d <- getFileServerStatsData ss
       let fd = periodStatDataCounts $ _filesDownloaded d
       pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
+
+    reloadHTTPCredentialThread_ :: XFTPServerConfig s -> [M s ()]
+    reloadHTTPCredentialThread_ XFTPServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}} =
+      [asks httpServerCreds >>= mapM_ (liftIO . reloadCredential (const True) credentialCheckInterval creds)]
+    reloadHTTPCredentialThread_ _ = []
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]

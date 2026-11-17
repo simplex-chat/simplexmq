@@ -43,6 +43,7 @@ module Simplex.Messaging.Server.Env.STM
     VerifiedTransmission,
     ResponseAndMessage,
     newEnv,
+    supportedHTTPSCredential,
     msgStore,
     fromMsgStore,
     newClient,
@@ -273,7 +274,7 @@ data Env s = Env
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe T.Credential,
+    httpServerCreds :: Maybe (TVar T.Credential),
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
@@ -578,8 +579,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   tlsServerCreds <- getCredentials "SMP" smpCredentials
-  httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
-  mapM_ checkHTTPSCredentials httpServerCreds
+  httpServerCreds <- forM httpCredentials $ \creds -> do
+    cred <- getCredentials "HTTPS" creds
+    checkHTTPSCredentials cred
+    newTVarIO cred
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -646,13 +649,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         missingCreds = do
           let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
            in concat <$> mapM missingfile files
-    checkHTTPSCredentials (X.CertificateChain cc, _k) =
-      -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
-      case map (X.signedObject . X.getSigned) cc of
-        X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> pure ()
-        _ -> do
-          putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
-          exitFailure
+    checkHTTPSCredentials cred =
+      unless (supportedHTTPSCredential cred) $ do
+        putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
+        exitFailure
     letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096\n----------"
     serverInfo =
       ServerInformation
@@ -675,6 +675,13 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
 #if defined(dbServerPostgres)
           _ -> SPMMessages
 #endif
+
+supportedHTTPSCredential :: T.Credential -> Bool
+supportedHTTPSCredential (X.CertificateChain cc, _k) =
+  -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
+  case map (X.signedObject . X.getSigned) cc of
+    X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca -> RSA.public_size rsa >= 512
+    _ -> False
 
 noPostgresExit :: IO a
 noPostgresExit = putStrLn noPostgresExitStr >> exitFailure

@@ -135,7 +135,7 @@ data XFTPEnv s = XFTPEnv
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe T.Credential,
+    httpServerCreds :: Maybe (TVar T.Credential),
     serverStats :: FileServerStats
   }
 
@@ -207,7 +207,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
   tlsServerCreds <- loadServerCredential xftpCredentials
-  httpServerCreds <- mapM loadServerCredential httpCredentials
+  httpServerCreds <- mapM (loadServerCredential >=> newTVarIO) httpCredentials
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}

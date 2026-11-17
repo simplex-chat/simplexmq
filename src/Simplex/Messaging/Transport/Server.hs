@@ -26,6 +26,7 @@ module Simplex.Messaging.Transport.Server
     runLocalTCPServer,
     startTCPServer,
     loadServerCredential,
+    reloadCredential,
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
@@ -36,6 +37,9 @@ where
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
+import qualified Crypto.PubKey.Ed25519 as Ed25519
+import qualified Crypto.PubKey.Ed448 as Ed448
+import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
 import Data.Default (def)
@@ -43,6 +47,7 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (find)
 import Data.Maybe (fromJust, fromMaybe, maybeToList)
+import qualified Data.Text as T
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
@@ -52,7 +57,8 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (catchAll_, labelMyThread, stateTVar', tshow, unlessM)
+import Simplex.Messaging.Util (catchAll_, eitherToMaybe, labelMyThread, stateTVar', tshow, unlessM)
+import System.Directory (getModificationTime)
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -85,7 +91,7 @@ data TLSServerCredential = TLSServerCredential
   { credential :: T.Credential,
     -- `sniCredential` is used when SNI is sent by the client.
     --  It is needed to provide different credential when the server is accessed from the browser.
-    sniCredential :: Maybe T.Credential
+    sniCredential :: Maybe (TVar T.Credential)
   }
 
 type SNICredentialUsed = Bool
@@ -264,6 +270,40 @@ loadServerCredential ServerCredentials {caCertificateFile, certificateFile, priv
     Right credential -> pure credential
     Left _ -> putStrLn "invalid credential" >> exitFailure
 
+reloadCredential :: (T.Credential -> Bool) -> Int -> ServerCredentials -> TVar T.Credential -> IO ()
+reloadCredential supported interval ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} credVar = do
+  labelMyThread "reloadCredential"
+  modificationTimes >>= reloadChanged
+  where
+    reloadChanged times = do
+      threadDelay interval
+      times' <- modificationTimes
+      when (times' /= times) $
+        loadCredential >>= \case
+          Right cred -> do
+            atomically $ writeTVar credVar cred
+            logNote $ "reloaded credential " <> T.pack certificateFile
+          Left e -> logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
+      reloadChanged times'
+    modificationTimes = eitherToMaybe <$> tryIOError (mapM getModificationTime files)
+    files = certificateFile : privateKeyFile : chainFiles
+    chainFiles = maybeToList caCertificateFile
+    loadCredential = validCredential <$> E.tryAny (T.credentialLoadX509Chain certificateFile chainFiles privateKeyFile)
+    validCredential = \case
+      Left e -> Left $ tshow e
+      Right (Left e) -> Left $ T.pack e
+      Right (Right cred)
+        | not (matchingKeyPair cred) -> Left "the private key does not match the certificate"
+        | not (supported cred) -> Left "unsupported certificate"
+        | otherwise -> Right cred
+
+matchingKeyPair :: T.Credential -> Bool
+matchingKeyPair (X.CertificateChain chain, privateKey) = case (map (X.certPubKey . X.getCertificate) chain, privateKey) of
+  (X.PubKeyRSA k : _, X.PrivKeyRSA pk) -> RSA.private_pub pk == k
+  (X.PubKeyEd25519 k : _, X.PrivKeyEd25519 pk) -> Ed25519.toPublic pk == k
+  (X.PubKeyEd448 k : _, X.PrivKeyEd448 pk) -> Ed448.toPublic pk == k
+  _ -> False
+
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =
   def
@@ -274,7 +314,9 @@ supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCre
               Nothing -> \_ -> pure $ T.Credentials [credential]
               Just sniCred -> \case
                 Nothing -> pure $ T.Credentials [credential]
-                Just _host -> T.Credentials [sniCred] <$ atomically (writeTVar sniCredUsed True),
+                Just _host -> atomically $ do
+                  writeTVar sniCredUsed True
+                  (\cred -> T.Credentials [cred]) <$> readTVar sniCred,
             T.onALPNClientSuggest = (\alpn -> pure . fromMaybe "" . find (`elem` alpn)) <$> alpn_
           },
       T.serverSupported = serverSupported

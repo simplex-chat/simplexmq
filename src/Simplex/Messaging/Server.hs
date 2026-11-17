@@ -195,6 +195,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
+            <> reloadHTTPCredentialThread_ cfg
     )
     `finally` stopServer s
   where
@@ -744,6 +745,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
         getCreateService @(StoreQueue s) (queueStore ms) sr
+
+    reloadHTTPCredentialThread_ :: ServerConfig s -> [M s ()]
+    reloadHTTPCredentialThread_ ServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}}
+      | isJust attachHTTP_ = [asks httpServerCreds >>= mapM_ (liftIO . reloadCredential supportedHTTPSCredential credentialCheckInterval creds)]
+    reloadHTTPCredentialThread_ _ = []
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
