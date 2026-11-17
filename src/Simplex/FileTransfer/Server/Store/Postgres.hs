@@ -11,6 +11,7 @@ module Simplex.FileTransfer.Server.Store.Postgres
   ( PostgresFileStore (..),
     importFileStore,
     exportFileStore,
+    withDB',
   )
 where
 
@@ -56,7 +57,7 @@ import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.QueueStore.Postgres ()
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.SystemTime (roundedSeconds)
-import Simplex.Messaging.Util (firstRow, tshow)
+import Simplex.Messaging.Util (catchOwn', firstRow, tshow)
 import System.Directory (renameFile)
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hFlush, stdout)
@@ -196,7 +197,7 @@ rowToFileRec (sId, size, digest, sndKeyBs, path, createdAt, expiresAt, status) =
 
 withDB :: forall a. Text -> PostgresFileStore -> (DB.Connection -> IO (Either XFTPErrorType a)) -> ExceptT XFTPErrorType IO a
 withDB op st action =
-  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+  ExceptT $ withTransaction (dbStore st) action `catchOwn'` logErr
   where
     logErr :: E.SomeException -> IO (Either XFTPErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left INTERNAL
