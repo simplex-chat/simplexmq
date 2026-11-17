@@ -323,7 +323,7 @@ reloadCredential checkCredential interval ReloadableCredential {credentialFiles 
 
 checkReloadedCredential :: (T.Credential -> Either Text ()) -> T.Credential -> IO (Either Text ())
 checkReloadedCredential checkCredential cred =
-  either (Left . tshow) id <$> E.tryAny (E.evaluate $ checkKeyPair cred >> checkCredential cred)
+  either (\_ -> Left "invalid private key") id <$> E.tryAny (E.evaluate $ checkKeyPair cred >> checkCredential cred)
 
 checkKeyPair :: T.Credential -> Either Text ()
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of

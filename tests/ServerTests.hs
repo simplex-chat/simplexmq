@@ -56,10 +56,9 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkReloadedCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkReloadedCredential, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
-import qualified Network.TLS as TLS
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
 import System.Timeout
 import Test.HUnit
@@ -1709,11 +1708,16 @@ webCredentialTests = do
     it "should reject an unsupported key type" $
       keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left "unsupported key type PubKeyALG_DSA"
     it "should reject an RSA key with inconsistent private fields" $
-      keyPairCheck "web" "web_corrupt" >>= (`shouldSatisfy` either ("integer is larger than expected" `T.isInfixOf`) (const False))
+      keyPairCheck "web" "web_corrupt" `shouldReturn` Left "invalid private key"
+    it "should reject an empty certificate file" $ do
+      writeFile (testPath "empty.crt") ""
+      credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left "no certificate"
   where
     keysMismatch = Left "the private key does not match the certificate"
-    keyPairCheck certName keyName =
-      either error (checkReloadedCredential acceptCredential) =<< TLS.credentialLoadX509Chain (fixtureFile certName ".crt") [] (fixtureFile keyName ".key")
+    keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
+    credentialCheck certificateFile privateKeyFile =
+      loadCredential ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
+        >>= either (error . T.unpack) (checkReloadedCredential acceptCredential)
 
 testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
 testWebCredentialReloadSMP =
