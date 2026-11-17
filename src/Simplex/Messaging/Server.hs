@@ -129,7 +129,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
-import UnliftIO (timeout)
+import UnliftIO (race_, timeout)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -175,7 +175,6 @@ smpServer :: forall s. MsgStoreClass s => TMVar Bool -> ServerConfig s -> Maybe 
 smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOptions} attachHTTP_ = do
   s <- asks server
   pa <- asks proxyAgent
-  httpCreds_ <- asks httpServerCreds
   msgStats_ <- processServerMessages startOptions
   ntfStats <- restoreServerNtfs
   liftIO $ mapM_ (printMessageStats "messages") msgStats_
@@ -196,7 +195,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
-            <> reloadHTTPCredentialThread_ httpCreds_
     )
     `finally` stopServer s
   where
@@ -209,7 +207,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
-        (Just (_, httpCreds), Just attachHTTP) | addHTTP ->
+        (Just (httpFiles, httpCreds), Just attachHTTP) | addHTTP ->
+          race_ (reloadCredential checkHTTPSCredential (credentialCheckInterval tCfg) httpFiles httpCreds) $
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
               Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
@@ -746,11 +745,6 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let sr = ServiceRec {serviceId = newServiceId, serviceRole = role, serviceCert = cert, serviceCertHash = fp, serviceCreatedAt = ts}
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
         getCreateService @(StoreQueue s) (queueStore ms) sr
-
-    reloadHTTPCredentialThread_ :: Maybe (ServerCredentials, TVar TLS.Credential) -> [M s ()]
-    reloadHTTPCredentialThread_ (Just (creds, credVar))
-      | isJust attachHTTP_ = [liftIO $ reloadCredential checkHTTPSCredential (credentialCheckInterval tCfg) creds credVar]
-    reloadHTTPCredentialThread_ _ = []
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]

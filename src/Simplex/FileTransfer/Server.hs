@@ -48,7 +48,6 @@ import qualified Network.HTTP.Types as N
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Server as H
 import Network.Socket
-import qualified Network.TLS as TLS
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Server.Control (ControlProtocol (..))
 import Simplex.FileTransfer.Server.Env
@@ -77,7 +76,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TransportServerConfig (..), acceptCredential, reloadCredential, runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), acceptCredential, reloadCredential, runLocalTCPServer)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -136,21 +135,19 @@ xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> 
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
   expireServerFiles Nothing fileExpiration
   restoreServerStats
-  httpCreds_ <- asks httpServerCreds
   raceAny_
     ( runServer
         : expireFiles fileExpiration
         : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
           <> controlPortThread_ cfg
-          <> reloadHTTPCredentialThread_ httpCreds_
     )
     `finally` stopServer
   where
     runServer :: M s ()
     runServer = do
       srvCreds@(chain, pk) <- asks tlsServerCreds
-      httpCreds_ <- fmap snd <$> asks httpServerCreds
+      httpCreds_ <- asks httpServerCreds
       signKey <- liftIO $ case C.x509ToPrivate' pk of
         Right pk' -> pure pk'
         Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
@@ -158,8 +155,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
+          reloadWebCredential (httpFiles, httpCreds) = race_ (reloadCredential acceptCredential (credentialCheckInterval transportConfig) httpFiles httpCreds)
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
-      liftIO . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
+      liftIO . maybe id reloadWebCredential httpCreds_ . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds (snd <$> httpCreds_) transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
@@ -353,10 +351,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       d <- getFileServerStatsData ss
       let fd = periodStatDataCounts $ _filesDownloaded d
       pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
-
-    reloadHTTPCredentialThread_ :: Maybe (ServerCredentials, TVar TLS.Credential) -> [M s ()]
-    reloadHTTPCredentialThread_ (Just (creds, credVar)) = [liftIO $ reloadCredential acceptCredential (credentialCheckInterval transportConfig) creds credVar]
-    reloadHTTPCredentialThread_ Nothing = []
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]
