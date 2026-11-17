@@ -13,6 +13,8 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import Data.Word (Word32, Word8)
 import Simplex.Messaging.Encoding (Encoding (..))
+import Simplex.Messaging.Parsers (parseAll)
+import Simplex.Messaging.Util ((<$?>))
 
 data RLPItem = RLPBytes ByteString | RLPList [RLPItem]
 
@@ -49,7 +51,7 @@ instance Encoding RLPItem where
         let len = B.foldl' (\l w -> l * 256 + fromIntegral w) 0 lenBytes
         when (len < 56) $ fail "RLP: a long form of a short length"
         pure len
-      items n = A.take n >>= either fail pure . A.parseOnly (A.many' smpP <* A.endOfInput)
+      items n = parseAll (A.many' smpP) <$?> A.take n
 
 -- | Big-endian with no leading zeros, and zero as the empty string.
 scalarItem :: ByteString -> RLPItem

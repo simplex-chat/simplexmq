@@ -355,14 +355,15 @@ signingTests g = do
           }
   it "refuses a digest that is not 32 bytes" $
     (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
-  it "serializes a signature as r, s and v, as viem does" $
+  it "serializes a signature as r, s and v, as viem does, refusing v other than 27 or 28" $ do
     smpEncode viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
+    smpDecode (smpEncode viemSig) `shouldBe` Right viemSig
+    smpDecode @S.RecoverableSignature (B.take 64 (smpEncode viemSig) <> "\x1d") `shouldBe` Left "Failed reading: signature: v is not 27 or 28"
   it "reads and writes a signature as 0x and 130 lowercase hex digits, refusing another form or v and a high s" $ do
     strEncode viemSig `shouldBe` viemSigHex
     strDecode viemSigHex `shouldBe` Right viemSig
-    forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00"] $ \s ->
+    forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00", B.take 130 viemSigHex <> "1d"] $ \s ->
       (s, isLeft (strDecode s :: Either String S.RecoverableSignature)) `shouldBe` (s, True)
-    (strDecode (B.take 130 viemSigHex <> "1d") :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: expected r, s and v of 27 or 28"
     let highS = viemSig {S.rsS = i2osp $ ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) - os2ip (S.rsS viemSig), S.rsRecId = 0}
     (strDecode (strEncode highS) :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: s is not in the lower half of the group order"
   it "recovers the address that signed a digest" $

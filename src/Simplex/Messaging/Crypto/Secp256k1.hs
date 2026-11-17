@@ -1,4 +1,5 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -92,15 +93,17 @@ data RecoverableSignature = RecoverableSignature
 
 instance Encoding RecoverableSignature where
   smpEncode RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)
-  smpP = A.take (compactSigSize + 1) >>= either fail pure . deserializeSignature
-
-deserializeSignature :: ByteString -> Either String RecoverableSignature
-deserializeSignature s = case B.unpack v of
-  [v'] | v' == 27 || v' == 28 -> Right RecoverableSignature {rsR, rsS, rsRecId = v' - 27}
-  _ -> Left "signature: expected r, s and v of 27 or 28"
-  where
-    (rsR, (rsS, v)) = B.splitAt compactScalarSize <$> B.splitAt compactScalarSize s
-    compactScalarSize = compactSigSize `div` 2
+  smpP = do
+    rsR <- A.take scalarSize
+    rsS <- A.take scalarSize
+    rsRecId <-
+      A.anyChar >>= \case
+        '\27' -> pure 0
+        '\28' -> pure 1
+        _ -> fail "signature: v is not 27 or 28"
+    pure RecoverableSignature {rsR, rsS, rsRecId}
+    where
+      scalarSize = compactSigSize `div` 2
 
 lowS :: RecoverableSignature -> Bool
 lowS RecoverableSignature {rsS} = os2ip rsS <= ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) `div` 2
@@ -110,7 +113,7 @@ instance StrEncoding RecoverableSignature where
   strP = do
     digits <- A.string "0x" *> A.takeWhile1 isAlphaNum
     unless (B.length digits == 2 * (compactSigSize + 1) && BC.all lowerHexDigit digits) $ fail "signature: expected 0x and 130 lowercase hex digits"
-    sig <- either fail pure $ BAE.convertFromBase BAE.Base16 digits >>= deserializeSignature
+    sig <- either fail pure $ BAE.convertFromBase BAE.Base16 digits >>= smpDecode
     unless (lowS sig) $ fail "signature: s is not in the lower half of the group order"
     pure sig
     where
