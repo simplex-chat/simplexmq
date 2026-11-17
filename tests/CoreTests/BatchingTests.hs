@@ -9,8 +9,11 @@
 
 module CoreTests.BatchingTests (batchingTests) where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
 import Control.Monad
+import Control.Monad.Trans.Except (runExceptT)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
@@ -44,6 +47,14 @@ batchingTests = do
     it "should break on large message" testClientBatchWithLargeMessage
   describe "tDecodeServer" $
     it "should copy IDs out of received block" testDecodeServerCopiesIds
+  describe "sendProtocolCommand_" $ do
+    it "should not queue command after timeout or cancellation" testCommandNotQueuedAfterEnd
+    it "should not keep timed out command" testTimedOutCommandNotKept
+    it "should not keep command of cancelled thread" testCancelledCommandNotKept
+  describe "sendProtocolCommands" $ do
+    it "should not keep command that is too large" testLargeBatchCommandNotKept
+    it "should not keep commands of cancelled batch" testCancelledBatchNotKept
+    it "should not queue batch after cancellation" testBatchNotQueuedAfterEnd
 
 testBatchSubscriptions :: IO ()
 testBatchSubscriptions = do
@@ -185,6 +196,67 @@ testDecodeServerCopiesIds = do
     sharesBuffer s (bs corrId') `shouldReturn` False
     sharesBuffer s (unEntityId entId') `shouldReturn` False
 
+testCommandNotQueuedAfterEnd :: IO ()
+testCommandNotQueuedAfterEnd = do
+  client <- testClientStub
+  let sndQ = pClientSndQ client
+      ping tOut = runExceptT $ sendProtocolCommand_ client NRMBackground Nothing tOut Nothing NoEntity (Cmd SIdleClient PING)
+  replicateM_ 100 $ atomically $ writeTBQueue sndQ (Nothing, "")
+  ping (Just 100000) `shouldReturn` Left PCEResponseTimeout
+  cancelled <- async $ ping Nothing
+  threadDelay 100000
+  cancel cancelled
+  replicateM_ 2 $ atomically $ readTBQueue sndQ
+  threadDelay 100000
+  atomically (lengthTBQueue sndQ) `shouldReturn` 98
+
+testTimedOutCommandNotKept :: IO ()
+testTimedOutCommandNotKept = do
+  c <- testClientStub
+  runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) Nothing NoEntity (Cmd SIdleClient PING))
+    `shouldReturn` Left PCEResponseTimeout
+  pClientSentCommandsCount c `shouldReturn` 0
+
+testCancelledCommandNotKept :: IO ()
+testCancelledCommandNotKept = do
+  c <- testClientStub
+  a <- async $ runExceptT $ sendProtocolCommand c NRMBackground Nothing NoEntity (Cmd SIdleClient PING)
+  threadDelay 100000
+  pClientSentCommandsCount c `shouldReturn` 1
+  cancel a
+  pClientSentCommandsCount c `shouldReturn` 0
+
+testLargeBatchCommandNotKept :: IO ()
+testLargeBatchCommandNotKept = do
+  c <- testClientStub
+  msg <- atomically . C.randomBytes 17000 =<< C.newRandom
+  [Response _ (Left (PCETransportError TELargeMsg))] <- L.toList <$> sendProtocolCommands c NRMBackground (L.fromList [(NoEntity, Nothing, Cmd SSender $ SEND noMsgFlags msg)])
+  pClientSentCommandsCount c `shouldReturn` 0
+
+testCancelledBatchNotKept :: IO ()
+testCancelledBatchNotKept = do
+  c <- testClientStub
+  g <- C.newRandom
+  subs <- replicateM 300 $ atomically $ randomSUBClientCmd g
+  a <- async $ sendProtocolCommands c NRMBackground $ L.fromList subs
+  _ <- atomically $ readTBQueue $ pClientSndQ c
+  pClientSentCommandsCount c `shouldReturn` 30
+  cancel a
+  pClientSentCommandsCount c `shouldReturn` 0
+
+testBatchNotQueuedAfterEnd :: IO ()
+testBatchNotQueuedAfterEnd = do
+  c <- testClientStub
+  let sndQ = pClientSndQ c
+  replicateM_ 100 $ atomically $ writeTBQueue sndQ (Nothing, "")
+  sub <- atomically . randomSUBClientCmd =<< C.newRandom
+  a <- async $ sendProtocolCommands c NRMBackground $ L.fromList [sub]
+  threadDelay 100000
+  cancel a
+  _ <- atomically $ readTBQueue sndQ
+  threadDelay 100000
+  atomically (lengthTBQueue sndQ) `shouldReturn` 99
+
 sharesBuffer :: ByteString -> ByteString -> IO Bool
 sharesBuffer block s =
   unsafeUseAsCString block $ \blockPtr -> unsafeUseAsCString s $ \ptr ->
@@ -215,6 +287,12 @@ randomSUBCmd c = do
   rId <- atomically $ C.randomBytes 24 g
   (_, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   mkTransmission c (EntityId rId, Just rpKey, Cmd SRecipient SUB)
+
+randomSUBClientCmd :: TVar ChaChaDRG -> STM (ClientCommand BrokerMsg)
+randomSUBClientCmd g = do
+  rId <- C.randomBytes 24 g
+  (_, rpKey) <- C.generateAuthKeyPair C.SEd25519 g
+  pure (EntityId rId, Just rpKey, Cmd SRecipient SUB)
 
 randomENDCmd :: IO (Transmission BrokerMsg)
 randomENDCmd = do
