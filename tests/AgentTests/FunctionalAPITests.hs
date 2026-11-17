@@ -5041,6 +5041,21 @@ workItemReadTests = do
       events <- atomically $ flushTBQueue $ subQ a
       length (filter workerError events) `shouldBe` 1
       withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
+  it "should mark a command failed when a server error aborts its read" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> do
+        createCmd db
+        DB.execute_ db "CREATE FUNCTION fail_read() RETURNS BOOLEAN LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = 'XX001'; END $$; ALTER TABLE connections ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY; CREATE POLICY fail_read ON connections FOR SELECT USING (fail_read())"
+      doWork <- newTMVarIO ()
+      runAM a (readCommand a doWork $ \_ -> pure ()) `shouldReturn` Right ()
+      events <- atomically $ flushTBQueue $ subQ a
+      filter workerError events `shouldBe` []
+      withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
+  it "should mark a ntf subscription failed when a server error aborts its read in a batch" $
+    readBatchAfterServerError (NSANtf NSACreate) "ntf_failed" (readNtfActions testNtfServer)
+  it "should mark a ntf SMP action failed when a server error aborts its read in a batch" $
+    readBatchAfterServerError (NSASMP NSASmpKey) "smp_failed" (readSMPActions testSMPServer)
   it "should retry the read 3 times on the same connection after serialization failures" $ do
     (r, pids) <- readWithErrors 3 "40001"
     r `shouldBe` Right ()
@@ -5074,6 +5089,22 @@ workItemReadTests = do
       createNtfSubscription db (newNtfSubscription 1 "conn1" testSMPServer Nothing testNtfServer NASNew) action `shouldReturn` Right ()
     readNtfActions srv a doWork = withWorkItems a doWork $ withStoreIsolation' a RepeatableRead $ \db -> getNextNtfSubNTFActions db srv 10
     readSMPActions srv a doWork = withWorkItems a doWork $ withStoreIsolation' a RepeatableRead $ \db -> getNextNtfSubSMPActions db srv 10
+    readBatchAfterServerError :: HasTestEnv => NtfSubAction -> Query -> (AgentClient -> TMVar () -> (NonEmpty a -> AM ()) -> AM ()) -> IO ()
+    readBatchAfterServerError action failedColumn readItems = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> do
+        createNtfSub action db
+        DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn2" :: ConnId, SCMInvitation)
+        createNtfSubscription db (newNtfSubscription 1 "conn2" testSMPServer Nothing testNtfServer NASNew) action `shouldReturn` Right ()
+        DB.execute_ db $ "UPDATE ntf_subscriptions SET updated_by_supervisor = 1; CREATE FUNCTION fail_update() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN IF NEW.conn_id = 'conn1' AND NEW." <> failedColumn <> " = OLD." <> failedColumn <> " THEN RAISE EXCEPTION 'test' USING ERRCODE = 'XX001'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_update BEFORE UPDATE ON ntf_subscriptions FOR EACH ROW EXECUTE FUNCTION fail_update()"
+      doWork <- newTMVarIO ()
+      itemsRead <- newTVarIO (0 :: Int)
+      runAM a (readItems a doWork $ atomically . writeTVar itemsRead . length) `shouldReturn` Right ()
+      readTVarIO itemsRead `shouldReturn` 1
+      events <- atomically $ flushTBQueue $ subQ a
+      filter workerError events `shouldBe` []
+      withTransaction st (\db -> DB.query_ db $ "SELECT conn_id, " <> failedColumn <> ", updated_by_supervisor FROM ntf_subscriptions ORDER BY conn_id")
+        `shouldReturn` [("conn1" :: ConnId, 1 :: Int, 0 :: Int), ("conn2", 0, 0)]
     createSndFile' :: DB.Connection -> IO ()
     createSndFile' db = do
       g <- C.newRandom
