@@ -14,13 +14,14 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
 - warp-tls takes the credential from `tlsServerHooks.onServerNameIndication`, which reads the same kind of `TVar`; tls tries the hook's credentials before the shared ones.
 - `reloadCredential` replaces the credential in its `TVar` when the files, parsed at each interval, differ from the credential in use:
   - the files are parsed by `loadCredential`, which `loadServerCredential` also uses at start;
+  - the checks below are applied only to files that differ from the credential in use;
   - `checkKeyPair`: the private key must belong to the leaf certificate; an RSA key signs a fixed message that the certificate's key verifies, and Ed25519, Ed448 and ECDSA keys on named curves are compared with the public key computed from the private key; other key types are rejected;
   - smp-server also requires the RSA key of at least 4096 bits that it requires at start (`checkHTTPSCredential`);
   - xftp-server accepts any key type at start, and only RSA, Ed25519, Ed448 and named-curve ECDSA keys on reload;
-  - a rejection is logged once, with its reason, until the files load and check successfully again, and the previous credential stays in use.
+  - a rejection is logged with its reason once per rejected credential, or once per reason when the files cannot be loaded, and the previous credential stays in use.
 - The Env types hold the web credential's files with its `TVar`: `httpServerCreds :: Maybe (ServerCredentials, TVar T.Credential)`.
 - The check interval is `credentialCheckInterval`, 60 seconds by default: in `TransportServerConfig` for SNI, and in `WebHttpsParams` with the check `checkCredential` for the separate HTTPS port.
-- Each reload thread runs with the listener that reads its `TVar` (`race_`), so they stop together: around the SMP listener of the port that serves HTTPS, around xftp-server's `runHTTP2Server`, and in `runHTTPSServer` for the separate port.
+- `withCredentialReload` runs each reload thread with the listener that reads its `TVar` (`race_`), so they stop together: around the SMP listener of the port that serves HTTPS, around xftp-server's `runHTTP2Server`, and in `runHTTPSServer` for the separate port.
 
 ## Composition
 
