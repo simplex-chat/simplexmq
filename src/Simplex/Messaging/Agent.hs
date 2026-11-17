@@ -213,7 +213,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore, abortsTransaction)
+import Simplex.Messaging.Agent.Store.Common (DBStore)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
@@ -2515,16 +2515,13 @@ enqueueMessageB :: forall t. Traversable t => AgentClient -> Maybe AsyncCmdId ->
 enqueueMessageB c cmdId_ reqs = do
   cfg <- asks config
   (_, reqMids) <- unsafeWithStore c $ \db -> do
-    rolledBack <- newTVarIO Nothing
-    (ids, rs) <- mapAccumLM (\ids r -> readTVarIO rolledBack >>= maybe (storeMsg db cfg rolledBack ids r) (pure . (ids,) . Left)) IM.empty reqs
-    rs' <- maybe rs (\e -> (>> Left e) <$> rs) <$> readTVarIO rolledBack
-    when (all isRight rs') $ mapM_ (deleteCommand db) cmdId_
-    pure (ids, rs')
+    res@(_, rs) <-
+      mapAccumLM (\ids r -> storeSentMsg db cfg ids r `catchItemError` \e -> (ids,) <$> handleInternal e) IM.empty reqs
+        `catchRolledBack` \e -> pure (IM.empty, Left e <$ reqs)
+    when (all isRight rs) $ mapM_ (deleteCommand db) cmdId_
+    pure res
   forME reqMids $ submitSentMsg c
   where
-    storeMsg db cfg rolledBack ids r = storeSentMsg db cfg ids r `catchNonConflict` \e -> do
-      when (abortsTransaction e) . atomically . writeTVar rolledBack . Just . INTERNAL $ "transaction rolled back after " <> show e
-      (ids,) <$> handleInternal e
     handleInternal :: E.SomeException -> IO (Either AgentErrorType b)
     handleInternal = pure . Left . INTERNAL . show
 
@@ -2814,7 +2811,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
       notifyDel msgId $ MERR (unId msgId) err
       msgIds_ <- withStore' c $ \db -> do
         msgIds_ <- getExpiredSndMessages db connId sq expireTs
-        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchNonConflict` \e -> when (abortsTransaction e) $ E.throwIO e
+        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchItemError` \_ -> pure ()
         pure msgIds_
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
@@ -3083,6 +3080,7 @@ deleteConnQueues c nm waitDelivery ntf rqs = do
     deleteQueueRecs rs = do
       maxErrs <- asks $ deleteErrorCount . config
       rs' <- rights <$> withStoreBatch' c (\db -> map (deleteQueueRec db maxErrs) rs)
+      forM_ [rq | ((rq, _), Just (Just _)) <- rs'] $ \RcvQueue {userId, server} -> incSMPServerStat c userId server connDeleted
       let delQ ((rq, _), err_) = (qConnId rq,qServer rq,queueId rq,) <$> err_
           delQs_ = L.nonEmpty $ mapMaybe delQ rs'
       forM_ delQs_ $ \delQs -> notify ("", "", AEvt SAEConn $ DEL_RCVQS delQs)
@@ -3093,14 +3091,13 @@ deleteConnQueues c nm waitDelivery ntf rqs = do
           Int ->
           (RcvQueue, Either AgentErrorType ()) ->
           IO ((RcvQueue, Either AgentErrorType ()), Maybe (Maybe AgentErrorType)) -- Nothing - no event, Just Nothing - no error
-        deleteQueueRec db maxErrs (rq@RcvQueue {userId, server}, r) = case r of
+        deleteQueueRec db maxErrs (rq, r) = case r of
           Right _ -> deleteConnRcvQueue db rq $> ((rq, r), Just Nothing)
           Left e
             | temporaryOrHostError e && deleteErrors rq + 1 < maxErrs -> incRcvDeleteErrors db rq $> ((rq, r), Nothing)
             | otherwise -> do
                 deleteConnRcvQueue db rq
                 -- attempts and successes are counted in deleteQueues function
-                incSMPServerStat c userId server connDeleted
                 pure ((rq, Right ()), Just (Just e))
     notify = when ntf . atomically . writeTBQueue (subQ c)
     connResults :: [(RcvQueue, Either AgentErrorType ())] -> Map ConnId (Either AgentErrorType ())
