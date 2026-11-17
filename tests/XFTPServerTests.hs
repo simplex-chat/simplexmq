@@ -32,7 +32,7 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
 import qualified Network.TLS as T
-import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentials, withStallingServerOn')
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -91,7 +91,7 @@ xftpServerTests = do
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
-      it "should serve the replaced web certificate without restart when SNI is used" testSNICertReload
+      it "should serve the replaced RSA or ECDSA web certificate without restart when SNI is used" testSNICertReload
       it "should add CORS headers when SNI is used" testCORSHeaders
       it "should respond to OPTIONS preflight with CORS headers" testCORSPreflight
       it "should not add CORS headers without SNI" testNoCORSWithoutSNI
@@ -501,8 +501,10 @@ testNoSNICertSelection =
 
 testSNICertReload :: HasTestEnv => Expectation
 testSNICertReload = do
-  copyWebCredential
-  withXFTPServerCfg cfg $ \_ -> testWebCredentialReload xftpTestPort
+  copyWebCredential "web"
+  withXFTPServerCfg cfg $ \_ -> do
+    testWebCredentialReload xftpTestPort
+    testWebCredentialReplaced xftpTestPort "web_ecdsa" "web_ecdsa"
   where
     XFTPServerConfig {transportConfig} = testXFTPServerConfigSNI
     cfg =

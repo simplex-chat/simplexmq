@@ -1680,7 +1680,7 @@ testPrometheusMetrics = do
 testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
 testWebCredentialReloadSMP = do
   it "should serve the replaced SNI certificate in transport server without restart" $ \_ -> do
-    copyWebCredential
+    copyWebCredential "web"
     credential <- loadServerCredential ntfTestServerCredentials
     sniCredential <- newTVarIO =<< loadServerCredential testWebCredentials
     ss <- newSocketState
@@ -1691,7 +1691,7 @@ testWebCredentialReloadSMP = do
             (runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ())
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
   it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ \(at, msType) -> do
-    copyWebCredential
+    copyWebCredential "web"
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ ->
           cfg_
             { httpCredentials = Just testWebCredentials,
@@ -1699,7 +1699,9 @@ testWebCredentialReloadSMP = do
             }
     withSmpServerWebConfigOn at cfg' testPort $ \_ -> do
       testWebCredentialReload testPort
-      testUnsupportedWebCredentialKept testPort
+      testWebCredentialReplaced testPort "web_rsa2048" "web"
+      testWebCredentialReplaced testPort "web_ecdsa" "web"
+      testWebCredentialReplaced testPort "web2" "web2"
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

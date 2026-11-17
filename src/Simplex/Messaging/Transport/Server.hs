@@ -37,6 +37,8 @@ where
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
+import qualified Crypto.PubKey.ECC.Prim as ECC
+import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
 import qualified Crypto.PubKey.RSA as RSA
@@ -47,8 +49,10 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
 import Data.List (find)
 import Data.Maybe (fromJust, fromMaybe, maybeToList)
+import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.X509 as X
+import Data.X509.EC (unserializePoint)
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
 import Foreign.C.Error
@@ -57,8 +61,7 @@ import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (catchAll_, eitherToMaybe, labelMyThread, stateTVar', tshow, unlessM)
-import System.Directory (getModificationTime)
+import Simplex.Messaging.Util (catchAll_, labelMyThread, stateTVar', tshow, unlessM)
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -273,35 +276,45 @@ loadServerCredential ServerCredentials {caCertificateFile, certificateFile, priv
 reloadCredential :: (T.Credential -> Bool) -> Int -> ServerCredentials -> TVar T.Credential -> IO ()
 reloadCredential supported interval ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} credVar = do
   labelMyThread "reloadCredential"
-  modificationTimes >>= reloadChanged
+  checkFiles Nothing
   where
-    reloadChanged times = do
+    checkFiles rejected = do
       threadDelay interval
-      times' <- modificationTimes
-      when (times' /= times) $
-        loadCredential >>= \case
-          Right cred -> do
-            atomically $ writeTVar credVar cred
-            logNote $ "reloaded credential " <> T.pack certificateFile
-          Left e -> logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
-      reloadChanged times'
-    modificationTimes = eitherToMaybe <$> tryIOError (mapM getModificationTime files)
-    files = certificateFile : privateKeyFile : chainFiles
-    chainFiles = maybeToList caCertificateFile
-    loadCredential = either (Left . tshow) id <$> E.tryAny (checkCredential <$!> T.credentialLoadX509Chain certificateFile chainFiles privateKeyFile)
+      current <- readTVarIO credVar
+      loadCredential >>= \case
+        Right cred
+          | cred == current -> checkFiles Nothing
+          | otherwise -> do
+              atomically $ writeTVar credVar cred
+              logNote $ "reloaded credential " <> T.pack certificateFile
+              checkFiles Nothing
+        Left e -> do
+          unless (rejected == Just e) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
+          checkFiles $ Just e
+    loadCredential = either (Left . tshow) id <$> E.tryAny (checkCredential <$!> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
     checkCredential = \case
       Left e -> Left $ T.pack e
-      Right cred
-        | not (matchingKeyPair cred) -> Left "the private key does not match the certificate"
-        | not (supported cred) -> Left "unsupported certificate"
-        | otherwise -> Right cred
+      Right cred -> do
+        checkKeyPair cred
+        unless (supported cred) $ Left "the certificate key type or size is not accepted by this server"
+        Right cred
 
-matchingKeyPair :: T.Credential -> Bool
-matchingKeyPair (X.CertificateChain chain, privateKey) = case (map (X.certPubKey . X.getCertificate) chain, privateKey) of
-  (X.PubKeyRSA k : _, X.PrivKeyRSA pk) -> RSA.private_pub pk == k
-  (X.PubKeyEd25519 k : _, X.PrivKeyEd25519 pk) -> Ed25519.toPublic pk == k
-  (X.PubKeyEd448 k : _, X.PrivKeyEd448 pk) -> Ed448.toPublic pk == k
-  _ -> False
+checkKeyPair :: T.Credential -> Either Text ()
+checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
+  [] -> Left "no certificate"
+  publicKey : _ -> case (publicKey, privateKey) of
+    (X.PubKeyRSA k, X.PrivKeyRSA pk) -> matching $ RSA.private_pub pk == k
+    (X.PubKeyEd25519 k, X.PrivKeyEd25519 pk) -> matching $ Ed25519.toPublic pk == k
+    (X.PubKeyEd448 k, X.PrivKeyEd448 pk) -> matching $ Ed448.toPublic pk == k
+    (X.PubKeyEC (X.PubKeyEC_Named curveName point), X.PrivKeyEC (X.PrivKeyEC_Named curveName' d)) ->
+      let curve = ECC.getCurveByName curveName
+       in matching $ curveName == curveName' && unserializePoint curve point == Just (ECC.pointBaseMul curve d)
+    _
+      | X.pubkeyToAlg publicKey == X.privkeyToAlg privateKey -> Left $ "unsupported key type " <> tshow (X.pubkeyToAlg publicKey)
+      | otherwise -> mismatch
+  where
+    matching keysMatch = if keysMatch then Right () else mismatch
+    mismatch = Left "the private key does not match the certificate"
 
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =

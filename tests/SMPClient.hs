@@ -43,7 +43,7 @@ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCert
 import Simplex.Messaging.Util (unlessM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.Directory (copyFile)
+import System.Directory (copyFile, removeFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -401,34 +401,40 @@ testWebCredentials =
 testCredentialCheckInterval :: Int
 testCredentialCheckInterval = 100000
 
-copyWebCredential :: HasTestEnv => IO ()
-copyWebCredential = do
-  copyFile "tests/fixtures/web.crt" $ certificateFile testWebCredentials
-  copyFile "tests/fixtures/web.key" $ privateKeyFile testWebCredentials
+copyWebCredential :: HasTestEnv => String -> IO ()
+copyWebCredential name = do
+  copyFile (webFixture name ".crt") $ certificateFile testWebCredentials
+  copyFile (webFixture name ".key") $ privateKeyFile testWebCredentials
+
+webFixture :: String -> String -> FilePath
+webFixture name extension = "tests/fixtures/" <> name <> extension
 
 testWebCredentialReload :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
 testWebCredentialReload port = do
-  servedCertificateShouldBe port "tests/fixtures/web.crt"
-  copyFile "tests/fixtures/web2.crt" $ certificateFile testWebCredentials
+  servedCertificateShouldBe port "web"
+  copyFile (webFixture "web2" ".crt") $ certificateFile testWebCredentials
   threadDelay credentialReloadWait
-  servedCertificateShouldBe port "tests/fixtures/web.crt"
-  copyFile "tests/fixtures/web2.key" $ privateKeyFile testWebCredentials
+  servedCertificateShouldBe port "web"
+  copyFile (webFixture "web2" ".key") $ privateKeyFile testWebCredentials
   threadDelay credentialReloadWait
-  servedCertificateShouldBe port "tests/fixtures/web2.crt"
+  servedCertificateShouldBe port "web2"
+  removeFile $ privateKeyFile testWebCredentials
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "web2"
+  testWebCredentialReplaced port "web" "web"
 
-testUnsupportedWebCredentialKept :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
-testUnsupportedWebCredentialKept port = do
-  copyFile "tests/fixtures/web_rsa2048.crt" $ certificateFile testWebCredentials
-  copyFile "tests/fixtures/web_rsa2048.key" $ privateKeyFile testWebCredentials
+testWebCredentialReplaced :: (HasCallStack, HasTestEnv) => ServiceName -> String -> String -> IO ()
+testWebCredentialReplaced port name servedName = do
+  copyWebCredential name
   threadDelay credentialReloadWait
-  servedCertificateShouldBe port "tests/fixtures/web2.crt"
+  servedCertificateShouldBe port servedName
 
 credentialReloadWait :: Int
 credentialReloadWait = 10 * testCredentialCheckInterval
 
-servedCertificateShouldBe :: HasCallStack => ServiceName -> FilePath -> IO ()
-servedCertificateShouldBe port certFile = do
-  chain <- X.CertificateChain <$> XF.readSignedObject certFile
+servedCertificateShouldBe :: HasCallStack => ServiceName -> String -> IO ()
+servedCertificateShouldBe port name = do
+  chain <- X.CertificateChain <$> XF.readSignedObject (webFixture name ".crt")
   XV.Fingerprint caFingerprint <- loadFileFingerprint "tests/fixtures/web_ca.crt"
   runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
     tlsPeerCert tls `shouldBe` chain

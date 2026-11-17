@@ -21,20 +21,22 @@ import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import qualified Network.HTTP.Client as H1
+import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H2
+import Network.Wai (responseLBS)
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials)
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.CLI (simplexmqVersionCommit)
+import Simplex.Messaging.Server.Env.STM (supportedHTTPSCredential)
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
-import SMPClient (copyWebCredential, testCredentialCheckInterval, testUnsupportedWebCredentialKept, testWebCredentialReload, testWebCredentials)
-import Simplex.Messaging.Server.Env.STM (supportedHTTPSCredential)
 import qualified SMPWeb
-import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..), serveStaticFiles, attachStaticFiles)
+import Simplex.Messaging.Server.Web (WebHttpsParams (..), serveStaticFiles, attachStaticFiles, runHTTPSServer)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
@@ -43,7 +45,7 @@ import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Main (withStdin)
 import UnliftIO (catchAny)
-import UnliftIO.Async (async, cancel)
+import UnliftIO.Async (async, cancel, withAsync)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
 import Util
@@ -222,12 +224,14 @@ smpServerTestStatic = do
 
 testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
 testStaticSiteCertReload = do
-  copyWebCredential
-  serveStaticFiles EmbeddedWebParams {webStaticPath = webPath, webHttpPort = Nothing, webHttpsParams = Just httpsParams}
-  threadDelay 1000000
-  testWebCredentialReload httpsPort
-  testUnsupportedWebCredentialKept httpsPort
+  copyWebCredential "web"
+  withAsync (runHTTPSServer httpsParams emptyApp) $ \_ -> do
+    threadDelay 1000000
+    testWebCredentialReload httpsPort
+    testWebCredentialReplaced httpsPort "web_rsa2048" "web"
+    testWebCredentialReplaced httpsPort "web2" "web2"
   where
+    emptyApp _ respond = respond $ responseLBS N.ok200 [] ""
     httpsPort = testServerPort 9
     httpsParams =
       WebHttpsParams
