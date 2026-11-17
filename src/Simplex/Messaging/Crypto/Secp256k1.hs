@@ -10,7 +10,6 @@ module Simplex.Messaging.Crypto.Secp256k1
     Secp256k1Context,
     PubKeyFormat (..),
     RecoverableSignature (..),
-    serializeSignature,
     mkPrivateKey,
     unPrivateKey,
     withContext,
@@ -41,6 +40,7 @@ import Foreign hiding (void)
 import Foreign.C
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -90,8 +90,9 @@ data RecoverableSignature = RecoverableSignature
   }
   deriving (Eq, Show)
 
-serializeSignature :: RecoverableSignature -> ByteString
-serializeSignature RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)
+instance Encoding RecoverableSignature where
+  smpEncode RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)
+  smpP = A.take (compactSigSize + 1) >>= either fail pure . deserializeSignature
 
 deserializeSignature :: ByteString -> Either String RecoverableSignature
 deserializeSignature s = case B.unpack v of
@@ -105,7 +106,7 @@ lowS :: RecoverableSignature -> Bool
 lowS RecoverableSignature {rsS} = os2ip rsS <= ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) `div` 2
 
 instance StrEncoding RecoverableSignature where
-  strEncode = ("0x" <>) . BAE.convertToBase BAE.Base16 . serializeSignature
+  strEncode = ("0x" <>) . BAE.convertToBase BAE.Base16 . smpEncode
   strP = do
     digits <- A.string "0x" *> A.takeWhile1 isAlphaNum
     unless (B.length digits == 2 * (compactSigSize + 1) && BC.all lowerHexDigit digits) $ fail "signature: expected 0x and 130 lowercase hex digits"
@@ -115,9 +116,9 @@ instance StrEncoding RecoverableSignature where
     where
       lowerHexDigit c = isDigit c || (c >= 'a' && c <= 'f')
 
-instance ToField RecoverableSignature where toField = toField . Binary . serializeSignature
+instance ToField RecoverableSignature where toField = toField . Binary . smpEncode
 
-instance FromField RecoverableSignature where fromField = blobFieldDecoder deserializeSignature
+instance FromField RecoverableSignature where fromField = blobFieldDecoder smpDecode
 
 -- FFI
 

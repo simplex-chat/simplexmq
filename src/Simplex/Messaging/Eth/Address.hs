@@ -6,7 +6,6 @@
 module Simplex.Messaging.Eth.Address
   ( Address,
     unAddress,
-    addressFromBytes,
     addressFromPublicKey,
     addressFromPrivateKey,
     recoverAddress,
@@ -31,6 +30,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import Simplex.Messaging.Crypto (keccak256)
 import Simplex.Messaging.Crypto.BIP32 (ExtendedKey, derivePath_, xkKey)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 
 newtype Address = Address ByteString
@@ -49,20 +49,19 @@ instance StrEncoding Address where
     where
       mixedCase s = BC.any isUpper s && BC.any isLower s
 
-instance ToField Address where toField (Address a) = toField $ Binary a
+instance Encoding Address where
+  smpEncode (Address a) = a
+  smpP = Address <$> A.take addressSize
 
-instance FromField Address where fromField = blobFieldDecoder addressFromBytes
+instance ToField Address where toField = toField . Binary . smpEncode
+
+instance FromField Address where fromField = blobFieldDecoder smpDecode
 
 addressSize :: Int
 addressSize = 20
 
 unAddress :: Address -> ByteString
 unAddress (Address bs) = bs
-
-addressFromBytes :: ByteString -> Either String Address
-addressFromBytes a
-  | B.length a == addressSize = Right $ Address a
-  | otherwise = Left "address: expected 20 bytes"
 
 -- | The last 20 bytes of @keccak256@ of the uncompressed public key with its @0x04@ SEC1 prefix removed.
 addressFromPublicKey :: S.Secp256k1PublicKey -> IO Address

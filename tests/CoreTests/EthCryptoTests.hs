@@ -31,12 +31,12 @@ import qualified Simplex.Messaging.Crypto.BIP39 as B39
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import Simplex.Messaging.Crypto.BIP44
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
 import Simplex.Messaging.Eth.EIP712
 import Simplex.Messaging.Eth.RLP
 import Simplex.Messaging.Eth.Transaction
-import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$$>))
 import Test.Hspec hiding (fit, it)
 import Util
@@ -321,15 +321,15 @@ eip55Tests = do
 rlpTests :: Spec
 rlpTests = do
   forM_ rlpVectors $ \(name, item, expected) ->
-    it ("encodes " <> name) $ toHex (rlpEncode item) `shouldBe` expected
+    it ("encodes " <> name) $ toHex (smpEncode item) `shouldBe` expected
   it "encodes scalars without leading zeros" $ do
-    toHex (rlpEncode $ scalarItem $ B.replicate 32 0) `shouldBe` "80"
-    toHex (rlpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
-    toHex (rlpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
+    toHex (smpEncode $ scalarItem $ B.replicate 32 0) `shouldBe` "80"
+    toHex (smpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
+    toHex (smpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
   it "decodes each encoding, and refuses one the encoder does not produce" $ do
-    forM_ rlpVectors $ \(_, item, expected) -> (rlpEncode <$> parseAll rlpP (hx expected)) `shouldBe` Right (rlpEncode item)
+    forM_ rlpVectors $ \(_, item, expected) -> (smpEncode <$> smpDecode @RLPItem (hx expected)) `shouldBe` Right (smpEncode item)
     forM_ ["8100", "817f", "b801ff", "b90038" <> B.concat (replicate 56 "61"), "c1", "83646f"] $ \encoded ->
-      (encoded, isLeft $ parseAll rlpP (hx encoded)) `shouldBe` (encoded, True)
+      (encoded, isLeft $ smpDecode @RLPItem (hx encoded)) `shouldBe` (encoded, True)
   where
     rlpVectors =
       [ ("the empty string", RLPBytes "", "80"),
@@ -356,7 +356,7 @@ signingTests g = do
   it "refuses a digest that is not 32 bytes" $
     (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
   it "serializes a signature as r, s and v, as viem does" $
-    serializeSignature viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
+    smpEncode viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
   it "reads and writes a signature as 0x and 130 lowercase hex digits, refusing another form or v and a high s" $ do
     strEncode viemSig `shouldBe` viemSigHex
     strDecode viemSigHex `shouldBe` Right viemSig

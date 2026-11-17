@@ -15,7 +15,6 @@ import Control.Concurrent.STM (TVar)
 import Control.Monad (when)
 import Crypto.Number.Serialize (os2ip)
 import Crypto.Random (ChaChaDRG)
-import qualified Data.Attoparsec.ByteString as A
 import Data.Bits (shiftR)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
@@ -24,8 +23,8 @@ import Data.WideWord.Word256 (Word256 (..))
 import Data.Word (Word32, Word64, Word8)
 import Simplex.Messaging.Crypto (keccak256)
 import Simplex.Messaging.Crypto.Secp256k1 (RecoverableSignature (..), Secp256k1PrivateKey, signRecoverable)
-import Simplex.Messaging.Encoding (smpEncode)
-import Simplex.Messaging.Eth.Address (Address, addressFromBytes, unAddress)
+import Simplex.Messaging.Encoding (Encoding (..))
+import Simplex.Messaging.Eth.Address (Address, unAddress)
 import Simplex.Messaging.Eth.RLP
 import Simplex.Messaging.Util ((<$$>))
 
@@ -54,7 +53,7 @@ eip1559SigningHash = keccak256 . typed . txFields
 
 decodeEip1559Tx :: ByteString -> Either String (Eip1559Tx, RecoverableSignature)
 decodeEip1559Tx raw = case B.uncons raw of
-  Just (txType, encoded) | txType == eip1559Type -> A.parseOnly (rlpP <* A.endOfInput) encoded >>= signedTx
+  Just (txType, encoded) | txType == eip1559Type -> smpDecode encoded >>= signedTx
   _ -> Left "transaction: not an EIP-1559 transaction"
   where
     signedTx = \case
@@ -64,7 +63,7 @@ decodeEip1559Tx raw = case B.uncons raw of
         txMaxPriorityFeePerGas <- word tip
         txMaxFeePerGas <- word maxFee
         txGasLimit <- word gas
-        txTo <- addressFromBytes to
+        txTo <- smpDecode to
         txValue <- word value
         rsRecId <- word yParity
         when (rsRecId > 1) $ Left "transaction: yParity above 1"
@@ -98,7 +97,7 @@ txFields Eip1559Tx {txChainId, txNonce, txMaxPriorityFeePerGas, txMaxFeePerGas, 
     be64 n = smpEncode (fromIntegral (n `shiftR` 32) :: Word32) <> smpEncode (fromIntegral n :: Word32)
 
 typed :: [RLPItem] -> ByteString
-typed items = B.cons eip1559Type $ rlpEncode $ RLPList items
+typed items = B.cons eip1559Type $ smpEncode $ RLPList items
 
 eip1559Type :: Word8
 eip1559Type = 0x02

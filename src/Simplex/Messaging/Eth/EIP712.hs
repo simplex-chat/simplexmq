@@ -6,7 +6,6 @@ module Simplex.Messaging.Eth.EIP712
   ( Eip712Domain (..),
     Eip712Value (..),
     hashTypedData,
-    serializeSignature,
   )
 where
 
@@ -16,7 +15,6 @@ import qualified Data.ByteString as B
 import Data.WideWord.Word256 (Word256)
 import Data.Word (Word64)
 import Simplex.Messaging.Crypto (keccak256)
-import Simplex.Messaging.Crypto.Secp256k1 (serializeSignature)
 import Simplex.Messaging.Eth.Address (Address, unAddress)
 
 data Eip712Domain = Eip712Domain
