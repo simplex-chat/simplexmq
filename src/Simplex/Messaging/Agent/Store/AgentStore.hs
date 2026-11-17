@@ -1641,10 +1641,17 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
   createdAt <- liftIO getCurrentTime
   liftIO . E.handle handleErr $
+#if defined(dbPostgres)
+    DB.execute
+      db
+      "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) SELECT ?, ?, ?, conn_id, ?, ?, ?::BYTEA, ?::TIMESTAMPTZ FROM connections WHERE conn_id = ? FOR KEY SHARE"
+      (host_, port_, Binary corrId, cmdTag, cmd, serverKeyHash_, createdAt, connId)
+#else
     DB.execute
       db
       "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
       (host_, port_, Binary corrId, connId, cmdTag, cmd, serverKeyHash_, createdAt)
+#endif
   where
     cmdTag = agentCommandTag cmd
 #if defined(dbPostgres)
