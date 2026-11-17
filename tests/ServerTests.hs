@@ -55,9 +55,10 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, mkTransportServerConfig, newSocketState, reloadCredential, runTransportServerState_)
+import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadServerCredential, mkTransportServerConfig, newSocketState, reloadCredential, runTransportServerState_)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
+import qualified Network.TLS as TLS
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
 import System.Timeout
 import Test.HUnit
@@ -1677,9 +1678,9 @@ testPrometheusMetrics = do
       threadDelay 1500000
       runSMPClient t $ \_ -> pure ()
 
-testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
-testWebCredentialReloadSMP = do
-  it "should serve the replaced SNI certificate in transport server without restart" $ \_ -> do
+webCredentialTests :: Spec
+webCredentialTests = do
+  it "should serve the replaced SNI certificate in transport server without restart" $ do
     copyWebCredential "web"
     credential <- loadServerCredential ntfTestServerCredentials
     sniCredential <- newTVarIO =<< loadServerCredential testWebCredentials
@@ -1687,9 +1688,33 @@ testWebCredentialReloadSMP = do
     let srvCreds = TLSServerCredential {credential, sniCredential = Just sniCredential}
         runServer started =
           race_
-            (reloadCredential (const True) testCredentialCheckInterval testWebCredentials sniCredential)
+            (reloadCredential acceptCredential testCredentialCheckInterval testWebCredentials sniCredential)
             (runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ())
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
+  describe "key pair check" $ do
+    it "should accept the matching RSA key and reject another one" $ do
+      keyPairCheck "web" "web" `shouldReturn` Right ()
+      keyPairCheck "web2" "web" `shouldReturn` keysMismatch
+    it "should accept the matching ECDSA key and reject another one" $ do
+      keyPairCheck "web_ecdsa" "web_ecdsa" `shouldReturn` Right ()
+      keyPairCheck "web_ecdsa" "web_ecdsa2" `shouldReturn` keysMismatch
+    it "should accept the matching Ed448 key and reject another one" $ do
+      keyPairCheck "server" "server" `shouldReturn` Right ()
+      keyPairCheck "server" "server2" `shouldReturn` keysMismatch
+    it "should accept the matching Ed25519 key and reject another one" $ do
+      keyPairCheck "ed25519/server" "ed25519/server" `shouldReturn` Right ()
+      keyPairCheck "ed25519/server" "ed25519/ca" `shouldReturn` keysMismatch
+    it "should reject a key of another type" $
+      keyPairCheck "web" "web_ecdsa" `shouldReturn` keysMismatch
+    it "should reject an unsupported key type" $
+      keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left "unsupported key type PubKeyALG_DSA"
+  where
+    keysMismatch = Left "the private key does not match the certificate"
+    keyPairCheck certName keyName =
+      either error checkKeyPair <$> TLS.credentialLoadX509Chain ("tests/fixtures/" <> certName <> ".crt") [] ("tests/fixtures/" <> keyName <> ".key")
+
+testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
+testWebCredentialReloadSMP =
   it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ \(at, msType) -> do
     copyWebCredential "web"
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ ->

@@ -553,7 +553,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           port <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
           cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
           key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
-          pure WebHttpsParams {port, cert, key, supportedCredential = supportedHTTPSCredential, credentialCheckInterval = defaultCredentialCheckInterval}
+          pure WebHttpsParams {port, cert, key, checkCredential = checkHTTPSCredential, credentialCheckInterval = defaultCredentialCheckInterval}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
     checkMsgStoreMode :: Ini -> AStoreType -> IO ()

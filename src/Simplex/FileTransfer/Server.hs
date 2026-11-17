@@ -77,7 +77,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TransportServerConfig (..), reloadCredential, runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TransportServerConfig (..), acceptCredential, reloadCredential, runLocalTCPServer)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -355,7 +355,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
 
     reloadHTTPCredentialThread_ :: Maybe (ServerCredentials, TVar TLS.Credential) -> [M s ()]
-    reloadHTTPCredentialThread_ (Just (creds, credVar)) = [liftIO $ reloadCredential (const True) (credentialCheckInterval transportConfig) creds credVar]
+    reloadHTTPCredentialThread_ (Just (creds, credVar)) = [liftIO $ reloadCredential acceptCredential (credentialCheckInterval transportConfig) creds credVar]
     reloadHTTPCredentialThread_ Nothing = []
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]

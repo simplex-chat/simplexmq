@@ -749,7 +749,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 
     reloadHTTPCredentialThread_ :: Maybe (ServerCredentials, TVar TLS.Credential) -> [M s ()]
     reloadHTTPCredentialThread_ (Just (creds, credVar))
-      | isJust attachHTTP_ = [liftIO $ reloadCredential supportedHTTPSCredential (credentialCheckInterval tCfg) creds credVar]
+      | isJust attachHTTP_ = [liftIO $ reloadCredential checkHTTPSCredential (credentialCheckInterval tCfg) creds credVar]
     reloadHTTPCredentialThread_ _ = []
 
     controlPortThread_ :: ServerConfig s -> [M s ()]

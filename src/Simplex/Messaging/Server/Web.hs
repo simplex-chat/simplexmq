@@ -69,7 +69,7 @@ data WebHttpsParams = WebHttpsParams
   { port :: Int,
     cert :: FilePath,
     key :: FilePath,
-    supportedCredential :: TLS.Credential -> Bool,
+    checkCredential :: TLS.Credential -> Either T.Text (),
     credentialCheckInterval :: Int
   }
 
@@ -87,16 +87,14 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
   forM_ webHttpsParams $ \params -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ runHTTPSServer params app
-  where
-    mkSettings port = W.setPort port warpSettings
 
 runHTTPSServer :: WebHttpsParams -> Application -> IO ()
-runHTTPSServer WebHttpsParams {port, cert, key, supportedCredential, credentialCheckInterval} app = do
+runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheckInterval} app = do
   logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
   let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
   credVar <- newTVarIO =<< loadServerCredential creds
-  race_ (reloadCredential supportedCredential credentialCheckInterval creds credVar) $
-    WT.runTLS (tlsSettings credVar) (W.setPort port warpSettings) app
+  race_ (reloadCredential checkCredential credentialCheckInterval creds credVar) $
+    WT.runTLS (tlsSettings credVar) (mkSettings port) app
   where
     tlsSettings credVar =
       WT.defaultTlsSettings
@@ -130,6 +128,9 @@ attachStaticFiles path action = do
 
 warpSettings :: W.Settings
 warpSettings = W.setHTTP2Disabled $ W.setFdCacheDuration 30 $ W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
+
+mkSettings :: Int -> W.Settings
+mkSettings port = W.setPort port warpSettings
 
 staticFiles :: FilePath -> IO Application
 staticFiles root = do

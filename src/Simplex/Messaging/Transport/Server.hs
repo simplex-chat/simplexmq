@@ -27,6 +27,8 @@ module Simplex.Messaging.Transport.Server
     startTCPServer,
     loadServerCredential,
     reloadCredential,
+    acceptCredential,
+    checkKeyPair,
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
@@ -37,11 +39,12 @@ where
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
+import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.Prim as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import qualified Crypto.PubKey.RSA as RSA
+import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
 import Data.Default (def)
@@ -268,20 +271,31 @@ startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStart
     setStarted sock = atomically (tryPutTMVar started True) >> pure sock
 
 loadServerCredential :: ServerCredentials -> IO T.Credential
-loadServerCredential ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
-  T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile >>= \case
+loadServerCredential creds =
+  loadCredential acceptCredential creds >>= \case
     Right credential -> pure credential
-    Left _ -> putStrLn "invalid credential" >> exitFailure
+    Left e -> putStrLn ("invalid credential: " <> T.unpack e) >> exitFailure
 
-reloadCredential :: (T.Credential -> Bool) -> Int -> ServerCredentials -> TVar T.Credential -> IO ()
-reloadCredential supported interval ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} credVar = do
+acceptCredential :: T.Credential -> Either Text ()
+acceptCredential _ = Right ()
+
+loadCredential :: (T.Credential -> Either Text ()) -> ServerCredentials -> IO (Either Text T.Credential)
+loadCredential checkCredential ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
+  either (Left . tshow) id <$> E.tryAny (validCredential <$!> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
+  where
+    validCredential = \case
+      Left e -> Left $ T.pack e
+      Right cred -> cred <$ checkCredential cred
+
+reloadCredential :: (T.Credential -> Either Text ()) -> Int -> ServerCredentials -> TVar T.Credential -> IO ()
+reloadCredential checkSupported interval creds@ServerCredentials {certificateFile} credVar = do
   labelMyThread "reloadCredential"
   checkFiles Nothing
   where
     checkFiles rejected = do
       threadDelay interval
       current <- readTVarIO credVar
-      loadCredential >>= \case
+      loadCredential (\cred -> checkKeyPair cred >> checkSupported cred) creds >>= \case
         Right cred
           | cred == current -> checkFiles Nothing
           | otherwise -> do
@@ -291,19 +305,12 @@ reloadCredential supported interval ServerCredentials {caCertificateFile, certif
         Left e -> do
           unless (rejected == Just e) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
           checkFiles $ Just e
-    loadCredential = either (Left . tshow) id <$> E.tryAny (checkCredential <$!> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
-    checkCredential = \case
-      Left e -> Left $ T.pack e
-      Right cred -> do
-        checkKeyPair cred
-        unless (supported cred) $ Left "the certificate key type or size is not accepted by this server"
-        Right cred
 
 checkKeyPair :: T.Credential -> Either Text ()
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
   [] -> Left "no certificate"
   publicKey : _ -> case (publicKey, privateKey) of
-    (X.PubKeyRSA k, X.PrivKeyRSA pk) -> matching $ RSA.private_pub pk == k
+    (X.PubKeyRSA k, X.PrivKeyRSA pk) -> matching $ either (const False) (RSA.verify (Just SHA256) k signedMessage) (RSA.sign Nothing (Just SHA256) pk signedMessage)
     (X.PubKeyEd25519 k, X.PrivKeyEd25519 pk) -> matching $ Ed25519.toPublic pk == k
     (X.PubKeyEd448 k, X.PrivKeyEd448 pk) -> matching $ Ed448.toPublic pk == k
     (X.PubKeyEC (X.PubKeyEC_Named curveName point), X.PrivKeyEC (X.PrivKeyEC_Named curveName' d)) ->
@@ -315,6 +322,8 @@ checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X
   where
     matching keysMatch = if keysMatch then Right () else mismatch
     mismatch = Left "the private key does not match the certificate"
+    signedMessage :: B.ByteString
+    signedMessage = "credential key pair"
 
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =
