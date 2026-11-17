@@ -59,6 +59,7 @@ module AgentTests.FunctionalAPITests
     testServerInformation,
 #if defined(dbPostgres)
     workItemReadTests,
+    transactionDeadlockTests,
 #endif
   )
 where
@@ -137,11 +138,12 @@ import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (Only (..), Query)
 import Fixtures
-import Simplex.Messaging.Agent.Client (withStoreIsolation', withWork, withWorkItems)
+import Simplex.Messaging.Agent.Client (withStore, withStore', withStoreIsolation', withWork, withWorkItems)
 import Simplex.Messaging.Agent.Env.SQLite (AM)
-import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
+import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), InternalId (..), RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, createSndMsgDelivery, createUserRecord, deleteClientService, deleteSndMsgDelivery, deleteUserRecord, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile, updateNewConnSnd)
 import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
+import Simplex.Messaging.Agent.Store.Entity (DBEntityId' (..))
 import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
@@ -5126,6 +5128,71 @@ waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Jus
         withTransaction st $ \db ->
           DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY (pg_blocking_pids(pid)) AND position(? IN query) > 0)" (holder, waitingQuery)
       unless waiting $ threadDelay 10000 >> waitLoop
+
+transactionDeadlockTests :: Spec
+transactionDeadlockTests = do
+  it "should retry the deletion of a delivered message aborted by deadlock with user deletion" $
+    deleteMessageAndUser 0 `shouldReturn` (2, 1)
+  it "should retry the user deletion aborted by deadlock with deletion of a delivered message" $
+    deleteMessageAndUser 2000000 `shouldReturn` (1, 2)
+
+deleteMessageAndUser :: HasTestEnv => Int -> IO (Int, Int)
+deleteMessageAndUser lockTime = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+      run :: AM () -> IO (Either AgentErrorType ())
+      run action = runReaderT (runExceptT action) (agentEnv a)
+  g <- C.newRandom
+  (userId, sq) <- withTransaction st $ createMessage g
+  msgPids <- newIORef []
+  userPids <- newIORef []
+  (deletingMsg, deletingUser) <- withTransaction st $ \db -> do
+    void (DB.query db "SELECT 1 FROM commands WHERE conn_id = ? FOR UPDATE" (Only connId) :: IO [Only Int])
+    [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
+    deletingUser <- async . run . withStore a $ \db' -> recordPid userPids db' >> deleteUserRecord db' userId
+    waitForLock st holder "DELETE FROM users"
+    [userDeleter] <- readIORef userPids
+    deletingMsg <- async . run . withStore' a $ \db' -> recordPid msgPids db' >> deleteSndMsgDelivery db' connId sq (InternalId 1) False
+    waitForLock st userDeleter "DELETE FROM messages"
+    threadDelay lockTime
+    pure (deletingMsg, deletingUser)
+  wait deletingMsg `shouldReturn` Right ()
+  wait deletingUser `shouldReturn` Right ()
+  withTransaction st (\db -> DB.query db "SELECT count(*) FROM users WHERE user_id = ?" (Only userId)) `shouldReturn` [Only (0 :: Int)]
+  (,) <$> (length <$> readIORef msgPids) <*> (length <$> readIORef userPids)
+  where
+    connId = "conn1" :: ConnId
+    recordPid :: IORef [Int] -> DB.Connection -> IO ()
+    recordPid pids db = do
+      [Only pid] <- DB.query_ db "SELECT pg_backend_pid()"
+      atomicModifyIORef' pids $ \ps -> (pid : ps, ())
+    createMessage g db = do
+      userId <- createUserRecord db
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (userId, connId, SCMInvitation)
+      (_, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPubKey, dhPrivKey) <- atomically $ C.generateKeyPair g
+      let newSq =
+            SndQueue
+              { userId,
+                connId,
+                server = testSMPServer,
+                sndId = SMP.EntityId "1234",
+                queueMode = Just SMP.QMMessaging,
+                sndPrivateKey,
+                e2ePubKey = Nothing,
+                e2eDhSecret = C.dh' dhPubKey dhPrivKey,
+                status = New,
+                dbQueueId = DBNewEntity,
+                primary = True,
+                dbReplaceQueueId = Nothing,
+                sndSwchStatus = Nothing,
+                smpClientVersion = SMP.VersionSMPC 1
+              }
+      Right sq <- updateNewConnSnd db connId newSq
+      DB.execute db "INSERT INTO messages (conn_id, internal_id, internal_ts, internal_snd_id, msg_type) VALUES (?, 1, now(), 1, '')" (Only connId)
+      DB.execute db "INSERT INTO snd_messages (conn_id, internal_snd_id, internal_id, internal_hash) VALUES (?, 1, 1, '')" (Only connId)
+      createSndMsgDelivery db sq (InternalId 1)
+      createCommand db "1" connId Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False) `shouldReturn` Right ()
+      pure (userId, sq)
 #endif
 
 testClientServiceConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
