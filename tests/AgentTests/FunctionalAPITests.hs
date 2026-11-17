@@ -3660,7 +3660,7 @@ testDuplicateConnIdsFullQueue = withAgentClients2 $ \a b -> do
   where
     resultSizeErr :: String -> ATransmission -> Bool
     resultSizeErr name = \case
-      ("", "", AEvt SAEConn (ERR (INTERNAL e))) -> (name <> " result size") `isPrefixOf` e
+      ("", "", AEvt SAEConn (ERR (A.INTERNAL e))) -> (name <> " result size") `isPrefixOf` e
       _ -> False
 
 testSendMessagesB :: HasTestEnv => IO ()
@@ -4229,7 +4229,7 @@ testDeleteUserStatsErrorFullQueue =
     timeout 5_000000 (runExceptT $ deleteUser a auId False) `shouldReturn` Just (Right ())
     withTransaction (store $ agentEnv a) (`DB.execute_` "ALTER TABLE servers_stats_ RENAME TO servers_stats")
     void . atomically . flushTBQueue $ subQ a
-    get a =##> \case ("", "", ERR (INTERNAL _)) -> True; _ -> False
+    get a =##> \case ("", "", ERR (A.INTERNAL _)) -> True; _ -> False
 
 testUsersNoServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testUsersNoServer ps = withAgentClientsCfg2 aCfg agentCfg $ \a b -> do
