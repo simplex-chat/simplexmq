@@ -10,7 +10,6 @@ import Crypto.Number.Serialize (i2osp, os2ip)
 import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
-import qualified Data.Attoparsec.ByteString as A
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
@@ -37,6 +36,7 @@ import Simplex.Messaging.Eth.Address
 import Simplex.Messaging.Eth.EIP712
 import Simplex.Messaging.Eth.RLP
 import Simplex.Messaging.Eth.Transaction
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$$>))
 import Test.Hspec hiding (fit, it)
 import Util
@@ -302,7 +302,7 @@ eip55Tests = do
       strDecode (BC.map toLower (strEncode a)) `shouldBe` Right a
   it "reads 0x and 40 hex digits in any case, and in the checksum case only for the checksum parser" $
     forM_ specAddresses $ \a -> do
-      let parsed p = A.parseOnly (p <* A.endOfInput)
+      let parsed = parseAll
           lower = BC.map toLower a
       (parsed anyCaseAddressP a, parsed anyCaseAddressP lower) `shouldBe` (strDecode a, strDecode a)
       parsed checksumAddressP a `shouldBe` strDecode a
@@ -335,9 +335,9 @@ rlpTests = do
     toHex (rlpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
     toHex (rlpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
   it "decodes each encoding, and refuses one the encoder does not produce" $ do
-    forM_ rlpVectors $ \(_, item, expected) -> (rlpEncode <$> A.parseOnly (rlpP <* A.endOfInput) (hx expected)) `shouldBe` Right (rlpEncode item)
+    forM_ rlpVectors $ \(_, item, expected) -> (rlpEncode <$> parseAll rlpP (hx expected)) `shouldBe` Right (rlpEncode item)
     forM_ ["8100", "817f", "b801ff", "b90038" <> B.concat (replicate 56 "61"), "c1", "83646f"] $ \encoded ->
-      (encoded, isLeft $ A.parseOnly (rlpP <* A.endOfInput) (hx encoded)) `shouldBe` (encoded, True)
+      (encoded, isLeft $ parseAll rlpP (hx encoded)) `shouldBe` (encoded, True)
   where
     rlpVectors =
       [ ("the empty string", RLPBytes "", "80"),
