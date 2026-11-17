@@ -14,14 +14,23 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
 - warp-tls takes the credential from `tlsServerHooks.onServerNameIndication`, which reads the same kind of `TVar`; tls tries the hook's credentials before the shared ones.
 - `reloadCredential` replaces the credential in its `TVar` when the files, parsed at each interval, differ from the credential in use:
   - the files are parsed by `loadCredential`, which `loadServerCredential` also uses at start;
-  - the checks below are applied only to files that differ from the credential in use, by `checkReloadedCredential`, which returns the rejection "invalid private key" when a check throws an exception;
-  - `checkKeyPair`: the private key must belong to the leaf certificate; an RSA key signs a fixed message that the certificate's key verifies, and Ed25519, Ed448 and ECDSA keys on named curves are compared with the public key computed from the private key; other key types are rejected;
+  - the checks below are applied only to files that differ from the credential in use;
+  - `checkKeyPair`: the private key must belong to the leaf certificate; for RSA, the public fields stored with the private key are compared with the certificate's key; for Ed25519, Ed448 and ECDSA on named curves, the public key computed from the private key is compared with the certificate's key; other key types are rejected;
   - smp-server also requires the RSA key of at least 4096 bits that it requires at start (`checkHTTPSCredentials`);
   - xftp-server accepts any key type at start, and only RSA, Ed25519, Ed448 and named-curve ECDSA keys on reload;
-  - a rejection is logged with its reason, and the previous credential stays in use.
+  - a rejection is logged with its reason, once while the same files stay rejected, and the previous credential stays in use.
 - `httpServerCreds :: Maybe ReloadableCredential` is a field of both Env types.
 - The check interval is `credentialCheckInterval`, 60 seconds by default: in `TransportServerConfig` for SNI, and in `WebHttpsParams` with the check `checkCredential` for the separate HTTPS port.
 - `withCredentialReload` runs each reload thread with the listener that reads its `TVar` (`race_`), so they stop together: around the SMP listener of the port that serves HTTPS, around xftp-server's `runHTTP2Server`, and in `runHTTPSServer` for the separate port.
+- The key pair check is listed in `protocol/crypto-registry.md` as a restricted use.
+
+## Threat model
+
+- The certificate and key files are written by the operator's renewal job and are trusted as much as at start; a party that can write them can already replace the credential at the next restart.
+- A file that is partly written, unreadable or mismatched is rejected, and the previous credential stays in use, so a reload never serves a credential that fails the checks that the reload applies.
+- An exception in a reload stops only that check; the server and its listeners continue.
+- Log lines contain fixed text, file paths and parser messages, and never key material.
+- `pointBaseMul` runs in variable time on the private scalar, only when changed files are checked, and its time does not affect any network response.
 
 ## Composition
 
@@ -71,7 +80,7 @@ sequenceDiagram
 
 ## Tests
 
-Each test copies the fixture files into its test directory and replaces them there.
+The reload tests copy the fixture files into their test directory and replace them there; the key pair tests read the fixtures directly.
 
 - Transport: a TLS server with an SNI credential `TVar` and `reloadCredential`; a client with SNI receives `web.crt`, then, after the files are replaced, `web2.crt`.
 - Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
@@ -79,5 +88,5 @@ Each test copies the fixture files into its test directory and replaces them the
 - Static site on a separate HTTPS port: the same.
 - Key types: smp-server rejects an RSA 2048 and an ECDSA P-256 certificate and keeps the current one; xftp-server serves the ECDSA P-256 certificate.
 - A deleted key file and an empty certificate file: the current certificate is still served.
-- Key pair check: for RSA, ECDSA, Ed448 and Ed25519, a matching pair is accepted and a pair of the same type with another key is rejected; a DSA certificate is rejected as an unsupported key type; an RSA key with inconsistent private fields and an empty certificate file are rejected.
-- Fixtures, signed by `web_ca` and generated as `tests/fixtures/README.md` states: `web2` (RSA 4096), `web_rsa2048`, `web_ecdsa` and `web_ecdsa2.key` (P-256), `web_dsa`, and `web_corrupt.key`, made from `web.key` by `corrupt_rsa_key.py`.
+- Key pair check: for RSA, ECDSA, Ed448 and Ed25519, a matching pair is accepted and a pair of the same type with another key is rejected; a DSA certificate is rejected as an unsupported key type, and an empty certificate file is rejected.
+- Fixtures, signed by `web_ca` and generated as `tests/fixtures/README.md` states: `web2` (RSA 4096), `web_rsa2048`, `web_ecdsa` and `web_ecdsa2.key` (P-256), `web_dsa`.
