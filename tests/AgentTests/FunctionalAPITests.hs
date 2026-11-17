@@ -5144,7 +5144,7 @@ transactionDeadlockTests = do
     isRight <$> createConnAfterConflict "" `shouldReturn` True
   where
     deleteUserInTransaction a recordPid userId _ = runAM a (withStore a $ \db -> recordPid db >> deleteUserRecord db userId) `shouldReturn` Right ()
-    deleteConnInBatch a recordPid _ connId = runReaderT (withStoreBatch' a $ \db -> [recordPid db >> deleteConn db Nothing connId]) (agentEnv a) `shouldReturn` [Right (Just connId)]
+    deleteConnInBatch a recordPid _ connId = runReaderT (withStoreBatch' a $ \db -> [recordPid db >> deleteConn db Nothing connId]) (agentEnv a) `shouldReturn` ([Right (Just connId)] :: [Either AgentErrorType (Maybe ConnId)])
 
 abortedTransactionTests :: Spec
 abortedTransactionTests =
