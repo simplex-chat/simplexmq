@@ -20,7 +20,7 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
   - a rejection is logged once, with its reason, until the files load and check successfully again, and the previous credential stays in use.
 - The Env types hold the web credential's files with its `TVar`: `httpServerCreds :: Maybe (ServerCredentials, TVar T.Credential)`.
 - The check interval is `credentialCheckInterval`, 60 seconds by default: in `TransportServerConfig` for SNI, and in `WebHttpsParams` with the check `checkCredential` for the separate HTTPS port.
-- The reload threads are part of the server's thread set (`raceAny_`) for SNI; for the separate port, `runHTTPSServer` runs the warp-tls listener and its reloader together (`race_`), so they stop with the server.
+- Each reload thread runs with the listener that reads its `TVar` (`race_`), so they stop together: around the SMP listener of the port that serves HTTPS, around xftp-server's `runHTTP2Server`, and in `runHTTPSServer` for the separate port.
 
 ## Composition
 
@@ -45,8 +45,8 @@ flowchart LR
     classDef added fill:#d9ead3,stroke:#008800
     class C removed
     class V,R added
-    linkStyle 1,2 stroke:#cc0000
-    linkStyle 3,4,5,6 stroke:#008800
+    linkStyle 2,3 stroke:#cc0000
+    linkStyle 1,4,5,6 stroke:#008800
 ```
 
 ## Copy of a renewed certificate
