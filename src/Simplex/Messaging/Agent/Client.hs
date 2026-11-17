@@ -99,6 +99,7 @@ module Simplex.Messaging.Agent.Client
     sendAck,
     suspendQueue,
     deleteQueue,
+    deleteNewQueue,
     deleteQueues,
     logServer,
     logSecret,
@@ -137,6 +138,7 @@ module Simplex.Messaging.Agent.Client
     waitForWork,
     hasWorkToDo,
     hasWorkToDo',
+    noWorkToDo,
     withWork,
     withWork_,
     withWorkItems,
@@ -229,6 +231,7 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
@@ -325,7 +328,7 @@ import System.Mem.Weak (Weak, deRefWeak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
-import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, mkWeakThreadId, myThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -386,6 +389,8 @@ data AgentClient = AgentClient
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
+    connLockHolders :: TMap ThreadId Text,
+    connLockViolations :: TVar [Text],
     -- locks to prevent concurrent operations with connection request invitations
     invLocks :: TMap ByteString Lock,
     -- lock to prevent concurrency between periodic and async connection deletions
@@ -556,6 +561,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   agentState <- newTVarIO ASForeground
   getMsgLocks <- TM.emptyIO
   connLocks <- TM.emptyIO
+  connLockHolders <- TM.emptyIO
+  connLockViolations <- newTVarIO []
   invLocks <- TM.emptyIO
   deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
@@ -602,6 +609,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         agentState,
         getMsgLocks,
         connLocks,
+        connLockHolders,
+        connLockViolations,
         invLocks,
         deleteLock,
         smpSubWorkers,
@@ -693,6 +702,7 @@ instance ProtocolServerClient XFTPVersion XFTPErrorType FileResponse where
 getSMPServerClient :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> AM SMPConnectedClient
 getSMPServerClient c@AgentClient {active, smpClients, workerSeq} nm tSess = do
   unlessM (readTVarIO active) $ throwE INACTIVE
+  checkNoConnLock c
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq tSess smpClients ts newClient (waitForProtocolClient c nm tSess smpClients)
   where
@@ -703,6 +713,7 @@ getSMPServerClient c@AgentClient {active, smpClients, workerSeq} nm tSess = do
 getSMPProxyClient :: AgentClient -> NetworkRequestMode -> Maybe SMPServerWithAuth -> SMPTransportSession -> AM (SMPConnectedClient, Either AgentErrorType ProxiedRelay)
 getSMPProxyClient c@AgentClient {active, smpClients, smpProxiedRelays, workerSeq} nm proxySrv_ destSess@(userId, destSrv, qId) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
+  checkNoConnLock c
   proxySrv <- maybe (getNextServer c userId proxySrvs [destSrv]) pure proxySrv_
   ts <- liftIO getCurrentTime
   (tSess, auth) <- liftIO $ proxiedTransportSession proxySrv
@@ -872,6 +883,7 @@ notifySub c = notifySub' c ""
 getNtfServerClient :: AgentClient -> NetworkRequestMode -> NtfTransportSession -> AM NtfClient
 getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, presetDomains} nm tSess@(_, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
+  checkNoConnLock c
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq tSess ntfClients ts (newProtocolClient c tSess ntfClients connectClient) (waitForProtocolClient c nm tSess ntfClients)
   where
@@ -893,6 +905,7 @@ getNtfServerClient c@AgentClient {active, ntfClients, workerSeq, proxySessTs, pr
 getXFTPServerClient :: AgentClient -> XFTPTransportSession -> AM XFTPClient
 getXFTPServerClient c@AgentClient {active, xftpClients, userEntitlements, workerSeq, proxySessTs, presetDomains} tSess@(userId, srv, _) = do
   unlessM (readTVarIO active) $ throwE INACTIVE
+  checkNoConnLock c
   ts <- liftIO getCurrentTime
   withGetSessVar workerSeq tSess xftpClients ts (newProtocolClient c tSess xftpClients connectClient) (waitForProtocolClient c NRMBackground tSess xftpClients)
   where
@@ -1096,7 +1109,7 @@ withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 
 withConnLock' :: AgentClient -> ConnId -> Text -> AM' a -> AM' a
 withConnLock' _ "" _ = id
-withConnLock' AgentClient {connLocks} connId name = withLockMap connLocks connId name
+withConnLock' AgentClient {connLocks, connLockHolders} connId name = withLockMap connLocks connId name . withLockHolder connLockHolders name
 {-# INLINE withConnLock' #-}
 
 withInvLock :: AgentClient -> ByteString -> Text -> AM a -> AM a
@@ -1108,7 +1121,7 @@ withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
 withConnLocks :: AgentClient -> Set ConnId -> Text -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks} = withLocksMap connLocks
+withConnLocks AgentClient {connLocks, connLockHolders} connIds name = withLocksMap connLocks connIds name . withLockHolder connLockHolders name
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
@@ -1121,6 +1134,29 @@ withLocksMap = withGetLocks . getMapLock
 
 getMapLock :: Ord k => TMap k Lock -> k -> IO Lock
 getMapLock locks key = either id id <$> TM.lookupOrInsertIO key createLock locks
+
+withLockHolder :: MonadUnliftIO m => TMap ThreadId Text -> Text -> m a -> m a
+withLockHolder holders name a = do
+  t <- myThreadId
+  E.bracket
+    (atomically $ TM.lookupInsert t name holders)
+    (\prev_ -> atomically $ TM.alter (const prev_) t holders)
+    (const a)
+
+checkNoConnLock :: AgentClient -> AM ()
+checkNoConnLock AgentClient {connLockHolders, connLockViolations} = do
+  t <- myThreadId
+  name_ <- liftIO $ TM.lookupIO t connLockHolders
+  forM_ name_ $ \name -> do
+    let err = "server request in connection lock " <> name
+    logError err
+    whenM (asks $ prohibitRequestsInConnLock . config) $ do
+      atomically $ modifyTVar' connLockViolations (name :)
+      throwE $ INTERNAL $ T.unpack err
+
+checkBatchOutsideConnLock :: AgentClient -> [q] -> AM' [(q, Either AgentErrorType r)] -> AM' [(q, Either AgentErrorType r)]
+checkBatchOutsideConnLock _ [] batch = batch
+checkBatchOutsideConnLock c qs batch = tryAllErrors' (checkNoConnLock c) >>= either (\e -> pure $ map (,Left e) qs) (const batch)
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do
@@ -1643,7 +1679,7 @@ serverHostError = \case
 -- | Batch by transport session and subscribe queues. The list of results can have a different order.
 subscribeQueues :: AgentClient -> Bool -> [RcvQueueSub] -> AM' [(RcvQueueSub, Either AgentErrorType (Maybe ServiceId))]
 subscribeQueues _ _ [] = pure []
-subscribeQueues c withEvents qs = do
+subscribeQueues c withEvents qs = checkBatchOutsideConnLock c qs $ do
   (errs, qs') <- checkQueues c qs
   atomically $ modifyTVar' (subscrConns c) (`S.union` S.fromList (map qConnId qs'))
   qss <- batchQueues mkSMPTSession qs' <$> getSessionModeIO c
@@ -1841,7 +1877,7 @@ type BatchResponses q e r = NonEmpty (q, Either e r)
 -- Please note: this function does not preserve order of results to be the same as the order of arguments,
 -- it includes arguments in the results instead.
 sendTSessionBatches :: forall q r. ByteString -> (q -> TransportSessionMode -> SMPTransportSession) -> (SMPClient -> NonEmpty q -> IO (BatchResponses q SMPClientError r)) -> AgentClient -> NetworkRequestMode -> [q] -> AM' [(q, Either AgentErrorType r)]
-sendTSessionBatches statCmd mkSession action c nm qs = do
+sendTSessionBatches statCmd mkSession action c nm qs = checkBatchOutsideConnLock c qs $ do
   qs' <- batchQueues mkSession qs <$> getSessionModeIO c
   concatMap L.toList <$> mapConcurrently (sendClientBatch statCmd action c nm) qs'
 
@@ -2118,6 +2154,11 @@ deleteQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} = do
   withSMPClient c nm rq "DEL" $ \smp ->
     deleteSMPQueue smp nm rcvPrivateKey rcvId
 
+deleteNewQueue :: AgentClient -> NetworkRequestMode -> SMPTransportSession -> NewRcvQueue -> AM ()
+deleteNewQueue c nm tSess RcvQueue {rcvId, rcvPrivateKey} =
+  withLogClient c nm tSess (unEntityId rcvId) "DEL" $ \smp ->
+    deleteSMPQueue (connectedClient smp) nm rcvPrivateKey rcvId
+
 deleteQueues :: AgentClient -> NetworkRequestMode -> [RcvQueue] -> AM' [(RcvQueue, Either AgentErrorType ())]
 deleteQueues c nm = sendTSessionBatches "DEL" mkSMPTSession deleteQueues_ c nm
   where
@@ -2374,9 +2415,9 @@ endAgentOperation c op = endOperation c op $ case op of
     suspendSendingAndDatabase c
   AOSndNetwork ->
     suspendOperation c AODatabase $
-      notifySuspended c
+      setSuspended c
   AODatabase ->
-    notifySuspended c
+    setSuspended c
 
 suspendMsgDelivery :: AgentClient -> STM ()
 suspendMsgDelivery c =
@@ -2387,7 +2428,7 @@ suspendSendingAndDatabase :: AgentClient -> STM ()
 suspendSendingAndDatabase c =
   suspendOperation c AOSndNetwork $
     suspendOperation c AODatabase $
-      notifySuspended c
+      setSuspended c
 
 suspendOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
 suspendOperation c op endedAction = do
@@ -2395,11 +2436,15 @@ suspendOperation c op endedAction = do
   -- unsafeIOToSTM $ putStrLn $ "suspendOperation_ " <> show op <> " " <> show n
   when (n == 0) $ whenSuspending c endedAction
 
-notifySuspended :: AgentClient -> STM ()
-notifySuspended c = do
-  -- unsafeIOToSTM $ putStrLn "notifySuspended"
-  writeTBQueue (subQ c) ("", "", AEvt SAENone SUSPENDED)
-  writeTVar (agentState c) ASSuspended
+setSuspended :: AgentClient -> STM ()
+setSuspended c = writeTVar (agentState c) ASSuspended
+
+notifySuspended :: AgentClient -> IO ()
+notifySuspended AgentClient {agentState, subQ} = do
+  suspended <- atomically $ readTVar agentState >>= \case
+    ASSuspending -> retry
+    s -> pure $ s == ASSuspended
+  when suspended . atomically $ writeTBQueue subQ ("", "", AEvt SAENone SUSPENDED)
 
 endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
 endOperation c op endedAction = do
