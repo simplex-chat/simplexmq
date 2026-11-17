@@ -19,6 +19,8 @@ printf 'subjectAltName = DNS:localhost\nbasicConstraints = CA:FALSE\nkeyUsage = 
 openssl x509 -req -days 999999 -extfile web.ext -in web2.csr -CA web_ca.crt -CAkey web_ca.key -set_serial 0x$(openssl rand -hex 16) -out web2.crt
 cat web_ca.crt >> web2.crt
 
+# Web certificate with a key smp-server does not accept: the same commands with web_rsa2048 for web2 and rsa_keygen_bits:2048
+
 # To pretty-print
 openssl x509 -in ca.crt -text -noout
 openssl req -in server.csr -text -noout
