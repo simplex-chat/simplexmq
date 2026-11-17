@@ -238,7 +238,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                     webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
                 generateSite cfg information onionHost path
                 when (isJust webHttpPort || isJust webHttpsParams') $
-                  serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams', credentialCheckInterval = defaultCredentialCheckInterval}
+                  serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
               Nothing -> pure ()
             runXFTPServer cfg
       where
@@ -278,7 +278,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           httpsPort <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
           cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
           key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
-          pure WebHttpsParams {port = httpsPort, cert, key}
+          pure WebHttpsParams {port = httpsPort, cert, key, supportedCredential = const True, credentialCheckInterval = defaultCredentialCheckInterval}
 
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 

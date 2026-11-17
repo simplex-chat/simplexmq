@@ -1690,14 +1690,16 @@ testWebCredentialReloadSMP = do
             (reloadCredential (const True) testCredentialCheckInterval testWebCredentials sniCredential)
             (runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ())
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
-  it "should serve the replaced web certificate on the shared port without restart" $ \(at, msType) -> do
+  it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ \(at, msType) -> do
     copyWebCredential
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ ->
           cfg_
             { httpCredentials = Just testWebCredentials,
               transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
             }
-    withSmpServerWebConfigOn at cfg' testPort $ \_ -> testWebCredentialReload testPort
+    withSmpServerWebConfigOn at cfg' testPort $ \_ -> do
+      testWebCredentialReload testPort
+      testUnsupportedWebCredentialKept testPort
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

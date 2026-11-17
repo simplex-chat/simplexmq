@@ -61,14 +61,15 @@ import qualified WaiAppStatic.Types as WAT
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,
     webHttpPort :: Maybe Int,
-    webHttpsParams :: Maybe WebHttpsParams,
-    credentialCheckInterval :: Int
+    webHttpsParams :: Maybe WebHttpsParams
   }
 
 data WebHttpsParams = WebHttpsParams
   { port :: Int,
     cert :: FilePath,
-    key :: FilePath
+    key :: FilePath,
+    supportedCredential :: TLS.Credential -> Bool,
+    credentialCheckInterval :: Int
   }
 
 data EmbeddedContent = EmbeddedContent
@@ -79,16 +80,16 @@ data EmbeddedContent = EmbeddedContent
   }
 
 serveStaticFiles :: EmbeddedWebParams -> IO ()
-serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams, credentialCheckInterval} = do
+serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} = do
   app <- staticFiles webStaticPath
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
-  forM_ webHttpsParams $ \WebHttpsParams {port, cert, key} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
+  forM_ webHttpsParams $ \WebHttpsParams {port, cert, key, supportedCredential, credentialCheckInterval} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
     let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
     credVar <- newTVarIO =<< loadServerCredential creds
-    race_ (reloadCredential (const True) credentialCheckInterval creds credVar) $
+    race_ (reloadCredential supportedCredential credentialCheckInterval creds credVar) $
       WT.runTLS (tlsSettings credVar) (mkSettings port) app
   where
     mkSettings port = W.setPort port warpSettings

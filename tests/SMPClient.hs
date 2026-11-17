@@ -408,20 +408,30 @@ copyWebCredential = do
 
 testWebCredentialReload :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
 testWebCredentialReload port = do
-  servedCertificateShouldBe "tests/fixtures/web.crt"
+  servedCertificateShouldBe port "tests/fixtures/web.crt"
   copyFile "tests/fixtures/web2.crt" $ certificateFile testWebCredentials
-  threadDelay reloadWait
-  servedCertificateShouldBe "tests/fixtures/web.crt"
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "tests/fixtures/web.crt"
   copyFile "tests/fixtures/web2.key" $ privateKeyFile testWebCredentials
-  threadDelay reloadWait
-  servedCertificateShouldBe "tests/fixtures/web2.crt"
-  where
-    reloadWait = 10 * testCredentialCheckInterval
-    servedCertificateShouldBe certFile = do
-      chain <- X.CertificateChain <$> XF.readSignedObject certFile
-      XV.Fingerprint caFingerprint <- loadFileFingerprint "tests/fixtures/web_ca.crt"
-      runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
-        tlsPeerCert tls `shouldBe` chain
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "tests/fixtures/web2.crt"
+
+testUnsupportedWebCredentialKept :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
+testUnsupportedWebCredentialKept port = do
+  copyFile "tests/fixtures/web_rsa2048.crt" $ certificateFile testWebCredentials
+  copyFile "tests/fixtures/web_rsa2048.key" $ privateKeyFile testWebCredentials
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "tests/fixtures/web2.crt"
+
+credentialReloadWait :: Int
+credentialReloadWait = 10 * testCredentialCheckInterval
+
+servedCertificateShouldBe :: HasCallStack => ServiceName -> FilePath -> IO ()
+servedCertificateShouldBe port certFile = do
+  chain <- X.CertificateChain <$> XF.readSignedObject certFile
+  XV.Fingerprint caFingerprint <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+  runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
+    tlsPeerCert tls `shouldBe` chain
 
 withSmpServerThreadOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)

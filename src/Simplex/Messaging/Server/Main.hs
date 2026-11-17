@@ -546,14 +546,14 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
           generateSite si onionHost webStaticPath
           when (isJust webHttpPort || isJust webHttpsParams) $
-            serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams, credentialCheckInterval = defaultCredentialCheckInterval}
+            serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
         webHttpsParams' = do
           port <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
           cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
           key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
-          pure WebHttpsParams {port, cert, key}
+          pure WebHttpsParams {port, cert, key, supportedCredential = supportedHTTPSCredential, credentialCheckInterval = defaultCredentialCheckInterval}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
     checkMsgStoreMode :: Ini -> AStoreType -> IO ()

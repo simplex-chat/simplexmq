@@ -31,7 +31,8 @@ import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTr
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
-import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentials)
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testUnsupportedWebCredentialKept, testWebCredentialReload, testWebCredentials)
+import Simplex.Messaging.Server.Env.STM (supportedHTTPSCredential)
 import qualified SMPWeb
 import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..), serveStaticFiles, attachStaticFiles)
 import System.Directory (doesFileExist)
@@ -97,7 +98,7 @@ cliTests = do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
   describe "Static site on HTTPS port" $
-    it "should serve the replaced web certificate without restart" testStaticSiteCertReload
+    it "should serve the replaced web certificate with a 4096-bit RSA key without restart" testStaticSiteCertReload
 
 smpServerTest :: HasTestEnv => Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -222,17 +223,20 @@ smpServerTestStatic = do
 testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
 testStaticSiteCertReload = do
   copyWebCredential
-  serveStaticFiles
-    EmbeddedWebParams
-      { webStaticPath = webPath,
-        webHttpPort = Nothing,
-        webHttpsParams = Just WebHttpsParams {port = read httpsPort, cert = certificateFile testWebCredentials, key = privateKeyFile testWebCredentials},
-        credentialCheckInterval = testCredentialCheckInterval
-      }
+  serveStaticFiles EmbeddedWebParams {webStaticPath = webPath, webHttpPort = Nothing, webHttpsParams = Just httpsParams}
   threadDelay 1000000
   testWebCredentialReload httpsPort
+  testUnsupportedWebCredentialKept httpsPort
   where
     httpsPort = testServerPort 9
+    httpsParams =
+      WebHttpsParams
+        { port = read httpsPort,
+          cert = certificateFile testWebCredentials,
+          key = privateKeyFile testWebCredentials,
+          supportedCredential = supportedHTTPSCredential,
+          credentialCheckInterval = testCredentialCheckInterval
+        }
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do
