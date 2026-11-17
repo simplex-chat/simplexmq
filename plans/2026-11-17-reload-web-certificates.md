@@ -12,13 +12,14 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
 - The protocol credential (`server.crt`, `server.key`) is unchanged: it is read at start only.
 - `TLSServerCredential.sniCredential` holds `TVar T.Credential`; `onServerNameIndication` reads it at each handshake.
 - warp-tls takes the credential from `tlsServerHooks.onServerNameIndication`, which reads the same kind of `TVar`; tls tries the hook's credentials before the shared ones.
-- `reloadCredential` replaces the credential in its `TVar` when the modification time of the certificate, key or CA file changes:
+- `reloadCredential` replaces the credential in its `TVar` when the files, parsed at each interval, differ from the credential in use:
   - the files are parsed with `T.credentialLoadX509Chain`;
-  - the private key must match the public key of the leaf certificate (RSA, Ed25519 and Ed448; other key types are rejected);
-  - smp-server also requires the RSA key of at least 4096 bits that it requires at start;
-  - a rejected change is logged once and the previous credential stays in use; the next change of a file is checked again.
-- The check interval is `credentialCheckInterval` in `TransportServerConfig`, 60 seconds by default, and in `EmbeddedWebParams` for the separate HTTPS port.
-- The reload threads are part of the server's thread set (`raceAny_`) for SNI, and forked with the HTTPS listener for the separate port, so they stop with the server.
+  - the private key must match the public key of the leaf certificate (RSA, Ed25519, Ed448 and ECDSA on named curves; other key types are rejected);
+  - smp-server also requires the RSA key of at least 4096 bits that it requires at start (`supportedHTTPSCredential`); xftp-server accepts every key type it accepts at start;
+  - a rejection is logged once until the files load and check successfully again, and the previous credential stays in use.
+- The Env types hold the web credential's files with its `TVar`: `httpServerCreds :: Maybe (ServerCredentials, TVar T.Credential)`.
+- The check interval is `credentialCheckInterval`, 60 seconds by default: in `TransportServerConfig` for SNI, and in `WebHttpsParams` with the predicate `supportedCredential` for the separate HTTPS port.
+- The reload threads are part of the server's thread set (`raceAny_`) for SNI; for the separate port, `runHTTPSServer` runs the warp-tls listener and its reloader together (`race_`), so they stop with the server.
 
 ## Composition
 
@@ -36,7 +37,7 @@ flowchart LR
     E -- "added - written" --> V
     E -- "removed - kept" --> C
     C -- "removed - returned" --> H
-    F -- "added - modification time checked, parsed, key pair checked" --> R
+    F -- "added - parsed, key pair checked, compared" --> R
     R -- "added - replaced" --> V
     V -- "added - read" --> H
     classDef removed fill:#f4cccc,stroke:#cc0000
@@ -58,10 +59,10 @@ sequenceDiagram
     participant R as reloadCredential
     participant V as TVar
     J->>F: new web.crt
-    R->>F: modification time of web.crt changed
-    R->>R: new certificate, old key: key pair rejected, logged
+    R->>F: files parsed, differ from the credential in use
+    R->>R: new certificate, old key: key pair rejected, logged once
     J->>F: new web.key
-    R->>F: modification time of web.key changed
+    R->>F: files parsed, differ from the credential in use
     R->>V: new credential written
 ```
 
@@ -73,4 +74,6 @@ Each test copies the fixture files into its test directory and replaces them the
 - Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
 - smp-server with the shared HTTPS port, and xftp-server with SNI: the served certificate changes after the files are replaced, without a restart.
 - Static site on a separate HTTPS port: the same.
-- Fixtures: `web2.crt` and `web2.key`, a second RSA 4096 certificate signed by `web_ca`, generated as `tests/fixtures/README.md` states.
+- Key types: smp-server rejects an RSA 2048 and an ECDSA P-256 certificate and keeps the current one; xftp-server serves the ECDSA P-256 certificate.
+- A deleted key file: the current certificate is still served.
+- Fixtures, signed by `web_ca` and generated as `tests/fixtures/README.md` states: `web2` (RSA 4096), `web_rsa2048` and `web_ecdsa` (P-256).
