@@ -138,10 +138,10 @@ import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (Only (..), Query)
 import Fixtures
-import Simplex.Messaging.Agent.Client (withStore, withStore', withStoreIsolation', withWork, withWorkItems)
+import Simplex.Messaging.Agent.Client (withStore, withStore', withStoreBatch', withStoreIsolation', withWork, withWorkItems)
 import Simplex.Messaging.Agent.Env.SQLite (AM)
-import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), InternalId (..), RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, createSndMsgDelivery, createUserRecord, deleteClientService, deleteSndMsgDelivery, deleteUserRecord, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile, updateNewConnSnd)
+import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), ConnData (..), InternalId (..), RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNewConn, createNtfSubscription, createServer, createSndFile, createSndMsgDelivery, createUserRecord, deleteClientService, deleteConn, deleteSndMsgDelivery, deleteUserRecord, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile, updateNewConnSnd)
 import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
 import Simplex.Messaging.Agent.Store.Entity (DBEntityId' (..))
 import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
@@ -5131,34 +5131,52 @@ waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Jus
 
 transactionDeadlockTests :: Spec
 transactionDeadlockTests = do
-  it "should retry the deletion of a delivered message aborted by deadlock with user deletion" $
-    deleteMessageAndUser 0 `shouldReturn` (2, 1)
-  it "should retry the user deletion aborted by deadlock with deletion of a delivered message" $
-    deleteMessageAndUser 2000000 `shouldReturn` (1, 2)
+  it "should retry deadlocked deletions of a delivered message and its user" $
+    deleteWithDeliveredMessage "DELETE FROM users" deleteUserInTransaction 0
+  it "should retry deadlocked deletions of a delivered message and its user after deadlock_timeout" $
+    deleteWithDeliveredMessage "DELETE FROM users" deleteUserInTransaction 2000000
+  it "should retry deadlocked deletions of a delivered message and its connection in a batch" $
+    deleteWithDeliveredMessage "DELETE FROM connections" deleteConnInBatch 2000000
+  it "should retry the creation of a connection after a conflict" $
+    createConnAfterConflict "conn1" `shouldReturn` Right "conn1"
+  it "should retry the creation of a connection with a random ID after a conflict" $
+    isRight <$> createConnAfterConflict "" `shouldReturn` True
+  where
+    deleteUserInTransaction a recordPid userId _ = runAM a (withStore a $ \db -> recordPid db >> deleteUserRecord db userId) `shouldReturn` Right ()
+    deleteConnInBatch a recordPid _ connId = runReaderT (withStoreBatch' a $ \db -> [recordPid db >> deleteConn db Nothing connId]) (agentEnv a) `shouldReturn` [Right (Just connId)]
 
-deleteMessageAndUser :: HasTestEnv => Int -> IO (Int, Int)
-deleteMessageAndUser lockTime = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+runAM :: AgentClient -> AM a -> IO (Either AgentErrorType a)
+runAM a action = runReaderT (runExceptT action) (agentEnv a)
+
+createConnAfterConflict :: HasTestEnv => ConnId -> IO (Either AgentErrorType ConnId)
+createConnAfterConflict connId = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  withTransaction (store $ agentEnv a) (`DB.execute_` "CREATE SEQUENCE inserts; CREATE FUNCTION fail_first_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('inserts') = 1 THEN RAISE EXCEPTION 'test' USING ERRCODE = '40P01'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_first_insert BEFORE INSERT ON connections FOR EACH ROW EXECUTE FUNCTION fail_first_insert()")
+  g <- C.newRandom
+  runAM a . withStore a $ \db ->
+    createNewConn db g ConnData {userId = 1, connId, connAgentVersion = VersionSMPA 1, enableNtfs = True, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport = PQSupportOn, serviceRequestExpiresAt = Nothing} SCMInvitation
+
+deleteWithDeliveredMessage :: HasTestEnv => String -> (AgentClient -> (DB.Connection -> IO ()) -> UserId -> ConnId -> IO ()) -> Int -> IO ()
+deleteWithDeliveredMessage deleteQuery deleteRecord lockTime = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
   let st = store $ agentEnv a
-      run :: AM () -> IO (Either AgentErrorType ())
-      run action = runReaderT (runExceptT action) (agentEnv a)
   g <- C.newRandom
   (userId, sq) <- withTransaction st $ createMessage g
   msgPids <- newIORef []
-  userPids <- newIORef []
-  (deletingMsg, deletingUser) <- withTransaction st $ \db -> do
+  deleterPids <- newIORef []
+  (deletingMsg, deleting) <- withTransaction st $ \db -> do
     void (DB.query db "SELECT 1 FROM commands WHERE conn_id = ? FOR UPDATE" (Only connId) :: IO [Only Int])
     [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
-    deletingUser <- async . run . withStore a $ \db' -> recordPid userPids db' >> deleteUserRecord db' userId
-    waitForLock st holder "DELETE FROM users"
-    [userDeleter] <- readIORef userPids
-    deletingMsg <- async . run . withStore' a $ \db' -> recordPid msgPids db' >> deleteSndMsgDelivery db' connId sq (InternalId 1) False
-    waitForLock st userDeleter "DELETE FROM messages"
+    deleting <- async $ deleteRecord a (recordPid deleterPids) userId connId
+    waitForLock st holder deleteQuery
+    [deleter] <- readIORef deleterPids
+    deletingMsg <- async $ runAM a (withStore' a $ \db' -> recordPid msgPids db' >> deleteSndMsgDelivery db' connId sq (InternalId 1) False) `shouldReturn` Right ()
+    waitForLock st deleter "DELETE FROM messages"
     threadDelay lockTime
-    pure (deletingMsg, deletingUser)
-  wait deletingMsg `shouldReturn` Right ()
-  wait deletingUser `shouldReturn` Right ()
-  withTransaction st (\db -> DB.query db "SELECT count(*) FROM users WHERE user_id = ?" (Only userId)) `shouldReturn` [Only (0 :: Int)]
-  (,) <$> (length <$> readIORef msgPids) <*> (length <$> readIORef userPids)
+    pure (deletingMsg, deleting)
+  wait deletingMsg
+  wait deleting
+  withTransaction st (\db -> DB.query db "SELECT count(*) FROM connections WHERE conn_id = ?" (Only connId)) `shouldReturn` [Only (0 :: Int)]
+  attempts <- (+) <$> (length <$> readIORef msgPids) <*> (length <$> readIORef deleterPids)
+  attempts `shouldSatisfy` (> 2)
   where
     connId = "conn1" :: ConnId
     recordPid :: IORef [Int] -> DB.Connection -> IO ()
