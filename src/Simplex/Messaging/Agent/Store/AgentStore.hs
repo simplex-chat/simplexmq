@@ -1173,7 +1173,12 @@ getWorkItems itemName getIds getItem markFailed =
 tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
 tryGetItem itemName getItem markFailed itemId = ExceptT getItem' `catchE` \e -> mark >> throwE e
   where
-    getItem' = getItem itemId `catchNonConflict` (pure . Left . fromSomeException)
+    getItem' = getItem itemId `catchNonConflict` readError
+    readError e
+#if defined(dbPostgres)
+      | abortsTransaction e = E.throwIO $ RetryAfter (markFailed itemId) $ itemName <> " ID " <> show itemId <> " read error: " <> show e
+#endif
+      | otherwise = pure $ Left $ fromSomeException e
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
@@ -2110,7 +2115,7 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =
-  DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
+  DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1, updated_by_supervisor = 0 where conn_id = ?" (Only connId)
 
 getNextNtfSubSMPActions :: DB.Connection -> SMPServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubSMPAction, NtfSubscription)])
 getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize =
@@ -2155,7 +2160,7 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
 
 markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionSMPFailed_ db connId =
-  DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1 where conn_id = ?" (Only connId)
+  DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1, updated_by_supervisor = 0 where conn_id = ?" (Only connId)
 
 markUpdatedByWorker :: DB.Connection -> ConnId -> IO ()
 markUpdatedByWorker db connId =
