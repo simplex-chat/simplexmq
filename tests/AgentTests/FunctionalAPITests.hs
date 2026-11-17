@@ -1812,9 +1812,8 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
     threadDelay 500000
     withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
       runRight $ do
-        withUP bob aliceId $ \case ("", _, INFO "alice's connInfo") -> True; _ -> False
+        liftIO $ getUpInfoCon bob [aliceId] aliceId "alice's connInfo"
         get alice2 ##> ("", bobId, CON)
-        get bob ##> ("", aliceId, CON)
         exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
@@ -1863,8 +1862,7 @@ testInvitationErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   withServer2 ps $ do
     get a ##> ("", bId, CON) -- note that server 1 is down, CON event is sent when HELLO is sent to server 2
-    runRight_ $ withUP b' aId $ \case ("", _, INFO "alice's connInfo") -> True; _ -> False
-    get b' ##> ("", aId, CON)
+    getUpInfoCon b' [aId] aId "alice's connInfo"
     withServer1 ps $ do
       ("", "", UP _ [_]) <- nGet a
       runRight_ $ exchangeGreetingsViaProxyMsgId_ False PQEncOn 2 (2 + n) a bId b' aId
@@ -1887,6 +1885,15 @@ restartAgent_ getAgent restart c cIds
       all isRight rs `shouldBe` True
       pure c'
   | otherwise = pure c
+
+getUpInfoCon :: HasCallStack => AgentClient -> [ConnId] -> ConnId -> ConnInfo -> Expectation
+getUpInfoCon c upConnIds connId info =
+  getInAnyOrder
+    c
+    [ \case ("", "", AEvt SAENone (UP _ cs)) -> S.fromList cs == S.fromList upConnIds; _ -> False,
+      \case ("", cId, AEvt SAEConn (INFO info')) -> cId == connId && info' == info; _ -> False,
+      \case ("", cId, AEvt SAEConn CON) -> cId == connId; _ -> False
+    ]
 
 waitAck :: AgentClient -> ConnId -> IO ()
 waitAck c connId = do
@@ -1957,12 +1964,7 @@ testContactErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet b''
   runRight_ $ allowConnection b'' aId confId "bob's connInfo"
   withServer1 ps $ do
-    getInAnyOrder
-      a'
-      [ \case ("", "", AEvt SAENone (UP _ [_, _])) -> True; _ -> False,
-        \case ("", c, AEvt SAEConn (A.INFO PQSupportOn "bob's connInfo")) -> c == bId; _ -> False
-      ]
-    get a' ##> ("", bId, A.CON PQEncOn)
+    getUpInfoCon a' [contactId, bId] bId "bob's connInfo"
     get b'' ##> ("", aId, A.CON PQEncOn) -- note that server 2 is down, this event is delivered when HELLO is sent to server 1
     a'' <- restartAgentA restart a' [contactId, bId]
     withServer2 ps $ do
