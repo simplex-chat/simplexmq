@@ -299,6 +299,14 @@ eip55Tests = do
   it "round-trips every byte value through the lowercase form" $
     forM_ everyByteAddresses $ \a ->
       strDecode (BC.map toLower (strEncode a)) `shouldBe` Right a
+  it "reads 0x and 40 hex digits in any case, and in the checksum case only for the checksum parser" $
+    forM_ specAddresses $ \a -> do
+      let parsed p = A.parseOnly (p <* A.endOfInput)
+          lower = BC.map toLower a
+      (parsed anyCaseAddressP a, parsed anyCaseAddressP lower) `shouldBe` (strDecode a, strDecode a)
+      parsed checksumAddressP a `shouldBe` strDecode a
+      isLeft (parsed checksumAddressP lower) `shouldBe` (lower /= a)
+      isLeft (parsed anyCaseAddressP $ B.drop 2 a) `shouldBe` True
   where
     -- 13 x 20 = 260 bytes, so every value 0x00..0xff appears at least once
     everyByteAddresses =
