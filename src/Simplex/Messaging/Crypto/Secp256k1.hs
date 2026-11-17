@@ -10,8 +10,10 @@ module Simplex.Messaging.Crypto.Secp256k1
     Secp256k1Context,
     PubKeyFormat (..),
     RecoverableSignature (..),
+    SignatureError (..),
     serializeSignature,
     deserializeSignature,
+    signatureFromHex,
     lowS,
     mkPrivateKey,
     unPrivateKey,
@@ -37,7 +39,8 @@ import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
-import Data.Char (isDigit)
+import qualified Data.ByteString.Char8 as BC
+import Data.Char (isAlphaNum, isDigit)
 import Foreign hiding (void)
 import Foreign.C
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
@@ -105,16 +108,23 @@ deserializeSignature s = case B.unpack v of
 lowS :: RecoverableSignature -> Bool
 lowS RecoverableSignature {rsS} = os2ip rsS <= ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) `div` 2
 
+data SignatureError = SEFormat | SERecoveryId | SEHighS
+  deriving (Eq, Show)
+
+signatureFromHex :: ByteString -> Either SignatureError RecoverableSignature
+signatureFromHex s = do
+  digits <- maybe (Left SEFormat) Right $ B.stripPrefix "0x" s
+  unless (B.length digits == 2 * (compactSigSize + 1) && BC.all lowerHexDigit digits) $ Left SEFormat
+  bytes <- either (const $ Left SEFormat) Right $ BAE.convertFromBase BAE.Base16 digits
+  sig <- either (const $ Left SERecoveryId) Right $ deserializeSignature bytes
+  unless (lowS sig) $ Left SEHighS
+  pure sig
+  where
+    lowerHexDigit c = isDigit c || (c >= 'a' && c <= 'f')
+
 instance StrEncoding RecoverableSignature where
   strEncode = ("0x" <>) . BAE.convertToBase BAE.Base16 . serializeSignature
-  strP = do
-    digits <- A.string "0x" *> A.takeWhile lowerHexDigit
-    unless (B.length digits == 2 * (compactSigSize + 1)) $ fail "signature: expected 0x and 130 lowercase hex digits"
-    sig <- either fail pure $ deserializeSignature =<< BAE.convertFromBase BAE.Base16 digits
-    unless (lowS sig) $ fail "signature: s is not in the lower half of the group order"
-    pure sig
-    where
-      lowerHexDigit c = isDigit c || (c >= 'a' && c <= 'f')
+  strP = A.takeWhile1 isAlphaNum >>= either (fail . ("signature: " <>) . show) pure . signatureFromHex
 
 instance ToField RecoverableSignature where toField = toField . Binary . serializeSignature
 

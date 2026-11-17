@@ -368,10 +368,13 @@ signingTests g = do
   it "reads and writes a signature as 0x and 130 lowercase hex digits, refusing another form or v and a high s" $ do
     strEncode viemSig `shouldBe` viemSigHex
     strDecode viemSigHex `shouldBe` Right viemSig
-    forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00", B.take 130 viemSigHex <> "1d"] $ \s ->
-      (s, isLeft (strDecode s :: Either String S.RecoverableSignature)) `shouldBe` (s, True)
+    S.signatureFromHex viemSigHex `shouldBe` Right viemSig
+    forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00"] $ \s ->
+      (s, S.signatureFromHex s) `shouldBe` (s, Left S.SEFormat)
+    S.signatureFromHex (B.take 130 viemSigHex <> "1d") `shouldBe` Left S.SERecoveryId
     let highS = viemSig {S.rsS = i2osp $ ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) - os2ip (S.rsS viemSig), S.rsRecId = 0}
-    (isLeft (strDecode (strEncode highS) :: Either String S.RecoverableSignature)) `shouldBe` True
+    S.signatureFromHex (strEncode highS) `shouldBe` Left S.SEHighS
+    (strDecode (strEncode highS) :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: SEHighS"
   it "recovers the address that signed a digest" $
     (strEncode <$$> recoverAddress viemSig digest) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
   it "refuses a recovery id above 3" $
