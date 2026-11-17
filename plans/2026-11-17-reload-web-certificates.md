@@ -28,7 +28,7 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
 
 - The certificate and key files are written by the operator's renewal job and are trusted as much as at start; a party that can write them can already replace the credential at the next restart.
 - A file that is partly written, unreadable or mismatched is rejected, and the previous credential stays in use, so a reload never serves a credential that fails the checks that the reload applies.
-- An exception in a reload stops only that check; the server and its listeners continue.
+- Exceptions from reading and parsing the files are caught and logged as rejections, and the checks are total functions, so a reload does not stop the server or its listeners.
 - Log lines contain fixed text, file paths and parser messages, and never key material.
 - `pointBaseMul` runs in variable time on the private scalar, only when changed files are checked, and its time does not affect any network response.
 
