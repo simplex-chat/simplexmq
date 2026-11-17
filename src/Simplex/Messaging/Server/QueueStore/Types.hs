@@ -35,7 +35,7 @@ class StoreQueueClass q => QueueStoreClass q s where
   addQueueLinkData :: s -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
   deleteQueueLinkData :: s -> q -> IO (Either ErrorType ())
   secureQueue :: s -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
-  updateKeys :: s -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys :: s -> q -> Maybe (NonEmpty RcvPublicAuthKey) -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
   addQueueNotifier :: s -> q -> NtfCreds -> IO (Either ErrorType (Maybe NtfCreds))
   deleteQueueNotifier :: s -> q -> IO (Either ErrorType (Maybe NtfCreds))
   suspendQueue :: s -> q -> IO (Either ErrorType ())
