@@ -9,6 +9,7 @@ import Data.Bits (shiftR)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Internal (w2c)
+import Data.Either (isRight)
 import Data.Int (Int64)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time.Clock.System (SystemTime (..), getSystemTime, utcToSystemTime)
@@ -16,7 +17,7 @@ import Data.Time.ISO8601 (parseISO8601)
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
-import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
+import Simplex.Messaging.Protocol (NMsgMeta (..), ProtocolServer (..), XFTPServer, unsafeMsgId)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..), SrvLoc (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Test.Hspec hiding (fit, it)
@@ -48,6 +49,10 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
       testSystemTime t'
     it "parse(encode(SystemTime) should equal the same Int64" . property $
       \i -> parseAll smpP (smpEncode i) == Right (i :: Int64)
+  describe "Encoding NMsgMeta" $
+    it "should decode message time only in years 1 to 9999" $ do
+      map decodedAt [-62135596800, 253402300799] `shouldBe` [True, True]
+      map decodedAt [-62135596801, 253402300800] `shouldBe` [False, False]
   describe "Encoding transport hosts" $ do
     describe "domain name hosts" $ do
       it "should encode / decode domain name" $ THDomainName "smp.simplex.im" #==# "smp.simplex.im"
@@ -104,6 +109,8 @@ encodingTests = modifyMaxSuccess (const 1000) $ do
     testSystemTime t = do
       smpEncode t `shouldBe` smpEncode (systemSeconds t)
       smpDecode (smpEncode t) `shouldBe` Right t {systemNanoseconds = 0}
+    decodedAt :: Int64 -> Bool
+    decodedAt s = isRight (smpDecode $ smpEncode $ NMsgMeta (unsafeMsgId "abcdefghijklmnopqrstuvwx") (MkSystemTime s 0) :: Either String NMsgMeta)
     (#==#) :: (StrEncoding s, Eq s, Show s) => s -> ByteString -> Expectation
     (#==#) x s = do
       strEncode x `shouldBe` s
