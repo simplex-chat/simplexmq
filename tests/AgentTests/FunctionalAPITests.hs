@@ -549,8 +549,8 @@ functionalAPITests ps = do
     it "should subscribe to multiple connections with pending messages" $
       withSmpServer ps $
         testBatchedPendingMessages 10 5
-    it "should subscribe to connections with pending messages when event queue is full" $
-      withSmpServer ps testBatchedPendingMessagesFullQueues
+    it "should acknowledge message when event and message queues are full" $
+      withSmpServer ps testAckMessageFullQueues
     it "should subscribe and delete repeated connection IDs when event queue is full" $
       withSmpServer ps testDuplicateConnIdsFullQueue
   describe "Batch send messages" $ do
@@ -3574,18 +3574,23 @@ testBatchedPendingMessages nCreate nMsgs =
         ("", cId, AEvt SAEConn (Msg' msgId _ "hello")) -> pure $ Right (cId, msgId)
         r -> error $ "unexpected event: " <> show r
 
-testBatchedPendingMessagesFullQueues :: HasTestEnv => IO ()
-testBatchedPendingMessagesFullQueues =
-  withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-    conns <- withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight $ replicateM 6 $ makeConnection a b
-    runRight_ $ forM_ conns $ \(_, bId) -> do
-      msgId <- sendMessage a bId SMP.noMsgFlags "hello"
-      get a ##> ("", bId, SENT msgId)
-    withAgent 2 agentCfg initAgentServers testDB2 $ \b -> do
-      fillSubQ b
-      timeout 5_000000 (runExceptT $ subscribeAllConnections b False Nothing) `shouldReturn` Just (Right ())
-      void . atomically . flushTBQueue $ subQ b
-      timeout 5_000000 (receiveMsgs b $ map ((,"hello") . fst) conns) `shouldReturn` Just ()
+testAckMessageFullQueues :: HasTestEnv => IO ()
+testAckMessageFullQueues = withAgentClients2 $ \a b -> do
+  (aId, bId) : conns <- runRight $ replicateM 6 $ makeConnection a b
+  runRight_ $ do
+    msgId1 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT msgId1)
+    msgId2 <- sendMessage a bId SMP.noMsgFlags "hello 2"
+    get a ##> ("", bId, SENT msgId2)
+  ("", _, Msg' msgId _ "hello") <- get b
+  fillSubQ b
+  runRight_ $ forM_ conns $ \(_, bId') -> do
+    msgId' <- sendMessage a bId' SMP.noMsgFlags "hello"
+    get a ##> ("", bId', SENT msgId')
+  timeout 5_000000 (atomically $ isFullTBQueue (msgQ b) >>= checkSTM) `shouldReturn` Just ()
+  timeout 5_000000 (runExceptT $ ackMessage b aId msgId Nothing) `shouldReturn` Just (Right ())
+  void . atomically . flushTBQueue $ subQ b
+  timeout 5_000000 (receiveMsgs b $ (aId, "hello 2") : map ((,"hello") . fst) conns) `shouldReturn` Just ()
 
 testDuplicateConnIdsFullQueue :: HasTestEnv => IO ()
 testDuplicateConnIdsFullQueue = withAgentClients2 $ \a b -> do
