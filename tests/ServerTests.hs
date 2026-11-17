@@ -19,7 +19,7 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
-import Control.Concurrent.Async (concurrently_, race_)
+import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
@@ -55,7 +55,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadServerCredential, mkTransportServerConfig, newSocketState, reloadCredential, runTransportServerState_)
+import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadServerCredential, mkTransportServerConfig, newSocketState, runTransportServerState_, withCredentialReload)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
@@ -1687,9 +1687,8 @@ webCredentialTests = do
     ss <- newSocketState
     let srvCreds = TLSServerCredential {credential, sniCredential = Just sniCredential}
         runServer started =
-          race_
-            (reloadCredential acceptCredential testCredentialCheckInterval testWebCredentials sniCredential)
-            (runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ())
+          withCredentialReload acceptCredential testCredentialCheckInterval testWebCredentials sniCredential $
+            runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ()
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
   describe "key pair check" $ do
     it "should accept the matching RSA key and reject another one" $ do
@@ -1711,7 +1710,7 @@ webCredentialTests = do
   where
     keysMismatch = Left "the private key does not match the certificate"
     keyPairCheck certName keyName =
-      either error checkKeyPair <$> TLS.credentialLoadX509Chain ("tests/fixtures/" <> certName <> ".crt") [] ("tests/fixtures/" <> keyName <> ".key")
+      either error checkKeyPair <$> TLS.credentialLoadX509Chain (fixtureFile certName ".crt") [] (fixtureFile keyName ".key")
 
 testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
 testWebCredentialReloadSMP =

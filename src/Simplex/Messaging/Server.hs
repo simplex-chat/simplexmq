@@ -129,7 +129,7 @@ import System.Environment (lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPrint, hPutStrLn, hSetNewlineMode, universalNewlineMode)
 import System.Mem.Weak (deRefWeak)
-import UnliftIO (race_, timeout)
+import UnliftIO (timeout)
 import UnliftIO.Concurrent
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
@@ -208,11 +208,11 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just (httpFiles, httpCreds), Just attachHTTP) | addHTTP ->
-          race_ (reloadCredential checkHTTPSCredential (credentialCheckInterval tCfg) httpFiles httpCreds) $
-          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
-            case cast h of
-              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
-              _ -> runClient srvCert srvSignKey t h `runReaderT` env
+          withCredentialReload checkHTTPSCredential (credentialCheckInterval tCfg) httpFiles httpCreds $
+            runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
+              case cast h of
+                Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
+                _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
         _ ->

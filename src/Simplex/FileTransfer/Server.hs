@@ -76,7 +76,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), acceptCredential, reloadCredential, runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), acceptCredential, runLocalTCPServer, withCredentialReload)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -155,7 +155,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
-          reloadWebCredential (httpFiles, httpCreds) = race_ (reloadCredential acceptCredential (credentialCheckInterval transportConfig) httpFiles httpCreds)
+          reloadWebCredential (httpFiles, httpCreds) = withCredentialReload acceptCredential (credentialCheckInterval transportConfig) httpFiles httpCreds
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
       liftIO . maybe id reloadWebCredential httpCreds_ . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds (snd <$> httpCreds_) transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig

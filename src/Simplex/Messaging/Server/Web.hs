@@ -49,11 +49,10 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), acceptCredential, loadCredential, reloadCredential)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadCredential, withCredentialReload)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
-import UnliftIO.Async (race_)
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
 import UnliftIO.STM (newTVarIO, readTVarIO)
@@ -92,9 +91,9 @@ runHTTPSServer :: WebHttpsParams -> Application -> IO ()
 runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheckInterval} app = do
   logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
   let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
-  cred <- loadCredential acceptCredential creds >>= either (\e -> fail $ "invalid credential: " <> T.unpack e) pure
+  cred <- loadCredential creds >>= either (\e -> fail $ "invalid credential: " <> T.unpack e) pure
   credVar <- newTVarIO cred
-  race_ (reloadCredential checkCredential credentialCheckInterval creds credVar) $
+  withCredentialReload checkCredential credentialCheckInterval creds credVar $
     WT.runTLS (tlsSettings credVar) (mkSettings port) app
   where
     tlsSettings credVar =

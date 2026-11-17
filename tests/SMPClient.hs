@@ -403,19 +403,19 @@ testCredentialCheckInterval = 100000
 
 copyWebCredential :: HasTestEnv => String -> IO ()
 copyWebCredential name = do
-  copyFile (webFixture name ".crt") $ certificateFile testWebCredentials
-  copyFile (webFixture name ".key") $ privateKeyFile testWebCredentials
+  copyFile (fixtureFile name ".crt") $ certificateFile testWebCredentials
+  copyFile (fixtureFile name ".key") $ privateKeyFile testWebCredentials
 
-webFixture :: String -> String -> FilePath
-webFixture name extension = "tests/fixtures/" <> name <> extension
+fixtureFile :: String -> String -> FilePath
+fixtureFile name extension = "tests/fixtures/" <> name <> extension
 
 testWebCredentialReload :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
 testWebCredentialReload port = do
   servedCertificateShouldBe port "web"
-  copyFile (webFixture "web2" ".crt") $ certificateFile testWebCredentials
+  copyFile (fixtureFile "web2" ".crt") $ certificateFile testWebCredentials
   threadDelay credentialReloadWait
   servedCertificateShouldBe port "web"
-  copyFile (webFixture "web2" ".key") $ privateKeyFile testWebCredentials
+  copyFile (fixtureFile "web2" ".key") $ privateKeyFile testWebCredentials
   threadDelay credentialReloadWait
   servedCertificateShouldBe port "web2"
   removeFile $ privateKeyFile testWebCredentials
@@ -434,7 +434,7 @@ credentialReloadWait = 10 * testCredentialCheckInterval
 
 servedCertificateShouldBe :: HasCallStack => ServiceName -> String -> IO ()
 servedCertificateShouldBe port name = do
-  chain <- X.CertificateChain <$> XF.readSignedObject (webFixture name ".crt")
+  chain <- X.CertificateChain <$> XF.readSignedObject (fixtureFile name ".crt")
   XV.Fingerprint caFingerprint <- loadFileFingerprint "tests/fixtures/web_ca.crt"
   runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
     tlsPeerCert tls `shouldBe` chain

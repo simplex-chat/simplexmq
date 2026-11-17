@@ -45,7 +45,7 @@ import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Main (withStdin)
 import UnliftIO (catchAny)
-import UnliftIO.Async (async, cancel, withAsync)
+import UnliftIO.Async (async, cancel, race_)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
 import Util
@@ -225,7 +225,7 @@ smpServerTestStatic = do
 testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
 testStaticSiteCertReload = do
   copyWebCredential "web"
-  withAsync (runHTTPSServer httpsParams emptyApp) $ \_ -> do
+  race_ (runHTTPSServer httpsParams emptyApp) $ do
     threadDelay 1000000
     testWebCredentialReload httpsPort
     testWebCredentialReplaced httpsPort "web_rsa2048" "web"

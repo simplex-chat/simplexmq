@@ -27,7 +27,7 @@ module Simplex.Messaging.Transport.Server
     startTCPServer,
     loadServerCredential,
     loadCredential,
-    reloadCredential,
+    withCredentialReload,
     acceptCredential,
     checkKeyPair,
     loadFingerprint,
@@ -48,6 +48,7 @@ import qualified Crypto.PubKey.Ed448 as Ed448
 import qualified Crypto.PubKey.RSA.PKCS15 as RSA
 import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
+import Data.Bifunctor (first)
 import Data.Default (def)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -69,7 +70,7 @@ import Simplex.Messaging.Util (catchAll_, labelMyThread, stateTVar', tshow, unle
 import System.Exit (exitFailure)
 import System.IO.Error (tryIOError)
 import System.Mem.Weak (Weak, deRefWeak)
-import UnliftIO (timeout)
+import UnliftIO (race_, timeout)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
@@ -273,22 +274,21 @@ startTCPServer started host port = withSocketsDo $ resolve >>= open >>= setStart
 
 loadServerCredential :: ServerCredentials -> IO T.Credential
 loadServerCredential creds =
-  loadCredential acceptCredential creds >>= \case
+  loadCredential creds >>= \case
     Right credential -> pure credential
     Left e -> putStrLn ("invalid credential: " <> T.unpack e) >> exitFailure
 
 acceptCredential :: T.Credential -> Either Text ()
 acceptCredential _ = Right ()
 
-loadCredential :: (T.Credential -> Either Text ()) -> ServerCredentials -> IO (Either Text T.Credential)
-loadCredential check ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
-  either (Left . tshow) id <$> E.tryAny (validCredential <$!> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
-  where
-    validCredential = \case
-      Left e -> Left $ T.pack e
-      Right cred -> cred <$ check cred
+loadCredential :: ServerCredentials -> IO (Either Text T.Credential)
+loadCredential ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
+  either (Left . tshow) (first T.pack) <$> E.tryAny (T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
 
-reloadCredential :: (T.Credential -> Either Text ()) -> Int -> ServerCredentials -> TVar T.Credential -> IO ()
+withCredentialReload :: (T.Credential -> Either Text ()) -> Int -> ServerCredentials -> TVar T.Credential -> IO () -> IO ()
+withCredentialReload checkCredential interval creds credVar = race_ (reloadCredential checkCredential interval creds credVar)
+
+reloadCredential :: (T.Credential -> Either Text ()) -> Int -> ServerCredentials -> TVar T.Credential -> IO a
 reloadCredential checkCredential interval creds@ServerCredentials {certificateFile} credVar = do
   labelMyThread "reloadCredential"
   checkFiles Nothing
@@ -296,16 +296,19 @@ reloadCredential checkCredential interval creds@ServerCredentials {certificateFi
     checkFiles rejected = do
       threadDelay interval
       current <- readTVarIO credVar
-      loadCredential (\cred -> checkKeyPair cred >> checkCredential cred) creds >>= \case
+      loadCredential creds >>= \case
         Right cred
           | cred == current -> checkFiles Nothing
-          | otherwise -> do
-              atomically $ writeTVar credVar cred
-              logNote $ "reloaded credential " <> T.pack certificateFile
-              checkFiles Nothing
-        Left e -> do
-          unless (rejected == Just e) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
-          checkFiles $ Just e
+          | otherwise -> case checkKeyPair cred >> checkCredential cred of
+              Right () -> do
+                atomically $ writeTVar credVar cred
+                logNote $ "reloaded credential " <> T.pack certificateFile
+                checkFiles Nothing
+              Left e -> reject rejected (e, Just cred)
+        Left e -> reject rejected (e, Nothing)
+    reject rejected rejection@(e, _) = do
+      unless (rejected == Just rejection) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
+      checkFiles $ Just rejection
 
 checkKeyPair :: T.Credential -> Either Text ()
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
