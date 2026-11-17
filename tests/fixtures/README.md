@@ -24,6 +24,13 @@ cat web_ca.crt >> web2.crt
 # Web certificate with an ECDSA P-256 key: the same commands with web_ecdsa for web2 and this key
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out web_ecdsa.key
 
+# A second ECDSA P-256 key, without a certificate
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out web_ecdsa2.key
+
+# Web certificate with a DSA key: the same commands with web_dsa for web2 and this key, without appending web_ca.crt
+openssl genpkey -genparam -algorithm DSA -pkeyopt dsa_paramgen_bits:2048 -out dsa.param
+openssl genpkey -paramfile dsa.param -out web_dsa.key
+
 # To pretty-print
 openssl x509 -in ca.crt -text -noout
 openssl req -in server.csr -text -noout
