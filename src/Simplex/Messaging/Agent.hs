@@ -662,7 +662,7 @@ sendMessagesB c = withAgentEnv c . sendMessagesB' c
 {-# INLINE sendMessagesB #-}
 
 ackMessage :: AgentClient -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AE ()
-ackMessage c = withAgentEnv c .:. ackMessage' c Nothing
+ackMessage c connId msgId rcptInfo_ = withAgentEnv c $ ackMessage' c Nothing connId msgId rcptInfo_ >>= mapM_ (liftIO . nonBlockingWriteTBQueue (subQ c))
 {-# INLINE ackMessage #-}
 
 getConnectionQueueInfo :: AgentClient -> NetworkRequestMode -> ConnId -> AE ServerQueueInfo
@@ -2312,7 +2312,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                         then throwE e
                         else atomically $ void $ tryPutTMVar v $ Left e -- will not overwrite existing result
         LET confId ownCInfo -> withServer' . tryAtomicCommand $ allowConnection' c (Just cmdId) connId confId ownCInfo >> notify OK
-        ACK msgId rcptInfo_ -> withServer' . tryAtomicCommand $ ackMessage' c (Just cmdId) connId msgId rcptInfo_ >> notify OK
+        ACK msgId rcptInfo_ -> withServer' . tryAtomicCommand $ ackMessage' c (Just cmdId) connId msgId rcptInfo_ >>= mapM_ (atomically . writeTBQueue subQ) >> notify OK
         SWCH ->
           noServer . tryAtomicCommand $
             withConnLock c connId "switchConnection" getConnToSwitch >>= \case
@@ -2886,27 +2886,28 @@ retrySndOp c loop = do
 withConnLockNotify :: AgentClient -> ConnId -> Text -> AM (Maybe ATransmission) -> AM ()
 withConnLockNotify c connId name action = do
   t_ <- withConnLock c connId name action
-  forM_ t_ $ liftIO . nonBlockingWriteTBQueue (subQ c)
+  forM_ t_ $ atomically . writeTBQueue (subQ c)
 
-ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
-ackMessage' c cmdId_ connId msgId rcptInfo_ = do
-  ack_ <- withConnLock c connId "ackMessage" $ do
-    SomeConn _ conn <- withStore c (`getConn` connId)
-    case conn of
-      DuplexConnection {} -> markUserAck
-      RcvConnection {} -> markUserAck
-      SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
-      ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
-      NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
-  forM_ ack_ $ \(rq, srvMsgId) -> do
+ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM (Maybe ATransmission)
+ackMessage' c cmdId_ connId msgId rcptInfo_ =
+  withConnLock c connId "ackMessage" markConnUserAck $>>= \(rq, srvMsgId) -> do
     recordAck <- ackQueueMessage c rq srvMsgId
-    withConnLockNotify c connId "ackMessage" $ do
+    withConnLock c connId "ackMessage" $ do
       t_ <- recordAck
       withStore c (`getConn` connId) >>= \case
         SomeConn _ conn@DuplexConnection {} -> sendRcpt conn
         _ -> pure ()
       t_ <$ del
   where
+    markConnUserAck :: AM (Maybe (RcvQueue, SMP.MsgId))
+    markConnUserAck = do
+      SomeConn _ conn <- withStore c (`getConn` connId)
+      case conn of
+        DuplexConnection {} -> markUserAck
+        RcvConnection {} -> markUserAck
+        SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
+        ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
+        NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
     -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
     markUserAck :: AM (Maybe (RcvQueue, SMP.MsgId))
     markUserAck =
