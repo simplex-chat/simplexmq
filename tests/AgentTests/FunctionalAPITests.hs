@@ -5150,7 +5150,11 @@ transactionDeadlockTests = do
     deleteConnInBatch a recordPid _ connId = runReaderT (withStoreBatch' a $ \db -> [recordPid db >> deleteConn db Nothing connId]) (agentEnv a) `shouldReturn` ([Right (Just connId)] :: [Either AgentErrorType (Maybe ConnId)])
 
 abortedTransactionTests :: Spec
-abortedTransactionTests =
+abortedTransactionTests = do
+  it "should keep the transaction that creates a command for a deleted connection" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      runAM a (withStore a $ \db -> createUserRecord db >> createCommand db "1" "deleted" Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False)) `shouldReturn` Right ()
+      withTransaction (store $ agentEnv a) (`DB.query_` "SELECT count(*) FROM users") `shouldReturn` [Only (2 :: Int)]
   it "should report every item of a batch rolled back after a database error" $
     withAgent 1 agentCfg initAgentServers testDB $ \a -> do
       rs <- runReaderT (withStoreBatch' a $ \db -> [void $ createUserRecord db, DB.execute_ db "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '23505'; END $$"]) (agentEnv a)
