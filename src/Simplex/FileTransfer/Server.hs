@@ -77,7 +77,7 @@ import Simplex.Messaging.Transport.Buffer (trimCR)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, TransportServerConfig (..), reloadCredential, runLocalTCPServer)
+import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, TransportServerConfig (..), reloadCredential, runLocalTCPServer)
 import Simplex.Messaging.Server.Web (serveStaticPageH2)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
@@ -143,14 +143,14 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         : serverStatsThread_ cfg
           <> prometheusMetricsThread_ cfg
           <> controlPortThread_ cfg
-          <> reloadHTTPCredentialThread_ cfg httpCreds_
+          <> reloadHTTPCredentialThread_ httpCreds_
     )
     `finally` stopServer
   where
     runServer :: M s ()
     runServer = do
       srvCreds@(chain, pk) <- asks tlsServerCreds
-      httpCreds_ <- asks httpServerCreds
+      httpCreds_ <- fmap snd <$> asks httpServerCreds
       signKey <- liftIO $ case C.x509ToPrivate' pk of
         Right pk' -> pure pk'
         Left e -> putStrLn ("Server has no valid key: " <> show e) >> exitFailure
@@ -354,10 +354,9 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       let fd = periodStatDataCounts $ _filesDownloaded d
       pure FileServerMetrics {statsData = d, filesDownloadedPeriods = fd, rtsOptions}
 
-    reloadHTTPCredentialThread_ :: XFTPServerConfig s -> Maybe (TVar TLS.Credential) -> [M s ()]
-    reloadHTTPCredentialThread_ XFTPServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}} (Just credVar) =
-      [liftIO $ reloadCredential (const True) credentialCheckInterval creds credVar]
-    reloadHTTPCredentialThread_ _ _ = []
+    reloadHTTPCredentialThread_ :: Maybe (ServerCredentials, TVar TLS.Credential) -> [M s ()]
+    reloadHTTPCredentialThread_ (Just (creds, credVar)) = [liftIO $ reloadCredential (const True) (credentialCheckInterval transportConfig) creds credVar]
+    reloadHTTPCredentialThread_ Nothing = []
 
     controlPortThread_ :: XFTPServerConfig s -> [M s ()]
     controlPortThread_ XFTPServerConfig {controlPort = Just port} = [runCPServer port]

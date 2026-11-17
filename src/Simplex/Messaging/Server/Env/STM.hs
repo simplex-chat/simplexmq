@@ -274,7 +274,7 @@ data Env s = Env
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe (TVar T.Credential),
+    httpServerCreds :: Maybe (ServerCredentials, TVar T.Credential),
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
@@ -582,7 +582,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   httpServerCreds <- forM httpCredentials $ \creds -> do
     cred <- getCredentials "HTTPS" creds
     checkHTTPSCredentials cred
-    newTVarIO cred
+    credVar <- newTVarIO cred
+    pure (creds, credVar)
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime

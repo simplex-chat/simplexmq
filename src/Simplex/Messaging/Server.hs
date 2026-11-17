@@ -196,7 +196,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             <> serverStatsThread_ cfg
             <> prometheusMetricsThread_ cfg
             <> controlPortThread_ cfg
-            <> reloadHTTPCredentialThread_ cfg httpCreds_
+            <> reloadHTTPCredentialThread_ httpCreds_
     )
     `finally` stopServer s
   where
@@ -209,7 +209,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
-        (Just httpCreds, Just attachHTTP) | addHTTP ->
+        (Just (_, httpCreds), Just attachHTTP) | addHTTP ->
           runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
             case cast h of
               Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
@@ -747,10 +747,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       withExceptT (const $ TEHandshake BAD_SERVICE) $ ExceptT $
         getCreateService @(StoreQueue s) (queueStore ms) sr
 
-    reloadHTTPCredentialThread_ :: ServerConfig s -> Maybe (TVar TLS.Credential) -> [M s ()]
-    reloadHTTPCredentialThread_ ServerConfig {httpCredentials = Just creds, transportConfig = TransportServerConfig {credentialCheckInterval}} (Just credVar)
-      | isJust attachHTTP_ = [liftIO $ reloadCredential supportedHTTPSCredential credentialCheckInterval creds credVar]
-    reloadHTTPCredentialThread_ _ _ = []
+    reloadHTTPCredentialThread_ :: Maybe (ServerCredentials, TVar TLS.Credential) -> [M s ()]
+    reloadHTTPCredentialThread_ (Just (creds, credVar))
+      | isJust attachHTTP_ = [liftIO $ reloadCredential supportedHTTPSCredential (credentialCheckInterval tCfg) creds credVar]
+    reloadHTTPCredentialThread_ _ = []
 
     controlPortThread_ :: ServerConfig s -> [M s ()]
     controlPortThread_ ServerConfig {controlPort = Just port} = [runCPServer port]
