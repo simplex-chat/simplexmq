@@ -1,5 +1,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | FFI bindings to libsecp256k1.
@@ -23,17 +25,24 @@ where
 
 import Control.Concurrent.STM
 import Control.Exception (bracket, throwIO)
-import Control.Monad (void, when)
-import Crypto.Number.Serialize (i2ospOf_)
+import Control.Monad (unless, void, when)
+import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
+import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
+import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
+import Data.Char (isAlphaNum, isDigit)
 import Foreign hiding (void)
 import Foreign.C
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding (Encoding (..))
+import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- Sizes
@@ -81,6 +90,38 @@ data RecoverableSignature = RecoverableSignature
     rsRecId :: Word8
   }
   deriving (Eq, Show)
+
+instance Encoding RecoverableSignature where
+  smpEncode RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)
+  smpP = do
+    rsR <- A.take scalarSize
+    rsS <- A.take scalarSize
+    rsRecId <-
+      A.anyChar >>= \case
+        '\27' -> pure 0
+        '\28' -> pure 1
+        _ -> fail "signature: v is not 27 or 28"
+    pure RecoverableSignature {rsR, rsS, rsRecId}
+    where
+      scalarSize = compactSigSize `div` 2
+
+lowS :: RecoverableSignature -> Bool
+lowS RecoverableSignature {rsS} = os2ip rsS <= ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) `div` 2
+
+instance StrEncoding RecoverableSignature where
+  strEncode = ("0x" <>) . BAE.convertToBase BAE.Base16 . smpEncode
+  strP = do
+    digits <- A.string "0x" *> A.takeWhile1 isAlphaNum
+    unless (B.length digits == 2 * (compactSigSize + 1) && BC.all lowerHexDigit digits) $ fail "signature: expected 0x and 130 lowercase hex digits"
+    sig <- either fail pure $ BAE.convertFromBase BAE.Base16 digits >>= smpDecode
+    unless (lowS sig) $ fail "signature: s is not in the lower half of the group order"
+    pure sig
+    where
+      lowerHexDigit c = isDigit c || (c >= 'a' && c <= 'f')
+
+instance ToField RecoverableSignature where toField = toField . Binary . smpEncode
+
+instance FromField RecoverableSignature where fromField = blobFieldDecoder smpDecode
 
 -- FFI
 

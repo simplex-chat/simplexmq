@@ -26,9 +26,11 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (isHexDigit, isLower, isUpper, toUpper)
 import Data.Word (Word32)
+import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import Simplex.Messaging.Crypto (keccak256)
 import Simplex.Messaging.Crypto.BIP32 (ExtendedKey, derivePath_, xkKey)
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 
 newtype Address = Address ByteString
@@ -46,6 +48,14 @@ instance StrEncoding Address where
     pure a
     where
       mixedCase s = BC.any isUpper s && BC.any isLower s
+
+instance Encoding Address where
+  smpEncode (Address a) = a
+  smpP = Address <$> A.take addressSize
+
+instance ToField Address where toField = toField . Binary . smpEncode
+
+instance FromField Address where fromField = blobFieldDecoder smpDecode
 
 addressSize :: Int
 addressSize = 20

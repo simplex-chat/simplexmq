@@ -6,7 +6,8 @@ module CoreTests.EthCryptoTests (ethCryptoTests) where
 
 import Control.Concurrent.STM (TVar, atomically)
 import Control.Monad (forM_)
-import Crypto.Number.Serialize (i2osp)
+import Crypto.Number.Serialize (i2osp, os2ip)
+import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
 import qualified Data.Aeson as J
 import qualified Data.ByteArray as BA
@@ -14,7 +15,7 @@ import qualified Data.ByteArray.Encoding as BAE
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as BC
-import Data.Char (toLower)
+import Data.Char (toLower, toUpper)
 import Data.Either (isLeft, isRight)
 import Data.FileEmbed (embedFile)
 import Data.List (elemIndex, foldl', nub)
@@ -30,6 +31,7 @@ import qualified Simplex.Messaging.Crypto.BIP39 as B39
 import Simplex.Messaging.Crypto.BIP39.English (englishWordList)
 import Simplex.Messaging.Crypto.BIP44
 import qualified Simplex.Messaging.Crypto.Secp256k1 as S
+import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Eth.Address
 import Simplex.Messaging.Eth.EIP712
@@ -319,11 +321,15 @@ eip55Tests = do
 rlpTests :: Spec
 rlpTests = do
   forM_ rlpVectors $ \(name, item, expected) ->
-    it ("encodes " <> name) $ toHex (rlpEncode item) `shouldBe` expected
+    it ("encodes " <> name) $ toHex (smpEncode item) `shouldBe` expected
   it "encodes scalars without leading zeros" $ do
-    toHex (rlpEncode $ scalarItem $ B.replicate 32 0) `shouldBe` "80"
-    toHex (rlpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
-    toHex (rlpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
+    toHex (smpEncode $ scalarItem $ B.replicate 32 0) `shouldBe` "80"
+    toHex (smpEncode $ scalarItem $ hx "000f") `shouldBe` "0f"
+    toHex (smpEncode $ scalarItem $ hx "000400") `shouldBe` "820400"
+  it "decodes each encoding, and refuses one the encoder does not produce" $ do
+    forM_ rlpVectors $ \(_, item, expected) -> (smpEncode <$> smpDecode @RLPItem (hx expected)) `shouldBe` Right (smpEncode item)
+    forM_ ["8100", "817f", "b801ff", "b90038" <> B.concat (replicate 56 "61"), "c1", "83646f"] $ \encoded ->
+      (encoded, isLeft $ smpDecode @RLPItem (hx encoded)) `shouldBe` (encoded, True)
   where
     rlpVectors =
       [ ("the empty string", RLPBytes "", "80"),
@@ -349,8 +355,17 @@ signingTests g = do
           }
   it "refuses a digest that is not 32 bytes" $
     (isLeft <$> S.signRecoverable g txKey "digest") `shouldReturn` True
-  it "serializes a signature as r, s and v, as viem does" $
-    serializeSignature viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
+  it "serializes a signature as r, s and v, as viem does, refusing v other than 27 or 28" $ do
+    smpEncode viemSig `shouldBe` hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
+    smpDecode (smpEncode viemSig) `shouldBe` Right viemSig
+    smpDecode @S.RecoverableSignature (B.take 64 (smpEncode viemSig) <> "\x1d") `shouldBe` Left "Failed reading: signature: v is not 27 or 28"
+  it "reads and writes a signature as 0x and 130 lowercase hex digits, refusing another form or v and a high s" $ do
+    strEncode viemSig `shouldBe` viemSigHex
+    strDecode viemSigHex `shouldBe` Right viemSig
+    forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00", B.take 130 viemSigHex <> "1d"] $ \s ->
+      (s, isLeft (strDecode s :: Either String S.RecoverableSignature)) `shouldBe` (s, True)
+    let highS = viemSig {S.rsS = i2osp $ ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) - os2ip (S.rsS viemSig), S.rsRecId = 0}
+    (strDecode (strEncode highS) :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: s is not in the lower half of the group order"
   it "recovers the address that signed a digest" $
     (strEncode <$$> recoverAddress viemSig digest) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
   it "refuses a recovery id above 3" $
@@ -365,6 +380,7 @@ signingTests g = do
     (isLeft <$> S.recoverPublicKey viemSig "digest") `shouldReturn` True
   where
     digest = C.keccak256 "simplex"
+    viemSigHex = "0x8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b03eb3b2c117d918736df192c69cef499294f2a070aff74c2bf69776a179b7cdb11c"
     viemSig =
       S.RecoverableSignature
         { S.rsR = hx "8d5aa94d4288fb8297dd9ff2c9cc5026b09b5305ace1f0b48a864ab116f2d3b0",
@@ -383,6 +399,15 @@ transactionTests g = do
   it "encodes every word of fields wider than 64 bits" $
     (B.isInfixOf wideFields . toHex <$$> signEip1559Tx g txKey wide)
       `shouldReturn` Right True
+  it "decodes a signed transaction to its fields and the signature its signer recovers from" $
+    forM_ [contractCall, transfer, wide] $ \tx -> do
+      (decoded, sig) <- right . decodeEip1559Tx . right <$> signEip1559Tx g txKey tx
+      decoded `shouldBe` tx
+      (strEncode <$$> recoverAddress sig (eip1559SigningHash decoded)) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
+  it "refuses another transaction type and trailing bytes" $ do
+    raw <- right <$> signEip1559Tx g txKey transfer
+    isLeft (decodeEip1559Tx $ B.cons 0x01 $ B.drop 1 raw) `shouldBe` True
+    isLeft (decodeEip1559Tx $ raw <> "\0") `shouldBe` True
   where
     to = right $ strDecode "0x3535353535353535353535353535353535353535"
     contractCall = Eip1559Tx {txChainId = 11155111, txNonce = 9, txMaxPriorityFeePerGas = 1000000000, txMaxFeePerGas = 30000000000, txGasLimit = 100000, txTo = to, txValue = 0, txData = hx "f14fcbc8" <> B.replicate 32 0x11}
