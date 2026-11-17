@@ -60,6 +60,7 @@ module AgentTests.FunctionalAPITests
 #if defined(dbPostgres)
     workItemReadTests,
     transactionDeadlockTests,
+    abortedTransactionTests,
 #endif
   )
 where
@@ -5144,6 +5145,14 @@ transactionDeadlockTests = do
   where
     deleteUserInTransaction a recordPid userId _ = runAM a (withStore a $ \db -> recordPid db >> deleteUserRecord db userId) `shouldReturn` Right ()
     deleteConnInBatch a recordPid _ connId = runReaderT (withStoreBatch' a $ \db -> [recordPid db >> deleteConn db Nothing connId]) (agentEnv a) `shouldReturn` [Right (Just connId)]
+
+abortedTransactionTests :: Spec
+abortedTransactionTests =
+  it "should report every item of a batch rolled back after a database error" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      rs <- runReaderT (withStoreBatch' a $ \db -> [void $ createUserRecord db, DB.execute_ db "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '23505'; END $$"]) (agentEnv a)
+      map isRight rs `shouldBe` [False, False]
+      withTransaction (store $ agentEnv a) (`DB.query_` "SELECT count(*) FROM users") `shouldReturn` [Only (1 :: Int)]
 
 runAM :: AgentClient -> AM a -> IO (Either AgentErrorType a)
 runAM a action = runReaderT (runExceptT action) (agentEnv a)
