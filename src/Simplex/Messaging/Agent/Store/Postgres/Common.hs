@@ -115,15 +115,17 @@ instance Show RetryAfter where
 instance E.Exception RetryAfter
 
 withTransactionIsolation :: DBStore -> IsolationLevel -> (PSQL.Connection -> IO a) -> IO a
-withTransactionIsolation st isolation action = withConnection st transaction
+withTransactionIsolation st isolation action = withConnection st $ transaction (3 :: Int)
   where
-    transaction conn =
-      E.try (inTransaction conn $ action conn) >>= \case
-        Right r -> pure r
-        Left e@(RetryAfter prepare _) -> do
-          logError $ "transaction rolled back after " <> tshow e
-          inTransaction conn prepare
-          transaction conn
+    transaction n conn
+      | n > 0 =
+          E.try (inTransaction conn $ action conn) >>= \case
+            Right r -> pure r
+            Left e@(RetryAfter prepare _) -> do
+              logError $ "transaction rolled back after " <> tshow e
+              inTransaction conn prepare
+              transaction (n - 1) conn
+      | otherwise = inTransaction conn $ action conn
     inTransaction conn = retryTransaction 3 . PSQL.withTransactionLevel level conn
     level = case isolation of
       ReadCommitted -> PSQL.ReadCommitted
