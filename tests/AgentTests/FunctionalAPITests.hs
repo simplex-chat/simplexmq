@@ -3346,12 +3346,15 @@ testOnlyCreatePull = withAgentClients2 $ \alice bob -> runRight_ $ do
 testAckMessageFullQueue :: HasTestEnv => IO ()
 testAckMessageFullQueue =
   withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-    (aId, bId) <- withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight $ makeConnection a b
+    (aId, bId) <- withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight $ do
+      (aId, bId) <- makeConnection a b
+      exchangeGreetings a bId b aId
+      pure (aId, bId)
     runRight_ $ do
-      msgId <- sendMessage a bId SMP.noMsgFlags "hello"
+      msgId <- sendMessage a bId SMP.noMsgFlags "hello again"
       get a ##> ("", bId, SENT msgId)
     withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight_ $ do
-      ("", _, Msg' msgId _ "hello") <- getMsg b aId $ get b
+      ("", _, Msg' msgId _ "hello again") <- getMsg b aId $ get b
       liftIO $ do
         fillSubQ b
         timeout 5_000000 (runExceptT $ ackMessage b aId msgId Nothing) `shouldReturn` Just (Right ())
