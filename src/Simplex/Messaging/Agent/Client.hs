@@ -2488,7 +2488,7 @@ withStore' c action = withStore c $ fmap Right . action
 {-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStore c action = withStore_ c (`withTransaction` action)
+withStore c = withStoreIsolation c ReadCommitted
 
 withStoreIsolation' :: AgentClient -> IsolationLevel -> (DB.Connection -> IO a) -> AM a
 withStoreIsolation' c isolation action = withStoreIsolation c isolation $ fmap Right . action
@@ -2518,14 +2518,14 @@ withStore_ c transaction = do
 unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
 unsafeWithStore c action = do
   st <- asks store
-  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransaction st action
+  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransactionIsolation st ReadCommitted action
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
   st <- asks store
   liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st $
-      mapM (`E.catch` handleInternal) . actions
+    withTransactionIsolation st ReadCommitted $
+      mapM (`catchNonConflict` handleInternal) . actions
   where
     handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
     handleInternal = pure . Left . INTERNAL . show

@@ -2515,7 +2515,7 @@ enqueueMessageB :: forall t. Traversable t => AgentClient -> Maybe AsyncCmdId ->
 enqueueMessageB c cmdId_ reqs = do
   cfg <- asks config
   (_, reqMids) <- unsafeWithStore c $ \db -> do
-    res@(_, rs) <- mapAccumLM (\ids r -> storeSentMsg db cfg ids r `E.catchAny` \e -> (ids,) <$> handleInternal e) IM.empty reqs
+    res@(_, rs) <- mapAccumLM (\ids r -> storeSentMsg db cfg ids r `catchNonConflict` \e -> (ids,) <$> handleInternal e) IM.empty reqs
     when (all isRight rs) $ mapM_ (deleteCommand db) cmdId_
     pure res
   forME reqMids $ submitSentMsg c
@@ -2809,7 +2809,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
       notifyDel msgId $ MERR (unId msgId) err
       msgIds_ <- withStore' c $ \db -> do
         msgIds_ <- getExpiredSndMessages db connId sq expireTs
-        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
+        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchNonConflict` \_ -> pure ()
         pure msgIds_
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err

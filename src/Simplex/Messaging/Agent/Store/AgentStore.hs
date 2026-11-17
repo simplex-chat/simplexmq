@@ -285,6 +285,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     fromOnlyBI,
     getWorkItem,
     getWorkItems,
+    catchNonConflict,
   )
 where
 
@@ -1184,6 +1185,9 @@ handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust work
 
 workItemError :: E.SomeException -> Maybe E.SomeException
 workItemError e = if isTransactionConflict e then Nothing else Just e
+
+catchNonConflict :: IO a -> (E.SomeException -> IO a) -> IO a
+catchNonConflict = E.catchJust workItemError
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
