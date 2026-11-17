@@ -288,11 +288,10 @@ reloadCredential supported interval ServerCredentials {caCertificateFile, certif
     modificationTimes = eitherToMaybe <$> tryIOError (mapM getModificationTime files)
     files = certificateFile : privateKeyFile : chainFiles
     chainFiles = maybeToList caCertificateFile
-    loadCredential = validCredential <$> E.tryAny (T.credentialLoadX509Chain certificateFile chainFiles privateKeyFile)
-    validCredential = \case
-      Left e -> Left $ tshow e
-      Right (Left e) -> Left $ T.pack e
-      Right (Right cred)
+    loadCredential = either (Left . tshow) id <$> E.tryAny (checkCredential <$!> T.credentialLoadX509Chain certificateFile chainFiles privateKeyFile)
+    checkCredential = \case
+      Left e -> Left $ T.pack e
+      Right cred
         | not (matchingKeyPair cred) -> Left "the private key does not match the certificate"
         | not (supported cred) -> Left "unsupported certificate"
         | otherwise -> Right cred
