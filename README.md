@@ -117,7 +117,7 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
 
    - `smp-server`
 
-     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+     You must change **your_ip_or_domain**. `-e "PASS=password"` is optional variable to password-protect your `smp` server. Passwords can contain printable ASCII characters except whitespace, `@`, `:` and `/`:
      ```sh
      docker run -d \
          -e "ADDR=your_ip_or_domain" \
@@ -188,7 +188,7 @@ On Linux, you can build smp server using Docker.
 
    - `smp-server`
 
-     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+     You must change **your_ip_or_domain**. `-e "PASS=password"` is optional variable to password-protect your `smp` server. Passwords can contain printable ASCII characters except whitespace, `@`, `:` and `/`:
      ```sh
      docker run -d \
          -e "ADDR=your_ip_or_domain" \
