@@ -351,6 +351,8 @@ functionalAPITests ps = do
       withSmpServer ps testAgentClient3
     it "should establish connection without PQ encryption and enable it" $
       withSmpServer ps testEnablePQEncryption
+    it "should not store messages that are too large" $
+      withSmpServer ps testLargeMessageNotStored
     it "should refuse joining already used invitation and keep connection" $
       withSmpServer ps testJoinUsedInvitation
     it "should refuse confirmation with client version below the version of its agent" $
@@ -1009,37 +1011,30 @@ testEnablePQEncryption =
     sml <- largeMsg g PQSupportOn
     -- fail because of message size
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOn SMP.noMsgFlags lrg
-    (7, PQEncOff) <- A.sendMessage ca bId PQEncOn SMP.noMsgFlags sml
-    get ca =##> \case ("", connId, SENT 7) -> connId == bId; _ -> False
-    get cb =##> \case ("", connId, MsgErr' 6 MsgSkipped {} PQEncOff msg') -> connId == aId && msg' == sml; _ -> False
-    ackMessage cb aId 6 Nothing
-    -- -- fail in reply to sync IDss
+    (a, 6, sml) \#>! b
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOn SMP.noMsgFlags lrg
-    (8, PQEncOff) <- A.sendMessage cb aId PQEncOn SMP.noMsgFlags sml
-    get cb =##> \case ("", connId, SENT 8) -> connId == aId; _ -> False
-    get ca =##> \case ("", connId, MsgErr' 8 MsgSkipped {} PQEncOff msg') -> connId == bId && msg' == sml; _ -> False
-    ackMessage ca bId 8 Nothing
-    (a, 9, sml) \#>! b
+    (b, 7, sml) \#>! a
+    (a, 8, sml) \#>! b
     -- PQ encryption now enabled
-    (b, 10, sml) !#>! a
-    (a, 11, sml) !#>! b
-    (b, 12, sml) !#>! a
+    (b, 9, sml) !#>! a
+    (a, 10, sml) !#>! b
+    (b, 11, sml) !#>! a
     -- disabling PQ encryption
-    (a, 13, sml) !#>\ b
-    (b, 14, sml) !#>\ a
-    (a, 15, sml) \#>\ b
-    (b, 16, sml) \#>\ a
+    (a, 12, sml) !#>\ b
+    (b, 13, sml) !#>\ a
+    (a, 14, sml) \#>\ b
+    (b, 15, sml) \#>\ a
     -- enabling PQ encryption again
-    (a, 17, sml) \#>! b
-    (b, 18, sml) \#>! a
-    (a, 19, sml) \#>! b
-    (b, 20, sml) !#>! a
-    (a, 21, sml) !#>! b
+    (a, 16, sml) \#>! b
+    (b, 17, sml) \#>! a
+    (a, 18, sml) \#>! b
+    (b, 19, sml) !#>! a
+    (a, 20, sml) !#>! b
     -- disabling PQ encryption again
-    (b, 22, sml) !#>\ a
-    (a, 23, sml) !#>\ b
-    (b, 24, sml) \#>\ a
-    (a, 25, sml) \#>\ b
+    (b, 21, sml) !#>\ a
+    (a, 22, sml) !#>\ b
+    (b, 23, sml) \#>\ a
+    (a, 24, sml) \#>\ b
     -- PQ encryption is now disabled, but support remained enabled, so we still cannot send larger messages
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage ca bId PQEncOff SMP.noMsgFlags (sml <> "123456")
     Left (A.CMD LARGE _) <- tryError $ A.sendMessage cb aId PQEncOff SMP.noMsgFlags (sml <> "123456")
@@ -1057,6 +1052,18 @@ sndRcv pqEnc pqEnc' ((c1, id1), mId, msg) (c2, id2) = do
   get c1 =##> \case ("", connId, SENT mId') -> connId == id2 && mId' == mId; _ -> False
   get c2 =##> \case ("", connId, Msg' mId' pq msg') -> connId == id1 && mId' == mId && msg' == msg && pq == pqEnc; _ -> False
   ackMessage c2 id1 mId Nothing
+
+testLargeMessageNotStored :: (HasCallStack, HasTestEnv) => IO ()
+testLargeMessageNotStored =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    Left (A.CMD LARGE _) <- tryError $ A.sendMessage a bId PQEncOn SMP.noMsgFlags $ B.replicate (e2eEncAgentMsgLength PQSupportOn) 'a'
+    liftIO $ unreferencedMsgBodies a `shouldReturn` []
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    get b =##> \case ("", c, Msg' 2 PQEncOn "hello") -> c == aId; _ -> False
+    ackMessage b aId 2 Nothing
+    liftIO $ skippedMsgKeys b `shouldReturn` []
 
 testAgentClient3 :: (HasCallStack, HasTestEnv) => IO ()
 testAgentClient3 =
@@ -3150,6 +3157,12 @@ sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_i
 
 connInvitations :: AgentClient -> IO [(InvitationId, Maybe ConnId)]
 connInvitations c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT invitation_id, contact_conn_id FROM conn_invitations")
+
+unreferencedMsgBodies :: AgentClient -> IO [(Int64, Int64)]
+unreferencedMsgBodies c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT snd_message_body_id, length(agent_msg) FROM snd_message_bodies b WHERE NOT EXISTS (SELECT 1 FROM snd_messages m WHERE m.snd_message_body_id = b.snd_message_body_id)")
+
+skippedMsgKeys :: AgentClient -> IO [(ConnId, Int64)]
+skippedMsgKeys c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, msg_n FROM skipped_messages")
 
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
