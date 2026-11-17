@@ -46,7 +46,7 @@ import Simplex.FileTransfer.Server.Store.Postgres.Migrations (xftpServerMigratio
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withRetriedTransaction, withTransaction)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -117,7 +117,7 @@ instance FileStoreClass PostgresFileStore where
     withLog "deleteFile" st $ \s -> logDeleteFile s sId
 
   deleteFiles st sIds = E.uninterruptibleMask_ $ do
-    withTransaction (dbStore st) $ \db ->
+    withRetriedTransaction (dbStore st) $ \db ->
       DB.execute db "DELETE FROM files WHERE sender_id IN ?" (Only (In sIds))
     withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s) sIds
 
@@ -196,7 +196,7 @@ rowToFileRec (sId, size, digest, sndKeyBs, path, createdAt, expiresAt, status) =
 
 withDB :: forall a. Text -> PostgresFileStore -> (DB.Connection -> IO (Either XFTPErrorType a)) -> ExceptT XFTPErrorType IO a
 withDB op st action =
-  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+  ExceptT $ E.try (withRetriedTransaction (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either XFTPErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left INTERNAL

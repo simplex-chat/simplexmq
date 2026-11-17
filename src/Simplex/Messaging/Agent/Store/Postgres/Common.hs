@@ -17,6 +17,8 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
     withTransaction',
     withTransactionPriority,
     withTransactionIsolation,
+    withRetriedTransaction,
+    withRetriedTransactionPriority,
     isTransactionConflict,
     abortsTransaction,
     withSavepoint,
@@ -113,6 +115,15 @@ withTransactionIsolation st isolation action = withConnection st transaction
     level = case isolation of
       ReadCommitted -> PSQL.ReadCommitted
       RepeatableRead -> PSQL.RepeatableRead
+
+withRetriedTransaction :: DBStore -> (PSQL.Connection -> IO a) -> IO a
+withRetriedTransaction st = withRetriedTransactionPriority st False
+{-# INLINE withRetriedTransaction #-}
+
+withRetriedTransactionPriority :: DBStore -> Bool -> (PSQL.Connection -> IO a) -> IO a
+withRetriedTransactionPriority st priority action = withConnectionPriority st priority transaction
+  where
+    transaction conn = retryTransaction 3 $ PSQL.withTransaction conn $ action conn
 
 retryTransaction :: Int -> IO a -> IO a
 retryTransaction n transaction
