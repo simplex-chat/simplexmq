@@ -438,7 +438,7 @@ credentialReloadWait = 10 * testCredentialCheckInterval
 servedCertificateShouldBe :: HasCallStack => ServiceName -> String -> IO ()
 servedCertificateShouldBe port name = do
   chain <- X.CertificateChain <$> XF.readSignedObject (fixtureFile name ".crt")
-  XV.Fingerprint caFingerprint <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+  XV.Fingerprint caFingerprint <- loadFileFingerprint $ fixtureFile "web_ca" ".crt"
   runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
     tlsPeerCert tls `shouldBe` chain
 

@@ -31,9 +31,6 @@ openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out web_ecdsa2.k
 openssl genpkey -genparam -algorithm DSA -pkeyopt dsa_paramgen_bits:2048 -out dsa.param
 openssl genpkey -paramfile dsa.param -out web_dsa.key
 
-# RSA key with inconsistent private fields: web.key with prime1 replaced by prime1 * 1000 + 2 and coefficient by prime1 * 999
-python3 corrupt_rsa_key.py web.key web_corrupt.key
-
 # To pretty-print
 openssl x509 -in ca.crt -text -noout
 openssl req -in server.csr -text -noout

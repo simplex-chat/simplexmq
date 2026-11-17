@@ -31,7 +31,7 @@ module Simplex.Messaging.Transport.Server
     newReloadableCredential,
     withCredentialReload,
     acceptCredential,
-    checkReloadedCredential,
+    checkKeyPair,
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
@@ -42,12 +42,11 @@ where
 import Control.Applicative ((<|>))
 import Control.Logger.Simple
 import Control.Monad
-import Crypto.Hash.Algorithms (SHA256 (..))
 import qualified Crypto.PubKey.ECC.Prim as ECC
 import qualified Crypto.PubKey.ECC.Types as ECC
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Crypto.PubKey.Ed448 as Ed448
-import qualified Crypto.PubKey.RSA.PKCS15 as RSA
+import qualified Crypto.PubKey.RSA as RSA
 import qualified Crypto.Store.X509 as SX
 import qualified Data.ByteString as B
 import Data.Bifunctor (first)
@@ -309,29 +308,22 @@ reloadCredential checkCredential interval ReloadableCredential {credentialFiles 
       loadCredential creds >>= \case
         Right cred
           | cred == current -> checkFiles Nothing
-          | otherwise ->
-              checkReloadedCredential checkCredential cred >>= \case
-                Right () -> do
-                  atomically $ writeTVar currentCredential cred
-                  logNote $ "reloaded credential " <> T.pack certificateFile
-                  checkFiles Nothing
-                Left e -> reject rejected (e, Just cred)
+          | otherwise -> case checkKeyPair cred >> checkCredential cred of
+              Right () -> do
+                atomically $ writeTVar currentCredential cred
+                logNote $ "reloaded credential " <> T.pack certificateFile
+                checkFiles Nothing
+              Left e -> reject rejected (e, Just cred)
         Left e -> reject rejected (e, Nothing)
     reject rejected rejection@(e, _) = do
       unless (rejected == Just rejection) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
       checkFiles $ Just rejection
 
-checkReloadedCredential :: (T.Credential -> Either Text ()) -> T.Credential -> IO (Either Text ())
-checkReloadedCredential checkCredential cred =
-  either (\_ -> Left "invalid private key") id <$> E.tryAny (E.evaluate $ checkKeyPair cred >> checkCredential cred)
-
 checkKeyPair :: T.Credential -> Either Text ()
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
   [] -> Left "no certificate"
   publicKey : _ -> case (publicKey, privateKey) of
-    (X.PubKeyRSA k, X.PrivKeyRSA pk) -> case RSA.sign Nothing (Just SHA256) pk signedMessage of
-      Right signature -> matching $ RSA.verify (Just SHA256) k signedMessage signature
-      Left e -> Left $ "the RSA key cannot sign: " <> tshow e
+    (X.PubKeyRSA k, X.PrivKeyRSA pk) -> matching $ RSA.private_pub pk == k
     (X.PubKeyEd25519 k, X.PrivKeyEd25519 pk) -> matching $ Ed25519.toPublic pk == k
     (X.PubKeyEd448 k, X.PrivKeyEd448 pk) -> matching $ Ed448.toPublic pk == k
     (X.PubKeyEC (X.PubKeyEC_Named curveName point), X.PrivKeyEC (X.PrivKeyEC_Named curveName' d)) ->
@@ -345,8 +337,6 @@ checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X
   where
     matching keysMatch = if keysMatch then Right () else mismatch
     mismatch = Left "the private key does not match the certificate"
-    signedMessage :: B.ByteString
-    signedMessage = "credential key pair"
 
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =

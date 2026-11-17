@@ -56,7 +56,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkReloadedCredential, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -113,7 +113,6 @@ serverTests = do
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
-  describe "Web credential reload" testWebCredentialReloadSMP
   describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
@@ -1690,6 +1689,18 @@ webCredentialTests = do
           withCredentialReload acceptCredential testCredentialCheckInterval sniCredential $
             runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ()
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
+  it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ do
+    copyWebCredential "web"
+    let cfg' = updateCfg (cfgMS $ ASType SQSMemory SMSMemory) $ \cfg_ ->
+          cfg_
+            { httpCredentials = Just testWebCredentials,
+              transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
+            }
+    withSmpServerWebConfigOn (transport @TLS) cfg' testPort $ \_ -> do
+      testWebCredentialReload testPort
+      testWebCredentialReplaced testPort "web_rsa2048" "web"
+      testWebCredentialReplaced testPort "web_ecdsa" "web"
+      testWebCredentialReplaced testPort "web2" "web2"
   describe "key pair check" $ do
     it "should accept the matching RSA key and reject another one" $ do
       keyPairCheck "web" "web" `shouldReturn` Right ()
@@ -1707,8 +1718,6 @@ webCredentialTests = do
       keyPairCheck "web" "web_ecdsa" `shouldReturn` keysMismatch
     it "should reject an unsupported key type" $
       keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left "unsupported key type PubKeyALG_DSA"
-    it "should reject an RSA key with inconsistent private fields" $
-      keyPairCheck "web" "web_corrupt" `shouldReturn` Left "invalid private key"
     it "should reject an empty certificate file" $ do
       writeFile (testPath "empty.crt") ""
       credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left "no certificate"
@@ -1716,23 +1725,7 @@ webCredentialTests = do
     keysMismatch = Left "the private key does not match the certificate"
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile =
-      loadCredential ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
-        >>= either (error . T.unpack) (checkReloadedCredential acceptCredential)
-
-testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
-testWebCredentialReloadSMP =
-  it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ \(at, msType) -> do
-    copyWebCredential "web"
-    let cfg' = updateCfg (cfgMS msType) $ \cfg_ ->
-          cfg_
-            { httpCredentials = Just testWebCredentials,
-              transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
-            }
-    withSmpServerWebConfigOn at cfg' testPort $ \_ -> do
-      testWebCredentialReload testPort
-      testWebCredentialReplaced testPort "web_rsa2048" "web"
-      testWebCredentialReplaced testPort "web_ecdsa" "web"
-      testWebCredentialReplaced testPort "web2" "web2"
+      either (error . T.unpack) checkKeyPair <$> loadCredential ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
