@@ -12,6 +12,13 @@ openssl genpkey -algorithm ED448 -out server.key
 openssl req -new -config openssl_server.conf -reqexts v3 -key server.key -out server.csr
 openssl x509 -req -days 999999 -extfile openssl_server.conf -extensions v3 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
 
+# Web certificate (RSA 4096, signed by web_ca, followed by web_ca.crt in the same file)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out web2.key
+openssl req -new -subj "/CN=localhost" -key web2.key -out web2.csr
+printf 'subjectAltName = DNS:localhost\nbasicConstraints = CA:FALSE\nkeyUsage = digitalSignature, nonRepudiation, keyAgreement\nextendedKeyUsage = serverAuth\nsubjectKeyIdentifier = hash\nauthorityKeyIdentifier = keyid\n' > web.ext
+openssl x509 -req -days 999999 -extfile web.ext -in web2.csr -CA web_ca.crt -CAkey web_ca.key -set_serial 0x$(openssl rand -hex 16) -out web2.crt
+cat web_ca.crt >> web2.crt
+
 # To pretty-print
 openssl x509 -in ca.crt -text -noout
 openssl req -in server.csr -text -noout
