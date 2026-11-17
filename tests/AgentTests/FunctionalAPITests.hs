@@ -360,6 +360,8 @@ functionalAPITests ps = do
       withSmpServer ps testConfClientVersionBelowAgentVersion
     it "should create X25519 sender keys" $
       withSmpServer ps testX25519SndKeys
+    it "should delete the reply queue when the connection is deleted while the queue is created" $
+      testJoinConnectionDeletedWhileReplyQueue ps
   describe "Duplex connection - delivery stress test" $ do
     describe "one way (50)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 50
     describe "one way (200)" $ testMatrix2Stress ps $ runAgentClientStressTestOneWay 200
@@ -683,9 +685,13 @@ functionalAPITests ps = do
   describe "getConnectionVerifyCodes" $
     it "should return the same codes for both peers" $
       withSmpServer ps testConnectionVerifyCodes
-  describe "Connection locks" $
+  describe "Connection locks" $ do
+#if defined(conn_lock_checks)
     it "should prohibit server requests in connection lock" $
       withSmpServer ps testServerRequestInConnLock
+#endif
+    it "should delete connections after connection lock is released" $
+      testDeleteConnectionsAfterConnLock
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False False
@@ -4433,6 +4439,24 @@ testSwitchConnectionDeletedWhileNewQueue ps@(t, _) =
             timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
 
+testJoinConnectionDeletedWhileReplyQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testJoinConnectionDeletedWhileReplyQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 1 agentCfg initAgentServers testDB $ \a ->
+      withAgent 2 agentCfg bServers testDB2 $ \b -> do
+        (_, cReq) <- runRight $ createConnection a 1 True SCMInvitation Nothing SMSubscribe
+        (aId, _) <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
+        withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+          withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+            withAsync (runExceptT $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) $ \joined -> do
+              timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+              runRight_ $ deleteConnection b aId
+              atomically $ putTMVar opened ()
+              timeout 5_000000 (wait joined) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
+        storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+  where
+    bServers = initAgentServersLongConnect {smp = userServers [testSMPServer2]}
+
 testSwitchRatchetSyncBeforeNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testSwitchRatchetSyncBeforeNewQueue ps@(t, _) =
   withSmpServer ps $
@@ -4961,6 +4985,7 @@ testConnectionVerifyCodes =
     codes1'' <- getConnectionVerifyCodes a bId
     liftIO $ codes1'' `shouldBe` codes1
 
+#if defined(conn_lock_checks)
 testServerRequestInConnLock :: (HasCallStack, HasTestEnv) => IO ()
 testServerRequestInConnLock =
   withAgentClients2 $ \a b -> do
@@ -4973,6 +4998,27 @@ testServerRequestInConnLock =
     rs <- runRight $ withAgentEnv a . withConnLock a bId "batch" . ExceptT . liftIO $ runExceptT (subscribeConnections a [bId])
     M.lookup bId rs `shouldBe` Just (Left $ A.INTERNAL "server request in connection lock batch")
     atomically (swapTVar (connLockViolations a) []) `shouldReturn` ["batch"]
+#endif
+
+testDeleteConnectionsAfterConnLock :: HasTestEnv => IO ()
+testDeleteConnectionsAfterConnLock =
+  withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+    let newConnId = runRight $ fst <$> A.prepareConnectionToJoin a 1 True (CRInvitationUri connReqData testE2ERatchetParams12) PQSupportOn
+    connId1 <- newConnId
+    deleteAfterLock a connId1 $ deleteConnectionsAsync a False [connId1]
+    connId2 <- newConnId
+    deleteAfterLock a connId2 . void $ deleteConnections a [connId2]
+  where
+    deleteAfterLock c connId delete = do
+      locked <- newEmptyTMVarIO
+      unlocked <- newEmptyTMVarIO
+      let holdLock = atomically (putTMVar locked ()) >> atomically (takeTMVar unlocked)
+      withAsync (runExceptT . withAgentEnv c . withConnLock c connId "test" $ liftIO holdLock) $ \_ -> do
+        atomically $ takeTMVar locked
+        withAsync (runExceptT delete) $ \deleted -> do
+          timeout 500000 (wait deleted) `shouldReturn` Nothing
+          atomically $ putTMVar unlocked ()
+          timeout 5_000000 (wait deleted) `shouldReturn` Just (Right ())
 
 testDeliveryReceipts :: (HasCallStack, HasTestEnv) => IO ()
 testDeliveryReceipts =
