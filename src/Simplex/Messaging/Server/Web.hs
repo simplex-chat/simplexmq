@@ -8,6 +8,7 @@ module Simplex.Messaging.Server.Web
     WebHttpsParams (..),
     EmbeddedContent (..),
     serveStaticFiles,
+    runHTTPSServer,
     attachStaticFiles,
     serveStaticPageH2,
     generateSite,
@@ -85,14 +86,18 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
-  forM_ webHttpsParams $ \WebHttpsParams {port, cert, key, supportedCredential, credentialCheckInterval} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
-    logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
-    let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
-    credVar <- newTVarIO =<< loadServerCredential creds
-    race_ (reloadCredential supportedCredential credentialCheckInterval creds credVar) $
-      WT.runTLS (tlsSettings credVar) (mkSettings port) app
+  forM_ webHttpsParams $ \params -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ runHTTPSServer params app
   where
     mkSettings port = W.setPort port warpSettings
+
+runHTTPSServer :: WebHttpsParams -> Application -> IO ()
+runHTTPSServer WebHttpsParams {port, cert, key, supportedCredential, credentialCheckInterval} app = do
+  logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
+  let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
+  credVar <- newTVarIO =<< loadServerCredential creds
+  race_ (reloadCredential supportedCredential credentialCheckInterval creds credVar) $
+    WT.runTLS (tlsSettings credVar) (W.setPort port warpSettings) app
+  where
     tlsSettings credVar =
       WT.defaultTlsSettings
         { WT.tlsCredentials = Just mempty,
