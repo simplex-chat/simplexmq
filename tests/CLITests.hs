@@ -29,10 +29,11 @@ import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint)
 import Simplex.Messaging.Util (catchAll_)
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentials)
 import qualified SMPWeb
-import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
+import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..), serveStaticFiles, attachStaticFiles)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
 import System.FilePath ((</>))
@@ -95,6 +96,8 @@ cliTests = do
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
+  describe "Static site on HTTPS port" $
+    it "should serve the replaced web certificate without restart" testStaticSiteCertReload
 
 smpServerTest :: HasTestEnv => Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -215,6 +218,21 @@ smpServerTestStatic = do
           getLn tls >>= \case
             "" -> pure []
             h -> (h :) <$> getHeaders
+
+testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
+testStaticSiteCertReload = do
+  copyWebCredential
+  serveStaticFiles
+    EmbeddedWebParams
+      { webStaticPath = webPath,
+        webHttpPort = Nothing,
+        webHttpsParams = Just WebHttpsParams {port = read httpsPort, cert = certificateFile testWebCredentials, key = privateKeyFile testWebCredentials},
+        credentialCheckInterval = testCredentialCheckInterval
+      }
+  threadDelay 1000000
+  testWebCredentialReload httpsPort
+  where
+    httpsPort = testServerPort 9
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do

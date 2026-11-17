@@ -21,6 +21,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
+import qualified Data.X509.File as XF
 import qualified Data.X509.Validation as XV
 import Network.Socket
 import Network.Socket.ByteString (recv)
@@ -42,6 +43,7 @@ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCert
 import Simplex.Messaging.Util (unlessM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+import System.Directory (copyFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -381,6 +383,45 @@ withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
+
+withSmpServerWebConfigOn :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerWebConfigOn t (ASrvCfg _ _ cfg') port' =
+  serverBracket
+    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, True)]} (Just $ \_ _ -> pure ()))
+    (threadDelay 10000)
+
+testWebCredentials :: HasTestEnv => ServerCredentials
+testWebCredentials =
+  ServerCredentials
+    { caCertificateFile = Nothing,
+      privateKeyFile = testPath "web.key",
+      certificateFile = testPath "web.crt"
+    }
+
+testCredentialCheckInterval :: Int
+testCredentialCheckInterval = 100000
+
+copyWebCredential :: HasTestEnv => IO ()
+copyWebCredential = do
+  copyFile "tests/fixtures/web.crt" $ certificateFile testWebCredentials
+  copyFile "tests/fixtures/web.key" $ privateKeyFile testWebCredentials
+
+testWebCredentialReload :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
+testWebCredentialReload port = do
+  servedCertificateShouldBe "tests/fixtures/web.crt"
+  copyFile "tests/fixtures/web2.crt" $ certificateFile testWebCredentials
+  threadDelay reloadWait
+  servedCertificateShouldBe "tests/fixtures/web.crt"
+  copyFile "tests/fixtures/web2.key" $ privateKeyFile testWebCredentials
+  threadDelay reloadWait
+  servedCertificateShouldBe "tests/fixtures/web2.crt"
+  where
+    reloadWait = 10 * testCredentialCheckInterval
+    servedCertificateShouldBe certFile = do
+      chain <- X.CertificateChain <$> XF.readSignedObject certFile
+      XV.Fingerprint caFingerprint <- loadFileFingerprint "tests/fixtures/web_ca.crt"
+      runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
+        tlsPeerCert tls `shouldBe` chain
 
 withSmpServerThreadOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)

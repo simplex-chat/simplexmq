@@ -14,6 +14,7 @@ module Simplex.Messaging.Transport.Server
     SNICredentialUsed,
     AddHTTP,
     mkTransportServerConfig,
+    defaultCredentialCheckInterval,
     runTransportServerState,
     runTransportServerState_,
     SocketState,
@@ -66,7 +67,8 @@ data TransportServerConfig = TransportServerConfig
     askClientCert :: Bool,
     addCORSHeaders :: Bool,
     tlsSetupTimeout :: Int,
-    transportTimeout :: Int
+    transportTimeout :: Int,
+    credentialCheckInterval :: Int
   }
   deriving (Eq, Show)
 
@@ -96,8 +98,12 @@ mkTransportServerConfig logTLSErrors serverALPN askClientCert =
       askClientCert,
       addCORSHeaders = False,
       tlsSetupTimeout = 60000000,
-      transportTimeout = 40000000
+      transportTimeout = 40000000,
+      credentialCheckInterval = defaultCredentialCheckInterval
     }
+
+defaultCredentialCheckInterval :: Int
+defaultCredentialCheckInterval = 60000000
 
 serverTransportConfig :: TransportServerConfig -> TransportConfig
 serverTransportConfig TransportServerConfig {logTLSErrors} =

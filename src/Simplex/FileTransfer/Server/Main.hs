@@ -47,7 +47,7 @@ import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), mkTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), defaultCredentialCheckInterval, mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -238,7 +238,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
                     webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
                 generateSite cfg information onionHost path
                 when (isJust webHttpPort || isJust webHttpsParams') $
-                  serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams'}
+                  serveStaticFiles EmbeddedWebParams {webStaticPath = path, webHttpPort, webHttpsParams = webHttpsParams', credentialCheckInterval = defaultCredentialCheckInterval}
               Nothing -> pure ()
             runXFTPServer cfg
       where

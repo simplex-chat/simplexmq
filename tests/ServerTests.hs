@@ -53,8 +53,9 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..), QueueInfo (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -111,6 +112,7 @@ serverTests = do
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
   describe "Save prometheus metrics" testPrometheusMetrics
+  describe "Web credential reload" testWebCredentialReloadSMP
   describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
     testMessageNotifications
@@ -1674,6 +1676,17 @@ testPrometheusMetrics = do
     withSmpServerConfigOn at cfg' testPort $ \_ -> do
       threadDelay 1500000
       runSMPClient t $ \_ -> pure ()
+
+testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
+testWebCredentialReloadSMP =
+  it "should serve the replaced web certificate on the shared port without restart" $ \(at, msType) -> do
+    copyWebCredential
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ ->
+          cfg_
+            { httpCredentials = Just testWebCredentials,
+              transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
+            }
+    withSmpServerWebConfigOn at cfg' testPort $ \_ -> testWebCredentialReload testPort
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

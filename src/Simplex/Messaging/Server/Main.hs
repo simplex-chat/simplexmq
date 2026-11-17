@@ -78,7 +78,7 @@ import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), defaultCredentialCheckInterval, mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
@@ -546,7 +546,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               webHttpPort = eitherToMaybe (lookupValue "WEB" "http" ini) >>= readMaybe . T.unpack
           generateSite si onionHost webStaticPath
           when (isJust webHttpPort || isJust webHttpsParams) $
-            serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams}
+            serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams, credentialCheckInterval = defaultCredentialCheckInterval}
           where
             isOnion = \case THOnionHost _ -> True; _ -> False
         webHttpsParams' = do

@@ -56,7 +56,8 @@ import qualified WaiAppStatic.Types as WAT
 data EmbeddedWebParams = EmbeddedWebParams
   { webStaticPath :: FilePath,
     webHttpPort :: Maybe Int,
-    webHttpsParams :: Maybe WebHttpsParams
+    webHttpsParams :: Maybe WebHttpsParams,
+    credentialCheckInterval :: Int
   }
 
 data WebHttpsParams = WebHttpsParams
