@@ -547,6 +547,9 @@ functionalAPITests ps = do
   describe "Batch send messages" $ do
     it "should send multiple messages to the same connection" $ withSmpServer ps testSendMessagesB
     it "should send messages to the 2 connections" $ withSmpServer ps testSendMessagesB2
+#if defined(dbPostgres)
+    it "should report every message of a batch rolled back after a database error" $ withSmpServer ps testSendMessagesRolledBack
+#endif
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
@@ -5034,7 +5037,7 @@ workItemReadTests = do
       let st = store $ agentEnv a
       withTransaction st $ \db -> createCmd db >> DB.execute_ db "UPDATE commands SET command = 'bad'::bytea"
       doWork <- newTMVarIO ()
-      runReaderT (runExceptT $ readCommand a doWork $ \_ -> pure ()) (agentEnv a) `shouldReturn` Right ()
+      runAM a (readCommand a doWork $ \_ -> pure ()) `shouldReturn` Right ()
       events <- atomically $ flushTBQueue $ subQ a
       length (filter workerError events) `shouldBe` 1
       withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
@@ -5095,7 +5098,7 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
   reading <- withTransaction st $ \db -> do
     lockItem db
     [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
-    r <- async $ runReaderT (runExceptT $ readItem a doWork $ \_ -> atomically $ writeTVar itemRead True) (agentEnv a)
+    r <- async $ runAM a (readItem a doWork $ \_ -> atomically $ writeTVar itemRead True)
     waitForLock st holder waitingQuery
     DB.execute_ db deleteItem
     pure r
@@ -5113,7 +5116,7 @@ workerError (_, _, AEvt _ e) = case e of
 readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), [Int])
 readWithErrors failures errCode = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
   pids <- newIORef []
-  r <- runReaderT (runExceptT $ withStoreIsolation' a RepeatableRead $ readItem pids) (agentEnv a)
+  r <- runAM a (withStoreIsolation' a RepeatableRead $ readItem pids)
   (r,) <$> readIORef pids
   where
     readItem pids db = do
@@ -5153,6 +5156,16 @@ abortedTransactionTests =
       rs <- runReaderT (withStoreBatch' a $ \db -> [void $ createUserRecord db, DB.execute_ db "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '23505'; END $$"]) (agentEnv a)
       map isRight rs `shouldBe` [False, False]
       withTransaction (store $ agentEnv a) (`DB.query_` "SELECT count(*) FROM users") `shouldReturn` [Only (1 :: Int)]
+
+testSendMessagesRolledBack :: HasTestEnv => IO ()
+testSendMessagesRolledBack = withAgentClients2 $ \a b -> do
+  (_, bId1) <- runRight $ makeConnection a b
+  (_, bId2) <- runRight $ makeConnection a b
+  withTransaction (store $ agentEnv a) $ \db -> do
+    DB.execute_ db "CREATE TABLE failing_conns (conn_id BYTEA); CREATE FUNCTION fail_snd_message() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.conn_id IN (SELECT conn_id FROM failing_conns) THEN RAISE EXCEPTION 'test' USING ERRCODE = '23505'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_snd_message BEFORE INSERT ON snd_messages FOR EACH ROW EXECUTE FUNCTION fail_snd_message()"
+    DB.execute db "INSERT INTO failing_conns (conn_id) VALUES (?)" (Only bId2)
+  rs <- runRight $ sendMessages a [(bId1, PQEncOn, SMP.noMsgFlags, vrValue "hello"), (bId2, PQEncOn, SMP.noMsgFlags, vrValue "hello")]
+  map isRight rs `shouldBe` [False, False]
 
 runAM :: AgentClient -> AM a -> IO (Either AgentErrorType a)
 runAM a action = runReaderT (runExceptT action) (agentEnv a)
