@@ -16,6 +16,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
     withTransactionPriority,
     withTransactionIsolation,
     isTransactionConflict,
+    abortsTransaction,
     withSavepoint,
     dbBusyLoop,
     storeKey,
@@ -116,6 +117,9 @@ withTransactionIsolation st _ = withTransaction st
 
 isTransactionConflict :: E.SomeException -> Bool
 isTransactionConflict _ = False
+
+abortsTransaction :: E.SomeException -> Bool
+abortsTransaction _ = False
 
 -- No-op for SQLite, just tries the action.
 -- This provides a consistent interface with the PostgreSQL version.

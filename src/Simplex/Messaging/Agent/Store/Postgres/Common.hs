@@ -18,6 +18,7 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
     withTransactionPriority,
     withTransactionIsolation,
     isTransactionConflict,
+    abortsTransaction,
     withSavepoint,
   )
 where
@@ -125,6 +126,11 @@ retryTransaction n transaction
 
 isTransactionConflict :: E.SomeException -> Bool
 isTransactionConflict = maybe False conflictState . E.fromException
+
+abortsTransaction :: E.SomeException -> Bool
+abortsTransaction e = case E.fromException e of
+  Just (_ :: PSQL.SqlError) -> True
+  Nothing -> False
 
 conflictState :: PSQL.SqlError -> Bool
 conflictState = (`elem` ["40001", "40P01"]) . PSQL.sqlState

@@ -250,7 +250,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), withTransactionIsolation)
+import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), abortsTransaction, withTransactionIsolation)
 import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -2524,9 +2524,14 @@ withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Eithe
 withStoreBatch c actions = do
   st <- asks store
   liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransactionIsolation st ReadCommitted $
-      mapM (`catchNonConflict` handleInternal) . actions
+    withTransactionIsolation st ReadCommitted $ \db -> do
+      rolledBack <- newTVarIO Nothing
+      rs <- forM (actions db) $ \action -> readTVarIO rolledBack >>= maybe (runItem rolledBack action) (pure . Left)
+      maybe rs (\e -> (>> Left e) <$> rs) <$> readTVarIO rolledBack
   where
+    runItem rolledBack action = action `catchNonConflict` \e -> do
+      when (abortsTransaction e) . atomically . writeTVar rolledBack . Just . INTERNAL $ "transaction rolled back after " <> show e
+      handleInternal e
     handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
     handleInternal = pure . Left . INTERNAL . show
 

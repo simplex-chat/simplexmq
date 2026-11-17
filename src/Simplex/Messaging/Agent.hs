@@ -213,7 +213,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Common (DBStore, abortsTransaction)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
 import Simplex.Messaging.Agent.Store.Interface (closeDBStore, execSQL, getCurrentMigrations)
@@ -2515,11 +2515,16 @@ enqueueMessageB :: forall t. Traversable t => AgentClient -> Maybe AsyncCmdId ->
 enqueueMessageB c cmdId_ reqs = do
   cfg <- asks config
   (_, reqMids) <- unsafeWithStore c $ \db -> do
-    res@(_, rs) <- mapAccumLM (\ids r -> storeSentMsg db cfg ids r `catchNonConflict` \e -> (ids,) <$> handleInternal e) IM.empty reqs
-    when (all isRight rs) $ mapM_ (deleteCommand db) cmdId_
-    pure res
+    rolledBack <- newTVarIO Nothing
+    (ids, rs) <- mapAccumLM (\ids r -> readTVarIO rolledBack >>= maybe (storeMsg db cfg rolledBack ids r) (pure . (ids,) . Left)) IM.empty reqs
+    rs' <- maybe rs (\e -> (>> Left e) <$> rs) <$> readTVarIO rolledBack
+    when (all isRight rs') $ mapM_ (deleteCommand db) cmdId_
+    pure (ids, rs')
   forME reqMids $ submitSentMsg c
   where
+    storeMsg db cfg rolledBack ids r = storeSentMsg db cfg ids r `catchNonConflict` \e -> do
+      when (abortsTransaction e) . atomically . writeTVar rolledBack . Just . INTERNAL $ "transaction rolled back after " <> show e
+      (ids,) <$> handleInternal e
     handleInternal :: E.SomeException -> IO (Either AgentErrorType b)
     handleInternal = pure . Left . INTERNAL . show
 
@@ -2809,7 +2814,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
       notifyDel msgId $ MERR (unId msgId) err
       msgIds_ <- withStore' c $ \db -> do
         msgIds_ <- getExpiredSndMessages db connId sq expireTs
-        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchNonConflict` \_ -> pure ()
+        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchNonConflict` \e -> when (abortsTransaction e) $ E.throwIO e
         pure msgIds_
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err
