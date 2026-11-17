@@ -43,7 +43,7 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     updateTokenCronSentAt,
     addNtfSubscription,
     deleteNtfSubscription,
-    updateSubStatus,
+    batchUpdateSubStatus,
     updateSrvSubStatus,
     batchUpdateSrvSubStatus,
     batchUpdateSrvSubErrors,
@@ -363,17 +363,7 @@ getServerNtfSubscriptions st srvId afterSubId_ count =
           DB.query db (query <> orderLimit) (srvId, In subscribeNtfStatuses, count)
         Just afterSubId ->
           DB.query db (query <> " AND subscription_id > ?" <> orderLimit) (srvId, In subscribeNtfStatuses, afterSubId, count)
-    void $
-      DB.executeMany
-        db
-        [sql|
-          UPDATE subscriptions s
-          SET status = upd.status
-          FROM (VALUES(?, ?)) AS upd(status, subscription_id)
-          WHERE s.subscription_id = (upd.subscription_id :: BYTEA)
-            AND s.status != upd.status
-        |]
-        (map ((NSPending,) . fst) subs)
+    batchUpdateSubStatus_ db subs NSPending
     pure subs
   where
     query =
@@ -534,17 +524,23 @@ deleteNtfSubscription st subId =
     assertUpdated <$>
       DB.execute db "DELETE FROM subscriptions WHERE subscription_id = ?" (Only subId)
 
-updateSubStatus :: NtfPostgresStore -> Int64 -> NotifierId -> NtfSubStatus -> IO (Either ErrorType ())
-updateSubStatus st srvId nId status =
-  withFastDB' "updateSubStatus" st $ \db -> do
-    void $
-      DB.execute
-        db
-        [sql|
-          UPDATE subscriptions SET status = ?
-          WHERE smp_server_id = ? AND smp_notifier_id = ? AND status != ?
-        |]
-        (status, srvId, nId, status)
+batchUpdateSubStatus :: NtfPostgresStore -> NonEmpty ServerNtfSub -> NtfSubStatus -> IO (Either ErrorType ())
+batchUpdateSubStatus st subs status =
+  withFastDB' "batchUpdateSubStatus" st $ \db -> batchUpdateSubStatus_ db (L.toList subs) status
+
+batchUpdateSubStatus_ :: DB.Connection -> [ServerNtfSub] -> NtfSubStatus -> IO ()
+batchUpdateSubStatus_ db subs status =
+  void $
+    DB.executeMany
+      db
+      [sql|
+        UPDATE subscriptions s
+        SET status = upd.status
+        FROM (VALUES(?, ?)) AS upd(status, subscription_id)
+        WHERE s.subscription_id = (upd.subscription_id :: BYTEA)
+          AND s.status != upd.status
+      |]
+      (map ((status,) . fst) subs)
 
 updateSrvSubStatus :: NtfPostgresStore -> SMPQueueNtf -> NtfSubStatus -> IO (Either ErrorType ())
 updateSrvSubStatus st q status =
