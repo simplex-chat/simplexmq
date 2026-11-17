@@ -231,7 +231,6 @@ import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
@@ -328,12 +327,16 @@ import System.Mem.Weak (Weak, deRefWeak)
 import System.Random (randomR)
 import UnliftIO (mapConcurrently, timeout)
 import UnliftIO.Async (async)
-import UnliftIO.Concurrent (forkIO, mkWeakThreadId, myThreadId)
+import UnliftIO.Concurrent (forkIO, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 #if !defined(dbPostgres)
 import qualified Database.SQLite.Simple as SQL
+#endif
+#if defined(conn_lock_checks)
+import qualified Data.Text as T
+import UnliftIO.Concurrent (myThreadId)
 #endif
 
 type ClientVar msg = SessionVar (Either (AgentErrorType, Maybe UTCTime) (Client msg))
@@ -389,8 +392,10 @@ data AgentClient = AgentClient
     getMsgLocks :: TMap (SMPServer, SMP.RecipientId) (TMVar ()),
     -- locks to prevent concurrent operations with connection
     connLocks :: TMap ConnId Lock,
+#if defined(conn_lock_checks)
     connLockHolders :: TMap ThreadId Text,
     connLockViolations :: TVar [Text],
+#endif
     -- locks to prevent concurrent operations with connection request invitations
     invLocks :: TMap ByteString Lock,
     -- lock to prevent concurrency between periodic and async connection deletions
@@ -561,8 +566,10 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   agentState <- newTVarIO ASForeground
   getMsgLocks <- TM.emptyIO
   connLocks <- TM.emptyIO
+#if defined(conn_lock_checks)
   connLockHolders <- TM.emptyIO
   connLockViolations <- newTVarIO []
+#endif
   invLocks <- TM.emptyIO
   deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
@@ -609,8 +616,10 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         agentState,
         getMsgLocks,
         connLocks,
+#if defined(conn_lock_checks)
         connLockHolders,
         connLockViolations,
+#endif
         invLocks,
         deleteLock,
         smpSubWorkers,
@@ -1109,7 +1118,7 @@ withConnLock c connId name = ExceptT . withConnLock' c connId name . runExceptT
 
 withConnLock' :: AgentClient -> ConnId -> Text -> AM' a -> AM' a
 withConnLock' _ "" _ = id
-withConnLock' AgentClient {connLocks, connLockHolders} connId name = withLockMap connLocks connId name . withLockHolder connLockHolders name
+withConnLock' c@AgentClient {connLocks} connId name = withLockMap connLocks connId name . withLockHolder c name
 {-# INLINE withConnLock' #-}
 
 withInvLock :: AgentClient -> ByteString -> Text -> AM a -> AM a
@@ -1121,7 +1130,7 @@ withInvLock' AgentClient {invLocks} = withLockMap invLocks
 {-# INLINE withInvLock' #-}
 
 withConnLocks :: AgentClient -> Set ConnId -> Text -> AM' a -> AM' a
-withConnLocks AgentClient {connLocks, connLockHolders} connIds name = withLocksMap connLocks connIds name . withLockHolder connLockHolders name
+withConnLocks c@AgentClient {connLocks} connIds name = withLocksMap connLocks connIds name . withLockHolder c name
 {-# INLINE withConnLocks #-}
 
 withLockMap :: (Ord k, MonadUnliftIO m) => TMap k Lock -> k -> Text -> m a -> m a
@@ -1135,12 +1144,13 @@ withLocksMap = withGetLocks . getMapLock
 getMapLock :: Ord k => TMap k Lock -> k -> IO Lock
 getMapLock locks key = either id id <$> TM.lookupOrInsertIO key createLock locks
 
-withLockHolder :: MonadUnliftIO m => TMap ThreadId Text -> Text -> m a -> m a
-withLockHolder holders name a = do
+#if defined(conn_lock_checks)
+withLockHolder :: MonadUnliftIO m => AgentClient -> Text -> m a -> m a
+withLockHolder AgentClient {connLockHolders} name a = do
   t <- myThreadId
   E.bracket
-    (atomically $ TM.lookupInsert t name holders)
-    (\prev_ -> atomically $ TM.alter (const prev_) t holders)
+    (atomically $ TM.lookupInsert t name connLockHolders)
+    (\prev_ -> atomically $ TM.alter (const prev_) t connLockHolders)
     (const a)
 
 checkNoConnLock :: AgentClient -> AM ()
@@ -1148,15 +1158,22 @@ checkNoConnLock AgentClient {connLockHolders, connLockViolations} = do
   t <- myThreadId
   name_ <- liftIO $ TM.lookupIO t connLockHolders
   forM_ name_ $ \name -> do
-    let err = "server request in connection lock " <> name
-    logError err
-    whenM (asks $ prohibitRequestsInConnLock . config) $ do
-      atomically $ modifyTVar' connLockViolations (name :)
-      throwE $ INTERNAL $ T.unpack err
+    atomically $ modifyTVar' connLockViolations (name :)
+    throwE $ INTERNAL $ "server request in connection lock " <> T.unpack name
 
 checkBatchOutsideConnLock :: AgentClient -> [q] -> AM' [(q, Either AgentErrorType r)] -> AM' [(q, Either AgentErrorType r)]
 checkBatchOutsideConnLock _ [] batch = batch
 checkBatchOutsideConnLock c qs batch = tryAllErrors' (checkNoConnLock c) >>= either (\e -> pure $ map (,Left e) qs) (const batch)
+#else
+withLockHolder :: AgentClient -> Text -> m a -> m a
+withLockHolder _ _ = id
+
+checkNoConnLock :: AgentClient -> AM ()
+checkNoConnLock _ = pure ()
+
+checkBatchOutsideConnLock :: AgentClient -> [q] -> AM' [(q, Either AgentErrorType r)] -> AM' [(q, Either AgentErrorType r)]
+checkBatchOutsideConnLock _ _ = id
+#endif
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
 withClient_ c nm tSess@(_, srv, _) action = do

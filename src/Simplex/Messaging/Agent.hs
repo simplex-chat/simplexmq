@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
@@ -355,13 +356,15 @@ disconnectAgentClient c@AgentClient {agentEnv = Env {ntfSupervisor = ns, xftpAge
 
 -- only used in the tests
 disposeAgentClient :: AgentClient -> IO ()
-disposeAgentClient c@AgentClient {acThread, connLockViolations, agentEnv = Env {store}} = do
+disposeAgentClient c@AgentClient {acThread, agentEnv = Env {store}} = do
   t_ <- atomically (swapTVar acThread Nothing) $>>= (liftIO . deRefWeak)
   disconnectAgentClient c
   mapM_ killThread t_
   liftIO $ closeDBStore store
-  violations <- readTVarIO connLockViolations
+#if defined(conn_lock_checks)
+  violations <- readTVarIO $ connLockViolations c
   unless (null violations) $ E.throwIO $ INTERNAL $ "server requests in connection locks " <> show violations
+#endif
 
 resumeAgentClient :: AgentClient -> IO ()
 resumeAgentClient c = atomically $ writeTVar (active c) True
@@ -1030,8 +1033,10 @@ deleteConnectionsAsync_ :: AM () -> AgentClient -> Bool -> [ConnId] -> AM ()
 deleteConnectionsAsync_ onSuccess c waitDelivery connIds = case connIds of
   [] -> onSuccess
   _ -> do
-    (_, rqs, connIds') <- prepareDeleteConnections_ getConns c waitDelivery connIds
-    withStore' c $ \db -> forM_ connIds' $ setConnDeleted db waitDelivery
+    rqs <- ExceptT . withConnLocks c (S.fromList connIds) "deleteConnectionsAsync" . runExceptT $ do
+      (_, rqs, connIds') <- prepareDeleteConnections_ getConns c waitDelivery connIds
+      withStore' c $ \db -> forM_ connIds' $ setConnDeleted db waitDelivery
+      pure rqs
     void . lift . forkIO $
       withLock' (deleteLock c) "deleteConnectionsAsync" $
         deleteConnQueues c NRMBackground waitDelivery True rqs >> void (runExceptT onSuccess)
@@ -1724,8 +1729,11 @@ createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientV
   (rq, qUri, tSess, sessId, serviceId_) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
   incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
-  rq' <- withStore c $ \db -> upgradeSndConnToDuplex db connId rq subMode
-  lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
+  recorded <- withConnLock c connId "createReplyQueue" $ do
+    r <- tryAllErrors $ withStore c $ \db -> upgradeSndConnToDuplex db connId rq subMode
+    forM_ r $ \rq' -> lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
+    pure r
+  rq' <- either (\e -> tryAllErrors (deleteNewQueue c nm tSess rq) >> throwE e) pure recorded
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure qInfo
 
@@ -1865,9 +1873,8 @@ serviceRequest_ c userId cReqUri@(CRContactUri _ addrKeys_) timeout_ doSend = do
     liftIO $ do
       expired <- registerDelay $ round (reqTimeout * 1000000)
       atomically $ takeTMVar var `orElse` (readTVar expired >>= \e -> if e then pure (Left $ AGENT $ A_SERVICE ASETimeout) else retry)
-  withConnLock c connId "serviceRequest_" $ do
-    atomically $ TM.delete connId (serviceRequests c)
-    deleteConnectionAsync' c True connId
+  atomically $ TM.delete connId (serviceRequests c)
+  deleteConnectionAsync' c True connId
   liftEither $ join r
 
 syncConnections' :: AgentClient -> [UserId] -> [ConnId] -> AM (DatabaseDiff UserId, DatabaseDiff ConnId)
@@ -3183,7 +3190,7 @@ deleteConnections_ ::
   AM (Map ConnId (Either AgentErrorType ()))
 deleteConnections_ _ _ _ _ _ [] = pure M.empty
 deleteConnections_ getConnections ntf waitDelivery c nm connIds = do
-  (rs, rqs, _) <- prepareDeleteConnections_ getConnections c waitDelivery connIds
+  (rs, rqs, _) <- ExceptT . withConnLocks c (S.fromList connIds) "deleteConnections" . runExceptT $ prepareDeleteConnections_ getConnections c waitDelivery connIds
   rcvRs <- lift $ deleteConnQueues c nm waitDelivery ntf rqs
   let rs' = M.union rs rcvRs
   notifyResultError rs'
@@ -3640,7 +3647,7 @@ cleanupManager c@AgentClient {subQ} = do
       expiredConns <- withStore' c $ \db -> do
         deleteExpiredServiceRequests db $ addUTCTime (negate serviceResponseTimeout) now
         getExpiredServiceConns db now
-      ExceptT . withConnLocks c (S.fromList expiredConns) "cleanupManager" . runExceptT $ deleteConnectionsAsync' c False expiredConns
+      deleteConnectionsAsync' c False expiredConns
     expireEndedRcvQueues = do
       maxErrs <- asks $ deleteErrorCount . config
       connIds <- withStore' c getEndedRcvQueueConnIds
