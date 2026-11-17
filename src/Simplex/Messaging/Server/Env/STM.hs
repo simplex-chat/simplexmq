@@ -43,7 +43,7 @@ module Simplex.Messaging.Server.Env.STM
     VerifiedTransmission,
     ResponseAndMessage,
     newEnv,
-    checkHTTPSCredential,
+    checkHTTPSCredentials,
     msgStore,
     fromMsgStore,
     newClient,
@@ -274,7 +274,7 @@ data Env s = Env
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe (ServerCredentials, TVar T.Credential),
+    httpServerCreds :: Maybe ReloadableCredential,
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
@@ -581,9 +581,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   tlsServerCreds <- getCredentials "SMP" smpCredentials
   httpServerCreds <- forM httpCredentials $ \creds -> do
     cred <- getCredentials "HTTPS" creds
-    either exitUnsupportedHTTPS pure $ checkHTTPSCredential cred
-    credVar <- newTVarIO cred
-    pure (creds, credVar)
+    either exitUnsupportedHTTPS pure $ checkHTTPSCredentials cred
+    newReloadableCredential creds cred
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -674,8 +673,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
           _ -> SPMMessages
 #endif
 
-checkHTTPSCredential :: T.Credential -> Either T.Text ()
-checkHTTPSCredential (X.CertificateChain cc, _k) =
+checkHTTPSCredentials :: T.Credential -> Either T.Text ()
+checkHTTPSCredentials (X.CertificateChain cc, _k) =
   -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
   case map (X.signedObject . X.getSigned) cc of
     X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> Right ()

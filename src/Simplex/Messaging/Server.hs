@@ -207,8 +207,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       srvSignKey <- either fail pure $ C.x509ToPrivate' srvKey
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
-        (Just (httpFiles, httpCreds), Just attachHTTP) | addHTTP ->
-          withCredentialReload checkHTTPSCredential (credentialCheckInterval tCfg) httpFiles httpCreds $
+        (Just httpCreds, Just attachHTTP) | addHTTP ->
+          withCredentialReload checkHTTPSCredentials (credentialCheckInterval tCfg) httpCreds $
             runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
               case cast h of
                 Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext

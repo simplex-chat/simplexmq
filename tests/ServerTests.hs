@@ -36,6 +36,7 @@ import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, isJust)
 import qualified Data.Set as S
 import Data.String (IsString (..))
+import qualified Data.Text as T
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
@@ -55,7 +56,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadServerCredential, mkTransportServerConfig, newSocketState, runTransportServerState_, withCredentialReload)
+import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkReloadedCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import qualified Network.TLS as TLS
@@ -1683,11 +1684,11 @@ webCredentialTests = do
   it "should serve the replaced SNI certificate in transport server without restart" $ do
     copyWebCredential "web"
     credential <- loadServerCredential ntfTestServerCredentials
-    sniCredential <- newTVarIO =<< loadServerCredential testWebCredentials
+    sniCredential <- newReloadableCredential testWebCredentials =<< loadServerCredential testWebCredentials
     ss <- newSocketState
     let srvCreds = TLSServerCredential {credential, sniCredential = Just sniCredential}
         runServer started =
-          withCredentialReload acceptCredential testCredentialCheckInterval testWebCredentials sniCredential $
+          withCredentialReload acceptCredential testCredentialCheckInterval sniCredential $
             runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ()
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
   describe "key pair check" $ do
@@ -1707,10 +1708,12 @@ webCredentialTests = do
       keyPairCheck "web" "web_ecdsa" `shouldReturn` keysMismatch
     it "should reject an unsupported key type" $
       keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left "unsupported key type PubKeyALG_DSA"
+    it "should reject an RSA key with inconsistent private fields" $
+      keyPairCheck "web" "web_corrupt" >>= (`shouldSatisfy` either ("integer is larger than expected" `T.isInfixOf`) (const False))
   where
     keysMismatch = Left "the private key does not match the certificate"
     keyPairCheck certName keyName =
-      either error checkKeyPair <$> TLS.credentialLoadX509Chain (fixtureFile certName ".crt") [] (fixtureFile keyName ".key")
+      either error (checkReloadedCredential acceptCredential) =<< TLS.credentialLoadX509Chain (fixtureFile certName ".crt") [] (fixtureFile keyName ".key")
 
 testWebCredentialReloadSMP :: SpecWith (ASrvTransport, AStoreType)
 testWebCredentialReloadSMP =

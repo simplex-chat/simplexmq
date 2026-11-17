@@ -155,9 +155,8 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       sessions <- liftIO TM.emptyIO
       let cleanup sessionId = atomically $ TM.delete sessionId sessions
           srvParams = if isJust httpCreds_ then defaultSupportedParamsHTTPS else defaultSupportedParams
-          reloadWebCredential (httpFiles, httpCreds) = withCredentialReload acceptCredential (credentialCheckInterval transportConfig) httpFiles httpCreds
       webCanonicalRoot_ <- liftIO $ mapM canonicalizePath (webStaticPath cfg)
-      liftIO . maybe id reloadWebCredential httpCreds_ . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds (snd <$> httpCreds_) transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
+      liftIO . maybe id (withCredentialReload acceptCredential (credentialCheckInterval transportConfig)) httpCreds_ . runHTTP2Server started xftpPort defaultHTTP2BufferSize srvParams srvCreds httpCreds_ transportConfig inactiveClientExpiration cleanup $ \sniUsed sessionId sessionALPN r sendResponse -> do
         let addCORS' = sniUsed && addCORSHeaders transportConfig
         case H.requestMethod r of
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders

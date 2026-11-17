@@ -28,7 +28,7 @@ import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredent
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.CLI (simplexmqVersionCommit)
-import Simplex.Messaging.Server.Env.STM (checkHTTPSCredential)
+import Simplex.Messaging.Server.Env.STM (checkHTTPSCredentials)
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
@@ -238,7 +238,7 @@ testStaticSiteCertReload = do
         { port = read httpsPort,
           cert = certificateFile testWebCredentials,
           key = privateKeyFile testWebCredentials,
-          checkCredential = checkHTTPSCredential,
+          checkCredential = checkHTTPSCredentials,
           credentialCheckInterval = testCredentialCheckInterval
         }
 

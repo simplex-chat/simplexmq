@@ -49,13 +49,13 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadCredential, withCredentialReload)
+import Simplex.Messaging.Transport.Server (ReloadableCredential (..), ServerCredentials (..), loadCredential, newReloadableCredential, withCredentialReload)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (bracket, finally)
-import UnliftIO.STM (newTVarIO, readTVarIO)
+import UnliftIO.STM (readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
 data EmbeddedWebParams = EmbeddedWebParams
@@ -92,14 +92,14 @@ runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheck
   logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
   let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
   cred <- loadCredential creds >>= either (\e -> fail $ "invalid credential: " <> T.unpack e) pure
-  credVar <- newTVarIO cred
-  withCredentialReload checkCredential credentialCheckInterval creds credVar $
-    WT.runTLS (tlsSettings credVar) (mkSettings port) app
+  reloadable <- newReloadableCredential creds cred
+  withCredentialReload checkCredential credentialCheckInterval reloadable $
+    WT.runTLS (tlsSettings reloadable) (mkSettings port) app
   where
-    tlsSettings credVar =
+    tlsSettings ReloadableCredential {currentCredential} =
       WT.defaultTlsSettings
         { WT.tlsCredentials = Just mempty,
-          WT.tlsServerHooks = def {TLS.onServerNameIndication = \_ -> (\cred -> TLS.Credentials [cred]) <$> readTVarIO credVar}
+          WT.tlsServerHooks = def {TLS.onServerNameIndication = \_ -> (\cred -> TLS.Credentials [cred]) <$> readTVarIO currentCredential}
         }
 
 -- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
