@@ -7,8 +7,6 @@ module Simplex.Messaging.Eth.Address
   ( Address,
     unAddress,
     addressFromBytes,
-    anyCaseAddressP,
-    checksumAddressP,
     addressFromPublicKey,
     addressFromPrivateKey,
     recoverAddress,
@@ -43,26 +41,13 @@ instance StrEncoding Address where
   strEncode = checksumAddress
   strP = do
     _ <- optional $ A.string "0x"
-    (body, a) <- addressDigitsP
+    body <- A.takeWhile isHexDigit
+    unless (B.length body == addressSize * 2) $ fail $ "address: expected 40 hex digits, got " <> show (B.length body)
+    a <- Address <$> either fail pure (BAE.convertFromBase BAE.Base16 body)
     when (mixedCase body && checksumAddress a /= "0x" <> body) $ fail "address: EIP-55 checksum mismatch"
     pure a
     where
       mixedCase s = BC.any isUpper s && BC.any isLower s
-
-anyCaseAddressP :: A.Parser Address
-anyCaseAddressP = A.string "0x" *> (snd <$> addressDigitsP)
-
-checksumAddressP :: A.Parser Address
-checksumAddressP = do
-  (body, a) <- A.string "0x" *> addressDigitsP
-  unless (checksumAddress a == "0x" <> body) $ fail "address: not in its EIP-55 checksum case"
-  pure a
-
-addressDigitsP :: A.Parser (ByteString, Address)
-addressDigitsP = do
-  body <- A.takeWhile isHexDigit
-  unless (B.length body == addressSize * 2) $ fail $ "address: expected 40 hex digits, got " <> show (B.length body)
-  (body,) . Address <$> either fail pure (BAE.convertFromBase BAE.Base16 body)
 
 instance ToField Address where toField (Address a) = toField $ Binary a
 

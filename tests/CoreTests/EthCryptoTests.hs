@@ -300,14 +300,6 @@ eip55Tests = do
   it "round-trips every byte value through the lowercase form" $
     forM_ everyByteAddresses $ \a ->
       strDecode (BC.map toLower (strEncode a)) `shouldBe` Right a
-  it "reads 0x and 40 hex digits in any case, and in the checksum case only for the checksum parser" $
-    forM_ specAddresses $ \a -> do
-      let parsed = parseAll
-          lower = BC.map toLower a
-      (parsed anyCaseAddressP a, parsed anyCaseAddressP lower) `shouldBe` (strDecode a, strDecode a)
-      parsed checksumAddressP a `shouldBe` strDecode a
-      isLeft (parsed checksumAddressP lower) `shouldBe` (lower /= a)
-      isLeft (parsed anyCaseAddressP $ B.drop 2 a) `shouldBe` True
   where
     -- 13 x 20 = 260 bytes, so every value 0x00..0xff appears at least once
     everyByteAddresses =
@@ -368,13 +360,11 @@ signingTests g = do
   it "reads and writes a signature as 0x and 130 lowercase hex digits, refusing another form or v and a high s" $ do
     strEncode viemSig `shouldBe` viemSigHex
     strDecode viemSigHex `shouldBe` Right viemSig
-    S.signatureFromHex viemSigHex `shouldBe` Right viemSig
     forM_ [B.drop 2 viemSigHex, "0x" <> BC.map toUpper (B.drop 2 viemSigHex), B.take 130 viemSigHex, viemSigHex <> "00"] $ \s ->
-      (s, S.signatureFromHex s) `shouldBe` (s, Left S.SEFormat)
-    S.signatureFromHex (B.take 130 viemSigHex <> "1d") `shouldBe` Left S.SERecoveryId
+      (s, isLeft (strDecode s :: Either String S.RecoverableSignature)) `shouldBe` (s, True)
+    (strDecode (B.take 130 viemSigHex <> "1d") :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: expected r, s and v of 27 or 28"
     let highS = viemSig {S.rsS = i2osp $ ECT.ecc_n (ECT.common_curve $ ECT.getCurveByName ECT.SEC_p256k1) - os2ip (S.rsS viemSig), S.rsRecId = 0}
-    S.signatureFromHex (strEncode highS) `shouldBe` Left S.SEHighS
-    (strDecode (strEncode highS) :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: SEHighS"
+    (strDecode (strEncode highS) :: Either String S.RecoverableSignature) `shouldBe` Left "Failed reading: signature: s is not in the lower half of the group order"
   it "recovers the address that signed a digest" $
     (strEncode <$$> recoverAddress viemSig digest) `shouldReturn` Right "0x9d8A62f656a8d1615C1294fd71e9CFb3E4855A4F"
   it "refuses a recovery id above 3" $
