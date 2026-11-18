@@ -1723,6 +1723,13 @@ webCredentialTests = do
       loadCredential (credentialFiles (testPath "malformed.crt") (fixtureFile "web" ".key")) >>= \case
         Left (CEPEMError _) -> pure ()
         r -> expectationFailure $ "Expected CEPEMError, got: " <> show (void r)
+    it "should reject an EC point that is not on its curve" $ do
+      Right (X.CertificateChain (signed : _), privateKey) <- loadCredential (credentialFiles (fixtureFile "web_ecdsa" ".crt") (fixtureFile "web_ecdsa" ".key"))
+      X.PubKeyEC (X.PubKeyEC_Named curveName _) <- pure . X.certPubKey $ X.getCertificate signed
+      let offCurvePoint = X.SerializedPoint $ B.cons '\x04' (B.replicate 64 '\x01')
+          certificate = (X.getCertificate signed) {X.certPubKey = X.PubKeyEC $ X.PubKeyEC_Named curveName offCurvePoint}
+          (offCurveSigned, ()) = X.objectToSignedExact (\_ -> ("", X.SignatureALG X.HashSHA256 X.PubKeyALG_EC, ())) certificate
+      checkKeyPair (X.CertificateChain [offCurveSigned], privateKey) `shouldBe` Left CEInvalidECPoint
   where
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
