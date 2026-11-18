@@ -36,10 +36,10 @@ import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, isJust)
 import qualified Data.Set as S
 import Data.String (IsString (..))
-import qualified Data.Text as T
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
+import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
@@ -56,7 +56,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
+import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -1701,31 +1701,38 @@ webCredentialTests = do
       testWebCredentialReplaced testPort "web_rsa2048" "web"
       testWebCredentialReplaced testPort "web_ecdsa" "web"
       testWebCredentialReplaced testPort "web2" "web2"
-  describe "key pair check" $ do
+  describe "credential check" $ do
     it "should accept the matching RSA key and reject another one" $ do
       keyPairCheck "web" "web" `shouldReturn` Right ()
-      keyPairCheck "web2" "web" `shouldReturn` keysMismatch
+      keyPairCheck "web2" "web" `shouldReturn` Left CEKeyMismatch
     it "should accept the matching ECDSA key and reject another one" $ do
       keyPairCheck "web_ecdsa" "web_ecdsa" `shouldReturn` Right ()
-      keyPairCheck "web_ecdsa" "web_ecdsa2" `shouldReturn` keysMismatch
+      keyPairCheck "web_ecdsa" "web_ecdsa2" `shouldReturn` Left CEKeyMismatch
     it "should accept the matching Ed448 key and reject another one" $ do
       keyPairCheck "server" "server" `shouldReturn` Right ()
-      keyPairCheck "server" "server2" `shouldReturn` keysMismatch
+      keyPairCheck "server" "server2" `shouldReturn` Left CEKeyMismatch
     it "should accept the matching Ed25519 key and reject another one" $ do
       keyPairCheck "ed25519/server" "ed25519/server" `shouldReturn` Right ()
-      keyPairCheck "ed25519/server" "ed25519/ca" `shouldReturn` keysMismatch
+      keyPairCheck "ed25519/server" "ed25519/ca" `shouldReturn` Left CEKeyMismatch
     it "should reject a key of another type" $
-      keyPairCheck "web" "web_ecdsa" `shouldReturn` keysMismatch
+      keyPairCheck "web" "web_ecdsa" `shouldReturn` Left CEKeyMismatch
     it "should reject an unsupported key type" $
-      keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left "unsupported key type PubKeyALG_DSA"
+      keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left (CEUnsupportedKeyType X.PubKeyALG_DSA)
     it "should reject an empty certificate file" $ do
       writeFile (testPath "empty.crt") ""
-      credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left "no certificate"
+      credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left CENoCertificate
+    it "should reject a missing key file and a malformed certificate file" $ do
+      writeFile (testPath "malformed.crt") "-----BEGIN CERTIFICATE-----\n"
+      loadCredential (credentialFiles (fixtureFile "web" ".crt") (testPath "missing.key")) >>= \case
+        Left (CEReadError _) -> pure ()
+        r -> expectationFailure $ "Expected CEReadError, got: " <> show (void r)
+      loadCredential (credentialFiles (testPath "malformed.crt") (fixtureFile "web" ".key")) >>= \case
+        Left (CEPEMError _) -> pure ()
+        r -> expectationFailure $ "Expected CEPEMError, got: " <> show (void r)
   where
-    keysMismatch = Left "the private key does not match the certificate"
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
-    credentialCheck certificateFile privateKeyFile =
-      either (error . T.unpack) checkKeyPair <$> loadCredential ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
+    credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
+    credentialFiles certificateFile privateKeyFile = ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

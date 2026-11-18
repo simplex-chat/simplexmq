@@ -12,6 +12,7 @@ module Simplex.Messaging.Transport.Server
     ServerCredentials (..),
     TLSServerCredential (..),
     ReloadableCredential (..),
+    CredentialError (..),
     SNICredentialUsed,
     AddHTTP,
     mkTransportServerConfig,
@@ -32,6 +33,7 @@ module Simplex.Messaging.Transport.Server
     withCredentialReload,
     acceptCredential,
     checkKeyPair,
+    credentialErrorText,
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
@@ -59,10 +61,11 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.X509 as X
 import Data.X509.EC (unserializePoint)
+import Data.X509.File (PEMError (..))
 import Data.X509.Validation (Fingerprint (..))
 import qualified Data.X509.Validation as XV
 import Foreign.C.Error
-import GHC.IO.Exception (ioe_errno)
+import GHC.IO.Exception (IOException, ioe_errno)
 import Network.Socket
 import qualified Network.TLS as T
 import Simplex.Messaging.Transport
@@ -107,6 +110,17 @@ data ReloadableCredential = ReloadableCredential
   { credentialFiles :: ServerCredentials,
     currentCredential :: TVar T.Credential
   }
+
+data CredentialError
+  = CEReadError IOException
+  | CEPEMError String
+  | CENoPrivateKey
+  | CENoCertificate
+  | CEKeyMismatch
+  | CEUnsupportedKeyType X.PubKeyALG
+  | CEUnsupportedECPoint
+  | CEUnsupportedHTTPSKey
+  deriving (Eq, Show)
 
 type SNICredentialUsed = Bool
 
@@ -282,22 +296,23 @@ loadServerCredential :: ServerCredentials -> IO T.Credential
 loadServerCredential creds =
   loadCredential creds >>= \case
     Right credential -> pure credential
-    Left e -> putStrLn ("invalid credential: " <> T.unpack e) >> exitFailure
+    Left e -> putStrLn ("invalid credential: " <> T.unpack (credentialErrorText e)) >> exitFailure
 
-acceptCredential :: T.Credential -> Either Text ()
+acceptCredential :: T.Credential -> Either CredentialError ()
 acceptCredential _ = Right ()
 
-loadCredential :: ServerCredentials -> IO (Either Text T.Credential)
+loadCredential :: ServerCredentials -> IO (Either CredentialError T.Credential)
 loadCredential ServerCredentials {caCertificateFile, certificateFile, privateKeyFile} =
-  either (Left . tshow) (first T.pack) <$> E.tryAny (T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
+  (first (const CENoPrivateKey) <$> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
+    `E.catches` [E.Handler (pure . Left . CEReadError), E.Handler (\(PEMError e) -> pure . Left $ CEPEMError e)]
 
 newReloadableCredential :: ServerCredentials -> T.Credential -> IO ReloadableCredential
 newReloadableCredential credentialFiles cred = ReloadableCredential credentialFiles <$> newTVarIO cred
 
-withCredentialReload :: (T.Credential -> Either Text ()) -> Int -> ReloadableCredential -> IO () -> IO ()
+withCredentialReload :: (T.Credential -> Either CredentialError ()) -> Int -> ReloadableCredential -> IO () -> IO ()
 withCredentialReload checkCredential interval reloadable = race_ (reloadCredential checkCredential interval reloadable)
 
-reloadCredential :: (T.Credential -> Either Text ()) -> Int -> ReloadableCredential -> IO a
+reloadCredential :: (T.Credential -> Either CredentialError ()) -> Int -> ReloadableCredential -> IO a
 reloadCredential checkCredential interval ReloadableCredential {credentialFiles = creds@ServerCredentials {certificateFile}, currentCredential} = do
   labelMyThread "reloadCredential"
   checkFiles Nothing
@@ -316,12 +331,12 @@ reloadCredential checkCredential interval ReloadableCredential {credentialFiles 
               Left e -> reject rejected (e, Just cred)
         Left e -> reject rejected (e, Nothing)
     reject rejected rejection@(e, _) = do
-      unless (rejected == Just rejection) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> e
+      unless (rejected == Just rejection) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> credentialErrorText e
       checkFiles $ Just rejection
 
-checkKeyPair :: T.Credential -> Either Text ()
+checkKeyPair :: T.Credential -> Either CredentialError ()
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
-  [] -> Left "no certificate"
+  [] -> Left CENoCertificate
   publicKey : _ -> case (publicKey, privateKey) of
     (X.PubKeyRSA k, X.PrivKeyRSA pk) -> matching $ RSA.private_pub pk == k
     (X.PubKeyEd25519 k, X.PrivKeyEd25519 pk) -> matching $ Ed25519.toPublic pk == k
@@ -330,13 +345,23 @@ checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X
       let curve = ECC.getCurveByName curveName
        in case unserializePoint curve point of
             Just publicPoint -> matching $ curveName == curveName' && publicPoint == ECC.pointBaseMul curve d
-            Nothing -> Left "unsupported EC point format"
+            Nothing -> Left CEUnsupportedECPoint
     _
-      | X.pubkeyToAlg publicKey == X.privkeyToAlg privateKey -> Left $ "unsupported key type " <> tshow (X.pubkeyToAlg publicKey)
-      | otherwise -> mismatch
+      | X.pubkeyToAlg publicKey == X.privkeyToAlg privateKey -> Left $ CEUnsupportedKeyType (X.pubkeyToAlg publicKey)
+      | otherwise -> Left CEKeyMismatch
   where
-    matching keysMatch = if keysMatch then Right () else mismatch
-    mismatch = Left "the private key does not match the certificate"
+    matching keysMatch = unless keysMatch $ Left CEKeyMismatch
+
+credentialErrorText :: CredentialError -> Text
+credentialErrorText = \case
+  CEReadError e -> tshow e
+  CEPEMError e -> T.pack e
+  CENoPrivateKey -> "no private key"
+  CENoCertificate -> "no certificate"
+  CEKeyMismatch -> "the private key does not match the certificate"
+  CEUnsupportedKeyType alg -> "unsupported key type " <> tshow alg
+  CEUnsupportedECPoint -> "unsupported EC point format"
+  CEUnsupportedHTTPSKey -> "unsupported HTTPS credentials, required 4096-bit RSA"
 
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =
