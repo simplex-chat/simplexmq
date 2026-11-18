@@ -21,9 +21,9 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `checkCredential`: the check of the server type;
   - `currentCredential :: TVar T.Credential`: the credential in use.
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
-- The `TVar` is read in `onServerNameIndication`, at each handshake that the hook is called for. The hook is set in:
-  - `supportedTLSServerParams`, protocol port: handshakes with SNI;
-  - `tlsServerHooks` of warp-tls with empty `tlsCredentials`, separate port: all handshakes.
+- The `TVar` is read in `onServerNameIndication` at these handshakes:
+  - protocol port (`supportedTLSServerParams`): handshakes with SNI;
+  - separate port (`tlsServerHooks` of warp-tls, empty `tlsCredentials`): all handshakes.
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
@@ -226,7 +226,7 @@ The reverse order is handled the same way.
 Fixture files are copied into the test directory for the reload tests, the static site start test and the start test of a rejected certificate. The other tests read them in place, with empty and malformed files written in the test directory.
 
 - Transport: on a TLS server with an SNI `ReloadableCredential`, `web.crt` is served to a client with SNI, then `web2.crt` after the files are replaced.
-- Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
+- Key pair: the new certificate is served only after its key is written.
 - smp-server with the shared HTTPS port, and xftp-server with SNI: the served certificate is changed after the files are replaced, without a restart.
 - Static site on a separate HTTPS port: the same.
 - Static site at start: `CENoPrivateKey` is thrown for an empty key file.
