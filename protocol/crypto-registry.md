@@ -188,5 +188,5 @@ None of the tests below compares against published reference vectors (NIST, RFC 
 | File encryption | [tests/CoreTests/CryptoFileTests.hs](../tests/CoreTests/CryptoFileTests.hs) | Round-trip |
 | XRCP session (SHA3-256 hybrid, sb chain) | [tests/RemoteControl.hs](../tests/RemoteControl.hs) | End-to-end |
 | SMP authenticators, block encryption, `IdsHash` (MD5) | [tests/ServerTests.hs](../tests/ServerTests.hs) | End-to-end; with the PostgreSQL queue store this checks Haskell MD5 against pgcrypto |
-| Key-pair check of reloaded web credentials (RSA, ECDSA, Ed25519, Ed448) | [tests/ServerTests.hs](../tests/ServerTests.hs) (`Web credentials`) | Matching and mismatched fixture pairs, an EC point off its curve, a P-384 pair, a key on another curve |
+| Key-pair check of reloaded web credentials (RSA, ECDSA, Ed25519, Ed448) | [tests/ServerTests.hs](../tests/ServerTests.hs) (`Web credentials`) | Matching and mismatched fixture pairs, an EC point off its curve, a P-384 pair, a key on another curve, a DSA pair, an empty certificate file |
 | Haskell and xftp-web: SHA-256/512, Ed25519, Ed448 identity proof, X25519, DER keys, crypto_box, secretbox, tail-tag, authenticator, file encryption | [tests/XFTPWebTests.hs](../tests/XFTPWebTests.hs) (`XFTP Web Client`) | Byte-identical cross-language output |
