@@ -18,7 +18,7 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
 - The protocol credential (`server.crt`, `server.key`) is read at start only, as before.
 - The fields of `ReloadableCredential`:
   - `credentialFiles`: the files of the web credential;
-  - `checkCredential`: the check of the server type;
+  - `checkCredential :: CredentialCheck`: the check of the server type, `T.Credential -> Either CredentialError ()`;
   - `currentCredential :: TVar T.Credential`: the credential in use.
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
 - The `TVar` is read in `onServerNameIndication` at these handshakes:
