@@ -650,7 +650,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
           let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
            in concat <$> mapM missingfile files
     exitUnsupportedHTTPS e = putStrLn ("Error: " <> T.unpack (credentialErrorText e) <> "\n" <> letsEncrypt) >> exitFailure
-    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096\n----------"
+    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size " <> show minHTTPSRSAKeyBits <> "\n----------"
     serverInfo =
       ServerInformation
         { information,
@@ -677,11 +677,8 @@ checkHTTPSCredentials :: T.Credential -> Either CredentialError ()
 checkHTTPSCredentials (X.CertificateChain cc, _k) =
   -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
   case map (X.signedObject . X.getSigned) cc of
-    X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= minHTTPSRSAKeyBytes -> Right ()
+    X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa * 8 >= minHTTPSRSAKeyBits -> Right ()
     _ -> Left CEUnsupportedHTTPSKey
-
-minHTTPSRSAKeyBytes :: Int
-minHTTPSRSAKeyBytes = 512
 
 noPostgresExit :: IO a
 noPostgresExit = putStrLn noPostgresExitStr >> exitFailure

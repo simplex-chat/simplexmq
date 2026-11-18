@@ -34,6 +34,7 @@ module Simplex.Messaging.Transport.Server
     acceptCredential,
     checkKeyPair,
     credentialErrorText,
+    minHTTPSRSAKeyBits,
     loadFingerprint,
     loadFileFingerprint,
     smpServerHandshake,
@@ -368,7 +369,10 @@ credentialErrorText = \case
   CEKeyMismatch -> "the private key does not match the certificate"
   CEUnsupportedKeyType alg -> "unsupported key type " <> tshow alg
   CEUnsupportedECPoint -> "unsupported EC point format"
-  CEUnsupportedHTTPSKey -> "unsupported HTTPS credentials, required 4096-bit RSA"
+  CEUnsupportedHTTPSKey -> "unsupported HTTPS credentials, required " <> tshow minHTTPSRSAKeyBits <> "-bit RSA"
+
+minHTTPSRSAKeyBits :: Int
+minHTTPSRSAKeyBits = 4096
 
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =
