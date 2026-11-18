@@ -22,8 +22,8 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `currentCredential :: TVar T.Credential`: the credential in use.
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
 - The `TVar` is read in `onServerNameIndication` at these handshakes:
-  - protocol port (`supportedTLSServerParams`): handshakes with SNI;
-  - separate port (`tlsServerHooks` of warp-tls, empty `tlsCredentials`): all handshakes.
+  - protocol port (`supportedTLSServerParams`): with SNI;
+  - separate port (`tlsServerHooks` of warp-tls, empty `tlsCredentials`): all.
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
@@ -118,7 +118,7 @@ flowchart LR
     W -- "added - CredentialError thrown, displayException" --> S
     W -- "added - credential loaded" --> V
     L -- "loaded credential" --> XE
-    XE -- "added - credential accepted" --> V
+    XE -- "added - credential loaded" --> V
     linkStyle 1,3,4,5,6,7,9 stroke:#008800
 ```
 
