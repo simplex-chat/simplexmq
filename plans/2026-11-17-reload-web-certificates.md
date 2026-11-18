@@ -1,8 +1,14 @@
-# Web certificates reloaded when their files change
+# Web certificates reloaded when their files are replaced
 
 ## Problem
 
-smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) once, at start: in `newEnv` (`Server/Env/STM.hs`), in `newXFTPServerEnv` (`FileTransfer/Server/Env.hs`) and by warp-tls in `serveStaticFiles` (`Server/Web.hs`). A renewed Let's Encrypt certificate is served only after a restart. A server that runs longer than 60 days after the last restart serves an expiring, then an expired certificate to browsers and web clients.
+smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) once, at start. Places of the reading:
+
+- `newEnv` (`Server/Env/STM.hs`);
+- `newXFTPServerEnv` (`FileTransfer/Server/Env.hs`);
+- warp-tls, started in `serveStaticFiles` (`Server/Web.hs`).
+
+A renewed Let's Encrypt certificate is served only after a restart. A server that runs longer than 60 days after the last restart serves an expiring, then an expired certificate to browsers and web clients.
 
 ## Decisions
 
@@ -17,52 +23,55 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
 - The `TVar` is read in `onServerNameIndication` at each handshake. Places of the hook:
   - protocol port: `supportedTLSServerParams`;
-  - separate port: `tlsServerHooks` of warp-tls, with empty `tlsCredentials`; in tls 1.9, the credentials of the hook are used before the shared ones.
+  - separate port: `tlsServerHooks` of warp-tls, with empty `tlsCredentials`.
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
-- In `checkKeyPair`, the private key is compared with the public key of the leaf certificate:
-  - RSA: the public fields stored with the private key are compared with the key of the certificate;
-  - Ed25519, Ed448 and ECDSA on named curves: the public key computed from the private key is compared with the key of the certificate;
-  - other key types are rejected.
+- In `checkKeyPair`, the public key of the leaf certificate is compared with a public key obtained from the private key file. Sources of that key:
+  - RSA: the public fields stored with the private key;
+  - Ed25519, Ed448: `toPublic` of the private key;
+  - ECDSA on named curves: `pointBaseMul` of the private scalar, after the certificate point is decoded and validated and the curve names are found equal.
+- Other key types are rejected.
 - xftp-server accepts any key type at start; on reload, only the key types of `checkKeyPair` are accepted.
 - Errors are values of `CredentialError`:
   - `CEReadError`: an `IOException` from reading a file;
   - `CEPEMError`: the message of a `PEMError` from parsing a file;
   - `CENoPrivateKey`: a key file without a private key;
   - `CENoCertificate`: a certificate file without a certificate;
-  - `CEKeyMismatch`: a private key of another certificate;
-  - `CEUnsupportedKeyType`: a key type outside those of `checkKeyPair`;
+  - `CEKeyMismatch`: a private key of another certificate, also of another key type;
+  - `CEUnsupportedKeyType`: a certificate and a private key of one key type outside those of `checkKeyPair`;
   - `CEInvalidECPoint`: an EC point other than an uncompressed point on its curve;
   - `CEUnsupportedHTTPSKey`: on smp-server, a key other than RSA of at least `minHTTPSRSAKeyBits` (4096).
-- The reload thread is started with `race_` against the listener that reads its `TVar`; an exception in either thread ends both. Callers of `race_`:
+- The reload thread is run by `withCredentialReload`, in `race_` with the listener that reads its `TVar`; both threads are ended by an exception in either one. Functions that call `withCredentialReload`:
   - `runTransportServerSocketState`, for an SNI credential;
   - `runHTTPSServer`.
-- xftp-server with `[WEB] https` builds two `ReloadableCredential` values from the same files, one for SNI and one for the separate port; each one is reloaded and logged by its own thread.
-- On the separate port, a credential that cannot be loaded at start is thrown as `CredentialError` and logged in `serveStaticFiles` with its reason.
+- xftp-server with `[WEB] https` and `[WEB] static_path` builds two `ReloadableCredential` values from the same files, one for SNI and one for the separate port; each one is reloaded and logged by its own thread.
+- On the separate port, `CENoPrivateKey` and the other errors of a credential that cannot be loaded at start are thrown as `CredentialError` and logged in `serveStaticFiles` with their reason.
 - The interval is `credentialCheckInterval`, 60 seconds by default. Places of the setting:
   - SNI: `TransportServerConfig`;
   - separate port: `WebHttpsParams`.
-- The key pair check is listed in `protocol/crypto-registry.md` as a restricted use.
+- The key-pair check is listed in `protocol/crypto-registry.md` as a restricted use.
 
 ## Reload thread
 
-State: the last rejection, `Maybe (CredentialError, Maybe T.Credential)`, initially `Nothing`.
+State: the last rejection, `Maybe (CredentialError, Maybe T.Credential)`, initially `Nothing`. The decision is made in the pure function `checkLoadedCredential`; its results are values of `CredentialCheck`.
 
 ```
 checkFiles rejected:
   wait credentialCheckInterval
-  case loadCredential credentialFiles of
-    Left e -> reject rejected (e, Nothing)
-    Right cred
-      | cred == currentCredential -> checkFiles Nothing
-      | otherwise -> case checkKeyPair cred >> checkCredential cred of
-          Right () -> write cred to currentCredential; log "reloaded credential"; checkFiles Nothing
-          Left e -> reject rejected (e, Just cred)
+  loaded <- loadCredential credentialFiles
+  case checkLoadedCredential checkCredential currentCredential rejected loaded of
+    CCUnchanged -> checkFiles Nothing
+    CCAccepted cred -> write cred to currentCredential; log "reloaded credential"; checkFiles Nothing
+    CCRejected rejection -> log "rejected credential" with the reason; checkFiles (Just rejection)
+    CCRejectedAgain -> checkFiles rejected
 
-reject rejected rejection:
-  log "rejected credential" with the reason, unless Just rejection == rejected
-  checkFiles (Just rejection)
+checkLoadedCredential checkCredential current rejected loaded:
+  Right cred, cred == current -> CCUnchanged
+  Right cred -> CCAccepted cred, if checkKeyPair cred >> checkCredential cred is Right ()
+                else reject (error, Just cred)
+  Left error -> reject (error, Nothing)
+  reject rejection -> CCRejectedAgain if Just rejection == rejected, else CCRejected rejection
 ```
 
 ```mermaid
@@ -70,26 +79,28 @@ stateDiagram-v2
     state "Nothing" as N
     state "Just (e, cred_)" as R
     [*] --> N
-    N --> N: files equal to the credential in use
-    N --> N: files accepted, credential written, logged
-    N --> R: files rejected, logged
-    R --> R: same rejection, not logged
-    R --> R: another rejection, logged
-    R --> N: files equal or accepted
+    N --> N: CCUnchanged
+    N --> N: CCAccepted, credential written, logged
+    N --> R: CCRejected, logged
+    R --> R: CCRejectedAgain, not logged
+    R --> R: CCRejected, logged
+    R --> N: CCUnchanged
+    R --> N: CCAccepted, credential written, logged
 ```
 
 ## Threat model
 
 - The certificate and key files are written by the renewal job of the operator and are trusted as at start.
-- An unreadable file, a file that fails to parse, and a mismatched pair are rejected, and the previous credential is kept in use.
-- A certificate file read during its copy, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the next check reads the whole file.
-- `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread ends only with its listener.
+- An unreadable file, a file that cannot be parsed, and a mismatched pair are rejected, and the previous credential is kept in use.
+- A certificate file read during its copy, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
+- `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread is ended only together with its listener.
+- A malformed file is read lazily by crypton-x509-store; its handle is closed by the garbage collector, once per interval while the file stays malformed.
 - Contents of log lines:
   - fixed text;
   - file paths;
   - parser messages and `IOException` messages;
-  - the key algorithm of a certificate, with its OID for an unknown algorithm.
-- `pointBaseMul` is computed in variable time on the private scalar, only for changed files; network responses are independent of its time.
+  - the key algorithm of a certificate.
+- `pointBaseMul` is computed in variable time on the private scalar, once per interval while the files differ from the credential in use; network responses are independent of its time.
 
 ## Composition
 
@@ -98,34 +109,39 @@ Green: added. Red: removed.
 ```mermaid
 flowchart LR
     F[web.crt, web.key]
-    E[newEnv, newXFTPServerEnv<br>runHTTPSServer]
+    E[newEnv, newXFTPServerEnv]
+    W[runHTTPSServer]
     V[TVar T.Credential]
     R[reloadCredential<br>every credentialCheckInterval]
     H[onServerNameIndication<br>at each handshake]
     L[listener]
     S[serveStaticFiles<br>forkFinally]
     C[Credential loaded once]
+    T[warp-tls shared credentials]
     F -- "read at start" --> E
+    F -- "added - read at start" --> W
     E -- "added - written" --> V
-    E -- "removed - kept" --> C
+    W -- "added - written" --> V
+    E -- "removed - kept, SNI" --> C
     C -- "removed - returned" --> H
+    F -- "removed - read by warp-tls, separate port" --> T
     F -- "added - parsed, compared, checked" --> R
     R -- "added - replaced" --> V
     V -- "added - read" --> H
     L -- "added - race_" --> R
     L -- "calls at each handshake" --> H
-    E -- "added - CredentialError thrown, separate port" --> S
+    W -- "added - CredentialError thrown" --> S
     classDef removed fill:#f4cccc,stroke:#cc0000
     classDef added fill:#d9ead3,stroke:#008800
-    class C removed
-    class V,R added
-    linkStyle 2,3 stroke:#cc0000
-    linkStyle 1,4,5,6,7,9 stroke:#008800
+    class C,T removed
+    class V,R,W added
+    linkStyle 4,5,6 stroke:#cc0000
+    linkStyle 1,2,3,7,8,9,10,12 stroke:#008800
 ```
 
 ## Copy of a renewed certificate
 
-The certificate copier writes `web.crt` before `web.key`.
+For a copier that writes `web.crt` before `web.key`:
 
 ```mermaid
 sequenceDiagram
@@ -142,6 +158,8 @@ sequenceDiagram
     R->>V: new credential written
 ```
 
+The reverse order is handled the same way.
+
 ## Tests
 
 In the reload tests, the fixture files are copied into the test directory and replaced there; in the credential check tests, the fixtures are read directly.
@@ -149,7 +167,8 @@ In the reload tests, the fixture files are copied into the test directory and re
 - Transport: on a TLS server with an SNI `ReloadableCredential`, `web.crt` is served to a client with SNI, then `web2.crt` after the files are replaced.
 - Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
 - smp-server with the shared HTTPS port, and xftp-server with SNI: the served certificate is changed after the files are replaced, without a restart.
-- Static site on a separate HTTPS port: the same, and an empty key file at start is thrown as `CENoPrivateKey`.
+- Static site on a separate HTTPS port: the same.
+- Static site at start: `CENoPrivateKey` is thrown for an empty key file.
 - Key types:
   - smp-server rejects an RSA 2048 and an ECDSA P-256 certificate and keeps the current one;
   - xftp-server serves the ECDSA P-256 certificate.
@@ -164,7 +183,13 @@ In the reload tests, the fixture files are copied into the test directory and re
   - missing key file: `CEReadError`;
   - malformed certificate file: `CEPEMError`;
   - EC point off its curve: `CEInvalidECPoint`.
-- Fixtures, generated as `tests/fixtures/README.md` states. Certificates signed by `web_ca`:
+- Reload decision (`checkLoadedCredential`), with the expected result:
+  - files equal to the credential in use: `CCUnchanged`;
+  - a mismatched pair: `CCRejected`, then `CCRejectedAgain` for the same pair;
+  - another error after it: `CCRejected`;
+  - a renewed pair: `CCAccepted`;
+  - an RSA 2048 pair: `CCRejected` with `checkHTTPSCredentials`, `CCAccepted` with `acceptCredential`.
+- Fixtures, generated by the commands in `tests/fixtures/README.md`. Certificates signed by `web_ca`:
   - `web2`: RSA 4096;
   - `web_rsa2048`: RSA 2048;
   - `web_ecdsa`: P-256;
