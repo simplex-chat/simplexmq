@@ -1697,6 +1697,9 @@ webCredentialTests = do
       testWebCredentialReplaced testPort "web_ecdsa" "web"
       testWebCredentialReplaced testPort "web2" "web2"
   describe "credential check" $ do
+    it "should reject an empty certificate chain with checkHTTPSCredentials" $ do
+      Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
+      checkHTTPSCredentials (X.CertificateChain [], snd current) `shouldBe` Left CENoCertificate
     it "should accept the matching RSA key and reject another one" $ do
       keyPairCheck "web" "web" `shouldReturn` Right ()
       keyPairCheck "web2" "web" `shouldReturn` Left CEKeyMismatch
@@ -1762,9 +1765,6 @@ webCredentialTests = do
       Right p384 <- loadCredential (credentialFiles (fixtureFile "web_ecdsa384" ".crt") (fixtureFile "web_ecdsa384" ".key"))
       checkLoadedCredential checkHTTPSCredentials current Nothing (Right p384) `shouldBe` RDRejected CEUnsupportedHTTPSKey
       checkLoadedCredential acceptCredential current Nothing (Right p384) `shouldBe` RDRejected (CEUnsupportedCurve ECC.SEC_p384r1)
-    it "should reject an empty certificate chain with checkHTTPSCredentials" $ do
-      Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
-      checkHTTPSCredentials (X.CertificateChain [], snd current) `shouldBe` Left CENoCertificate
   where
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
