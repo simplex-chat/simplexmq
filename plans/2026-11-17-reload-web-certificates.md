@@ -29,6 +29,7 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - xftp-server: `acceptCredential`.
 - In `checkKeyPair`, the public key of the leaf certificate is compared with a public key obtained from the private key file, as shown in the section "Key-pair check".
 - xftp-server accepts any key type at start, and only the key types of `checkKeyPair` after a change of the files.
+- EC keys are accepted on reload only on `tlsSigningCurve` (P-256), the curve of `kxSupportedPrivKeyEC` in tls 1.9.
 - Errors are values of `CredentialError`:
   - `CEReadError`: an `IOException` from reading a file;
   - `CEPEMError`: the message of a `PEMError` from parsing a file;
@@ -36,6 +37,7 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `CENoCertificate`: a certificate file without a certificate;
   - `CEKeyMismatch`: a private key of another certificate, also of another key type;
   - `CEUnsupportedKeyType`: a certificate and a private key of one key type outside those of `checkKeyPair`;
+  - `CEUnsupportedCurve`: a certificate key on a curve other than `tlsSigningCurve`;
   - `CEInvalidECPoint`: an EC point other than an uncompressed point on its curve;
   - `CEUnsupportedHTTPSKey`: on smp-server, a key other than RSA of at least `minHTTPSRSAKeyBits` (4096).
 - The reload thread is run by `withCredentialReload`, in `race_` with the listener in which its `TVar` is read; both threads are ended by an exception in either one. `withCredentialReload` is called in:
@@ -57,6 +59,7 @@ checkKeyPair (chain, privateKey):
   (Ed25519 k, Ed25519 pk) -> CEKeyMismatch unless toPublic pk == k
   (Ed448 k, Ed448 pk) -> CEKeyMismatch unless toPublic pk == k
   (EC named curve point, EC named curve' d) ->
+    CEUnsupportedCurve curve unless curve == tlsSigningCurve
     publicPoint <- unserializePoint curve point, else CEInvalidECPoint
     CEKeyMismatch unless curve == curve' && publicPoint == pointBaseMul curve d
   same algorithm -> CEUnsupportedKeyType algorithm
@@ -69,15 +72,19 @@ flowchart TD
     E[CENoCertificate]
     P{key types}
     C[public key compared]
+    G{certificate curve is P-256}
     D{EC point decoded and on its curve}
     M[CEKeyMismatch]
     I[CEInvalidECPoint]
     U[CEUnsupportedKeyType]
+    UC[CEUnsupportedCurve]
     OK[Right]
     A -- "chain empty" --> E
     A --> P
     P -- "RSA, Ed25519, Ed448" --> C
-    P -- "EC on named curves" --> D
+    P -- "EC on named curves" --> G
+    G -- "no" --> UC
+    G -- "yes" --> D
     D -- "no" --> I
     D -- "yes, curves compared" --> C
     P -- "same algorithm, other type" --> U
@@ -153,7 +160,7 @@ stateDiagram-v2
 
 - The certificate and key files are written by the renewal job of the operator and are trusted as at start.
 - Unreadable or unparsable files and a mismatched pair are rejected, and the previous credential is kept in use.
-- A certificate file read while it is being copied, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
+- A certificate file read while it is being copied, cut at a PEM boundary, is parsed as a shorter chain; with the key of the new certificate already in place (a reused key, or a key copied first), that chain is served until the whole file is read at the next check.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread is ended only together with its listener.
 - A malformed file is read lazily by crypton-x509-store; when parsing stops before the end of the file, its handle is closed by the garbage collector.
 - Contents of log lines:
@@ -232,7 +239,7 @@ Fixture files are copied into the test directory for the reload tests, the stati
 - Static site at start: `CENoPrivateKey` is thrown for an empty key file.
 - Key types:
   - smp-server rejects an RSA 2048 and an ECDSA P-256 certificate and keeps the current one;
-  - xftp-server serves the ECDSA P-256 certificate.
+  - xftp-server serves the ECDSA P-256 certificate, then rejects an ECDSA P-384 certificate and keeps the P-256 one.
 - A deleted key file and an empty certificate file: the current certificate is still served.
 - Start, in the sequential "Server CLIs" tests, with the output captured, exit code 1 and `prException` equal to `Nothing`:
   - smp-server started with an RSA 2048 web certificate: `Error: unsupported HTTPS credentials, required 4096-bit RSA`;
@@ -244,7 +251,8 @@ Fixture files are copied into the test directory for the reload tests, the stati
   - empty certificate file: `CENoCertificate`;
   - missing key file: `CEReadError`;
   - malformed certificate file: `CEPEMError`;
-  - EC point off its curve: `CEInvalidECPoint`.
+  - EC point off its curve: `CEInvalidECPoint`;
+  - ECDSA P-384 pair: `CEUnsupportedCurve`.
 - Reload decision (`checkLoadedCredential`), with the expected result:
   - files equal to the credential in use: `RDUnchanged`;
   - a mismatched pair: `RDRejected`, then `RDRejectedAgain` for the same pair;
@@ -256,5 +264,6 @@ Fixture files are copied into the test directory for the reload tests, the stati
   - `web2`: RSA 4096;
   - `web_rsa2048`: RSA 2048;
   - `web_ecdsa`: P-256;
+  - `web_ecdsa384`: P-384;
   - `web_dsa`: DSA.
 - A second P-256 key, without a certificate: `web_ecdsa2.key`.
