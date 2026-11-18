@@ -15,9 +15,9 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
   - `checkCredential`: the check of the server type;
   - `currentCredential :: TVar T.Credential`: the credential in use.
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
-- The `TVar` is read in `onServerNameIndication` at each handshake:
-  - on the protocol port, in `supportedTLSServerParams`;
-  - on the separate port, in `tlsServerHooks` of warp-tls, with empty `tlsCredentials`; in tls 1.9, the credentials of the hook are used before the shared ones.
+- The `TVar` is read in `onServerNameIndication` at each handshake. Places of the hook:
+  - protocol port: `supportedTLSServerParams`;
+  - separate port: `tlsServerHooks` of warp-tls, with empty `tlsCredentials`; in tls 1.9, the credentials of the hook are used before the shared ones.
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
@@ -33,15 +33,16 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
   - `CENoCertificate`: a certificate file without a certificate;
   - `CEKeyMismatch`: a private key of another certificate;
   - `CEUnsupportedKeyType`: a key type outside those of `checkKeyPair`;
-  - `CEInvalidECPoint`: an EC point that is compressed or off its curve;
+  - `CEInvalidECPoint`: an EC point other than an uncompressed point on its curve;
   - `CEUnsupportedHTTPSKey`: on smp-server, a key other than RSA of at least `minHTTPSRSAKeyBits` (4096).
-- The reload thread is started with `race_` against the listener that reads its `TVar`:
-  - by `runTransportServerSocketState`, for an SNI credential;
-  - by `runHTTPSServer`.
+- The reload thread is started with `race_` against the listener that reads its `TVar`; an exception in either thread ends both. Callers of `race_`:
+  - `runTransportServerSocketState`, for an SNI credential;
+  - `runHTTPSServer`.
+- xftp-server with `[WEB] https` builds two `ReloadableCredential` values from the same files, one for SNI and one for the separate port; each one is reloaded and logged by its own thread.
 - On the separate port, a credential that cannot be loaded at start is thrown as `CredentialError` and logged in `serveStaticFiles` with its reason.
-- The interval is `credentialCheckInterval`, 60 seconds by default:
-  - in `TransportServerConfig`, for SNI;
-  - in `WebHttpsParams`, for the separate port.
+- The interval is `credentialCheckInterval`, 60 seconds by default. Places of the setting:
+  - SNI: `TransportServerConfig`;
+  - separate port: `WebHttpsParams`.
 - The key pair check is listed in `protocol/crypto-registry.md` as a restricted use.
 
 ## Reload thread
@@ -80,9 +81,14 @@ stateDiagram-v2
 ## Threat model
 
 - The certificate and key files are written by the renewal job of the operator and are trusted as at start.
-- A partly written, unreadable or mismatched file is rejected, and the previous credential is kept in use.
+- An unreadable file, a file that fails to parse, and a mismatched pair are rejected, and the previous credential is kept in use.
+- A certificate file read during its copy, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the next check reads the whole file.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread ends only with its listener.
-- Log lines are composed of fixed text, file paths and parser messages.
+- Contents of log lines:
+  - fixed text;
+  - file paths;
+  - parser messages and `IOException` messages;
+  - the key algorithm of a certificate, with its OID for an unknown algorithm.
 - `pointBaseMul` is computed in variable time on the private scalar, only for changed files; network responses are independent of its time.
 
 ## Composition
@@ -96,6 +102,8 @@ flowchart LR
     V[TVar T.Credential]
     R[reloadCredential<br>every credentialCheckInterval]
     H[onServerNameIndication<br>at each handshake]
+    L[listener]
+    S[serveStaticFiles<br>forkFinally]
     C[Credential loaded once]
     F -- "read at start" --> E
     E -- "added - written" --> V
@@ -104,12 +112,15 @@ flowchart LR
     F -- "added - parsed, compared, checked" --> R
     R -- "added - replaced" --> V
     V -- "added - read" --> H
+    L -- "added - race_" --> R
+    L -- "calls at each handshake" --> H
+    E -- "added - CredentialError thrown, separate port" --> S
     classDef removed fill:#f4cccc,stroke:#cc0000
     classDef added fill:#d9ead3,stroke:#008800
     class C removed
     class V,R added
     linkStyle 2,3 stroke:#cc0000
-    linkStyle 1,4,5,6 stroke:#008800
+    linkStyle 1,4,5,6,7,9 stroke:#008800
 ```
 
 ## Copy of a renewed certificate
@@ -138,23 +149,24 @@ In the reload tests, the fixture files are copied into the test directory and re
 - Transport: on a TLS server with an SNI `ReloadableCredential`, `web.crt` is served to a client with SNI, then `web2.crt` after the files are replaced.
 - Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
 - smp-server with the shared HTTPS port, and xftp-server with SNI: the served certificate is changed after the files are replaced, without a restart.
-- Static site on a separate HTTPS port: the same.
+- Static site on a separate HTTPS port: the same, and an empty key file at start is thrown as `CENoPrivateKey`.
 - Key types:
   - smp-server rejects an RSA 2048 and an ECDSA P-256 certificate and keeps the current one;
   - xftp-server serves the ECDSA P-256 certificate.
 - A deleted key file and an empty certificate file: the current certificate is still served.
-- Start, in the sequential "Server CLIs" tests, with the output captured:
-  - `newEnv` of smp-server with an RSA 2048 web certificate exits with `Error: unsupported HTTPS credentials, required 4096-bit RSA`;
-  - an empty key file is reported as `invalid credential: no private key`;
-  - each exits with exit code 1 and without another exception.
-- Credential check:
-  - RSA, ECDSA, Ed448 and Ed25519: a matching pair is accepted; a pair of the same type with another key is rejected with `CEKeyMismatch`;
-  - a DSA certificate is rejected with `CEUnsupportedKeyType`;
-  - an empty certificate file is rejected with `CENoCertificate`;
-  - a missing key file is rejected with `CEReadError`;
-  - a malformed certificate file is rejected with `CEPEMError`.
-- Fixtures, signed by `web_ca` and generated as `tests/fixtures/README.md` states:
+- Start, in the sequential "Server CLIs" tests, with the output captured, exit code 1 and no other exception:
+  - smp-server started with an RSA 2048 web certificate: `Error: unsupported HTTPS credentials, required 4096-bit RSA`;
+  - an empty key file: `invalid credential: no private key`.
+- Credential check, with the expected error:
+  - RSA, ECDSA, Ed448 and Ed25519 pairs: accepted when matching, `CEKeyMismatch` with another key of the same type;
+  - DSA certificate: `CEUnsupportedKeyType`;
+  - empty certificate file: `CENoCertificate`;
+  - missing key file: `CEReadError`;
+  - malformed certificate file: `CEPEMError`;
+  - EC point off its curve: `CEInvalidECPoint`.
+- Fixtures, generated as `tests/fixtures/README.md` states. Certificates signed by `web_ca`:
   - `web2`: RSA 4096;
-  - `web_rsa2048`;
-  - `web_ecdsa` and `web_ecdsa2.key`: P-256;
-  - `web_dsa`.
+  - `web_rsa2048`: RSA 2048;
+  - `web_ecdsa`: P-256;
+  - `web_dsa`: DSA.
+- A second P-256 key, without a certificate: `web_ecdsa2.key`.
