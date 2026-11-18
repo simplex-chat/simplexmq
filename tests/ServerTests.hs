@@ -1715,6 +1715,9 @@ webCredentialTests = do
       keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left (CEUnsupportedKeyType X.PubKeyALG_DSA)
     it "should reject an EC key pair on a curve other than P-256" $
       keyPairCheck "web_ecdsa384" "web_ecdsa384" `shouldReturn` Left (CEUnsupportedCurve ECC.SEC_p384r1)
+    it "should reject a P-256 certificate with a key on another curve" $ do
+      Right (chain, X.PrivKeyEC (X.PrivKeyEC_Named _ d)) <- loadCredential (credentialFiles (fixtureFile "web_ecdsa" ".crt") (fixtureFile "web_ecdsa" ".key"))
+      checkKeyPair (chain, X.PrivKeyEC (X.PrivKeyEC_Named ECC.SEC_p384r1 d)) `shouldBe` Left CEKeyMismatch
     it "should reject an empty certificate file" $ do
       writeFile (testPath "empty.crt") ""
       credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left CENoCertificate
