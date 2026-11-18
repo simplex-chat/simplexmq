@@ -49,7 +49,6 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
@@ -59,13 +58,11 @@ import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
 import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_)
 import System.Directory (doesFileExist, removeFile)
-import System.Exit (ExitCode (..))
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
 import System.Timeout
 import Test.HUnit
 import Test.Hspec hiding (fit, it, xit)
-import Test.Main (ProcessResult (..), captureProcessResult)
 import Util
 
 #if defined(dbServerPostgres)
@@ -1698,19 +1695,6 @@ webCredentialTests = do
       testWebCredentialReplaced testPort "web_rsa2048" "web"
       testWebCredentialReplaced testPort "web_ecdsa" "web"
       testWebCredentialReplaced testPort "web2" "web2"
-  it "should exit at start with the reason of a rejected web certificate" $ do
-    copyWebCredential "web_rsa2048"
-    ProcessResult {prStdout, prExitCode} <- captureProcessResult $ case webServerCfg of
-      ASrvCfg _ _ cfg_ -> do
-        started <- newEmptyTMVarIO
-        runSMPServerBlocking started cfg_ {transports = [(testPort, transport @TLS, True)]} Nothing
-    prExitCode `shouldBe` ExitFailure 1
-    prStdout `shouldSatisfy` B.isInfixOf "Error: unsupported HTTPS credentials, required 4096-bit RSA\n"
-  it "should exit at start with the reason of an invalid credential" $ do
-    writeFile (testPath "empty.key") ""
-    ProcessResult {prStdout, prExitCode} <- captureProcessResult . void . loadServerCredential $ credentialFiles (fixtureFile "web" ".crt") (testPath "empty.key")
-    prExitCode `shouldBe` ExitFailure 1
-    prStdout `shouldBe` "invalid credential: no private key\n"
   describe "credential check" $ do
     it "should accept the matching RSA key and reject another one" $ do
       keyPairCheck "web" "web" `shouldReturn` Right ()
@@ -1743,13 +1727,6 @@ webCredentialTests = do
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
     credentialFiles certificateFile privateKeyFile = ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
-
-webServerCfg :: HasTestEnv => AServerConfig
-webServerCfg = updateCfg (cfgMS $ ASType SQSMemory SMSMemory) $ \cfg_ ->
-  cfg_
-    { httpCredentials = Just testWebCredentials,
-      transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
-    }
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do

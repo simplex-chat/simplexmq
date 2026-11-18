@@ -36,7 +36,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
-import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
@@ -400,6 +400,13 @@ testWebCredentials =
 
 testCredentialCheckInterval :: Int
 testCredentialCheckInterval = 100000
+
+webServerCfg :: HasTestEnv => AServerConfig
+webServerCfg = updateCfg (cfgMS $ ASType SQSMemory SMSMemory) $ \cfg_ ->
+  cfg_
+    { httpCredentials = Just testWebCredentials,
+      transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
+    }
 
 copyWebCredential :: HasTestEnv => String -> IO ()
 copyWebCredential name = do
