@@ -366,7 +366,7 @@ credentialErrorText = \case
   CEPEMError e -> T.pack e
   CENoPrivateKey -> "no private key"
   CENoCertificate -> "no certificate"
-  CEKeyMismatch -> "the private key does not match the certificate"
+  CEKeyMismatch -> "private key of another certificate"
   CEUnsupportedKeyType alg -> "unsupported key type " <> tshow alg
   CEInvalidECPoint -> "invalid or unsupported EC point"
   CEUnsupportedHTTPSKey -> "unsupported HTTPS credentials, required " <> tshow minHTTPSRSAKeyBits <> "-bit RSA"
