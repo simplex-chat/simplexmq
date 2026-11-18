@@ -24,6 +24,9 @@ cat web_ca.crt >> web2.crt
 # Web certificate with an ECDSA P-256 key: the same commands with web_ecdsa for web2 and this key
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out web_ecdsa.key
 
+# Web certificate with an ECDSA P-384 key, which tls 1.9 does not sign with: the same commands with web_ecdsa384 for web2 and this key
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -out web_ecdsa384.key
+
 # A second ECDSA P-256 key, without a certificate
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out web_ecdsa2.key
 
