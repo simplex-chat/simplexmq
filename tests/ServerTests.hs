@@ -56,7 +56,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (CredentialCheck (..), CredentialError (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, checkLoadedCredential, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_)
+import Simplex.Messaging.Transport.Server (CredentialError (..), ReloadDecision (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, checkLoadedCredential, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -1731,23 +1731,26 @@ webCredentialTests = do
           (offCurveSigned, ()) = X.objectToSignedExact (\_ -> ("", X.SignatureALG X.HashSHA256 X.PubKeyALG_EC, ())) certificate
       checkKeyPair (X.CertificateChain [offCurveSigned], privateKey) `shouldBe` Left CEInvalidECPoint
   describe "reload decision" $ do
-    it "should reject a repeated rejection without logging it again" $ do
+    it "should decide unchanged, rejected, repeated and accepted credentials" $ do
       Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
       Right renewed <- loadCredential (credentialFiles (fixtureFile "web2" ".crt") (fixtureFile "web2" ".key"))
       Right mismatched <- loadCredential (credentialFiles (fixtureFile "web2" ".crt") (fixtureFile "web" ".key"))
+      Right otherMismatched <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web2" ".key"))
       let check = checkLoadedCredential acceptCredential current
-          mismatch = (CEKeyMismatch, Just mismatched)
-      check Nothing (Right current) `shouldBe` CCUnchanged
-      check Nothing (Right mismatched) `shouldBe` CCRejected mismatch
-      check (Just mismatch) (Right mismatched) `shouldBe` CCRejectedAgain
-      check (Just mismatch) (Left CENoPrivateKey) `shouldBe` CCRejected (CENoPrivateKey, Nothing)
-      check (Just mismatch) (Right renewed) `shouldBe` CCAccepted renewed
-      check (Just mismatch) (Right current) `shouldBe` CCUnchanged
+          rejected = Just (Right mismatched)
+      check Nothing (Right current) `shouldBe` RDUnchanged
+      check Nothing (Right mismatched) `shouldBe` RDRejected CEKeyMismatch
+      check rejected (Right mismatched) `shouldBe` RDRejectedAgain
+      check rejected (Right otherMismatched) `shouldBe` RDRejected CEKeyMismatch
+      check rejected (Left CENoPrivateKey) `shouldBe` RDRejected CENoPrivateKey
+      check (Just (Left CENoPrivateKey)) (Left CENoPrivateKey) `shouldBe` RDRejectedAgain
+      check rejected (Right renewed) `shouldBe` RDAccepted renewed
+      check rejected (Right current) `shouldBe` RDUnchanged
     it "should reject a credential that fails the check of the server type" $ do
       Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
       Right rsa2048 <- loadCredential (credentialFiles (fixtureFile "web_rsa2048" ".crt") (fixtureFile "web_rsa2048" ".key"))
-      checkLoadedCredential checkHTTPSCredentials current Nothing (Right rsa2048) `shouldBe` CCRejected (CEUnsupportedHTTPSKey, Just rsa2048)
-      checkLoadedCredential acceptCredential current Nothing (Right rsa2048) `shouldBe` CCAccepted rsa2048
+      checkLoadedCredential checkHTTPSCredentials current Nothing (Right rsa2048) `shouldBe` RDRejected CEUnsupportedHTTPSKey
+      checkLoadedCredential acceptCredential current Nothing (Right rsa2048) `shouldBe` RDAccepted rsa2048
   where
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
