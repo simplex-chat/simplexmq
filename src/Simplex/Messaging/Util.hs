@@ -41,6 +41,7 @@ module Simplex.Messaging.Util
     isAsyncCancellation,
     catchOwn',
     catchOwn,
+    tryOwnLogged,
     tryAllOwnErrors,
     tryAllOwnErrors',
     catchAllOwnErrors,
@@ -71,6 +72,7 @@ module Simplex.Messaging.Util
 
 import Control.Exception (AllocationLimitExceeded (..), AsyncException (..))
 import qualified Control.Exception as E
+import Control.Logger.Simple (logError)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
@@ -334,6 +336,10 @@ catchOwn action handleInternal =
   withRunInIO $ \run ->
     run action `E.catch` \e -> if isAsyncCancellation e then E.throwIO e else run (handleInternal e)
 {-# INLINE catchOwn #-}
+
+tryOwnLogged :: Text -> IO a -> IO (Maybe a)
+tryOwnLogged message action = (Just <$> action) `catchOwn'` \e -> Nothing <$ logError (message <> tshow e)
+{-# INLINE tryOwnLogged #-}
 
 tryAllOwnErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m (Either e a)
 tryAllOwnErrors action = ExceptT $ Right <$> runExceptT action `catchOwn` (pure . Left . fromSomeException)
