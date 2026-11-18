@@ -76,7 +76,7 @@ digestSize = 32
 -- Types
 
 newtype Secp256k1PrivateKey = Secp256k1PrivateKey ScrubbedBytes
-  deriving (Eq, Show)
+  deriving (Eq)
 
 -- | A public key in libsecp256k1's opaque 64-byte form; 'serializePublicKey' returns the SEC1 bytes.
 newtype Secp256k1PublicKey = Secp256k1PublicKey ByteString
