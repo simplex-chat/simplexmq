@@ -155,7 +155,7 @@ stateDiagram-v2
 - Unreadable or unparsable files and a mismatched pair are rejected, and the previous credential is kept in use.
 - A certificate file read while it is being copied, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread is ended only together with its listener.
-- A malformed file is read lazily by crypton-x509-store: a handle is opened at each check while the file is malformed, and each handle is closed by the garbage collector.
+- A malformed file is read lazily by crypton-x509-store; when parsing stops before the end of the file, its handle is closed by the garbage collector.
 - Contents of log lines:
   - fixed text;
   - file paths;
