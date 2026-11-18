@@ -123,6 +123,9 @@ data CredentialError
   | CEUnsupportedHTTPSKey
   deriving (Eq, Show)
 
+instance E.Exception CredentialError where
+  displayException = T.unpack . credentialErrorText
+
 type SNICredentialUsed = Bool
 
 mkTransportServerConfig :: Bool -> Maybe [ALPN] -> Bool -> TransportServerConfig

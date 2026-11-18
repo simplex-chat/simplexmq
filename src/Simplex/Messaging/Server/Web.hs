@@ -49,12 +49,12 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Server (CredentialError, ReloadableCredential (ReloadableCredential, currentCredential), ServerCredentials (..), loadServerCredential, newReloadableCredential, withCredentialReload)
+import Simplex.Messaging.Transport.Server (CredentialError, ReloadableCredential (ReloadableCredential, currentCredential), ServerCredentials (..), loadCredential, newReloadableCredential, withCredentialReload)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
-import UnliftIO.Exception (bracket, finally)
+import UnliftIO.Exception (bracket, finally, throwIO)
 import UnliftIO.STM (readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
@@ -91,7 +91,7 @@ runHTTPSServer :: WebHttpsParams -> Application -> IO ()
 runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheckInterval} app = do
   logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
   let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
-  reloadable <- newReloadableCredential checkCredential creds =<< loadServerCredential creds
+  reloadable <- newReloadableCredential checkCredential creds =<< either throwIO pure =<< loadCredential creds
   withCredentialReload credentialCheckInterval reloadable $
     WT.runTLS (tlsSettings reloadable) (mkSettings port) app
   where
