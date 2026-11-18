@@ -673,7 +673,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
           _ -> SPMMessages
 #endif
 
-checkHTTPSCredentials :: T.Credential -> Either CredentialError ()
+checkHTTPSCredentials :: CredentialCheck
 checkHTTPSCredentials (X.CertificateChain cc, _k) =
   -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
   case map (X.signedObject . X.getSigned) cc of

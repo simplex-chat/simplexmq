@@ -13,6 +13,7 @@ module Simplex.Messaging.Transport.Server
     TLSServerCredential (..),
     ReloadableCredential (..),
     CredentialError (..),
+    CredentialCheck,
     SNICredentialUsed,
     AddHTTP,
     mkTransportServerConfig,
@@ -111,7 +112,7 @@ data TLSServerCredential = TLSServerCredential
 
 data ReloadableCredential = ReloadableCredential
   { credentialFiles :: ServerCredentials,
-    checkCredential :: T.Credential -> Either CredentialError (),
+    checkCredential :: CredentialCheck,
     currentCredential :: TVar T.Credential
   }
 
@@ -126,6 +127,8 @@ data CredentialError
   | CEInvalidECPoint
   | CEUnsupportedHTTPSKey
   deriving (Eq, Show)
+
+type CredentialCheck = T.Credential -> Either CredentialError ()
 
 instance E.Exception CredentialError where
   displayException = T.unpack . credentialErrorText
@@ -309,7 +312,7 @@ loadServerCredential creds =
     Right credential -> pure credential
     Left e -> putStrLn ("invalid credential: " <> T.unpack (credentialErrorText e)) >> exitFailure
 
-acceptCredential :: T.Credential -> Either CredentialError ()
+acceptCredential :: CredentialCheck
 acceptCredential _ = Right ()
 
 loadCredential :: ServerCredentials -> IO (Either CredentialError T.Credential)
@@ -317,7 +320,7 @@ loadCredential ServerCredentials {caCertificateFile, certificateFile, privateKey
   (first (const CENoPrivateKey) <$> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
     `E.catches` [E.Handler (pure . Left . CEReadError), E.Handler (\(PEMError e) -> pure . Left $ CEPEMError e)]
 
-newReloadableCredential :: (T.Credential -> Either CredentialError ()) -> ServerCredentials -> T.Credential -> IO ReloadableCredential
+newReloadableCredential :: CredentialCheck -> ServerCredentials -> T.Credential -> IO ReloadableCredential
 newReloadableCredential checkCredential credentialFiles cred = ReloadableCredential credentialFiles checkCredential <$> newTVarIO cred
 
 withCredentialReload :: Int -> ReloadableCredential -> IO () -> IO ()
@@ -350,14 +353,14 @@ data ReloadDecision
   | RDRejectedAgain
   deriving (Eq, Show)
 
-checkLoadedCredential :: (T.Credential -> Either CredentialError ()) -> T.Credential -> Maybe (Either CredentialError T.Credential) -> Either CredentialError T.Credential -> ReloadDecision
+checkLoadedCredential :: CredentialCheck -> T.Credential -> Maybe (Either CredentialError T.Credential) -> Either CredentialError T.Credential -> ReloadDecision
 checkLoadedCredential checkCredential current rejected loaded = case loaded of
   Right cred | cred == current -> RDUnchanged
   _ | rejected == Just loaded -> RDRejectedAgain
   Right cred -> either RDRejected (const $ RDAccepted cred) (checkCredential cred >> checkKeyPair cred)
   Left e -> RDRejected e
 
-checkKeyPair :: T.Credential -> Either CredentialError ()
+checkKeyPair :: CredentialCheck
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
   [] -> Left CENoCertificate
   publicKey : _ -> case (publicKey, privateKey) of

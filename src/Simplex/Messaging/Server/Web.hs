@@ -49,7 +49,7 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
-import Simplex.Messaging.Transport.Server (CredentialError, ReloadableCredential (ReloadableCredential, currentCredential), ServerCredentials (..), loadCredential, newReloadableCredential, withCredentialReload)
+import Simplex.Messaging.Transport.Server (CredentialCheck, ReloadableCredential (ReloadableCredential, currentCredential), ServerCredentials (..), loadCredential, newReloadableCredential, withCredentialReload)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
@@ -68,7 +68,7 @@ data WebHttpsParams = WebHttpsParams
   { port :: Int,
     cert :: FilePath,
     key :: FilePath,
-    checkCredential :: TLS.Credential -> Either CredentialError (),
+    checkCredential :: CredentialCheck,
     credentialCheckInterval :: Int
   }
 
