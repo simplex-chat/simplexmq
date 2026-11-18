@@ -1725,8 +1725,8 @@ webCredentialTests = do
         r -> expectationFailure $ "Expected CEPEMError, got: " <> show (void r)
     it "should reject an EC point that is not on its curve" $ do
       Right (X.CertificateChain (signed : _), privateKey) <- loadCredential (credentialFiles (fixtureFile "web_ecdsa" ".crt") (fixtureFile "web_ecdsa" ".key"))
-      X.PubKeyEC (X.PubKeyEC_Named curveName _) <- pure . X.certPubKey $ X.getCertificate signed
-      let offCurvePoint = X.SerializedPoint $ B.cons '\x04' (B.replicate 64 '\x01')
+      X.PubKeyEC (X.PubKeyEC_Named curveName (X.SerializedPoint point)) <- pure . X.certPubKey $ X.getCertificate signed
+      let offCurvePoint = X.SerializedPoint $ B.take 1 point <> B.map (const '\x01') (B.drop 1 point)
           certificate = (X.getCertificate signed) {X.certPubKey = X.PubKeyEC $ X.PubKeyEC_Named curveName offCurvePoint}
           (offCurveSigned, ()) = X.objectToSignedExact (\_ -> ("", X.SignatureALG X.HashSHA256 X.PubKeyALG_EC, ())) certificate
       checkKeyPair (X.CertificateChain [offCurveSigned], privateKey) `shouldBe` Left CEInvalidECPoint
@@ -1736,16 +1736,16 @@ webCredentialTests = do
       Right renewed <- loadCredential (credentialFiles (fixtureFile "web2" ".crt") (fixtureFile "web2" ".key"))
       Right mismatched <- loadCredential (credentialFiles (fixtureFile "web2" ".crt") (fixtureFile "web" ".key"))
       Right otherMismatched <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web2" ".key"))
-      let check = checkLoadedCredential acceptCredential current
+      let checkLoaded = checkLoadedCredential acceptCredential current
           rejected = Just (Right mismatched)
-      check Nothing (Right current) `shouldBe` RDUnchanged
-      check Nothing (Right mismatched) `shouldBe` RDRejected CEKeyMismatch
-      check rejected (Right mismatched) `shouldBe` RDRejectedAgain
-      check rejected (Right otherMismatched) `shouldBe` RDRejected CEKeyMismatch
-      check rejected (Left CENoPrivateKey) `shouldBe` RDRejected CENoPrivateKey
-      check (Just (Left CENoPrivateKey)) (Left CENoPrivateKey) `shouldBe` RDRejectedAgain
-      check rejected (Right renewed) `shouldBe` RDAccepted renewed
-      check rejected (Right current) `shouldBe` RDUnchanged
+      checkLoaded Nothing (Right current) `shouldBe` RDUnchanged
+      checkLoaded Nothing (Right mismatched) `shouldBe` RDRejected CEKeyMismatch
+      checkLoaded rejected (Right mismatched) `shouldBe` RDRejectedAgain
+      checkLoaded rejected (Right otherMismatched) `shouldBe` RDRejected CEKeyMismatch
+      checkLoaded rejected (Left CENoPrivateKey) `shouldBe` RDRejected CENoPrivateKey
+      checkLoaded (Just (Left CENoPrivateKey)) (Left CENoPrivateKey) `shouldBe` RDRejectedAgain
+      checkLoaded rejected (Right renewed) `shouldBe` RDAccepted renewed
+      checkLoaded rejected (Right current) `shouldBe` RDUnchanged
     it "should reject an RSA 2048 credential with checkHTTPSCredentials and accept it with acceptCredential" $ do
       Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
       Right rsa2048 <- loadCredential (credentialFiles (fixtureFile "web_rsa2048" ".crt") (fixtureFile "web_rsa2048" ".key"))
