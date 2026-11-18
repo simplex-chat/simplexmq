@@ -1723,7 +1723,7 @@ webCredentialTests = do
       checkKeyPair (chain, X.PrivKeyEC (X.PrivKeyEC_Named ECC.SEC_p384r1 d)) `shouldBe` Left CEKeyMismatch
     it "should reject an empty certificate file" $ do
       writeFile (testPath "empty.crt") ""
-      credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left CENoCertificate
+      keyPairCheckFiles (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left CENoCertificate
     it "should reject a missing key file and a malformed certificate file" $ do
       writeFile (testPath "malformed.crt") "-----BEGIN CERTIFICATE-----\n"
       loadCredential (credentialFiles (fixtureFile "web" ".crt") (testPath "missing.key")) >>= \case
@@ -1766,9 +1766,9 @@ webCredentialTests = do
       checkLoadedCredential checkHTTPSCredentials current Nothing (Right p384) `shouldBe` RDRejected CEUnsupportedHTTPSKey
       checkLoadedCredential acceptCredential current Nothing (Right p384) `shouldBe` RDRejected (CEUnsupportedCurve ECC.SEC_p384r1)
   where
-    keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
+    keyPairCheck certName keyName = keyPairCheckFiles (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     loadFixture certName keyName = loadCredential $ credentialFiles (fixtureFile certName ".crt") (fixtureFile keyName ".key")
-    credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
+    keyPairCheckFiles certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
     credentialFiles certificateFile privateKeyFile = ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
