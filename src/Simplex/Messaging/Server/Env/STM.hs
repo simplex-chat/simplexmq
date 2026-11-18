@@ -677,8 +677,11 @@ checkHTTPSCredentials :: T.Credential -> Either CredentialError ()
 checkHTTPSCredentials (X.CertificateChain cc, _k) =
   -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
   case map (X.signedObject . X.getSigned) cc of
-    X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> Right ()
+    X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= minHTTPSRSAKeyBytes -> Right ()
     _ -> Left CEUnsupportedHTTPSKey
+
+minHTTPSRSAKeyBytes :: Int
+minHTTPSRSAKeyBytes = 512
 
 noPostgresExit :: IO a
 noPostgresExit = putStrLn noPostgresExitStr >> exitFailure
