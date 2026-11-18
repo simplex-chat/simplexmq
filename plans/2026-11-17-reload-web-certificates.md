@@ -22,12 +22,12 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `currentCredential :: TVar T.Credential`: the credential in use.
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
 - The `TVar` is read in `onServerNameIndication`, at each handshake that the hook is called for. The hook is set in:
-  - `supportedTLSServerParams`, on the protocol port, for handshakes with SNI;
-  - `tlsServerHooks` of warp-tls, with empty `tlsCredentials`, on the separate port, for every handshake.
+  - `supportedTLSServerParams`, protocol port: handshakes with SNI;
+  - `tlsServerHooks` of warp-tls with empty `tlsCredentials`, separate port: all handshakes.
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
-- In `checkKeyPair`, the public key of the leaf certificate is compared with a public key obtained from the private key file, as the section "Key-pair check" shows.
+- In `checkKeyPair`, the public key of the leaf certificate is compared with a public key obtained from the private key file, as shown in the section "Key-pair check".
 - xftp-server accepts any key type at start, and only the key types of `checkKeyPair` after a change of the files.
 - Errors are values of `CredentialError`:
   - `CEReadError`: an `IOException` from reading a file;
@@ -56,22 +56,46 @@ checkKeyPair (chain, privateKey):
   (RSA k, RSA pk) -> CEKeyMismatch unless private_pub pk == k
   (Ed25519 k, Ed25519 pk) -> CEKeyMismatch unless toPublic pk == k
   (Ed448 k, Ed448 pk) -> CEKeyMismatch unless toPublic pk == k
-  (EC curve point, EC curve' d) ->
+  (EC named curve point, EC named curve' d) ->
     publicPoint <- unserializePoint curve point, else CEInvalidECPoint
     CEKeyMismatch unless curve == curve' && publicPoint == pointBaseMul curve d
   same algorithm -> CEUnsupportedKeyType algorithm
   other algorithms -> CEKeyMismatch
 ```
 
+```mermaid
+flowchart TD
+    A[leaf certificate key, private key]
+    E[CENoCertificate]
+    P{key types}
+    C[public key compared]
+    D{EC point decoded and on its curve}
+    M[CEKeyMismatch]
+    I[CEInvalidECPoint]
+    U[CEUnsupportedKeyType]
+    OK[Right]
+    A -- "chain empty" --> E
+    A --> P
+    P -- "RSA, Ed25519, Ed448" --> C
+    P -- "EC on named curves" --> D
+    D -- "no" --> I
+    D -- "yes, curves compared" --> C
+    P -- "same algorithm, other type" --> U
+    P -- "different algorithms" --> M
+    C -- "equal" --> OK
+    C -- "different" --> M
+```
+
 ## Start
 
-Green: changed.
+Green: added or changed.
 
 ```mermaid
 flowchart LR
     F[web.crt, web.key]
     L[loadServerCredential]
     N[newEnv of smp-server]
+    XE[newXFTPServerEnv]
     W[runHTTPSServer]
     X[exit with code 1]
     S[serveStaticFiles log]
@@ -80,11 +104,13 @@ flowchart LR
     L -- "changed - CredentialError: invalid credential: reason" --> X
     L -- "loaded credential" --> N
     N -- "changed - checkHTTPSCredentials error: Error: reason, certbot hint" --> X
-    N -- "credential accepted" --> V
-    F -- "loaded" --> W
-    W -- "changed - CredentialError thrown, displayException" --> S
-    W -- "credential loaded" --> V
-    linkStyle 1,3,6 stroke:#008800
+    N -- "added - credential accepted" --> V
+    F -- "added - loaded" --> W
+    W -- "added - CredentialError thrown, displayException" --> S
+    W -- "added - credential loaded" --> V
+    L -- "loaded credential" --> XE
+    XE -- "added - credential accepted" --> V
+    linkStyle 1,3,4,5,6,7,9 stroke:#008800
 ```
 
 ## Reload thread
@@ -129,13 +155,13 @@ stateDiagram-v2
 - Unreadable or unparsable files and a mismatched pair are rejected, and the previous credential is kept in use.
 - A certificate file read while it is being copied, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread is ended only together with its listener.
-- A malformed file is read lazily by crypton-x509-store; its handle is closed by the garbage collector, once per interval while the file is malformed.
+- A malformed file is read lazily by crypton-x509-store: a handle is opened at each check while the file is malformed, and each handle is closed by the garbage collector.
 - Contents of log lines:
   - fixed text;
   - file paths;
   - messages of the PEM parser and of `IOException`;
   - the key algorithm of a certificate.
-- `pointBaseMul` is computed in variable time on the private scalar, once per change of the files in each reload thread; its computation is started only by a change of the files.
+- `pointBaseMul` is computed in variable time on the private scalar, once per change of the files in each reload thread.
 
 ## Composition
 
