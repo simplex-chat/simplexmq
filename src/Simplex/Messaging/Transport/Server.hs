@@ -354,7 +354,7 @@ checkLoadedCredential :: (T.Credential -> Either CredentialError ()) -> T.Creden
 checkLoadedCredential checkCredential current rejected loaded = case loaded of
   Right cred | cred == current -> RDUnchanged
   _ | rejected == Just loaded -> RDRejectedAgain
-  Right cred -> either RDRejected (const $ RDAccepted cred) (checkKeyPair cred >> checkCredential cred)
+  Right cred -> either RDRejected (const $ RDAccepted cred) (checkCredential cred >> checkKeyPair cred)
   Left e -> RDRejected e
 
 checkKeyPair :: T.Credential -> Either CredentialError ()

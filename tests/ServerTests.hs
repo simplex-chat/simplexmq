@@ -1754,6 +1754,11 @@ webCredentialTests = do
       Right rsa2048 <- loadCredential (credentialFiles (fixtureFile "web_rsa2048" ".crt") (fixtureFile "web_rsa2048" ".key"))
       checkLoadedCredential checkHTTPSCredentials current Nothing (Right rsa2048) `shouldBe` RDRejected CEUnsupportedHTTPSKey
       checkLoadedCredential acceptCredential current Nothing (Right rsa2048) `shouldBe` RDAccepted rsa2048
+    it "should report the error of checkHTTPSCredentials before the key-pair check" $ do
+      Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
+      Right p384 <- loadCredential (credentialFiles (fixtureFile "web_ecdsa384" ".crt") (fixtureFile "web_ecdsa384" ".key"))
+      checkLoadedCredential checkHTTPSCredentials current Nothing (Right p384) `shouldBe` RDRejected CEUnsupportedHTTPSKey
+      checkLoadedCredential acceptCredential current Nothing (Right p384) `shouldBe` RDRejected (CEUnsupportedCurve ECC.SEC_p384r1)
   where
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
