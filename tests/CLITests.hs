@@ -104,7 +104,7 @@ cliTests = do
   describe "Static site on HTTPS port" $ do
     it "should serve the replaced web certificate with a 4096-bit RSA key without restart" testStaticSiteCertReload
     it "should throw the error of an invalid credential at start" testStaticSiteInvalidCredential
-  describe "Web credentials at start" $ do
+  describe "Server start" $ do
     it "should exit with the reason of a rejected web certificate" testStartRejectedWebCertificate
     it "should exit with the reason of an invalid credential" testStartInvalidCredential
 
