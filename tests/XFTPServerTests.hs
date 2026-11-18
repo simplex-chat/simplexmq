@@ -505,6 +505,7 @@ testSNICertReload = do
   withXFTPServerCfg cfg $ \_ -> do
     testWebCredentialReload xftpTestPort
     testWebCredentialReplaced xftpTestPort "web_ecdsa" "web_ecdsa"
+    testWebCredentialReplaced xftpTestPort "web_ecdsa384" "web_ecdsa"
   where
     XFTPServerConfig {transportConfig} = testXFTPServerConfigSNI
     cfg =

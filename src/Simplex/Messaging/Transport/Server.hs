@@ -122,6 +122,7 @@ data CredentialError
   | CENoCertificate
   | CEKeyMismatch
   | CEUnsupportedKeyType X.PubKeyALG
+  | CEUnsupportedCurve ECC.CurveName
   | CEInvalidECPoint
   | CEUnsupportedHTTPSKey
   deriving (Eq, Show)
@@ -363,11 +364,13 @@ checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X
     (X.PubKeyRSA k, X.PrivKeyRSA pk) -> matching $ RSA.private_pub pk == k
     (X.PubKeyEd25519 k, X.PrivKeyEd25519 pk) -> matching $ Ed25519.toPublic pk == k
     (X.PubKeyEd448 k, X.PrivKeyEd448 pk) -> matching $ Ed448.toPublic pk == k
-    (X.PubKeyEC (X.PubKeyEC_Named curveName point), X.PrivKeyEC (X.PrivKeyEC_Named curveName' d)) ->
-      let curve = ECC.getCurveByName curveName
-       in case unserializePoint curve point of
-            Just publicPoint -> matching $ curveName == curveName' && publicPoint == ECC.pointBaseMul curve d
-            Nothing -> Left CEInvalidECPoint
+    (X.PubKeyEC (X.PubKeyEC_Named curveName point), X.PrivKeyEC (X.PrivKeyEC_Named curveName' d))
+      | curveName /= tlsSigningCurve -> Left $ CEUnsupportedCurve curveName
+      | otherwise ->
+          let curve = ECC.getCurveByName curveName
+           in case unserializePoint curve point of
+                Just publicPoint -> matching $ curveName == curveName' && publicPoint == ECC.pointBaseMul curve d
+                Nothing -> Left CEInvalidECPoint
     _
       | X.pubkeyToAlg publicKey == X.privkeyToAlg privateKey -> Left $ CEUnsupportedKeyType (X.pubkeyToAlg publicKey)
       | otherwise -> Left CEKeyMismatch
@@ -382,11 +385,15 @@ credentialErrorText = \case
   CENoCertificate -> "no certificate"
   CEKeyMismatch -> "private key of another certificate"
   CEUnsupportedKeyType alg -> "unsupported key type " <> tshow alg
+  CEUnsupportedCurve curveName -> "unsupported EC curve " <> tshow curveName <> ", required " <> tshow tlsSigningCurve
   CEInvalidECPoint -> "invalid or unsupported EC point"
   CEUnsupportedHTTPSKey -> "unsupported HTTPS credentials, required " <> tshow minHTTPSRSAKeyBits <> "-bit RSA"
 
 minHTTPSRSAKeyBits :: Int
 minHTTPSRSAKeyBits = 4096
+
+tlsSigningCurve :: ECC.CurveName
+tlsSigningCurve = ECC.SEC_p256r1
 
 supportedTLSServerParams :: T.Supported -> TLSServerCredential -> TVar SNICredentialUsed -> Maybe [ALPN] -> T.ServerParams
 supportedTLSServerParams serverSupported TLSServerCredential {credential, sniCredential} sniCredUsed alpn_ =

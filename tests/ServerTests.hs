@@ -24,6 +24,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import qualified Crypto.PubKey.ECC.Types as ECC
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -1712,6 +1713,8 @@ webCredentialTests = do
       keyPairCheck "web" "web_ecdsa" `shouldReturn` Left CEKeyMismatch
     it "should reject an unsupported key type" $
       keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left (CEUnsupportedKeyType X.PubKeyALG_DSA)
+    it "should reject an EC key pair on a curve other than P-256" $
+      keyPairCheck "web_ecdsa384" "web_ecdsa384" `shouldReturn` Left (CEUnsupportedCurve ECC.SEC_p384r1)
     it "should reject an empty certificate file" $ do
       writeFile (testPath "empty.crt") ""
       credentialCheck (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left CENoCertificate
