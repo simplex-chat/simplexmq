@@ -42,7 +42,7 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `CEUnsupportedKeyType`: a certificate and a private key of one key type outside those of `checkKeyPair`;
   - `CEInvalidECPoint`: an EC point other than an uncompressed point on its curve;
   - `CEUnsupportedHTTPSKey`: on smp-server, a key other than RSA of at least `minHTTPSRSAKeyBits` (4096).
-- The reload thread is run by `withCredentialReload`, in `race_` with the listener that reads its `TVar`; both threads are ended by an exception in either one. Functions that call `withCredentialReload`:
+- The reload thread is run by `withCredentialReload`, in `race_` with the listener in which its `TVar` is read; both threads are ended by an exception in either one. `withCredentialReload` is called in:
   - `runTransportServerSocketState`, for an SNI credential;
   - `runHTTPSServer`.
 - xftp-server with `[WEB] https` and `[WEB] static_path` builds two `ReloadableCredential` values from the same files, one for SNI and one for the separate port; each one is reloaded and logged by its own thread.
@@ -59,8 +59,9 @@ State: the last rejection, `Maybe (CredentialError, Maybe T.Credential)`, initia
 ```
 checkFiles rejected:
   wait credentialCheckInterval
+  current <- read currentCredential
   loaded <- loadCredential credentialFiles
-  case checkLoadedCredential checkCredential currentCredential rejected loaded of
+  case checkLoadedCredential checkCredential current rejected loaded of
     CCUnchanged -> checkFiles Nothing
     CCAccepted cred -> write cred to currentCredential; log "reloaded credential"; checkFiles Nothing
     CCRejected rejection -> log "rejected credential" with the reason; checkFiles (Just rejection)
@@ -91,14 +92,14 @@ stateDiagram-v2
 ## Threat model
 
 - The certificate and key files are written by the renewal job of the operator and are trusted as at start.
-- An unreadable file, a file that cannot be parsed, and a mismatched pair are rejected, and the previous credential is kept in use.
-- A certificate file read during its copy, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
+- Unreadable or unparsable files and a mismatched pair are rejected, and the previous credential is kept in use.
+- A certificate file read while it is being copied, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread is ended only together with its listener.
 - A malformed file is read lazily by crypton-x509-store; its handle is closed by the garbage collector, once per interval while the file stays malformed.
 - Contents of log lines:
   - fixed text;
   - file paths;
-  - parser messages and `IOException` messages;
+  - messages of the PEM parser and of `IOException`;
   - the key algorithm of a certificate.
 - `pointBaseMul` is computed in variable time on the private scalar, once per interval while the files differ from the credential in use; network responses are independent of its time.
 
@@ -129,7 +130,7 @@ flowchart LR
     R -- "added - replaced" --> V
     V -- "added - read" --> H
     L -- "added - race_" --> R
-    L -- "calls at each handshake" --> H
+    L -- "called at each handshake" --> H
     W -- "added - CredentialError thrown" --> S
     classDef removed fill:#f4cccc,stroke:#cc0000
     classDef added fill:#d9ead3,stroke:#008800
@@ -139,7 +140,7 @@ flowchart LR
     linkStyle 1,2,3,7,8,9,10,12 stroke:#008800
 ```
 
-## Copy of a renewed certificate
+## A renewed certificate copied into place
 
 For a copier that writes `web.crt` before `web.key`:
 
@@ -162,7 +163,7 @@ The reverse order is handled the same way.
 
 ## Tests
 
-In the reload tests, the fixture files are copied into the test directory and replaced there; in the credential check tests, the fixtures are read directly.
+Fixture files are copied into the test directory and replaced there for the reload tests, and read in place for the credential check tests.
 
 - Transport: on a TLS server with an SNI `ReloadableCredential`, `web.crt` is served to a client with SNI, then `web2.crt` after the files are replaced.
 - Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
@@ -178,6 +179,7 @@ In the reload tests, the fixture files are copied into the test directory and re
   - an empty key file: `invalid credential: no private key`.
 - Credential check, with the expected error:
   - RSA, ECDSA, Ed448 and Ed25519 pairs: accepted when matching, `CEKeyMismatch` with another key of the same type;
+  - a key of another type: `CEKeyMismatch`;
   - DSA certificate: `CEUnsupportedKeyType`;
   - empty certificate file: `CENoCertificate`;
   - missing key file: `CEReadError`;
