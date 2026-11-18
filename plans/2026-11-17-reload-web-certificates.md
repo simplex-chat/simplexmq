@@ -21,17 +21,13 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `checkCredential`: the check of the server type;
   - `currentCredential :: TVar T.Credential`: the credential in use.
 - `ReloadableCredential` is stored in `TLSServerCredential.sniCredential` and in `httpServerCreds` of both Env types.
-- The `TVar` is read in `onServerNameIndication`. The hook is set in:
-  - `supportedTLSServerParams`, on the protocol port, where the `TVar` is read at each handshake with SNI;
-  - `tlsServerHooks` of warp-tls, with empty `tlsCredentials`, on the separate port, where the `TVar` is read at each handshake.
+- The `TVar` is read in `onServerNameIndication`, at each handshake that the hook is called for. The hook is set in:
+  - `supportedTLSServerParams`, on the protocol port, for handshakes with SNI;
+  - `tlsServerHooks` of warp-tls, with empty `tlsCredentials`, on the separate port, for every handshake.
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
-- In `checkKeyPair`, the public key of the leaf certificate is compared with a public key obtained from the private key file. Sources of that key:
-  - RSA: the public fields stored with the private key;
-  - Ed25519, Ed448: `toPublic` of the private key;
-  - ECDSA on named curves: `pointBaseMul` of the private scalar, after the certificate point is decoded and validated and the curve names are found equal.
-- Other key types are rejected.
+- In `checkKeyPair`, the public key of the leaf certificate is compared with a public key obtained from the private key file, as the section "Key-pair check" shows.
 - xftp-server accepts any key type at start, and only the key types of `checkKeyPair` after a change of the files.
 - Errors are values of `CredentialError`:
   - `CEReadError`: an `IOException` from reading a file;
@@ -47,10 +43,49 @@ A renewed Let's Encrypt certificate is served only after a restart. A server tha
   - `runHTTPSServer`.
 - xftp-server with `[WEB] https` and `[WEB] static_path` builds two `ReloadableCredential` values from the same files, used by the SNI listener and the separate port; each event is logged twice, by their two reload threads.
 - On the separate port, `CENoPrivateKey` and the other errors of a credential that cannot be loaded at start are thrown as `CredentialError` and logged in `serveStaticFiles` with their reason.
-- The interval is `credentialCheckInterval`, 60 seconds by default. The interval is set in:
+- The interval, `credentialCheckInterval` (60 seconds by default), is set in:
   - SNI: `TransportServerConfig`;
   - separate port: `WebHttpsParams`.
 - The key-pair check is listed in `protocol/crypto-registry.md` as a restricted use.
+
+## Key-pair check
+
+```
+checkKeyPair (chain, privateKey):
+  chain empty -> CENoCertificate
+  (RSA k, RSA pk) -> CEKeyMismatch unless private_pub pk == k
+  (Ed25519 k, Ed25519 pk) -> CEKeyMismatch unless toPublic pk == k
+  (Ed448 k, Ed448 pk) -> CEKeyMismatch unless toPublic pk == k
+  (EC curve point, EC curve' d) ->
+    publicPoint <- unserializePoint curve point, else CEInvalidECPoint
+    CEKeyMismatch unless curve == curve' && publicPoint == pointBaseMul curve d
+  same algorithm -> CEUnsupportedKeyType algorithm
+  other algorithms -> CEKeyMismatch
+```
+
+## Start
+
+Green: changed.
+
+```mermaid
+flowchart LR
+    F[web.crt, web.key]
+    L[loadServerCredential]
+    N[newEnv of smp-server]
+    W[runHTTPSServer]
+    X[exit with code 1]
+    S[serveStaticFiles log]
+    V[ReloadableCredential]
+    F -- "loaded" --> L
+    L -- "changed - CredentialError: invalid credential: reason" --> X
+    L -- "loaded credential" --> N
+    N -- "changed - checkHTTPSCredentials error: Error: reason, certbot hint" --> X
+    N -- "credential accepted" --> V
+    F -- "loaded" --> W
+    W -- "changed - CredentialError thrown, displayException" --> S
+    W -- "credential loaded" --> V
+    linkStyle 1,3,6 stroke:#008800
+```
 
 ## Reload thread
 
@@ -94,13 +129,13 @@ stateDiagram-v2
 - Unreadable or unparsable files and a mismatched pair are rejected, and the previous credential is kept in use.
 - A certificate file read while it is being copied, cut at a PEM boundary, is parsed as a shorter chain; with a reused key, that chain is served until the whole file is read at the next check.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread is ended only together with its listener.
-- A malformed file is read lazily by crypton-x509-store; its handle is closed by the garbage collector, once per interval while the file stays malformed.
+- A malformed file is read lazily by crypton-x509-store; its handle is closed by the garbage collector, once per interval while the file is malformed.
 - Contents of log lines:
   - fixed text;
   - file paths;
   - messages of the PEM parser and of `IOException`;
   - the key algorithm of a certificate.
-- `pointBaseMul` is computed in variable time on the private scalar, once per change of the files in each reload thread; network responses are independent of its time.
+- `pointBaseMul` is computed in variable time on the private scalar, once per change of the files in each reload thread; its computation is started only by a change of the files.
 
 ## Composition
 
@@ -162,7 +197,7 @@ The reverse order is handled the same way.
 
 ## Tests
 
-Fixture files are copied into the test directory for the reload and start tests. The credential check tests read them in place, with empty and malformed files written in the test directory.
+Fixture files are copied into the test directory for the reload tests, the static site start test and the start test of a rejected certificate. The other tests read them in place, with empty and malformed files written in the test directory.
 
 - Transport: on a TLS server with an SNI `ReloadableCredential`, `web.crt` is served to a client with SNI, then `web2.crt` after the files are replaced.
 - Key pair: the new certificate with the old key is not served; after the new key is written, the new certificate is served.
