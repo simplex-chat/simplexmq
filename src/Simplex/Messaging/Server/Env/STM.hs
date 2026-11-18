@@ -582,7 +582,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   httpServerCreds <- forM httpCredentials $ \creds -> do
     cred <- getCredentials "HTTPS" creds
     either exitUnsupportedHTTPS pure $ checkHTTPSCredentials cred
-    newReloadableCredential creds cred
+    newReloadableCredential checkHTTPSCredentials creds cred
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime

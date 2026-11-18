@@ -208,11 +208,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       env <- ask
       liftIO $ case (httpCreds_, attachHTTP_) of
         (Just httpCreds, Just attachHTTP) | addHTTP ->
-          withCredentialReload checkHTTPSCredentials (credentialCheckInterval tCfg) httpCreds $
-            runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
-              case cast h of
-                Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
-                _ -> runClient srvCert srvSignKey t h `runReaderT` env
+          runTransportServerState_ ss started tcpPort defaultSupportedParamsHTTPS combinedCreds tCfg $ \s (sniUsed, h) ->
+            case cast h of
+              Just (TLS {tlsContext} :: TLS 'TServer) | sniUsed -> labelMyThread "https client" >> attachHTTP s tlsContext
+              _ -> runClient srvCert srvSignKey t h `runReaderT` env
           where
             combinedCreds = TLSServerCredential {credential = smpCreds, sniCredential = Just httpCreds}
         _ ->

@@ -56,7 +56,7 @@ import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..)
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
 import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Credentials
-import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_, withCredentialReload)
+import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -1682,12 +1682,11 @@ webCredentialTests = do
   it "should serve the replaced SNI certificate in transport server without restart" $ do
     copyWebCredential "web"
     credential <- loadServerCredential ntfTestServerCredentials
-    sniCredential <- newReloadableCredential testWebCredentials =<< loadServerCredential testWebCredentials
+    sniCredential <- newReloadableCredential acceptCredential testWebCredentials =<< loadServerCredential testWebCredentials
     ss <- newSocketState
     let srvCreds = TLSServerCredential {credential, sniCredential = Just sniCredential}
-        runServer started =
-          withCredentialReload acceptCredential testCredentialCheckInterval sniCredential $
-            runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds (mkTransportServerConfig True Nothing False) $ \_ _ -> pure ()
+        tCfg = (mkTransportServerConfig True Nothing False) {credentialCheckInterval = testCredentialCheckInterval}
+        runServer started = runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds tCfg $ \_ _ -> pure ()
     serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
   it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ do
     copyWebCredential "web"

@@ -108,6 +108,7 @@ data TLSServerCredential = TLSServerCredential
 
 data ReloadableCredential = ReloadableCredential
   { credentialFiles :: ServerCredentials,
+    checkCredential :: T.Credential -> Either CredentialError (),
     currentCredential :: TVar T.Credential
   }
 
@@ -172,9 +173,12 @@ runTransportServerSocket started getSocket threadLabel srvParams cfg server = do
       (False,) <$> getTransportConnection tCfg True (X.CertificateChain []) tls
 
 runTransportServerSocketState :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> T.Supported -> TLSServerCredential -> TransportServerConfig -> (Socket -> (SNICredentialUsed, c 'TServer) -> IO ()) -> IO ()
-runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds cfg server =
-  runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS server
+runTransportServerSocketState ss started getSocket threadLabel srvSupported srvCreds@TLSServerCredential {sniCredential} cfg server =
+  case sniCredential of
+    Just reloadable -> withCredentialReload (credentialCheckInterval cfg) reloadable runServer
+    Nothing -> runServer
   where
+    runServer = runTransportServerSocketState_ ss started getSocket threadLabel (tlsSetupTimeout cfg) setupTLS server
     tCfg = serverTransportConfig cfg
     setupTLS conn = do
       sniUsed <- newTVarIO False
@@ -306,14 +310,14 @@ loadCredential ServerCredentials {caCertificateFile, certificateFile, privateKey
   (first (const CENoPrivateKey) <$> T.credentialLoadX509Chain certificateFile (maybeToList caCertificateFile) privateKeyFile)
     `E.catches` [E.Handler (pure . Left . CEReadError), E.Handler (\(PEMError e) -> pure . Left $ CEPEMError e)]
 
-newReloadableCredential :: ServerCredentials -> T.Credential -> IO ReloadableCredential
-newReloadableCredential credentialFiles cred = ReloadableCredential credentialFiles <$> newTVarIO cred
+newReloadableCredential :: (T.Credential -> Either CredentialError ()) -> ServerCredentials -> T.Credential -> IO ReloadableCredential
+newReloadableCredential checkCredential credentialFiles cred = ReloadableCredential credentialFiles checkCredential <$> newTVarIO cred
 
-withCredentialReload :: (T.Credential -> Either CredentialError ()) -> Int -> ReloadableCredential -> IO () -> IO ()
-withCredentialReload checkCredential interval reloadable = race_ (reloadCredential checkCredential interval reloadable)
+withCredentialReload :: Int -> ReloadableCredential -> IO () -> IO ()
+withCredentialReload interval reloadable = race_ (reloadCredential interval reloadable)
 
-reloadCredential :: (T.Credential -> Either CredentialError ()) -> Int -> ReloadableCredential -> IO a
-reloadCredential checkCredential interval ReloadableCredential {credentialFiles = creds@ServerCredentials {certificateFile}, currentCredential} = do
+reloadCredential :: Int -> ReloadableCredential -> IO a
+reloadCredential interval ReloadableCredential {credentialFiles = creds@ServerCredentials {certificateFile}, checkCredential, currentCredential} = do
   labelMyThread "reloadCredential"
   checkFiles Nothing
   where
