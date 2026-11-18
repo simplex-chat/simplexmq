@@ -2,7 +2,7 @@
 
 ## Problem
 
-smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) once, at start: in `newEnv` (`Server/Env/STM.hs`), in `newXFTPServerEnv` (`FileTransfer/Server/Env.hs`) and by warp-tls in `serveStaticFiles` (`Server/Web.hs`). A renewed Let's Encrypt certificate is served only after a restart. A server that runs longer than 60 days after the last renewal serves an expiring, then an expired certificate to browsers and web clients.
+smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) once, at start: in `newEnv` (`Server/Env/STM.hs`), in `newXFTPServerEnv` (`FileTransfer/Server/Env.hs`) and by warp-tls in `serveStaticFiles` (`Server/Web.hs`). A renewed Let's Encrypt certificate is served only after a restart. A server that runs longer than 60 days after the last restart serves an expiring, then an expired certificate to browsers and web clients.
 
 ## Decisions
 
@@ -10,7 +10,7 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
   - SNI on the protocol port (`TLSServerCredential.sniCredential`);
   - the separate HTTPS port of the static site (`runHTTPSServer`).
 - The protocol credential (`server.crt`, `server.key`) is read at start only, as before.
-- `ReloadableCredential` contains:
+- The fields of `ReloadableCredential`:
   - `credentialFiles`: the files of the web credential;
   - `checkCredential`: the check of the server type;
   - `currentCredential :: TVar T.Credential`: the credential in use.
@@ -21,23 +21,24 @@ smp-server and xftp-server read the web certificate (`[WEB] cert` and `key`) onc
 - Checks of the server type:
   - smp-server: `checkHTTPSCredentials`, an RSA key of at least 4096 bits, as at start;
   - xftp-server: `acceptCredential`.
-- `checkKeyPair` requires the private key of the leaf certificate:
+- In `checkKeyPair`, the private key is compared with the public key of the leaf certificate:
   - RSA: the public fields stored with the private key are compared with the key of the certificate;
   - Ed25519, Ed448 and ECDSA on named curves: the public key computed from the private key is compared with the key of the certificate;
   - other key types are rejected.
 - xftp-server accepts any key type at start; on reload, only the key types of `checkKeyPair` are accepted.
 - Errors are values of `CredentialError`:
   - `CEReadError`: an `IOException` from reading a file;
-  - `CEPEMError`: a `PEMError` from parsing a file;
-  - `CENoPrivateKey`;
-  - `CENoCertificate`;
-  - `CEKeyMismatch`;
-  - `CEUnsupportedKeyType`;
-  - `CEUnsupportedECPoint`;
-  - `CEUnsupportedHTTPSKey`.
+  - `CEPEMError`: the message of a `PEMError` from parsing a file;
+  - `CENoPrivateKey`: a key file without a private key;
+  - `CENoCertificate`: a certificate file without a certificate;
+  - `CEKeyMismatch`: a private key of another certificate;
+  - `CEUnsupportedKeyType`: a key type outside those of `checkKeyPair`;
+  - `CEInvalidECPoint`: an EC point that is compressed or off its curve;
+  - `CEUnsupportedHTTPSKey`: on smp-server, a key other than RSA of at least `minHTTPSRSAKeyBits` (4096).
 - The reload thread is started with `race_` against the listener that reads its `TVar`:
   - by `runTransportServerSocketState`, for an SNI credential;
   - by `runHTTPSServer`.
+- On the separate port, a credential that cannot be loaded at start is thrown as `CredentialError` and logged in `serveStaticFiles` with its reason.
 - The interval is `credentialCheckInterval`, 60 seconds by default:
   - in `TransportServerConfig`, for SNI;
   - in `WebHttpsParams`, for the separate port.
@@ -59,19 +60,21 @@ checkFiles rejected:
           Left e -> reject rejected (e, Just cred)
 
 reject rejected rejection:
-  log "rejected credential" with the reason, unless rejection == rejected
+  log "rejected credential" with the reason, unless Just rejection == rejected
   checkFiles (Just rejection)
 ```
 
 ```mermaid
 stateDiagram-v2
-    [*] --> InUse
-    InUse --> InUse: files equal to the credential in use
-    InUse --> InUse: files accepted, credential written, logged
-    InUse --> Rejected: files rejected, logged
-    Rejected --> Rejected: same rejection, not logged
-    Rejected --> Rejected: another rejection, logged
-    Rejected --> InUse: files equal or accepted
+    state "Nothing" as N
+    state "Just (e, cred_)" as R
+    [*] --> N
+    N --> N: files equal to the credential in use
+    N --> N: files accepted, credential written, logged
+    N --> R: files rejected, logged
+    R --> R: same rejection, not logged
+    R --> R: another rejection, logged
+    R --> N: files equal or accepted
 ```
 
 ## Threat model
@@ -79,7 +82,7 @@ stateDiagram-v2
 - The certificate and key files are written by the renewal job of the operator and are trusted as at start.
 - A partly written, unreadable or mismatched file is rejected, and the previous credential is kept in use.
 - `IOException` and `PEMError` from reading the files are caught and logged as rejections; the checks are total functions; the reload thread ends only with its listener.
-- Log lines contain fixed text, file paths and parser messages; key material is excluded.
+- Log lines are composed of fixed text, file paths and parser messages.
 - `pointBaseMul` is computed in variable time on the private scalar, only for changed files; network responses are independent of its time.
 
 ## Composition
@@ -140,9 +143,10 @@ In the reload tests, the fixture files are copied into the test directory and re
   - smp-server rejects an RSA 2048 and an ECDSA P-256 certificate and keeps the current one;
   - xftp-server serves the ECDSA P-256 certificate.
 - A deleted key file and an empty certificate file: the current certificate is still served.
-- Start:
-  - smp-server with an RSA 2048 web certificate exits with `Error: unsupported HTTPS credentials, required 4096-bit RSA`;
-  - an empty key file is reported as `invalid credential: no private key`, with exit code 1.
+- Start, in the sequential "Server CLIs" tests, with the output captured:
+  - `newEnv` of smp-server with an RSA 2048 web certificate exits with `Error: unsupported HTTPS credentials, required 4096-bit RSA`;
+  - an empty key file is reported as `invalid credential: no private key`;
+  - each exits with exit code 1 and without another exception.
 - Credential check:
   - RSA, ECDSA, Ed448 and Ed25519: a matching pair is accepted; a pair of the same type with another key is rejected with `CEKeyMismatch`;
   - a DSA certificate is rejected with `CEUnsupportedKeyType`;
