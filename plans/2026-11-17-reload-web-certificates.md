@@ -252,7 +252,13 @@ The reverse order is handled the same way.
 
 ## Tests
 
-Fixture files are copied into the test directory for the reload tests, the static site start test and the start test of a rejected certificate. In the other tests, the fixtures are read in place, and empty and malformed files are written in the test directory.
+Fixture files are copied into the test directory in these tests:
+
+- reload;
+- static site at start;
+- smp-server start with a rejected certificate.
+
+In the other tests, the fixtures are read in place, and empty and malformed files are written in the test directory.
 
 - Transport: on a TLS server with an SNI `ReloadableCredential`, `web.crt` is served to a client with SNI, then `web2.crt` after the files are replaced.
 - Key pair: the new certificate is served only after its key is written.
