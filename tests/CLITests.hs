@@ -226,11 +226,12 @@ testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
 testStaticSiteCertReload = do
   copyWebCredential "web"
   race_ (runHTTPSServer httpsParams emptyApp) $ do
-    threadDelay 1000000
+    threadDelay httpsServerStartWait
     testWebCredentialReload httpsPort
     testWebCredentialReplaced httpsPort "web_rsa2048" "web"
     testWebCredentialReplaced httpsPort "web2" "web2"
   where
+    httpsServerStartWait = 1000000
     emptyApp _ respond = respond $ responseLBS N.ok200 [] ""
     httpsPort = testServerPort 9
     httpsParams =
