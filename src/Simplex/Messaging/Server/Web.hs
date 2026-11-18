@@ -54,7 +54,7 @@ import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
-import UnliftIO.Exception (bracket, finally, throwIO)
+import UnliftIO.Exception (Exception (displayException), bracket, finally, throwIO)
 import UnliftIO.STM (readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
@@ -85,7 +85,7 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
-  forM_ webHttpsParams $ \params -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ runHTTPSServer params app
+  forM_ webHttpsParams $ \params -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> either (T.pack . displayException) tshow e) $ runHTTPSServer params app
 
 runHTTPSServer :: WebHttpsParams -> Application -> IO ()
 runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheckInterval} app = do

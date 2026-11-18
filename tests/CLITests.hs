@@ -23,7 +23,8 @@ import Data.X509.Validation (Fingerprint (..))
 import qualified Network.HTTP.Client as H1
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H2
-import Network.Wai (responseLBS)
+import Network.Socket (ServiceName)
+import Network.Wai (Application, responseLBS)
 import SMPClient (copyWebCredential, fixtureFile, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, webServerCfg, withServerCfg)
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
@@ -33,7 +34,7 @@ import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), loadFileFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (catchAll_)
 import qualified SMPWeb
 import Simplex.Messaging.Server.Web (WebHttpsParams (..), serveStaticFiles, attachStaticFiles, runHTTPSServer)
@@ -100,8 +101,9 @@ cliTests = do
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
-  describe "Static site on HTTPS port" $
+  describe "Static site on HTTPS port" $ do
     it "should serve the replaced web certificate with a 4096-bit RSA key without restart" testStaticSiteCertReload
+    it "should throw the error of an invalid credential at start" testStaticSiteInvalidCredential
   describe "Web credentials at start" $ do
     it "should exit with the reason of a rejected web certificate" testStartRejectedWebCertificate
     it "should exit with the reason of an invalid credential" testStartInvalidCredential
@@ -229,23 +231,35 @@ smpServerTestStatic = do
 testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
 testStaticSiteCertReload = do
   copyWebCredential "web"
-  race_ (runHTTPSServer httpsParams emptyApp) $ do
+  race_ (runHTTPSServer staticSiteParams emptyApp) $ do
     threadDelay httpsServerStartWait
-    testWebCredentialReload httpsPort
-    testWebCredentialReplaced httpsPort "web_rsa2048" "web"
-    testWebCredentialReplaced httpsPort "web2" "web2"
+    testWebCredentialReload staticSitePort
+    testWebCredentialReplaced staticSitePort "web_rsa2048" "web"
+    testWebCredentialReplaced staticSitePort "web2" "web2"
   where
     httpsServerStartWait = 1000000
-    emptyApp _ respond = respond $ responseLBS N.ok200 [] ""
-    httpsPort = testServerPort 9
-    httpsParams =
-      WebHttpsParams
-        { port = read httpsPort,
-          cert = certificateFile testWebCredentials,
-          key = privateKeyFile testWebCredentials,
-          checkCredential = checkHTTPSCredentials,
-          credentialCheckInterval = testCredentialCheckInterval
-        }
+
+testStaticSiteInvalidCredential :: (HasCallStack, HasTestEnv) => IO ()
+testStaticSiteInvalidCredential = do
+  copyWebCredential "web"
+  writeFile (privateKeyFile testWebCredentials) ""
+  runHTTPSServer staticSiteParams emptyApp `shouldThrow` (== CENoPrivateKey)
+
+staticSitePort :: HasTestEnv => ServiceName
+staticSitePort = testServerPort 9
+
+staticSiteParams :: HasTestEnv => WebHttpsParams
+staticSiteParams =
+  WebHttpsParams
+    { port = read staticSitePort,
+      cert = certificateFile testWebCredentials,
+      key = privateKeyFile testWebCredentials,
+      checkCredential = checkHTTPSCredentials,
+      credentialCheckInterval = testCredentialCheckInterval
+    }
+
+emptyApp :: Application
+emptyApp _ respond = respond $ responseLBS N.ok200 [] ""
 
 testStartRejectedWebCertificate :: (HasCallStack, HasTestEnv) => IO ()
 testStartRejectedWebCertificate = do
