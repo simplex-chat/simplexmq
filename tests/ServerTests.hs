@@ -1762,7 +1762,9 @@ webCredentialTests = do
       Right p384 <- loadCredential (credentialFiles (fixtureFile "web_ecdsa384" ".crt") (fixtureFile "web_ecdsa384" ".key"))
       checkLoadedCredential checkHTTPSCredentials current Nothing (Right p384) `shouldBe` RDRejected CEUnsupportedHTTPSKey
       checkLoadedCredential acceptCredential current Nothing (Right p384) `shouldBe` RDRejected (CEUnsupportedCurve ECC.SEC_p384r1)
-      checkLoadedCredential checkHTTPSCredentials current Nothing (Right (X.CertificateChain [], snd current)) `shouldBe` RDRejected CENoCertificate
+    it "should reject an empty certificate chain with checkHTTPSCredentials" $ do
+      Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
+      checkHTTPSCredentials (X.CertificateChain [], snd current) `shouldBe` Left CENoCertificate
   where
     keyPairCheck certName keyName = credentialCheck (fixtureFile certName ".crt") (fixtureFile keyName ".key")
     credentialCheck certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
