@@ -120,7 +120,7 @@ data CredentialError
   | CENoCertificate
   | CEKeyMismatch
   | CEUnsupportedKeyType X.PubKeyALG
-  | CEUnsupportedECPoint
+  | CEInvalidECPoint
   | CEUnsupportedHTTPSKey
   deriving (Eq, Show)
 
@@ -353,7 +353,7 @@ checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X
       let curve = ECC.getCurveByName curveName
        in case unserializePoint curve point of
             Just publicPoint -> matching $ curveName == curveName' && publicPoint == ECC.pointBaseMul curve d
-            Nothing -> Left CEUnsupportedECPoint
+            Nothing -> Left CEInvalidECPoint
     _
       | X.pubkeyToAlg publicKey == X.privkeyToAlg privateKey -> Left $ CEUnsupportedKeyType (X.pubkeyToAlg publicKey)
       | otherwise -> Left CEKeyMismatch
@@ -368,7 +368,7 @@ credentialErrorText = \case
   CENoCertificate -> "no certificate"
   CEKeyMismatch -> "the private key does not match the certificate"
   CEUnsupportedKeyType alg -> "unsupported key type " <> tshow alg
-  CEUnsupportedECPoint -> "unsupported EC point format"
+  CEInvalidECPoint -> "invalid or unsupported EC point"
   CEUnsupportedHTTPSKey -> "unsupported HTTPS credentials, required " <> tshow minHTTPSRSAKeyBits <> "-bit RSA"
 
 minHTTPSRSAKeyBits :: Int
