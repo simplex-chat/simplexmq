@@ -1698,8 +1698,8 @@ webCredentialTests = do
       testWebCredentialReplaced testPort "web2" "web2"
   describe "credential check" $ do
     it "should reject an empty certificate chain with checkHTTPSCredentials" $ do
-      Right current <- loadFixture "web" "web"
-      checkHTTPSCredentials (X.CertificateChain [], snd current) `shouldBe` Left CENoCertificate
+      Right (_, privateKey) <- loadFixture "web" "web"
+      checkHTTPSCredentials (X.CertificateChain [], privateKey) `shouldBe` Left CENoCertificate
     it "should accept the matching RSA key and reject another one" $ do
       keyPairCheck "web" "web" `shouldReturn` Right ()
       keyPairCheck "web2" "web" `shouldReturn` Left CEKeyMismatch
