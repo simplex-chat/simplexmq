@@ -91,7 +91,7 @@ xftpServerTests = do
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
-      it "should serve the replaced RSA or ECDSA web certificate without restart when SNI is used" testSNICertReload
+      it "should serve the replaced RSA and ECDSA web certificates without restart when SNI is used" testSNICertReload
       it "should add CORS headers when SNI is used" testCORSHeaders
       it "should respond to OPTIONS preflight with CORS headers" testCORSPreflight
       it "should not add CORS headers without SNI" testNoCORSWithoutSNI
