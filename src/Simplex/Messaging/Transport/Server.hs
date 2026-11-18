@@ -31,6 +31,8 @@ module Simplex.Messaging.Transport.Server
     loadCredential,
     newReloadableCredential,
     withCredentialReload,
+    CredentialCheck (..),
+    checkLoadedCredential,
     acceptCredential,
     checkKeyPair,
     credentialErrorText,
@@ -328,19 +330,37 @@ reloadCredential interval ReloadableCredential {credentialFiles = creds@ServerCr
     checkFiles rejected = do
       threadDelay interval
       current <- readTVarIO currentCredential
-      loadCredential creds >>= \case
-        Right cred
-          | cred == current -> checkFiles Nothing
-          | otherwise -> case checkKeyPair cred >> checkCredential cred of
-              Right () -> do
-                atomically $ writeTVar currentCredential cred
-                logNote $ "reloaded credential " <> T.pack certificateFile
-                checkFiles Nothing
-              Left e -> reject rejected (e, Just cred)
-        Left e -> reject rejected (e, Nothing)
-    reject rejected rejection@(e, _) = do
-      unless (rejected == Just rejection) $ logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> credentialErrorText e
-      checkFiles $ Just rejection
+      loaded <- loadCredential creds
+      case checkLoadedCredential checkCredential current rejected loaded of
+        CCUnchanged -> checkFiles Nothing
+        CCAccepted cred -> do
+          atomically $ writeTVar currentCredential cred
+          logNote $ "reloaded credential " <> T.pack certificateFile
+          checkFiles Nothing
+        CCRejected rejection@(e, _) -> do
+          logWarn $ "rejected credential " <> T.pack certificateFile <> ": " <> credentialErrorText e
+          checkFiles $ Just rejection
+        CCRejectedAgain -> checkFiles rejected
+
+type CredentialRejection = (CredentialError, Maybe T.Credential)
+
+data CredentialCheck
+  = CCUnchanged
+  | CCAccepted T.Credential
+  | CCRejected CredentialRejection
+  | CCRejectedAgain
+  deriving (Eq, Show)
+
+checkLoadedCredential :: (T.Credential -> Either CredentialError ()) -> T.Credential -> Maybe CredentialRejection -> Either CredentialError T.Credential -> CredentialCheck
+checkLoadedCredential checkCredential current rejected = \case
+  Right cred
+    | cred == current -> CCUnchanged
+    | otherwise -> either (reject . (,Just cred)) (const $ CCAccepted cred) (checkKeyPair cred >> checkCredential cred)
+  Left e -> reject (e, Nothing)
+  where
+    reject rejection
+      | rejected == Just rejection = CCRejectedAgain
+      | otherwise = CCRejected rejection
 
 checkKeyPair :: T.Credential -> Either CredentialError ()
 checkKeyPair (X.CertificateChain chain, privateKey) = case map (X.certPubKey . X.getCertificate) chain of
