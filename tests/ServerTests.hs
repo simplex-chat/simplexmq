@@ -1731,7 +1731,7 @@ webCredentialTests = do
           (offCurveSigned, ()) = X.objectToSignedExact (\_ -> ("", X.SignatureALG X.HashSHA256 X.PubKeyALG_EC, ())) certificate
       checkKeyPair (X.CertificateChain [offCurveSigned], privateKey) `shouldBe` Left CEInvalidECPoint
   describe "reload decision" $ do
-    it "should decide unchanged, rejected, repeated and accepted credentials" $ do
+    it "should return RDUnchanged, RDRejected, RDRejectedAgain and RDAccepted for loaded credentials" $ do
       Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
       Right renewed <- loadCredential (credentialFiles (fixtureFile "web2" ".crt") (fixtureFile "web2" ".key"))
       Right mismatched <- loadCredential (credentialFiles (fixtureFile "web2" ".crt") (fixtureFile "web" ".key"))
@@ -1746,7 +1746,7 @@ webCredentialTests = do
       check (Just (Left CENoPrivateKey)) (Left CENoPrivateKey) `shouldBe` RDRejectedAgain
       check rejected (Right renewed) `shouldBe` RDAccepted renewed
       check rejected (Right current) `shouldBe` RDUnchanged
-    it "should reject a credential that fails the check of the server type" $ do
+    it "should reject an RSA 2048 credential with checkHTTPSCredentials and accept it with acceptCredential" $ do
       Right current <- loadCredential (credentialFiles (fixtureFile "web" ".crt") (fixtureFile "web" ".key"))
       Right rsa2048 <- loadCredential (credentialFiles (fixtureFile "web_rsa2048" ".crt") (fixtureFile "web_rsa2048" ".key"))
       checkLoadedCredential checkHTTPSCredentials current Nothing (Right rsa2048) `shouldBe` RDRejected CEUnsupportedHTTPSKey
