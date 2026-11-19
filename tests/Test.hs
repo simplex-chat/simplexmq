@@ -110,6 +110,7 @@ main = do
 #endif
           describe "SMP server via TLS, memory message store" $ do
             describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+            describe "Web credentials" webCredentialTests
             before (pure (transport @TLS, ASType SQSMemory SMSMemory)) serverTests
           -- xdescribe "SMP server via WebSockets" $ do
           --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
