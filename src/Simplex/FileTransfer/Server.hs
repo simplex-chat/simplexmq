@@ -36,7 +36,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), getCurrentTime)
 import Data.Time.Clock.System (systemSeconds, utcToSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Word (Word32)
@@ -287,11 +287,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
     serverStatsThread_ XFTPServerConfig {logStatsStartTime} = [resetPeriodStats logStatsStartTime]
-
-    delayUntilDayTime :: Int64 -> IO ()
-    delayUntilDayTime startAt = do
-      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> getCurrentTime
-      threadDelay' $ 1_000_000 * (initialDelay + if initialDelay < 0 then 86_400 else 0)
 
     resetPeriodStats :: Int64 -> M s ()
     resetPeriodStats startAt = do
