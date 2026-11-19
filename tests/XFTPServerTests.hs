@@ -29,7 +29,7 @@ import qualified Data.CaseInsensitive as CI
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Maybe (isJust, listToMaybe)
+import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), getCurrentTime)
@@ -276,9 +276,7 @@ testExpireNotUploadedFiles _ = do
 
 testInactiveClientExpiration :: HasTestEnv => AFStoreType -> Expectation
 testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> runRight_ $ do
-  disconnected <- newEmptyTMVarIO
-  ts <- liftIO getCurrentTime
-  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
+  (c, disconnected) <- liftIO connectXFTPClient
   pingXFTP c
   liftIO $ do
     threadDelay 100000
@@ -571,7 +569,7 @@ testNoRequestTimeout fsType =
       Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
       let cfg = defaultTransportClientConfig {clientALPN = Just alpnSupportedXFTPhandshakes} :: TransportClientConfig
       runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-        timeout 5000000 (tryAny $ cGet tls 1) >>= (`shouldSatisfy` isJust)
+        timeout 5000000 (tryAny $ cGet tls 1) >>= (`shouldSatisfy` maybe False isLeft)
       (c, disconnected) <- connectXFTPClient
       threadDelay 2000000
       atomically (tryReadTMVar disconnected) `shouldReturn` Nothing

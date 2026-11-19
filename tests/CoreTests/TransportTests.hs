@@ -27,7 +27,7 @@ import Util
 transportTests :: Spec
 transportTests = do
   describe "TLS connection close" $
-    it "should close connection while a sender is blocked by a peer that stopped reading" testCloseBlockedTLS
+    it "should close TLS connection within the close limit while data is sent" testCloseBlockedTLS
   describe "TCP keep-alive" $ do
     it "should enable keep-alive on accepted sockets when configured" $
       testServerKeepAlive (Just defaultKeepAliveOpts) True
