@@ -50,7 +50,7 @@ import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, Sender
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet, cPut), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2MaxConcurrentStreams, http2WindowSize)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), defaultHTTP2BufferSize, http2MaxConcurrentStreams, http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential, runTransportServer)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
@@ -491,8 +491,10 @@ testHTTP2ClientGoAway keepOpen _ = do
   let server (tls :: TLS 'TServer) = do
         _ <- cGet tls connectionPrefaceLength
         cPut tls $ h2Frame 0 id (SettingsFrame [])
+        settings <- awaitH2Frame tls "client SETTINGS" $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
+        windowUpdate <- awaitH2Frame tls "client WINDOW_UPDATE" $ \typ h -> typ == FrameWindowUpdate && streamId h == 0
         _ <- awaitH2Frame tls "request HEADERS" $ \typ h -> typ == FrameHeaders && streamId h == 1
-        atomically $ putTMVar requested ()
+        atomically $ putTMVar requested (settings, windowUpdate)
         cPut tls $ h2Frame 0 id (GoAwayFrame 1 NoError "")
         when keepOpen $ do
           hdrs <- h2HeaderBlock [(":status", "200")]
@@ -504,9 +506,13 @@ testHTTP2ClientGoAway keepOpen _ = do
     $ \_ -> do
       Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
       runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \h2 ->
+        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) defaultHTTP2BufferSize tls) HC.closeHTTP2Client $ \h2 ->
           withAsync (HC.sendRequest h2 (H2.requestNoBody "GET" "/" []) Nothing (\_ -> pure ())) $ \response -> do
-            timeout h2FrameTimeout (atomically $ takeTMVar requested) `shouldReturn` Just ()
+            timeout h2FrameTimeout (atomically $ takeTMVar requested) >>= \case
+              Just (SettingsFrame settings, windowUpdate) -> do
+                (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just http2MaxConcurrentStreams, Just http2WindowSize)
+                windowUpdate `shouldBe` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
+              r -> expectationFailure $ "no request: " <> show r
             timeout h2FrameTimeout (atomically $ readTMVar disconnected) `shouldReturn` Just ()
             when keepOpen $ timeout h2FrameTimeout (wait response) >>= (`shouldSatisfy` maybe False isRight)
   where
