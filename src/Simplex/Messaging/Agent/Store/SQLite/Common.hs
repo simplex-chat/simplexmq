@@ -1,6 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Common
@@ -104,9 +105,16 @@ withTransaction st = withTransactionPriority st False
 
 withTransactionPriority :: DBStore -> Bool -> (DB.Connection -> IO a) -> IO a
 withTransactionPriority st@DBStore {dbClosed} priority action = withConnectionPriority st priority $ \db ->
-  ifM (readTVarIO dbClosed) (fail "withTransaction: database closed") (dbBusyLoop $ transaction db)
+  ifM (readTVarIO dbClosed) (fail "withTransaction: database closed") (transaction db)
   where
-    transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
+    transaction db@DB.Connection {conn} = E.mask $ \restore -> do
+      r <- dbBusyLoop $ do
+        SQL.execute_ conn "BEGIN IMMEDIATE TRANSACTION"
+        restore (action db) `E.onException` rollback
+      dbBusyLoop (SQL.execute_ conn "COMMIT TRANSACTION") `E.onException` rollback
+      pure r
+      where
+        rollback = SQL.execute_ conn "ROLLBACK TRANSACTION"
 
 -- isolation for agent transactions; postgresql-simple is not a dependency of SQLite builds
 data IsolationLevel = RepeatableRead
