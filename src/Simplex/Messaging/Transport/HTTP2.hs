@@ -6,6 +6,7 @@ module Simplex.Messaging.Transport.HTTP2
     HTTP2BodyChunk (..),
     defaultHTTP2BufferSize,
     http2Settings,
+    http2MaxConcurrentStreams,
     http2WindowSize,
     withHTTP2,
     http2TLSParams,
@@ -51,7 +52,10 @@ allocHTTP2Config c sz = do
       }
 
 http2Settings :: HS.Settings
-http2Settings = HS.defaultSettings {HS.maxConcurrentStreams = Just 100, HS.initialWindowSize = http2WindowSize}
+http2Settings = HS.defaultSettings {HS.maxConcurrentStreams = Just http2MaxConcurrentStreams, HS.initialWindowSize = http2WindowSize}
+
+http2MaxConcurrentStreams :: Int
+http2MaxConcurrentStreams = 100
 
 http2WindowSize :: Int
 http2WindowSize = 1048575

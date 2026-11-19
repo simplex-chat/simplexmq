@@ -50,7 +50,7 @@ import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, Sender
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2WindowSize)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2MaxConcurrentStreams, http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
@@ -465,13 +465,13 @@ testHTTP2FlowControl _ =
     runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) -> do
       cPut tls $ connectionPreface <> frame 0 id (SettingsFrame [])
       SettingsFrame settings <- nextFrame tls "SETTINGS" $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
-      (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just 100, Just http2WindowSize)
+      (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just http2MaxConcurrentStreams, Just http2WindowSize)
       cPut tls $ frame 0 setAck (SettingsFrame [])
       nextFrame tls "WINDOW_UPDATE" (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
       dynTable <- newDynamicTableForEncoding 4096
       hdrs <- encodeHeader defaultEncodeStrategy 4096 dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
       cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
-      atomically $ takeTMVar requested
+      timeout 5000000 (atomically $ takeTMVar requested) `shouldReturn` Just ()
       let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
       replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
       cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
