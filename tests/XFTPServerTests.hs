@@ -102,6 +102,7 @@ xftpServerTests = do
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection and file when download stalls" testStalledDownload
+      it "should close connection when the end of a download stalls" testStalledDownloadEnd
       it "should close connection when request body stalls" testStalledRequestBody
       it "should time out a stalled upload of a committed chunk" testStalledCommittedUpload
       it "should close connections without requests" testNoRequestTimeout
@@ -302,14 +303,16 @@ testLongDownloadExpiration fsType =
     timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
-    readBody getPart limit delay = go 0
-      where
-        go n
-          | n >= limit = pure n
-          | otherwise = do
-              threadDelay delay
-              len <- B.length <$> getPart fileBlockSize
-              if len == 0 then pure n else go (n + len)
+
+readBody :: (Int -> IO ByteString) -> Int -> Int -> IO Int
+readBody getPart limit delay = go 0
+  where
+    go n
+      | n >= limit = pure n
+      | otherwise = do
+          threadDelay delay
+          len <- B.length <$> getPart fileBlockSize
+          if len == 0 then pure n else go (n + len)
 
 testCancelledClientConnect :: HasTestEnv => Expectation
 testCancelledClientConnect =
@@ -524,7 +527,7 @@ testFileSkipCommitted fsType =
 
 testStalledDownload :: HasTestEnv => AFStoreType -> Expectation
 testStalledDownload fsType =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ -> do
     (c, disconnected, rId, rpKey) <- uploadLargeChunk
     g <- C.newRandom
     void $ sendFGET c g rpKey rId
@@ -532,9 +535,20 @@ testStalledDownload fsType =
     files <- listDirectory xftpServerFiles
     mapM (openDescriptors . (xftpServerFiles </>)) files >>= (`shouldSatisfy` all (maybe True (== 0)))
 
+testStalledDownloadEnd :: HasTestEnv => AFStoreType -> Expectation
+testStalledDownloadEnd fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ ->
+    forM_ [mb 1 + kb k | k <- [0, 32 .. 160]] $ \unread -> do
+      (c, disconnected, rId, rpKey) <- uploadLargeChunk
+      g <- C.newRandom
+      HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
+      getPart <- maybe (error "no response body") pure bodyPart
+      void $ readBody getPart (mb 4 + C.authTagSize - unread) 0
+      timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+
 testStalledRequestBody :: HasTestEnv => AFStoreType -> Expectation
 testStalledRequestBody fsType =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ -> do
     (XFTPClient {http2Client}, disconnected) <- connectXFTPClient
     let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
     withAsync (HC.sendRequest http2Client req Nothing) $ \_ ->
@@ -542,7 +556,7 @@ testStalledRequestBody fsType =
 
 testStalledCommittedUpload :: HasTestEnv => AFStoreType -> Expectation
 testStalledCommittedUpload fsType =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000}) $ \_ ->
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000}) $ \_ ->
     testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
       g <- C.newRandom
       (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
