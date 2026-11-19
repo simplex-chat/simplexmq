@@ -25,7 +25,7 @@ import Control.Concurrent.STM
 import Control.Monad
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
-import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, isJust)
@@ -79,9 +79,6 @@ class FileStoreClass s where
   closeFileStore :: s -> IO ()
   addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
-  addRecipient :: s -> SenderId -> FileRecipient -> IO (Either XFTPErrorType ())
-  addRecipient s sId rcp = addRecipients s sId (rcp :| [])
-  -- | adds either all recipients or none of them
   addRecipients :: s -> SenderId -> NonEmpty FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
   deleteFiles :: s -> [SenderId] -> IO ()

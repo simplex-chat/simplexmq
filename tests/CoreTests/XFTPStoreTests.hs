@@ -103,7 +103,7 @@ testAddGetFileRecipient = withPgStore $ \st -> do
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
+  addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Right ()
   result <- getFile st SFRecipient testRecipientId
   case result of
     Right (FileRec {senderId}, key) -> do
@@ -146,8 +146,8 @@ testDuplicateRecipient = withPgStore $ \st -> do
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
-  addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Left DUPLICATE_
+  addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Right ()
+  addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Left DUPLICATE_
 
 testAddRecipientsAtomically :: FileStoreClass s => s -> Expectation
 testAddRecipientsAtomically st = do
@@ -159,14 +159,14 @@ testAddRecipientsAtomically st = do
       rcpC = FileRecipient (EntityId "recipient_c_____") keyC
       recipientKey (FileRecipient rId _) = fmap snd <$> getFile st SFRecipient rId
   addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  addRecipient st testSenderId rcpA `shouldReturn` Right ()
+  addRecipients st testSenderId (rcpA :| []) `shouldReturn` Right ()
   addRecipients st testSenderId (rcpB :| [rcpA]) `shouldReturn` Left DUPLICATE_
   recipientKey rcpB `shouldReturn` Left AUTH
   addRecipients st testSenderId (rcpB :| [rcpC, rcpB]) `shouldReturn` Left DUPLICATE_
   recipientKey rcpB `shouldReturn` Left AUTH
   addRecipients st testSenderId (rcpB :| [rcpC]) `shouldReturn` Right ()
   mapM recipientKey [rcpA, rcpB, rcpC] `shouldReturn` [Right keyA, Right keyB, Right keyC]
-  addRecipient st (EntityId "no_such_sender__") (FileRecipient (EntityId "recipient_d_____") keyA) `shouldReturn` Left AUTH
+  addRecipients st (EntityId "no_such_sender__") (FileRecipient (EntityId "recipient_d_____") keyA :| []) `shouldReturn` Left AUTH
 
 testDeleteFileCascade :: HasTestEnv => Expectation
 testDeleteFileCascade = withPgStore $ \st -> do
@@ -175,7 +175,7 @@ testDeleteFileCascade = withPgStore $ \st -> do
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
+  addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Right ()
   deleteFile st testSenderId `shouldReturn` Right ()
   -- File and recipient should both be gone
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
@@ -201,7 +201,7 @@ testAckFile = withPgStore $ \st -> do
   (rcpKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
+  addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Right ()
   ackFile st testRecipientId `shouldReturn` Right ()
   -- Recipient gone, but file still exists
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
@@ -304,7 +304,7 @@ testMigrationRoundTrip = do
       rId1 = EntityId "migration_rcp_1_"
   addFile stmStore sId1 fileInfo1 testCreatedAt (Just testExpiresAt) EntityActive `shouldReturn` Right ()
   void $ setFilePath stmStore sId1 ("/tmp" </> serverFileName sId1)
-  addRecipient stmStore sId1 (FileRecipient rId1 rcpKey1) `shouldReturn` Right ()
+  addRecipients stmStore sId1 (FileRecipient rId1 rcpKey1 :| []) `shouldReturn` Right ()
   let testBlockInfo = BlockingInfo {reason = BRSpam, notice = Nothing}
   addFile stmStore sId2 fileInfo2 testCreatedAt Nothing (EntityBlocked testBlockInfo) `shouldReturn` Right ()
   -- 2. Write to StoreLog
