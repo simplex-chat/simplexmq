@@ -464,32 +464,32 @@ testHTTP2FlowControl _ =
     Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
     runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) -> do
       cPut tls $ connectionPreface <> frame 0 id (SettingsFrame [])
-      SettingsFrame settings <- nextFrame tls $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
+      SettingsFrame settings <- nextFrame tls "SETTINGS" $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
       (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just 100, Just http2WindowSize)
       cPut tls $ frame 0 setAck (SettingsFrame [])
-      nextFrame tls (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
+      nextFrame tls "WINDOW_UPDATE" (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
       dynTable <- newDynamicTableForEncoding 4096
       hdrs <- encodeHeader defaultEncodeStrategy 4096 dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
       cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
       atomically $ takeTMVar requested
-      -- the stalling handler reads no body, so the server returns no window
       let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
       replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
       cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
       cPut tls $ frame 0 id $ PingFrame "flowctrl"
-      nextFrame tls (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
+      nextFrame tls "PING ack" (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
       cPut tls $ frame 1 id $ DataFrame "x"
-      nextFrame tls (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
+      nextFrame tls "GOAWAY" (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
   where
     frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
-    nextFrame tls wanted = do
+    nextFrame tls name wanted = timeout 5000000 (nextFrame_ tls wanted) >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
+    nextFrame_ tls wanted = do
       (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
       payload <- either (error . show) pure . decodeFramePayload typ h =<< cGet tls (payloadLength h)
       if wanted typ h
         then pure payload
         else case payload of
           GoAwayFrame {} -> error $ "unexpected " <> show payload
-          _ -> nextFrame tls wanted
+          _ -> nextFrame_ tls wanted
 
 -- SNI and CORS tests
 
