@@ -606,8 +606,11 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
       Just getBody -> skipCommitted $ mask $ \restore -> ifM reserve (receive restore) (pure $ FRErr QUOTA)
         where
           -- having a filePath means the file is already uploaded and committed, must not change anything
-          skipCommitted = ifM (isJust <$> readTVarIO filePath) (liftIO $ drain $ fromIntegral size)
+          skipCommitted = ifM (isJust <$> readTVarIO filePath) drainCommitted
             where
+              drainCommitted = do
+                t <- asks $ fileTimeout . config
+                liftIO $ fromMaybe (FRErr TIMEOUT) <$> timeout t (drain $ fromIntegral size)
               -- can't send FROk without reading the request body or a client will block on sending it
               -- can't send any old error as the client would fail or restart indefinitely
               drain s = do

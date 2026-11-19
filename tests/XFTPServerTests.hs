@@ -43,7 +43,7 @@ import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb, mb)
-import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
+import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), FileResponse (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpDecodeTClient, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), XFTPStoreConfig (..), defaultInactiveClientExpiration)
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile)
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), alpnSupportedXFTPhandshakes, receiveEncFile, receiveFile, pattern VersionXFTP)
@@ -103,6 +103,7 @@ xftpServerTests = do
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection and file when download stalls" testStalledDownload
       it "should close connection when request body stalls" testStalledRequestBody
+      it "should time out a stalled upload of a committed chunk" testStalledCommittedUpload
       it "should close connections without requests" testNoRequestTimeout
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
@@ -545,6 +546,28 @@ testStalledRequestBody fsType =
     let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
     withAsync (HC.sendRequest http2Client req Nothing) $ \_ ->
       timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+
+testStalledCommittedUpload :: HasTestEnv => AFStoreType -> Expectation
+testStalledCommittedUpload fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000}) $ \_ ->
+    testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      void $ createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      sId <- runRight $ do
+        (sId, _) <- createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
+        sId <$ uploadXFTPChunk c spKey sId chunkSpec
+      t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+      let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send (byteString t) >> flush >> threadDelay maxBound
+      timeout 5000000 (HC.sendRequest http2Client req Nothing) >>= \case
+        Just (Right HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead}}) -> case xftpDecodeTClient thParams bodyHead of
+          Right (_, _, Right (FRErr e)) -> e `shouldBe` TIMEOUT
+          r -> expectationFailure $ "unexpected response: " <> show r
+        Just (Left e) -> expectationFailure $ "request error: " <> show e
+        Nothing -> expectationFailure "no response within 5 seconds"
 
 testNoRequestTimeout :: HasTestEnv => AFStoreType -> Expectation
 testNoRequestTimeout fsType =
