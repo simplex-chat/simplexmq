@@ -250,7 +250,6 @@ testExpiredFilesTotalLimit = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
       oldTime = RoundedSystemTime 100000
       addExpired i expiresAt = addFile st (EntityId $ "expired_file_" <> B.pack (show i) <> "__") fileInfo oldTime expiresAt EntityActive `shouldReturn` Right ()
-  -- 3 files expire by stored expiration, 3 by creation time
   forM_ [1 .. 3 :: Int] $ \i -> addExpired i $ Just (RoundedSystemTime 400000)
   forM_ [4 .. 6 :: Int] $ \i -> addExpired i Nothing
   length <$> expiredFiles st (RoundedSystemTime 500000) 500000 4 `shouldReturn` 4

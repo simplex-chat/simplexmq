@@ -91,11 +91,8 @@ data TransportServerConfig = TransportServerConfig
     addCORSHeaders :: Bool,
     tlsSetupTimeout :: Int,
     transportTimeout :: Int,
-    -- | HTTP/2 connections are closed when no request starts within this time, microseconds
     firstRequestTimeout :: Int,
-    -- | TCP keep-alive for accepted connections
     tcpKeepAlive :: Maybe KeepAliveOpts,
-    -- | TCP_USER_TIMEOUT for accepted connections, milliseconds
     tcpUserTimeout :: Maybe Int,
     credentialCheckInterval :: Int
   }

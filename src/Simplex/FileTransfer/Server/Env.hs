@@ -131,18 +131,16 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
--- | an idle peer that vanished is detected after keepIdle + keepCnt * keepIntvl = 120 seconds
 defaultXFTPKeepAlive :: KeepAliveOpts
 defaultXFTPKeepAlive =
   KeepAliveOpts
-    { keepIdle = 60, -- seconds
-      keepIntvl = 10, -- seconds
+    { keepIdle = 60,
+      keepIntvl = 10,
       keepCnt = 6
     }
 
--- | a peer that stops acknowledging sent data is detected after 3 minutes, as keep-alive does not run while data is unacknowledged
 defaultXFTPUserTimeout :: Int
-defaultXFTPUserTimeout = 180000 -- milliseconds
+defaultXFTPUserTimeout = 180000
 
 data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,

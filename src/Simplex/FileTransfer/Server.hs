@@ -164,7 +164,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
           Just "OPTIONS" | addCORS' -> sendResponse $ H.responseNoBody N.ok200 corsPreflightHeaders
           Just "GET" | sniUsed -> forM_ webCanonicalRoot_ $ \root -> serveStaticPageH2 root r sendResponse
           _ ->
-            -- requests in flight keep the connection from expiring, so a stalled request body must close it
             timeout (fileTimeout cfg) (getHTTP2Body r xftpBlockSize) >>= \case
               Nothing -> logWarn "request receiving timeout, closing connection" >> closeSession
               Just reqBody -> do
@@ -284,7 +283,6 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
         expireServerFiles (Just 100000) expCfg
           `catchAny` \e -> logError $ "Expired files error: " <> tshow e
 
-    -- period stats are reset by the stats log, without it they are reset separately
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
     serverStatsThread_ XFTPServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
       [logServerStats logStatsStartTime interval serverStatsLogFile]
@@ -478,7 +476,6 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
               timeout sendTimeout (withFile filePath ReadMode $ \h -> sendEncFile h send sbState fileSize) >>= \case
                 Just () -> pure ()
                 Nothing -> do
-                  -- http2 cannot reset a stream while its send queue is full, so the connection is closed instead
                   logWarn "file sending timeout, closing connection"
                   closeSession
           done
@@ -741,7 +738,6 @@ expireServerFiles itemDelay expCfg = do
           incFileStat filesExpired
         expireLoop st us now old
 
--- | periodStatCounts resets day, week and month stats when called once a day
 periodStatsInterval :: Int64
 periodStatsInterval = 86400
 

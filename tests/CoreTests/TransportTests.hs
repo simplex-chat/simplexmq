@@ -50,7 +50,6 @@ testCredentials =
       certificateFile = "tests/fixtures/server.crt"
     }
 
--- | Runs the client action with the server socket and TLS of the same connection
 withTLSConnection :: HasTestEnv => TransportServerConfig -> (TLS 'TClient -> (Socket, TLS 'TServer) -> IO a) -> IO a
 withTLSConnection cfg action = do
   credential <- loadServerCredential testCredentials
@@ -71,13 +70,11 @@ testCloseBlockedTLS = withTLSConnection (mkTransportServerConfig True Nothing Fa
   sent <- newTVarIO (0 :: Int)
   sender <- async . forever $ cPut server block >> atomically (modifyTVar' sent (+ 1))
   waitBlocked sent 0
-  -- bracket release closes connections with exceptions masked
   closing <- async . uninterruptibleMask_ $ closeConnection server
   timeout 5000000 (wait closing) `shouldReturn` Just ()
   timeout 5000000 (isLeft <$> waitCatch sender) `shouldReturn` Just True
   where
     block = B.replicate 1048576 'x'
-    -- the sender holds the TLS write lock once the socket buffers are full and it stops sending
     waitBlocked sent n = do
       threadDelay 500000
       n' <- readTVarIO sent

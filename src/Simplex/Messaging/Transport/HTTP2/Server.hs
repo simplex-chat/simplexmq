@@ -82,7 +82,6 @@ runHTTP2ServerWith bufferSize tlsSetup http2Server =
     (\handler -> tlsSetup $ \tls -> handler (False, tls))
     (\_ _ -> http2Server)
 
--- | The handler receives an action that closes the client connection.
 runHTTP2ServerWith_ :: Maybe ExpirationConfig -> Maybe Int -> (SessionId -> IO ()) -> BufferSize -> (((SNICredentialUsed, TLS p) -> IO ()) -> a) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> a
 runHTTP2ServerWith_ expCfg_ firstRequestTimeout_ clientFinished bufferSize setup http2Server = setup $ \(sniUsed, tls) -> do
   activity <- newClientActivity
@@ -113,7 +112,6 @@ runHTTP2ServerWith_ expCfg_ firstRequestTimeout_ clientFinished bufferSize setup
 data ClientActivity = ClientActivity
   { requestStarted :: TVar Bool,
     requestsInFlight :: TVar Int,
-    -- | the time the last request ended, or the connection started
     idleSince :: TVar SystemTime
   }
 

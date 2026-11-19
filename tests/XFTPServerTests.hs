@@ -263,13 +263,11 @@ testExpireNotUploadedFiles _ = do
   let sIds = map (\i -> EntityId $ "never_uploaded" <> B.pack (show i)) [10 .. 59 :: Int]
       fileInfo = FileInfo {sndKey, size = chSize, digest = "digest"}
       createdAt = RoundedSystemTime $ roundedSeconds now
-      -- expire after the start-up expiration, during the periodic one
       expiresAt = RoundedSystemTime $ roundedSeconds now + 2
   sl <- openWriteStoreLog False testXFTPLogFile
   forM_ sIds $ \sId -> logAddFile sl sId fileInfo createdAt (Just expiresAt) EntityActive
   closeStoreLog sl
   withXFTPServerCfg testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile, fileExpiration} $ \_ -> do
-    -- files expire within 4 seconds, with a delay per expired file 50 files would take 5 seconds more
     threadDelay 6000000
     testXFTPClient $ \c -> forM_ sIds $ \sId ->
       runExceptT (addXFTPRecipients c spKey sId [rcvKey]) `shouldReturn` Left (PCEProtocolError AUTH)
@@ -299,7 +297,6 @@ testLongDownloadExpiration fsType =
     g <- C.newRandom
     HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
     getPart <- maybe (error "no response body") pure bodyPart
-    -- the slow part takes longer than the inactivity ttl, the rest is read without delays
     slowBytes <- readBody getPart (mb 2) 25000
     restBytes <- readBody getPart maxBound 0
     slowBytes + restBytes `shouldBe` mb 4 + C.authTagSize
@@ -532,7 +529,6 @@ testStalledDownload fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
     (c, disconnected, rId, rpKey) <- uploadLargeChunk
     g <- C.newRandom
-    -- only the response head is read, the rest of the body is never consumed
     void $ sendFGET c g rpKey rId
     timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
     files <- listDirectory xftpServerFiles
@@ -542,7 +538,6 @@ testStalledRequestBody :: HasTestEnv => AFStoreType -> Expectation
 testStalledRequestBody fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 1000000, inactiveClientExpiration = Nothing}) $ \_ -> do
     (XFTPClient {http2Client}, disconnected) <- connectXFTPClient
-    -- http2 client sends request headers only after the first part of the body
     let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
     withAsync (HC.sendRequest http2Client req Nothing) $ \_ ->
       timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
@@ -589,7 +584,6 @@ connectXFTPClient = do
   c <- either (error . show) pure =<< getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
   pure (c, disconnected)
 
--- | Uploads a chunk larger than the 1 MB stream window of http2 plus its send queue, so that its download blocks unless the body is read
 uploadLargeChunk :: HasTestEnv => IO (XFTPClient, TMVar (), RecipientId, C.APrivateAuthKey)
 uploadLargeChunk = do
   g <- C.newRandom
@@ -612,7 +606,6 @@ sendFGET XFTPClient {http2Client, thParams} g rpKey rId = do
   t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams rpKey ("", rId, FileCmd SFRecipient $ FGET rDhKey)
   either (error . show) pure =<< HC.sendRequest http2Client (H2.requestBuilder "POST" "/" [] $ byteString t) Nothing
 
--- | Nothing when the platform has no /proc/self/fd
 openDescriptors :: FilePath -> IO (Maybe Int)
 openDescriptors path =
   doesDirectoryExist fdDir >>= \case
@@ -658,7 +651,6 @@ testOldServerHandshake _ = do
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
 
--- the received chunks are written to /dev/null, so only the digest of received bytes can match
 testReceiveChunkDigest :: Expectation
 testReceiveChunkDigest = do
   bytes <- atomically . C.randomBytes chSize =<< C.newRandom

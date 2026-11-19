@@ -384,8 +384,6 @@ closeTLSTimeout = 1000000
 closeTLS :: T.Context -> IO ()
 closeTLS ctx = do
   byeDone <- newEmptyTMVarIO
-  -- T.bye waits for the write lock that a sender blocked by a non-reading peer holds. It runs in an unmasked
-  -- thread because closeTLS can be called masked (bracket release), where timeout cannot interrupt it.
   _ <- forkIOWithUnmask $ \unmask ->
     -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
     (unmask (void $ timeout closeTLSTimeout $ T.bye ctx) `catchAll_` pure ())
