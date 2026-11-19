@@ -91,7 +91,8 @@ xftpServerTests = do
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
       it "should close connection when DATA exceeds the HTTP/2 flow-control window" testHTTP2FlowControl
-      it "should disconnect HTTP/2 client after GOAWAY of the server" testHTTP2ClientGoAway
+      it "should disconnect HTTP/2 client after GOAWAY of the server with the connection kept open" $ testHTTP2ClientGoAway True
+      it "should disconnect HTTP/2 client after GOAWAY of the server with the connection closed" $ testHTTP2ClientGoAway False
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -496,23 +497,22 @@ testHTTP2FlowControl _ =
           GoAwayFrame {} -> error $ "unexpected " <> show payload
           _ -> nextFrame_ tls wanted
 
-testHTTP2ClientGoAway :: HasTestEnv => AFStoreType -> Expectation
-testHTTP2ClientGoAway _ =
-  forM_ [True, False] $ \keepOpen -> do
-    credential <- loadServerCredential xftpCredentials
-    disconnected <- newEmptyTMVarIO
-    let server (tls :: TLS 'TServer) = do
-          _ <- cGet tls connectionPrefaceLength
-          cPut tls $ frame (SettingsFrame []) <> frame (GoAwayFrame 0 NoError "")
-          threadDelay $ if keepOpen then maxBound else closeDelay
-    serverBracket
-      (\started -> runTransportServer started xftpTestPort defaultSupportedParams credential transportConfig server)
-      (pure ())
-      $ \_ -> do
-        Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-        runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-          bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \_ ->
-            timeout 5000000 (atomically $ readTMVar disconnected) `shouldReturn` Just ()
+testHTTP2ClientGoAway :: HasTestEnv => Bool -> AFStoreType -> Expectation
+testHTTP2ClientGoAway keepOpen _ = do
+  credential <- loadServerCredential xftpCredentials
+  disconnected <- newEmptyTMVarIO
+  let server (tls :: TLS 'TServer) = do
+        _ <- cGet tls connectionPrefaceLength
+        cPut tls $ frame (SettingsFrame []) <> frame (GoAwayFrame 0 NoError "")
+        threadDelay $ if keepOpen then maxBound else closeDelay
+  serverBracket
+    (\started -> runTransportServer started xftpTestPort defaultSupportedParams credential transportConfig server)
+    (pure ())
+    $ \_ -> do
+      Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+      runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
+        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \_ ->
+          timeout 5000000 (atomically $ readTMVar disconnected) `shouldReturn` Just ()
   where
     XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
     frame = encodeFrame (encodeInfo id 0)
