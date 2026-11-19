@@ -508,7 +508,8 @@ testHTTP2ClientGoAway keepOpen _ = do
       runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
         bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) defaultHTTP2BufferSize tls) HC.closeHTTP2Client $ \h2 ->
           withAsync (HC.sendRequest h2 (H2.requestNoBody "GET" "/" []) Nothing (\_ -> pure ())) $ \response -> do
-            timeout h2FrameTimeout (atomically $ takeTMVar requested) >>= \case
+            clientFrames <- timeout h2FrameTimeout (atomically $ takeTMVar requested)
+            case clientFrames of
               Just (SettingsFrame settings, windowUpdate) -> do
                 (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just http2MaxConcurrentStreams, Just http2WindowSize)
                 windowUpdate `shouldBe` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
