@@ -23,16 +23,16 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
-import Network.HPACK (defaultDynamicTableSize, defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
+import Network.HPACK (Header, defaultDynamicTableSize, defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
-import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm, NoError), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, connectionPrefaceLength, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
+import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm, NoError), FrameFlags, FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FrameHeaders, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), StreamId, connectionPreface, connectionPrefaceLength, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, setEndStream, testAck)
 import qualified Network.TLS as T
 import SMPClient (copyWebCredential, serverBracket, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
 import ServerTests (logSize)
@@ -58,7 +58,7 @@ import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, wait, withAsync)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
@@ -465,37 +465,23 @@ testHTTP2FlowControl _ =
   withStallingXFTPServer $ \requested _ -> do
     Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
     runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) -> do
-      cPut tls $ connectionPreface <> frame 0 id (SettingsFrame [])
-      SettingsFrame settings <- nextFrame tls "SETTINGS" $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
+      cPut tls $ connectionPreface <> h2Frame 0 id (SettingsFrame [])
+      SettingsFrame settings <- awaitH2Frame tls "SETTINGS" $ \typ h -> typ == FrameSettings && not (testAck $ flags h)
       (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just http2MaxConcurrentStreams, Just http2WindowSize)
-      cPut tls $ frame 0 setAck (SettingsFrame [])
-      nextFrame tls "WINDOW_UPDATE" (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
-      dynTable <- newDynamicTableForEncoding defaultDynamicTableSize
-      hdrs <- encodeHeader defaultEncodeStrategy headerBufferSize dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
-      cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
-      timeout frameTimeout (atomically $ takeTMVar requested) `shouldReturn` Just ()
+      cPut tls $ h2Frame 0 setAck (SettingsFrame [])
+      awaitH2Frame tls "WINDOW_UPDATE" (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
+      hdrs <- h2HeaderBlock [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
+      cPut tls $ h2Frame 1 setEndHeader (HeadersFrame Nothing hdrs)
+      timeout h2FrameTimeout (atomically $ takeTMVar requested) `shouldReturn` Just ()
       let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
           sendWindow = do
-            replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
-            cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
-      timeout frameTimeout sendWindow `shouldReturn` Just ()
-      cPut tls $ frame 0 id $ PingFrame "flowctrl"
-      nextFrame tls "PING ack" (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
-      cPut tls $ frame 1 id $ DataFrame "x"
-      nextFrame tls "GOAWAY" (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
-  where
-    frameTimeout = 5000000
-    headerBufferSize = 4096
-    frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
-    nextFrame tls name wanted = timeout frameTimeout (nextFrame_ tls wanted) >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
-    nextFrame_ tls wanted = do
-      (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
-      payload <- either (error . show) pure . decodeFramePayload typ h =<< cGet tls (payloadLength h)
-      if wanted typ h
-        then pure payload
-        else case payload of
-          GoAwayFrame {} -> error $ "unexpected " <> show payload
-          _ -> nextFrame_ tls wanted
+            replicateM_ blocks $ cPut tls $ h2Frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
+            cPut tls $ h2Frame 1 id $ DataFrame $ B.replicate rest 'x'
+      timeout h2FrameTimeout sendWindow `shouldReturn` Just ()
+      cPut tls $ h2Frame 0 id $ PingFrame "flowctrl"
+      awaitH2Frame tls "PING ack" (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
+      cPut tls $ h2Frame 1 id $ DataFrame "x"
+      awaitH2Frame tls "GOAWAY" (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
 
 testHTTP2ClientGoAway :: HasTestEnv => Bool -> AFStoreType -> Expectation
 testHTTP2ClientGoAway keepOpen _ = do
@@ -503,20 +489,51 @@ testHTTP2ClientGoAway keepOpen _ = do
   disconnected <- newEmptyTMVarIO
   let server (tls :: TLS 'TServer) = do
         _ <- cGet tls connectionPrefaceLength
-        cPut tls $ frame (SettingsFrame []) <> frame (GoAwayFrame 0 NoError "")
-        threadDelay $ if keepOpen then maxBound else closeDelay
+        cPut tls $ h2Frame 0 id (SettingsFrame [])
+        _ <- awaitH2Frame tls "request HEADERS" $ \typ h -> typ == FrameHeaders && streamId h == 1
+        cPut tls $ h2Frame 0 id (GoAwayFrame 1 NoError "")
+        when keepOpen $ do
+          hdrs <- h2HeaderBlock [(":status", "200")]
+          cPut tls $ h2Frame 1 (setEndStream . setEndHeader) (HeadersFrame Nothing hdrs)
+          threadDelay maxBound
   serverBracket
     (\started -> runTransportServer started xftpTestPort defaultSupportedParams credential transportConfig server)
     (pure ())
     $ \_ -> do
       Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
       runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \_ ->
-          timeout 5000000 (atomically $ readTMVar disconnected) `shouldReturn` Just ()
+        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \h2 ->
+          withAsync (HC.sendRequest h2 (H2.requestNoBody "GET" "/" []) Nothing (\_ -> pure ())) $ \response -> do
+            timeout h2FrameTimeout (atomically $ readTMVar disconnected) `shouldReturn` Just ()
+            when keepOpen $ wait response >>= (`shouldSatisfy` isRight)
   where
     XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
-    frame = encodeFrame (encodeInfo id 0)
-    closeDelay = 100000
+
+h2FrameTimeout :: Int
+h2FrameTimeout = 5000000
+
+h2Frame :: StreamId -> (FrameFlags -> FrameFlags) -> FramePayload -> ByteString
+h2Frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
+
+h2HeaderBlock :: [Header] -> IO ByteString
+h2HeaderBlock hs = do
+  dynTable <- newDynamicTableForEncoding defaultDynamicTableSize
+  encodeHeader defaultEncodeStrategy h2HeaderBufferSize dynTable hs
+
+h2HeaderBufferSize :: Int
+h2HeaderBufferSize = 4096
+
+awaitH2Frame :: TLS p -> String -> (FrameType -> FrameHeader -> Bool) -> IO FramePayload
+awaitH2Frame tls name wanted = timeout h2FrameTimeout nextFrame >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
+  where
+    nextFrame = do
+      (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
+      payload <- either (error . show) pure . decodeFramePayload typ h =<< cGet tls (payloadLength h)
+      if wanted typ h
+        then pure payload
+        else case payload of
+          GoAwayFrame {} -> error $ "unexpected " <> show payload
+          _ -> nextFrame
 
 -- SNI and CORS tests
 
