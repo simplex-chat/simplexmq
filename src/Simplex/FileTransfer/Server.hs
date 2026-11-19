@@ -458,10 +458,11 @@ processRequest XFTPTransportRequest {thParams, reqBody = body@HTTP2Body {bodyHea
 #ifdef slow_servers
       randomDelay
 #endif
-      liftIO . sendResponse $ case (t_, serverFile_) of
-        (Right t, Just serverFile) -> H.responseStreaming N.ok200 (corsHeaders addCORS) $ streamBody sendTimeout t serverFile
-        _ -> H.responseBuilder N.ok200 (corsHeaders addCORS) $ either (const paddingError) byteString t_
+      liftIO . sendResponse $ case t_ of
+        Left _ -> responseBuilder paddingError
+        Right t -> maybe (responseBuilder $ byteString t) (H.responseStreaming N.ok200 (corsHeaders addCORS) . streamBody sendTimeout t) serverFile_
       where
+        responseBuilder = H.responseBuilder N.ok200 (corsHeaders addCORS)
         paddingError = "padding error" -- TODO respond with BLOCK error?
         streamBody sendTimeout t ServerFile {filePath, fileSize, sbState} send done = do
           send $ byteString t
