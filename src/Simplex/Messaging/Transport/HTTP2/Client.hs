@@ -175,8 +175,6 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
         putTMVar cVar (Right c')
       process c' sendReq `E.finally` disconnected
 
-    -- http2 resets the stream when the callback returns, so it waits for the request handler to finish.
-    -- Requests are still sent one at a time, each after the previous response arrives.
     process :: HTTP2Client -> H.SendRequest -> IO HTTP2Response
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
       (req, respVar, doneVar) <- atomically $ readTBQueue reqQ
@@ -192,17 +190,16 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
 closeHTTP2Client :: HTTP2Client -> IO ()
 closeHTTP2Client = mapM_ uninterruptibleCancel . action
 
--- | The response body can only be read in the handler, its stream is closed after it returns.
 sendRequest :: HTTP2Client -> Request -> Maybe Int -> (HTTP2Response -> IO a) -> IO (Either HTTP2ClientError a)
 sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ handleResponse = do
   resp <- newEmptyTMVarIO
   done <- newEmptyTMVarIO
-  atomically $ writeTBQueue reqQ (req, resp, done)
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  r <- (reqTimeout `timeout` atomically (takeTMVar resp) >>= mapM handleResponse) `E.finally` atomically (putTMVar done ())
+  r <- E.mask $ \restore -> do
+    atomically $ writeTBQueue reqQ (req, resp, done)
+    restore (reqTimeout `timeout` atomically (takeTMVar resp) >>= mapM handleResponse) `E.finally` atomically (putTMVar done ())
   pure $ maybe (Left HCResponseTimeout) Right r
 
--- | this function should not be used until HTTP2 is thread safe, use sendRequest
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequestDirect HTTP2Client {client_ = HClient {config, disconnected}, sendReq} req reqTimeout_ = do
   let reqTimeout = http2RequestTimeout config reqTimeout_
