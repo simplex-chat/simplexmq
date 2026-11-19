@@ -16,6 +16,7 @@
 module AgentTests.SQLiteTests where
 
 import AgentTests.EqInstances ()
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -45,7 +46,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withTransaction')
+import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withConnection', withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -101,6 +102,7 @@ storeTests :: Spec
 storeTests = do
   withStore2 $ do
     describe "stress test" testConcurrentWrites
+    describe "busy commit" testBusyCommit
   withStore $ do
     describe "db setup" $ do
       testCompiledThreadsafe
@@ -170,6 +172,19 @@ testConcurrentWrites =
       (internalId, internalRcvId, _, _) <- updateRcvIds db connId
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
       createRcvMsg db connId rq rcvMsgData
+
+testBusyCommit :: SpecWith (DBStore, DBStore)
+testBusyCommit =
+  it "should retry transaction when commit is busy" $ \(s1, s2) -> do
+    reading <- newEmptyMVar
+    concurrently_
+      ( withConnection' s2 $ \db -> SQL.withTransaction db $ do
+          _ <- SQL.query_ db "SELECT user_id FROM users" :: IO [Only Int]
+          putMVar reading ()
+          threadDelay 500000
+      )
+      (takeMVar reading >> withTransaction' s1 (`SQL.execute_` "INSERT INTO users (user_id) VALUES (2)"))
+    withTransaction' s1 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
 
 testCompiledThreadsafe :: SpecWith DBStore
 testCompiledThreadsafe =
