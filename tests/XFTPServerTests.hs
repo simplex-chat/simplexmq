@@ -17,7 +17,6 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
-import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Base64.URL as B64
@@ -293,14 +292,13 @@ testLongDownloadExpiration :: HasTestEnv => AFStoreType -> Expectation
 testLongDownloadExpiration fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> do
     (c, disconnected, rId, rpKey) <- uploadLargeChunk
-    g <- C.newRandom
-    HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
+    HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c rpKey rId
     getPart <- maybe (error "no response body") pure bodyPart
     slowBytes <- readBody getPart (mb 2) 25000
     restBytes <- timeout 15000000 (readBody getPart maxBound 0) >>= maybe (error "body not read within 15 seconds") pure
     slowBytes + restBytes `shouldBe` mb 4 + C.authTagSize
     runRight_ $ pingXFTP c
-    timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+    expectDisconnected disconnected
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
@@ -529,9 +527,8 @@ testStalledDownload :: HasTestEnv => AFStoreType -> Expectation
 testStalledDownload fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ -> do
     (c, disconnected, rId, rpKey) <- uploadLargeChunk
-    g <- C.newRandom
-    void $ sendFGET c g rpKey rId
-    timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+    void $ sendFGET c rpKey rId
+    expectDisconnected disconnected
     filesClosed (20 :: Int) `shouldReturn` True
   where
     filesClosed n = do
@@ -543,11 +540,10 @@ testStalledDownloadEnd fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration}) $ \_ ->
     forM_ [mb 1 + kb k | k <- [0, 64 .. 320]] $ \unread -> do
       (c, disconnected, rId, rpKey) <- uploadLargeChunk
-      g <- C.newRandom
-      HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
+      HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c rpKey rId
       getPart <- maybe (error "no response body") pure bodyPart
       void $ readBody getPart (mb 4 + C.authTagSize - unread) 0
-      timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+      expectDisconnected disconnected
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
@@ -556,8 +552,7 @@ testStalledRequestBody fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ -> do
     (XFTPClient {http2Client}, disconnected) <- connectXFTPClient
     let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
-    withAsync (HC.sendRequest http2Client req Nothing) $ \_ ->
-      timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+    withAsync (HC.sendRequest http2Client req Nothing) $ \_ -> expectDisconnected disconnected
 
 testStalledCommittedUpload :: HasTestEnv => AFStoreType -> Expectation
 testStalledCommittedUpload fsType =
@@ -617,9 +612,12 @@ uploadLargeChunk = do
     pure rId
   pure (c, disconnected, rId, rpKey)
 
-sendFGET :: XFTPClient -> TVar ChaChaDRG -> C.APrivateAuthKey -> RecipientId -> IO HC.HTTP2Response
-sendFGET XFTPClient {http2Client, thParams} g rpKey rId = do
-  (rDhKey, _) <- atomically $ C.generateKeyPair g
+expectDisconnected :: TMVar () -> Expectation
+expectDisconnected disconnected = timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+
+sendFGET :: XFTPClient -> C.APrivateAuthKey -> RecipientId -> IO HC.HTTP2Response
+sendFGET XFTPClient {http2Client, thParams} rpKey rId = do
+  (rDhKey, _) <- atomically . C.generateKeyPair =<< C.newRandom
   t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams rpKey ("", rId, FileCmd SFRecipient $ FGET rDhKey)
   either (error . show) pure =<< HC.sendRequest http2Client (H2.requestBuilder "POST" "/" [] $ byteString t) Nothing
 
