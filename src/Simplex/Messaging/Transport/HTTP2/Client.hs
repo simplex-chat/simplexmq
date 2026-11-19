@@ -226,7 +226,12 @@ runHTTP2ClientWith :: forall a p. BufferSize -> TransportHost -> ((TLS p -> IO a
 runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 bufferSize (run tls) (pure ()) tls
   where
     run :: TLS p -> H.Config -> IO a
-    run tls cfg = H.run clientConfig cfg $ client tls
+    run tls cfg = do
+      closed <- newEmptyTMVarIO
+      let readN n = H.confReadN cfg n `E.onException` atomically (void $ tryPutTMVar closed ())
+          untilClosed :: H.Client a
+          untilClosed sendReq aux = race (atomically $ readTMVar closed) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
+      H.run clientConfig cfg {H.confReadN = readN} untilClosed
     clientConfig =
       H.defaultClientConfig
         { scheme = "https",

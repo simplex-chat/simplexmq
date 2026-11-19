@@ -32,9 +32,9 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK (defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
-import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
+import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm, NoError), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
 import qualified Network.TLS as T
-import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
+import SMPClient (copyWebCredential, serverBracket, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -52,7 +52,7 @@ import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (.
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2MaxConcurrentStreams, http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), loadFileFingerprint, loadServerCredential, newSocketState, runTransportServerState_)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (listDirectory, removeFile)
@@ -91,6 +91,7 @@ xftpServerTests = do
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
       it "should close connection when DATA exceeds the HTTP/2 flow-control window" testHTTP2FlowControl
+      it "should disconnect HTTP/2 client after GOAWAY of the server" testHTTP2ClientGoAway
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -490,6 +491,28 @@ testHTTP2FlowControl _ =
         else case payload of
           GoAwayFrame {} -> error $ "unexpected " <> show payload
           _ -> nextFrame_ tls wanted
+
+testHTTP2ClientGoAway :: HasTestEnv => AFStoreType -> Expectation
+testHTTP2ClientGoAway _ = do
+  credential <- loadServerCredential xftpCredentials
+  ss <- newSocketState
+  disconnected <- newEmptyTMVarIO
+  let srvCreds = TLSServerCredential {credential, sniCredential = Nothing}
+      server _ (_, tls :: TLS 'TServer) = do
+        _ <- cGet tls $ B.length connectionPreface
+        cPut tls $ frame (SettingsFrame []) <> frame (GoAwayFrame 0 NoError "")
+        threadDelay maxBound
+  serverBracket
+    (\started -> runTransportServerState_ ss started xftpTestPort defaultSupportedParams srvCreds transportConfig server)
+    (pure ())
+    $ \_ -> do
+      Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+      runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
+        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \_ ->
+          timeout 5000000 (atomically $ readTMVar disconnected) `shouldReturn` Just ()
+  where
+    XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
+    frame = encodeFrame (encodeInfo id 0)
 
 -- SNI and CORS tests
 
