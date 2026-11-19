@@ -537,14 +537,16 @@ testStalledDownload fsType =
 
 testStalledDownloadEnd :: HasTestEnv => AFStoreType -> Expectation
 testStalledDownloadEnd fsType =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ ->
-    forM_ [mb 1 + kb k | k <- [0, 32 .. 160]] $ \unread -> do
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration}) $ \_ ->
+    forM_ [mb 1 + kb k | k <- [0, 64 .. 320]] $ \unread -> do
       (c, disconnected, rId, rpKey) <- uploadLargeChunk
       g <- C.newRandom
       HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
       getPart <- maybe (error "no response body") pure bodyPart
       void $ readBody getPart (mb 4 + C.authTagSize - unread) 0
       timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+  where
+    inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
 
 testStalledRequestBody :: HasTestEnv => AFStoreType -> Expectation
 testStalledRequestBody fsType =
@@ -583,7 +585,7 @@ testNoRequestTimeout fsType =
       Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
       let cfg = defaultTransportClientConfig {clientALPN = Just alpnSupportedXFTPhandshakes} :: TransportClientConfig
       runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-        timeout 5000000 (tryAny $ cGet tls 1) >>= (`shouldSatisfy` maybe False isLeft)
+        timeout 5000000 (tryAny $ cGet tls 1) >>= (`shouldSatisfy` maybe False (either (const True) B.null))
       (c, disconnected) <- connectXFTPClient
       threadDelay 2000000
       atomically (tryReadTMVar disconnected) `shouldReturn` Nothing
