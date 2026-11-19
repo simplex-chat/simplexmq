@@ -564,22 +564,16 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
         _ -> defaultMax
     addFileRetry :: s -> FileInfo -> Int -> RoundedFileTime -> Maybe RoundedFileTime -> M s (Either XFTPErrorType XFTPFileId)
     addFileRetry st file n ts expiresAt =
-      retryAdd n $ \sId -> runExceptT $ do
-        ExceptT $ addFile st sId file ts expiresAt EntityActive
-        pure sId
+      retryAdd n getFileId $ \sId -> (sId <$) <$> addFile st sId file ts expiresAt EntityActive
     addRecipientsRetry :: s -> Int -> XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s (Either XFTPErrorType (NonEmpty FileRecipient))
-    addRecipientsRetry _ 0 _ _ = pure $ Left INTERNAL
-    addRecipientsRetry st n sId rks = do
-      rcps <- mapM (\rpk -> (`FileRecipient` rpk) <$> getFileId) rks
-      liftIO (addRecipients st sId rcps) >>= \case
-        Left DUPLICATE_ -> addRecipientsRetry st (n - 1) sId rks
-        r -> pure $ rcps <$ r
-    retryAdd :: Int -> (XFTPFileId -> IO (Either XFTPErrorType a)) -> M s (Either XFTPErrorType a)
-    retryAdd 0 _ = pure $ Left INTERNAL
-    retryAdd n add = do
-      fId <- getFileId
-      liftIO (add fId) >>= \case
-        Left DUPLICATE_ -> retryAdd (n - 1) add
+    addRecipientsRetry st n sId rks =
+      retryAdd n (mapM (\rpk -> (`FileRecipient` rpk) <$> getFileId) rks) $ \rcps -> (rcps <$) <$> addRecipients st sId rcps
+    retryAdd :: Int -> M s a -> (a -> IO (Either XFTPErrorType b)) -> M s (Either XFTPErrorType b)
+    retryAdd 0 _ _ = pure $ Left INTERNAL
+    retryAdd n newIds add = do
+      ids <- newIds
+      liftIO (add ids) >>= \case
+        Left DUPLICATE_ -> retryAdd (n - 1) newIds add
         r -> pure r
     addFileRecipients :: XFTPFileId -> NonEmpty RcvPublicAuthKey -> M s FileResponse
     addFileRecipients sId rks = do
