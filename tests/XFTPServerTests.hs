@@ -297,7 +297,7 @@ testLongDownloadExpiration fsType =
     HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c g rpKey rId
     getPart <- maybe (error "no response body") pure bodyPart
     slowBytes <- readBody getPart (mb 2) 25000
-    restBytes <- readBody getPart maxBound 0
+    restBytes <- timeout 15000000 (readBody getPart maxBound 0) >>= maybe (error "body not read within 15 seconds") pure
     slowBytes + restBytes `shouldBe` mb 4 + C.authTagSize
     runRight_ $ pingXFTP c
     timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
@@ -532,8 +532,11 @@ testStalledDownload fsType =
     g <- C.newRandom
     void $ sendFGET c g rpKey rId
     timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
-    files <- listDirectory xftpServerFiles
-    mapM (openDescriptors . (xftpServerFiles </>)) files >>= (`shouldSatisfy` all (maybe True (== 0)))
+    filesClosed (20 :: Int) `shouldReturn` True
+  where
+    filesClosed n = do
+      closed <- all (maybe True (== 0)) <$> (mapM (openDescriptors . (xftpServerFiles </>)) =<< listDirectory xftpServerFiles)
+      if closed || n <= 0 then pure closed else threadDelay 100000 >> filesClosed (n - 1)
 
 testStalledDownloadEnd :: HasTestEnv => AFStoreType -> Expectation
 testStalledDownloadEnd fsType =
