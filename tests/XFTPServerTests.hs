@@ -450,12 +450,12 @@ testFileLog _ = do
 testPeriodStatsReset :: HasTestEnv => AFStoreType -> Expectation
 testPeriodStatsReset fsType = do
   ts <- getCurrentTime
-  let resetTime = floor (utctDayTime ts) + 5
+  let resetTime = floor (utctDayTime ts) + 10
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {logStatsInterval = Nothing, logStatsStartTime = resetTime, prometheusInterval = Just 1}) $ \_ -> do
     testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
     threadDelay 1500000
     dailyDownloads `shouldReturn` Just "1"
-    threadDelay 5000000
+    threadDelay 10000000
     dailyDownloads `shouldReturn` Just "0"
   where
     dailyDownloads = do
