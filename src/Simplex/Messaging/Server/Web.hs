@@ -20,7 +20,6 @@ module Simplex.Messaging.Server.Web
   ) where
 
 import qualified Codec.Compression.GZip as GZip
-import Control.Concurrent.STM (newTVarIO)
 import Control.Logger.Simple
 import Control.Monad
 import Data.ByteString (ByteString)
@@ -56,7 +55,7 @@ import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExi
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (Exception (displayException), bracket, finally, throwIO)
-import UnliftIO.STM (readTVarIO)
+import UnliftIO.STM (newTVarIO, readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
 data EmbeddedWebParams = EmbeddedWebParams
