@@ -18,7 +18,6 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
--- tls 2 deprecates getFinished and getPeerFinished, but getTLSUnique has no value for TLS 1.3 sessions
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- |
@@ -109,9 +108,8 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
-import Control.Concurrent (forkIOWithUnmask, newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent (forkIOWithUnmask)
 import Control.Concurrent.STM
-import qualified Control.Exception as CE
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Class
@@ -152,6 +150,7 @@ import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, state
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
+import System.Timeout (timeout)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 
@@ -381,17 +380,17 @@ withTlsUnique cxt f =
       STServer -> T.getPeerFinished
       STClient -> T.getFinished
 
+closeTLSTimeout :: Int
+closeTLSTimeout = 1000000
+
 closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  bye -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `E.finally` T.contextClose ctx
-    `catchAll_` pure ()
-  where
-    -- tls 2 bye waits for the peer with a timeout, which cannot fire in the uninterruptible cleanup of UnliftIO bracket
-    bye = do
-      r <- newEmptyMVar
-      _ <- forkIOWithUnmask $ \unmask -> CE.try @CE.SomeException (unmask $ T.bye ctx) >>= putMVar r
-      takeMVar r >>= either CE.throwIO pure
+closeTLS ctx = do
+  byeDone <- newEmptyTMVarIO
+  _ <- forkIOWithUnmask $ \unmask ->
+    -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
+    (unmask (void $ timeout closeTLSTimeout $ T.bye ctx) `catchAll_` pure ())
+      `E.finally` atomically (putTMVar byeDone ())
+  atomically (takeTMVar byeDone) `E.finally` (T.contextClose ctx `catchAll_` pure ())
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
