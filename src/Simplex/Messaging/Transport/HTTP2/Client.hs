@@ -57,7 +57,7 @@ data HTTP2Client = HTTP2Client
     serverKey :: Maybe C.APublicVerifyKey, -- may not always be a key we control (i.e. APNS with apple-mandated key types)
     serverCerts :: X.CertificateChain,
     sessionTs :: UTCTime,
-    sendReq :: Request -> (Response -> IO HTTP2Response) -> IO HTTP2Response,
+    sendReq :: H.SendRequest,
     client_ :: HClient
   }
 
