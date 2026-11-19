@@ -47,11 +47,9 @@ allocHTTP2Config c sz = do
         confSendAll = cPut c,
         confReadN = cGet c,
         confTimeoutManager = tm,
-        -- otherwise http2 closes a connection that receives no frames for the timeout above
         confReadNTimeout = True
       }
 
--- http2 4.2.2 advertised these limits; the received data is bounded by the connection window.
 http2Settings :: HS.Settings
 http2Settings = HS.defaultSettings {HS.maxConcurrentStreams = Just 100, HS.initialWindowSize = http2WindowSize}
 
