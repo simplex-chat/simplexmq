@@ -83,7 +83,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1)
 import qualified Data.Text.IO as T
-import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Type.Equality
@@ -542,9 +542,8 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
     logServerStats :: Int64 -> Int64 -> FilePath -> M s ()
     logServerStats startAt logInterval statsFilePath = do
       labelMyThread "logServerStats"
-      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       liftIO $ putStrLn $ "server stats log enabled: " <> statsFilePath
-      liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      liftIO $ delayUntilDayTime startAt
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, pMsgFwdsBelow23, pMsgFwdsFrom23, pMsgFwdsRecvBelow23, pMsgFwdsRecvFrom23, rcvServices, ntfServices, rslvStats}
         <- asks serverStats
       st <- asks msgStore

@@ -61,6 +61,7 @@ module Simplex.Messaging.Util
     safeDecodeUtf8,
     timeoutThrow,
     threadDelay',
+    delayUntilDayTime,
     diffToMicroseconds,
     diffToMilliseconds,
     labelMyThread,
@@ -97,7 +98,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import qualified Data.Text.IO as T
-import Data.Time (NominalDiffTime)
+import Data.Time (NominalDiffTime, diffTimeToPicoseconds, getCurrentTime, utctDayTime)
 import Data.Tuple (swap)
 import Data.Word (Word8)
 import Foreign.ForeignPtr (withForeignPtr)
@@ -423,6 +424,11 @@ threadDelay' = loop
           let maxWait = min time $ fromIntegral (maxBound :: Int)
           threadDelay $ fromIntegral maxWait
           loop $ time - maxWait
+
+delayUntilDayTime :: Int64 -> IO ()
+delayUntilDayTime startAt = do
+  initialDelay <- (startAt -) . fromIntegral . (`div` 1000000000000) . diffTimeToPicoseconds . utctDayTime <$> getCurrentTime
+  threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = truncate $ diff * 1000000
