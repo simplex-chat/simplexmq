@@ -469,20 +469,24 @@ testHTTP2FlowControl _ =
       (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just http2MaxConcurrentStreams, Just http2WindowSize)
       cPut tls $ frame 0 setAck (SettingsFrame [])
       nextFrame tls "WINDOW_UPDATE" (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
-      dynTable <- newDynamicTableForEncoding 4096
-      hdrs <- encodeHeader defaultEncodeStrategy 4096 dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
+      dynTable <- newDynamicTableForEncoding headerTableSize
+      hdrs <- encodeHeader defaultEncodeStrategy headerTableSize dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
       cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
-      timeout 5000000 (atomically $ takeTMVar requested) `shouldReturn` Just ()
+      timeout frameTimeout (atomically $ takeTMVar requested) `shouldReturn` Just ()
       let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
-      replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
-      cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
+          sendWindow = do
+            replicateM_ blocks $ cPut tls $ frame 1 id $ DataFrame $ B.replicate defaultPayloadLength 'x'
+            cPut tls $ frame 1 id $ DataFrame $ B.replicate rest 'x'
+      timeout frameTimeout sendWindow `shouldReturn` Just ()
       cPut tls $ frame 0 id $ PingFrame "flowctrl"
       nextFrame tls "PING ack" (\typ h -> typ == FramePing && testAck (flags h)) `shouldReturn` PingFrame "flowctrl"
       cPut tls $ frame 1 id $ DataFrame "x"
       nextFrame tls "GOAWAY" (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
   where
+    frameTimeout = 5000000
+    headerTableSize = 4096
     frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
-    nextFrame tls name wanted = timeout 5000000 (nextFrame_ tls wanted) >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
+    nextFrame tls name wanted = timeout frameTimeout (nextFrame_ tls wanted) >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
     nextFrame_ tls wanted = do
       (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
       payload <- either (error . show) pure . decodeFramePayload typ h =<< cGet tls (payloadLength h)
