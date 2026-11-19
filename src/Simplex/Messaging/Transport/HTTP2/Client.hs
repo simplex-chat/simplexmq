@@ -228,12 +228,12 @@ runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 buff
   where
     run :: TLS p -> H.Config -> IO a
     run tls cfg = do
-      receiverStopped <- newTVarIO Nothing
+      readerStop <- newTVarIO Nothing
       let readNWith stopped n = do
-            whenM (isNothing <$> readTVarIO receiverStopped) $ atomically $ writeTVar receiverStopped (Just stopped)
+            whenM (isNothing <$> readTVarIO readerStop) $ atomically $ writeTVar readerStop (Just stopped)
             H.confReadN cfg n
           untilClosed :: H.Client a
-          untilClosed sendReq aux = race (atomically $ readTVar receiverStopped >>= fromMaybe retrySTM) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
+          untilClosed sendReq aux = race (atomically $ readTVar readerStop >>= fromMaybe retrySTM) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
       H.run clientConfig cfg {H.confReadNWith = Just readNWith} untilClosed
     clientConfig =
       H.defaultClientConfig
