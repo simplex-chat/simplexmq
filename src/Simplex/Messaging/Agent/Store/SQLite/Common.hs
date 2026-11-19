@@ -3,7 +3,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 module Simplex.Messaging.Agent.Store.SQLite.Common
   ( DBStore (..),
@@ -109,10 +108,10 @@ withTransactionPriority st@DBStore {dbClosed} priority action = withConnectionPr
   ifM (readTVarIO dbClosed) (fail "withTransaction: database closed") (transaction db)
   where
     transaction db@DB.Connection {conn} = E.mask $ \restore -> do
-      (r, budget) <- dbBusyLoopWith busyBudget $ do
+      r <- dbBusyLoop $ do
         SQL.execute_ conn "BEGIN IMMEDIATE TRANSACTION"
         restore (action db) `E.onException` rollback
-      _ <- dbBusyLoopWith budget (SQL.execute_ conn "COMMIT TRANSACTION") `E.onException` rollback
+      dbBusyLoop (SQL.execute_ conn "COMMIT TRANSACTION") `E.onException` rollback
       pure r
       where
         rollback = SQL.execute_ conn "ROLLBACK TRANSACTION"
@@ -132,20 +131,15 @@ withSavepoint :: DB.Connection -> SQL.Query -> IO a -> IO (Either SQLError a)
 withSavepoint _ _ = E.try
 {-# INLINE withSavepoint #-}
 
-dbBusyLoop :: IO a -> IO a
-dbBusyLoop = fmap fst . dbBusyLoopWith busyBudget
-
-data BusyBudget = BusyBudget Int Int
-
-busyBudget :: BusyBudget
-busyBudget = BusyBudget 500 3000000
-
-dbBusyLoopWith :: BusyBudget -> IO a -> IO (a, BusyBudget)
-dbBusyLoopWith b@(BusyBudget t tLim) action =
-  ((,b) <$> action) `E.catch` \(e :: SQLError) ->
-    let se = SQL.sqlError e
-     in if tLim > t && (se == SQL.ErrorBusy || se == SQL.ErrorLocked)
-          then do
-            threadDelay t
-            dbBusyLoopWith (BusyBudget (t * 9 `div` 8) (tLim - t)) action
-          else E.throwIO e
+dbBusyLoop :: forall a. IO a -> IO a
+dbBusyLoop action = loop 500 3000000
+  where
+    loop :: Int -> Int -> IO a
+    loop t tLim =
+      action `E.catch` \(e :: SQLError) ->
+        let se = SQL.sqlError e
+         in if tLim > t && (se == SQL.ErrorBusy || se == SQL.ErrorLocked)
+              then do
+                threadDelay t
+                loop (t * 9 `div` 8) (tLim - t)
+              else E.throwIO e
