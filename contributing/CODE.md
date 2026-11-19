@@ -117,4 +117,3 @@ cabal list-bin exe:smp-server
 Custom forks specified in `cabal.project`:
 - `aeson`, `hs-socks` (SimpleX forks)
 - `direct-sqlcipher`, `sqlcipher-simple` (encrypted SQLite)
-- `warp`, `warp-tls` (HTTP server)
