@@ -177,7 +177,7 @@ CREATE TABLE smp_agent_test_protocol_schema.commands (
     command bytea NOT NULL,
     agent_version integer DEFAULT 1 NOT NULL,
     server_key_hash bytea,
-    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+01'::timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
     failed smallint DEFAULT 0
 );
 
@@ -240,7 +240,7 @@ CREATE TABLE smp_agent_test_protocol_schema.connections (
     ratchet_sync_state text DEFAULT 'ok'::text NOT NULL,
     deleted_at_wait_delivery timestamp with time zone,
     pq_support smallint DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+01'::timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
     service_request_expires_at timestamp with time zone
 );
 

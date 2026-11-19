@@ -21,6 +21,7 @@ import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.X509 as X
+import qualified Data.X509.File as XF
 import qualified Data.X509.Validation as XV
 import Network.Socket
 import Network.Socket.ByteString (recv)
@@ -35,14 +36,14 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Server (runSMPServerBlocking)
 import Simplex.Messaging.Server.Env.STM
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), SMSType (..), SQSType (..))
-import Simplex.Messaging.Transport
+import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (ifM, unlessM)
+import Simplex.Messaging.Util (unlessM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.Info (os)
+import System.Directory (copyFile, removeFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -139,15 +140,6 @@ testPrometheusMetricsFile = testPath "smp-server-metrics.txt"
 
 testServerStatsBackupFile :: HasTestEnv => FilePath
 testServerStatsBackupFile = testPath "smp-server-stats.log"
-
-xit' :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
-xit' d t = if os == "linux" then skip "skipped on Linux" $ it d t else it d t
-
-xit'' :: (HasCallStack, Example a) => String -> (HasTestEnv => a) -> SpecWith (Arg a)
-xit'' d t = skipOnCI $ it d t
-
-skipOnCI :: SpecWith a -> SpecWith a
-skipOnCI t = ifM (runIO envCI) (skip "skipped on CI" t) t
 
 testSMPClient :: (HasTestEnv, Transport c) => (THandleSMP c 'TClient -> IO a) -> IO a
 testSMPClient = testSMPClientVR supportedClientSMPRelayVRange
@@ -391,6 +383,71 @@ withSmpServerConfigOn t (ASrvCfg _ _ cfg') port' =
   serverBracket
     (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, False)]} Nothing)
     (threadDelay 10000)
+
+withSmpServerWebConfigOn :: HasCallStack => ASrvTransport -> AServerConfig -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
+withSmpServerWebConfigOn t (ASrvCfg _ _ cfg') port' =
+  serverBracket
+    (\started -> runSMPServerBlocking started cfg' {transports = [(port', t, True)]} (Just $ \_ _ -> pure ()))
+    (threadDelay 10000)
+
+testWebCredentials :: HasTestEnv => ServerCredentials
+testWebCredentials =
+  ServerCredentials
+    { caCertificateFile = Nothing,
+      privateKeyFile = testPath "web.key",
+      certificateFile = testPath "web.crt"
+    }
+
+testCredentialCheckInterval :: Int
+testCredentialCheckInterval = 100000
+
+webServerCfg :: HasTestEnv => AServerConfig
+webServerCfg = updateCfg (cfgMS $ ASType SQSMemory SMSMemory) $ \cfg_ ->
+  cfg_
+    { httpCredentials = Just testWebCredentials,
+      transportConfig = (transportConfig cfg_) {credentialCheckInterval = testCredentialCheckInterval}
+    }
+
+copyWebCredential :: HasTestEnv => String -> IO ()
+copyWebCredential name = do
+  copyFile (fixtureFile name ".crt") $ certificateFile testWebCredentials
+  copyFile (fixtureFile name ".key") $ privateKeyFile testWebCredentials
+
+fixtureFile :: String -> String -> FilePath
+fixtureFile name extension = "tests/fixtures/" <> name <> extension
+
+testWebCredentialReload :: (HasCallStack, HasTestEnv) => ServiceName -> IO ()
+testWebCredentialReload port = do
+  servedCertificateShouldBe port "web"
+  copyFile (fixtureFile "web2" ".crt") $ certificateFile testWebCredentials
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "web"
+  copyFile (fixtureFile "web2" ".key") $ privateKeyFile testWebCredentials
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "web2"
+  writeFile (certificateFile testWebCredentials) ""
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "web2"
+  removeFile $ privateKeyFile testWebCredentials
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port "web2"
+  testWebCredentialReplaced port "web" "web"
+
+testWebCredentialReplaced :: (HasCallStack, HasTestEnv) => ServiceName -> String -> String -> IO ()
+testWebCredentialReplaced port name servedName = do
+  copyWebCredential name
+  threadDelay credentialReloadWait
+  servedCertificateShouldBe port servedName
+
+credentialReloadWait :: Int
+credentialReloadWait = 10 * testCredentialCheckInterval
+
+servedCertificateShouldBe :: HasCallStack => ServiceName -> String -> IO ()
+servedCertificateShouldBe port name = do
+  chain <- X.CertificateChain <$> XF.readSignedObject (fixtureFile name ".crt")
+  XV.Fingerprint caFingerprint <- loadFileFingerprint $ fixtureFile "web_ca" ".crt"
+  runTLSTransportClient defaultSupportedParamsHTTPS Nothing defaultTransportClientConfig Nothing "localhost" port (Just $ C.KeyHash caFingerprint) $ \(tls :: TLS 'TClient) ->
+    tlsPeerCert tls `shouldBe` chain
 
 withSmpServerThreadOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> (HasCallStack => ThreadId -> IO a) -> IO a
 withSmpServerThreadOn (t, msType) = withSmpServerConfigOn t (cfgMS msType)

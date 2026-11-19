@@ -508,12 +508,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       ss@ServerStats {fromTime, qCreated, qSecured, qDeletedAll, qDeletedAllB, qDeletedNew, qDeletedSecured, qSub, qSubAllB, qSubAuth, qSubDuplicate, qSubProhibited, qSubEnd, qSubEndB, ntfCreated, ntfDeleted, ntfDeletedB, ntfSub, ntfSubB, ntfSubAuth, ntfSubDuplicate, msgSent, msgSentAuth, msgSentQuota, msgSentLarge, msgRecv, msgRecvGet, msgGet, msgGetNoMsg, msgGetAuth, msgGetDuplicate, msgGetProhibited, msgExpired, activeQueues, msgSentNtf, msgRecvNtf, activeQueuesNtf, qCount, msgCount, ntfCount, pRelays, pRelaysOwn, pMsgFwds, pMsgFwdsOwn, pMsgFwdsRecv, rcvServices, ntfServices, rslvStats}
         <- asks serverStats
       st <- asks msgStore
-      EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
-        liftIO $ getEntityCounts @(StoreQueue s) $ queueStore st
       let interval = 1000000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
+          EntityCounts {queueCount, notifierCount, rcvServiceCount, ntfServiceCount, rcvServiceQueuesCount, ntfServiceQueuesCount} <-
+            getEntityCounts @(StoreQueue s) $ queueStore st
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
           qCreated' <- atomicSwapIORef qCreated 0
@@ -667,12 +667,14 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       env <- ask
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
+          saveMetrics = do
+            ts <- getCurrentTime
+            sm <- getServerMetrics st ss rtsOpts
+            rtm <- getRealTimeMetrics env
+            writeFileAtomic metricsFile (prometheusMetrics sm rtm ts)
       liftIO $ forever $ do
         threadDelay interval
-        ts <- getCurrentTime
-        sm <- getServerMetrics st ss rtsOpts
-        rtm <- getRealTimeMetrics env
-        T.writeFile metricsFile $ prometheusMetrics sm rtm ts
+        saveMetrics `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getServerMetrics :: s -> ServerStats -> Text -> IO ServerMetrics
     getServerMetrics st ss rtsOptions = do

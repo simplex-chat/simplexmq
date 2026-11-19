@@ -34,7 +34,7 @@ import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
 import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
 import qualified Network.TLS as T
-import SMPClient (withStallingServerOn')
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -52,7 +52,7 @@ import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (.
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (loadFileFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (listDirectory, removeFile)
@@ -94,6 +94,7 @@ xftpServerTests = do
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
+      it "should serve the replaced RSA and ECDSA web certificates without restart when SNI is used" testSNICertReload
       it "should add CORS headers when SNI is used" testCORSHeaders
       it "should respond to OPTIONS preflight with CORS headers" testCORSPreflight
       it "should not add CORS headers without SNI" testNoCORSWithoutSNI
@@ -533,6 +534,21 @@ testNoSNICertSelection =
         X.Certificate {X.certPubKey = X.PubKeyEd448 _} : _ -> pure ()
         leaf : _ -> expectationFailure $ "Expected Ed448 cert, got: " <> show (X.certPubKey leaf)
         [] -> expectationFailure "Empty certificate chain"
+
+testSNICertReload :: HasTestEnv => Expectation
+testSNICertReload = do
+  copyWebCredential "web"
+  withXFTPServerCfg cfg $ \_ -> do
+    testWebCredentialReload xftpTestPort
+    testWebCredentialReplaced xftpTestPort "web_ecdsa" "web_ecdsa"
+    testWebCredentialReplaced xftpTestPort "web_ecdsa384" "web_ecdsa"
+  where
+    XFTPServerConfig {transportConfig} = testXFTPServerConfigSNI
+    cfg =
+      testXFTPServerConfigSNI
+        { httpCredentials = Just testWebCredentials,
+          transportConfig = transportConfig {credentialCheckInterval = testCredentialCheckInterval}
+        }
 
 testCORSHeaders :: HasTestEnv => Expectation
 testCORSHeaders =

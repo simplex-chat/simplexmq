@@ -8,6 +8,7 @@ module Simplex.Messaging.Server.Web
     WebHttpsParams (..),
     EmbeddedContent (..),
     serveStaticFiles,
+    runHTTPSServer,
     attachStaticFiles,
     serveStaticPageH2,
     generateSite,
@@ -27,6 +28,7 @@ import Data.ByteString.Builder (byteString, lazyByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.Char (toUpper)
+import Data.Default (def)
 import Data.IORef (readIORef)
 import Data.List (isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
@@ -36,6 +38,7 @@ import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Server as H
 import Network.Socket (getPeerName)
+import qualified Network.TLS as TLS
 import Network.Wai (Application, Request (..), responseLBS)
 import Network.Wai.Application.Static (StaticSettings (..))
 import qualified Network.Wai.Application.Static as S
@@ -47,11 +50,13 @@ import Simplex.Messaging.Server (AttachHTTP)
 import Simplex.Messaging.Server.CLI (simplexmqCommit)
 import Simplex.Messaging.Server.Information
 import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport.Server (CredentialCheck, ReloadableCredential (ReloadableCredential, currentCredential), ServerCredentials (..), loadCredential, newReloadableCredential, withCredentialReload)
 import Simplex.Messaging.Util (tshow)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist)
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
-import UnliftIO.Exception (bracket, finally)
+import UnliftIO.Exception (Exception (displayException), bracket, finally, throwIO)
+import UnliftIO.STM (readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
 data EmbeddedWebParams = EmbeddedWebParams
@@ -63,7 +68,9 @@ data EmbeddedWebParams = EmbeddedWebParams
 data WebHttpsParams = WebHttpsParams
   { port :: Int,
     cert :: FilePath,
-    key :: FilePath
+    key :: FilePath,
+    checkCredential :: CredentialCheck,
+    credentialCheckInterval :: Int
   }
 
 data EmbeddedContent = EmbeddedContent
@@ -79,11 +86,21 @@ serveStaticFiles EmbeddedWebParams {webStaticPath, webHttpPort, webHttpsParams} 
   forM_ webHttpPort $ \port -> flip forkFinally (\e -> logError $ "HTTP server crashed: " <> tshow e) $ do
     logInfo $ "Serving static site on port " <> tshow port
     W.runSettings (mkSettings port) app
-  forM_ webHttpsParams $ \WebHttpsParams {port, cert, key} -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> tshow e) $ do
-    logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
-    WT.runTLS (WT.tlsSettings cert key) (mkSettings port) app
+  forM_ webHttpsParams $ \params -> flip forkFinally (\e -> logError $ "HTTPS server crashed: " <> either (T.pack . displayException) tshow e) $ runHTTPSServer params app
+
+runHTTPSServer :: WebHttpsParams -> Application -> IO ()
+runHTTPSServer WebHttpsParams {port, cert, key, checkCredential, credentialCheckInterval} app = do
+  logInfo $ "Serving static site on port " <> tshow port <> " (TLS)"
+  let creds = ServerCredentials {caCertificateFile = Nothing, certificateFile = cert, privateKeyFile = key}
+  reloadable <- newReloadableCredential checkCredential creds =<< either throwIO pure =<< loadCredential creds
+  withCredentialReload credentialCheckInterval reloadable $
+    WT.runTLS (tlsSettings reloadable) (mkSettings port) app
   where
-    mkSettings port = W.setPort port warpSettings
+    tlsSettings ReloadableCredential {currentCredential} =
+      WT.defaultTlsSettings
+        { WT.tlsCredentials = Just mempty,
+          WT.tlsServerHooks = def {TLS.onServerNameIndication = \_ -> (\cred -> TLS.Credentials [cred]) <$> readTVarIO currentCredential}
+        }
 
 -- | Prepare context and prepare HTTP handler for TLS connections that already passed TLS.handshake and ALPN check.
 attachStaticFiles :: FilePath -> (AttachHTTP -> IO ()) -> IO ()
@@ -111,6 +128,9 @@ attachStaticFiles path action = do
 
 warpSettings :: W.Settings
 warpSettings = W.setHTTP2Disabled $ W.setFdCacheDuration 30 $ W.setGracefulShutdownTimeout (Just 1) W.defaultSettings
+
+mkSettings :: Int -> W.Settings
+mkSettings port = W.setPort port warpSettings
 
 staticFiles :: FilePath -> IO Application
 staticFiles root = do

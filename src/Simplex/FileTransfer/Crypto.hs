@@ -77,7 +77,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
     destFile@(CryptoFile path _) <- withExceptT FTCEFileIOError $ getDestFile fileName
     authOk <- CF.withFile destFile WriteMode $ \h -> liftIO $ do
       CF.hPut h ch'
-      state' <- foldM (decryptChunk h) state $ reverse chPaths'
+      state' <- foldM (decryptChunk h expectedLen) state $ reverse chPaths'
       decryptLastChunk h state' expectedLen
     unless authOk $ do
       removeFile path
@@ -91,11 +91,11 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
         (!expectedLen, ch2) <- liftEitherWith FTCECryptoError $ LC.splitLen ch1
         let len1 = LB.length ch2
         pure ((sb', len1), expectedLen, ch2)
-      decryptChunk h (!sb, !len) chPth = do
+      decryptChunk h expectedLen (!sb, !len) chPth = do
         ch <- LB.readFile chPth
         let len' = len + LB.length ch
             (ch', sb') = LC.sbDecryptChunkLazy sb ch
-        CF.hPut h ch'
+        CF.hPut h $ LB.take (expectedLen - len) ch'
         pure (sb', len')
       decryptLastChunk h (!sb, !len) expectedLen = do
         ch <- LB.readFile lastPath

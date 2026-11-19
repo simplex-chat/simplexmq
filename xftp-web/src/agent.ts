@@ -284,20 +284,20 @@ export async function downloadFileRaw(
   const resolvedFd = fd
   // Group chunks by server, sequential within each server, parallel across servers
   let downloaded = 0
-  const byServer = new Map<string, typeof resolvedFd.chunks>()
+  const byServer = new Map<string, {server: XFTPServer, chunks: typeof resolvedFd.chunks}>()
   for (const chunk of resolvedFd.chunks) {
-    const srv = chunk.replicas[0]?.server ?? ""
-    if (!byServer.has(srv)) byServer.set(srv, [])
-    byServer.get(srv)!.push(chunk)
+    const server = parseXFTPServer(chunk.replicas[0]?.server ?? "")
+    const key = formatXFTPServer(server)
+    if (!byServer.has(key)) byServer.set(key, {server, chunks: []})
+    byServer.get(key)!.chunks.push(chunk)
   }
-  await Promise.all([...byServer.entries()].map(async ([srv, chunks]) => {
-    const server = parseXFTPServer(srv)
+  await Promise.all([...byServer.values()].map(async ({server, chunks}) => {
     for (const chunk of chunks) {
       const replica = chunk.replicas[0]
       if (!replica) throw new Error("downloadFileRaw: chunk has no replicas")
       const seed = decodePrivKeyEd25519(replica.replicaKey)
       const kp = ed25519KeyPairFromSeed(seed)
-      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId)
+      const raw = await downloadXFTPChunkRaw(agent, server, kp.privateKey, replica.replicaId, chunk.chunkSize)
       await onRawChunk({
         chunkNo: chunk.chunkNo,
         dhSecret: raw.dhSecret,
@@ -341,7 +341,7 @@ async function resolveRedirect(
     const server = parseXFTPServer(replica.server)
     const seed = decodePrivKeyEd25519(replica.replicaKey)
     const kp = ed25519KeyPairFromSeed(seed)
-    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.digest)
+    const data = await downloadXFTPChunk(agent, server, kp.privateKey, replica.replicaId, chunk.chunkSize, chunk.digest)
     plaintextChunks[chunk.chunkNo - 1] = data
   }
   const totalSize = plaintextChunks.reduce((s, c) => s + c.length, 0)
