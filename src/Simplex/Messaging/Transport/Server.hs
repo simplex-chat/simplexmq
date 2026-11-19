@@ -219,7 +219,8 @@ runTransportServerSocketState ss started getSocket threadLabel srvSupported srvC
 setServerSocketOptions :: TransportServerConfig -> Socket -> IO ()
 setServerSocketOptions TransportServerConfig {tcpKeepAlive, tcpUserTimeout} conn = do
   mapM_ (setSocketKeepAlive conn) tcpKeepAlive `catchAll` \e -> logError ("Error setting TCP keep-alive " <> tshow e)
-  mapM_ (setSocketOption conn UserTimeout) tcpUserTimeout `catchAll` \e -> logError ("Error setting TCP user timeout " <> tshow e)
+  when (isSupportedSocketOption UserTimeout) $
+    mapM_ (setSocketOption conn UserTimeout) tcpUserTimeout `catchAll` \e -> logError ("Error setting TCP user timeout " <> tshow e)
 
 -- | Run a transport server with provided connection setup and handler.
 runTransportServerSocketState_ :: Transport c => SocketState -> TMVar Bool -> IO Socket -> String -> Int -> (Socket -> IO (SNICredentialUsed, c 'TServer)) -> (Socket -> (SNICredentialUsed, c 'TServer) -> IO ()) -> IO ()
