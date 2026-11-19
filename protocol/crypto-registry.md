@@ -154,7 +154,7 @@ Other derivations:
 | Source | Version or pin | Provides |
 |---|---|---|
 | crypton | 0.34 | Ed25519, Ed448, X25519, X448, XSalsa20, Poly1305, AES-GCM, HKDF, SHA-2, SHA-3, Keccak, MD5, ChaChaDRG, ECDSA, EC point arithmetic |
-| tls, crypton-x509, crypton-x509-validation, cryptostore | 1.9.0, 1.7.6, 1.6.12, 0.3.0.1 | TLS, X.509, PKCS#8 |
+| tls, crypton-x509, crypton-x509-validation, cryptostore | 2.1.6, 1.7.7, 1.6.14, 0.3.1.0 | TLS, X.509, PKCS#8 |
 | [cbits/sntrup761.c](../cbits/sntrup761.c) | Copy of draft-josefsson-ntruprime-streamlined-00 ([cbits/README.md](../cbits/README.md)) | sntrup761 |
 | [cbits/sha512.c](../cbits/sha512.c) and system OpenSSL `libcrypto` | system | SHA-512 for sntrup761 |
 | `cbits/libbbs` submodule ([simplex-chat/libbbs](https://github.com/simplex-chat/libbbs)) | `59a0f4bf` | BBS+ (`bbs_sha256_ciphersuite`), SHA-256, SHAKE256 |
