@@ -27,7 +27,7 @@ import Util
 transportTests :: Spec
 transportTests = do
   describe "TLS connection close" $
-    it "should close TLS connection within the close limit while data is sent" testCloseBlockedTLS
+    it "should close TLS connection while its peer does not read and data is sent" testCloseBlockedTLS
   describe "TCP keep-alive" $ do
     it "should enable keep-alive on accepted sockets when configured" $
       testServerKeepAlive (Just defaultKeepAliveOpts) True
@@ -69,7 +69,7 @@ testCloseBlockedTLS :: HasTestEnv => Expectation
 testCloseBlockedTLS = withTLSConnection (mkTransportServerConfig True Nothing False) $ \_client (_, server) -> do
   sent <- newTVarIO (0 :: Int)
   sender <- async . forever $ cPut server block >> atomically (modifyTVar' sent (+ 1))
-  waitBlocked sent 0
+  timeout 30000000 (waitBlocked sent 0) `shouldReturn` Just ()
   closing <- async . uninterruptibleMask_ $ closeConnection server
   timeout 5000000 (wait closing) `shouldReturn` Just ()
   timeout 5000000 (isLeft <$> waitCatch sender) `shouldReturn` Just True
