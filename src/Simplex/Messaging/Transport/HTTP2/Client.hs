@@ -30,6 +30,7 @@ import qualified Control.Exception as E
 import Control.Monad
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Time (UTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.CertificateStore as XS
@@ -46,7 +47,7 @@ import Simplex.Messaging.Protocol (NetworkError (..), toNetworkError)
 import Simplex.Messaging.Transport (ALPN, STransportPeer (..), SessionId, TLS (tlsALPN, tlsPeerCert, tlsUniq), TransportPeer (..), TransportPeerI (..), getServerVerifyKey)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Util (eitherToMaybe)
+import Simplex.Messaging.Util (eitherToMaybe, whenM)
 import UnliftIO.STM
 import UnliftIO.Timeout
 
@@ -228,10 +229,19 @@ runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 buff
     run :: TLS p -> H.Config -> IO a
     run tls cfg = do
       closed <- newEmptyTMVarIO
-      let readN n = H.confReadN cfg n `E.onException` atomically (void $ tryPutTMVar closed ())
+      receiverStopped <- newTVarIO Nothing
+      let setClosed = atomically . void $ tryPutTMVar closed ()
+          readN n = do
+            s <- H.confReadN cfg n `E.onException` setClosed
+            when (B.length s < n) setClosed
+            pure s
+          readNWith stopped n = do
+            whenM (isNothing <$> readTVarIO receiverStopped) $ atomically $ writeTVar receiverStopped (Just stopped)
+            race (atomically stopped) (readN n) >>= either (\() -> "" <$ setClosed) pure
+          connectionEnded = readTMVar closed `orElse` (readTVar receiverStopped >>= fromMaybe retrySTM)
           untilClosed :: H.Client a
-          untilClosed sendReq aux = race (atomically $ readTMVar closed) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
-      H.run clientConfig cfg {H.confReadN = readN} untilClosed
+          untilClosed sendReq aux = race (atomically connectionEnded) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
+      H.run clientConfig cfg {H.confReadN = readN, H.confReadNWith = Just readNWith} untilClosed
     clientConfig =
       H.defaultClientConfig
         { scheme = "https",

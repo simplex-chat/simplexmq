@@ -29,10 +29,10 @@ import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
-import Network.HPACK (defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
+import Network.HPACK (defaultDynamicTableSize, defaultEncodeStrategy, encodeHeader, newDynamicTableForEncoding)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
-import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm, NoError), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
+import Network.HTTP2.Frame (ErrorCode (EnhanceYourCalm, NoError), FrameHeader (..), FramePayload (..), FrameType (FrameGoAway, FramePing, FrameSettings, FrameWindowUpdate), SettingsKey (SettingsInitialWindowSize, SettingsMaxConcurrentStreams), connectionPreface, connectionPrefaceLength, decodeFrameHeader, decodeFramePayload, defaultPayloadLength, defaultWindowSize, encodeFrame, encodeInfo, frameHeaderLength, setAck, setEndHeader, testAck)
 import qualified Network.TLS as T
 import SMPClient (copyWebCredential, serverBracket, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
 import ServerTests (logSize)
@@ -48,11 +48,11 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet, cPut), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), http2MaxConcurrentStreams, http2WindowSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (TLSServerCredential (..), TransportServerConfig (..), loadFileFingerprint, loadServerCredential, newSocketState, runTransportServerState_)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential, runTransportServer)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (listDirectory, removeFile)
@@ -469,8 +469,8 @@ testHTTP2FlowControl _ =
       (lookup SettingsMaxConcurrentStreams settings, lookup SettingsInitialWindowSize settings) `shouldBe` (Just http2MaxConcurrentStreams, Just http2WindowSize)
       cPut tls $ frame 0 setAck (SettingsFrame [])
       nextFrame tls "WINDOW_UPDATE" (\typ h -> typ == FrameWindowUpdate && streamId h == 0) `shouldReturn` WindowUpdateFrame (http2WindowSize - defaultWindowSize)
-      dynTable <- newDynamicTableForEncoding headerTableSize
-      hdrs <- encodeHeader defaultEncodeStrategy headerTableSize dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
+      dynTable <- newDynamicTableForEncoding defaultDynamicTableSize
+      hdrs <- encodeHeader defaultEncodeStrategy headerBufferSize dynTable [(":method", "POST"), (":scheme", "https"), (":authority", "localhost"), (":path", "/")]
       cPut tls $ frame 1 setEndHeader (HeadersFrame Nothing hdrs)
       timeout frameTimeout (atomically $ takeTMVar requested) `shouldReturn` Just ()
       let (blocks, rest) = http2WindowSize `divMod` defaultPayloadLength
@@ -484,7 +484,7 @@ testHTTP2FlowControl _ =
       nextFrame tls "GOAWAY" (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
   where
     frameTimeout = 5000000
-    headerTableSize = 4096
+    headerBufferSize = 4096
     frame sid setFlags = encodeFrame (encodeInfo setFlags sid)
     nextFrame tls name wanted = timeout frameTimeout (nextFrame_ tls wanted) >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
     nextFrame_ tls wanted = do
@@ -497,26 +497,26 @@ testHTTP2FlowControl _ =
           _ -> nextFrame_ tls wanted
 
 testHTTP2ClientGoAway :: HasTestEnv => AFStoreType -> Expectation
-testHTTP2ClientGoAway _ = do
-  credential <- loadServerCredential xftpCredentials
-  ss <- newSocketState
-  disconnected <- newEmptyTMVarIO
-  let srvCreds = TLSServerCredential {credential, sniCredential = Nothing}
-      server _ (_, tls :: TLS 'TServer) = do
-        _ <- cGet tls $ B.length connectionPreface
-        cPut tls $ frame (SettingsFrame []) <> frame (GoAwayFrame 0 NoError "")
-        threadDelay maxBound
-  serverBracket
-    (\started -> runTransportServerState_ ss started xftpTestPort defaultSupportedParams srvCreds transportConfig server)
-    (pure ())
-    $ \_ -> do
-      Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-      runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-        bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \_ ->
-          timeout 5000000 (atomically $ readTMVar disconnected) `shouldReturn` Just ()
+testHTTP2ClientGoAway _ =
+  forM_ [True, False] $ \keepOpen -> do
+    credential <- loadServerCredential xftpCredentials
+    disconnected <- newEmptyTMVarIO
+    let server (tls :: TLS 'TServer) = do
+          _ <- cGet tls connectionPrefaceLength
+          cPut tls $ frame (SettingsFrame []) <> frame (GoAwayFrame 0 NoError "")
+          threadDelay $ if keepOpen then maxBound else closeDelay
+    serverBracket
+      (\started -> runTransportServer started xftpTestPort defaultSupportedParams credential transportConfig server)
+      (pure ())
+      $ \_ -> do
+        Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+        runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
+          bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \_ ->
+            timeout 5000000 (atomically $ readTMVar disconnected) `shouldReturn` Just ()
   where
     XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
     frame = encodeFrame (encodeInfo id 0)
+    closeDelay = 100000
 
 -- SNI and CORS tests
 
