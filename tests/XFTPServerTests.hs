@@ -487,10 +487,12 @@ testHTTP2ClientGoAway :: HasTestEnv => Bool -> AFStoreType -> Expectation
 testHTTP2ClientGoAway keepOpen _ = do
   credential <- loadServerCredential xftpCredentials
   disconnected <- newEmptyTMVarIO
+  requested <- newEmptyTMVarIO
   let server (tls :: TLS 'TServer) = do
         _ <- cGet tls connectionPrefaceLength
         cPut tls $ h2Frame 0 id (SettingsFrame [])
         _ <- awaitH2Frame tls "request HEADERS" $ \typ h -> typ == FrameHeaders && streamId h == 1
+        atomically $ putTMVar requested ()
         cPut tls $ h2Frame 0 id (GoAwayFrame 1 NoError "")
         when keepOpen $ do
           hdrs <- h2HeaderBlock [(":status", "200")]
@@ -504,8 +506,9 @@ testHTTP2ClientGoAway keepOpen _ = do
       runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
         bracket (either (error . show) pure =<< HC.attachHTTP2Client HC.defaultHTTP2ClientConfig (THDomainName "localhost") xftpTestPort (void . atomically $ tryPutTMVar disconnected ()) 65536 tls) HC.closeHTTP2Client $ \h2 ->
           withAsync (HC.sendRequest h2 (H2.requestNoBody "GET" "/" []) Nothing (\_ -> pure ())) $ \response -> do
+            timeout h2FrameTimeout (atomically $ takeTMVar requested) `shouldReturn` Just ()
             timeout h2FrameTimeout (atomically $ readTMVar disconnected) `shouldReturn` Just ()
-            when keepOpen $ wait response >>= (`shouldSatisfy` isRight)
+            when keepOpen $ timeout h2FrameTimeout (wait response) >>= (`shouldSatisfy` maybe False isRight)
   where
     XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
 
@@ -524,7 +527,7 @@ h2HeaderBufferSize :: Int
 h2HeaderBufferSize = 4096
 
 awaitH2Frame :: TLS p -> String -> (FrameType -> FrameHeader -> Bool) -> IO FramePayload
-awaitH2Frame tls name wanted = timeout h2FrameTimeout nextFrame >>= maybe (error $ "no " <> name <> " frame within 5 seconds") pure
+awaitH2Frame tls name wanted = timeout h2FrameTimeout nextFrame >>= maybe (error $ "no " <> name <> " frame within " <> show h2FrameTimeout <> " microseconds") pure
   where
     nextFrame = do
       (typ, h) <- decodeFrameHeader <$> cGet tls frameHeaderLength
