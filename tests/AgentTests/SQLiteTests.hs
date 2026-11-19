@@ -16,7 +16,6 @@
 module AgentTests.SQLiteTests where
 
 import AgentTests.EqInstances ()
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -177,13 +176,17 @@ testBusyCommit :: SpecWith (DBStore, DBStore)
 testBusyCommit =
   it "should retry transaction when commit is busy" $ \(s1, s2) -> do
     reading <- newEmptyMVar
+    attempts <- newTVarIO (0 :: Int)
+    let insert db = do
+          SQL.execute_ db "INSERT INTO users (user_id) VALUES (2)"
+          atomically $ modifyTVar' attempts (+ 1)
     concurrently_
       ( withConnection' s2 $ \db -> SQL.withTransaction db $ do
           _ <- SQL.query_ db "SELECT user_id FROM users" :: IO [Only Int]
           putMVar reading ()
-          threadDelay 500000
+          atomically $ readTVar attempts >>= check . (> 1)
       )
-      (takeMVar reading >> withTransaction' s1 (`SQL.execute_` "INSERT INTO users (user_id) VALUES (2)"))
+      (takeMVar reading >> withTransaction' s1 insert)
     withTransaction' s1 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
 
 testCompiledThreadsafe :: SpecWith DBStore
