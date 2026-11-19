@@ -58,6 +58,7 @@ import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMo
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Agent.Store.Entity
 import System.Random
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Directory (removeFile)
 import Util
@@ -101,7 +102,9 @@ storeTests :: Spec
 storeTests = do
   withStore2 $ do
     describe "stress test" testConcurrentWrites
-    describe "busy commit" testBusyCommit
+    describe "busy commit" $ do
+      testBusyCommit
+      testBusyCommitBudget
   withStore $ do
     describe "db setup" $ do
       testCompiledThreadsafe
@@ -186,11 +189,31 @@ testBusyCommit =
       ( withConnection' s2 $ \db -> SQL.withTransaction db $ do
           _ <- SQL.query_ db "SELECT user_id FROM users" :: IO [Only Int]
           putMVar reading ()
-          atomically $ readTVar commits >>= check . (> 1)
+          timeout 5000000 (atomically $ readTVar commits >>= check . (> 1)) `shouldReturn` Just ()
       )
       (takeMVar reading >> withTransaction' s1 insert)
     readTVarIO attempts `shouldReturn` 1
     withTransaction' s1 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
+
+testBusyCommitBudget :: SpecWith (DBStore, DBStore)
+testBusyCommitBudget =
+  it "should roll back busy commit after retry budget and keep store usable" $ \(s1, s2) -> do
+    reading <- newEmptyMVar
+    failed <- newEmptyMVar
+    let insert db = SQL.execute_ db "INSERT INTO users (user_id) VALUES (2)"
+    concurrently_
+      ( withConnection' s2 $ \db -> SQL.withTransaction db $ do
+          _ <- SQL.query_ db "SELECT user_id FROM users" :: IO [Only Int]
+          putMVar reading ()
+          takeMVar failed
+      )
+      ( do
+          takeMVar reading
+          withTransaction' s1 insert `shouldThrow` (\e -> SQL.sqlError e == SQL.ErrorBusy)
+          putMVar failed ()
+      )
+    withTransaction' s1 insert
+    withConnection' s2 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
 
 testCompiledThreadsafe :: SpecWith DBStore
 testCompiledThreadsafe =
