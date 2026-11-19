@@ -109,7 +109,7 @@ instance FileStoreClass PostgresFileStore where
             (map (\(FileRecipient rId rKey) -> (rId, senderId, Binary (C.encodePubKey rKey))) $ L.toList rcps)
         )
         >>= either handleDuplicate (pure . Right)
-    withLog "addRecipients" st $ \s -> forM_ rcps $ logAddRecipients s senderId . pure
+    withLog "addRecipients" st $ \s -> logAddRecipients s senderId rcps
 
   deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "deleteFile" st $ \db ->
