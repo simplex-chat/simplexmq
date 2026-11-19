@@ -24,6 +24,7 @@ import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import qualified Crypto.PubKey.ECC.Types as ECC
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -39,6 +40,7 @@ import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import Data.Type.Equality
+import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
@@ -48,14 +50,14 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Protocol
-import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..))
+import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..), ServerStoreCfg (..), checkHTTPSCredentials)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.MsgStore.Types (SMSType (..), SQSType (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo (QSub (..), QSubThread (..), QueueInfo (..))
 import Simplex.Messaging.Server.Stats (PeriodStatsData (..), ServerStatsData (..))
-import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Credentials
+import Simplex.Messaging.Transport.Server (CredentialError (..), ReloadDecision (..), ServerCredentials (..), TLSServerCredential (..), TransportServerConfig (..), acceptCredential, checkKeyPair, checkLoadedCredential, loadCredential, loadServerCredential, mkTransportServerConfig, newReloadableCredential, newSocketState, runTransportServerState_)
 import System.Directory (doesFileExist, removeFile)
 import qualified Network.Socket as N
 import System.IO (BufferMode (..), IOMode (..), hClose, hGetLine, hPutStrLn, hSetBuffering, withFile)
@@ -1657,11 +1659,117 @@ testRestoreExpireMessages =
     runClient _ test' = testSMPClient test' `shouldReturn` ()
 
 testPrometheusMetrics :: SpecWith (ASrvTransport, AStoreType)
-testPrometheusMetrics =
+testPrometheusMetrics = do
   it "should save Prometheus metrics" $ \(at, msType) -> do
     let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
     withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 1000000
     doesFileExist testPrometheusMetricsFile `shouldReturn` True
+  it "should save Prometheus metrics while they are read" $ \(at, msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+        metricsTime = B.takeWhile (/= '\n') <$> B.readFile testPrometheusMetricsFile
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      recordedAt <- metricsTime
+      _ <- timeout 3000000 $ forever metricsTime
+      metricsTime `shouldNotReturn` recordedAt
+  it "should continue when Prometheus metrics cannot be saved" $ \(at@(ATransport t), msType) -> do
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {prometheusInterval = Just 1, prometheusMetricsFile = testPath "missing/smp-server-metrics.txt"}
+    withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      threadDelay 1500000
+      runSMPClient t $ \_ -> pure ()
+
+webCredentialTests :: Spec
+webCredentialTests = do
+  it "should serve the replaced SNI certificate in transport server without restart" $ do
+    copyWebCredential "web"
+    credential <- loadServerCredential ntfTestServerCredentials
+    sniCredential <- newReloadableCredential acceptCredential testWebCredentials =<< loadServerCredential testWebCredentials
+    ss <- newSocketState
+    let srvCreds = TLSServerCredential {credential, sniCredential = Just sniCredential}
+        tCfg = (mkTransportServerConfig True Nothing False) {credentialCheckInterval = testCredentialCheckInterval}
+        runServer started = runTransportServerState_ @TLS ss started testPort defaultSupportedParamsHTTPS srvCreds tCfg $ \_ _ -> pure ()
+    serverBracket runServer (pure ()) $ \_ -> testWebCredentialReload testPort
+  it "should serve the replaced web certificate with a 4096-bit RSA key on the shared port without restart" $ do
+    copyWebCredential "web"
+    withSmpServerWebConfigOn (transport @TLS) webServerCfg testPort $ \_ -> do
+      testWebCredentialReload testPort
+      testWebCredentialReplaced testPort "web_rsa2048" "web"
+      testWebCredentialReplaced testPort "web_ecdsa" "web"
+      testWebCredentialReplaced testPort "web2" "web2"
+  describe "credential check" $ do
+    it "should reject an empty certificate chain with checkHTTPSCredentials" $ do
+      Right (_, privateKey) <- loadFixture "web" "web"
+      checkHTTPSCredentials (X.CertificateChain [], privateKey) `shouldBe` Left CENoCertificate
+    it "should accept the matching RSA key and reject another one" $ do
+      keyPairCheck "web" "web" `shouldReturn` Right ()
+      keyPairCheck "web2" "web" `shouldReturn` Left CEKeyMismatch
+    it "should accept the matching ECDSA key and reject another one" $ do
+      keyPairCheck "web_ecdsa" "web_ecdsa" `shouldReturn` Right ()
+      keyPairCheck "web_ecdsa" "web_ecdsa2" `shouldReturn` Left CEKeyMismatch
+    it "should accept the matching Ed448 key and reject another one" $ do
+      keyPairCheck "server" "server" `shouldReturn` Right ()
+      keyPairCheck "server" "server2" `shouldReturn` Left CEKeyMismatch
+    it "should accept the matching Ed25519 key and reject another one" $ do
+      keyPairCheck "ed25519/server" "ed25519/server" `shouldReturn` Right ()
+      keyPairCheck "ed25519/server" "ed25519/ca" `shouldReturn` Left CEKeyMismatch
+    it "should reject a key of another type" $
+      keyPairCheck "web" "web_ecdsa" `shouldReturn` Left CEKeyMismatch
+    it "should reject an unsupported key type" $
+      keyPairCheck "web_dsa" "web_dsa" `shouldReturn` Left (CEUnsupportedKeyType X.PubKeyALG_DSA)
+    it "should reject an EC key pair on a curve other than P-256" $
+      keyPairCheck "web_ecdsa384" "web_ecdsa384" `shouldReturn` Left (CEUnsupportedCurve ECC.SEC_p384r1)
+    it "should reject a P-256 certificate with a key on another curve" $ do
+      Right (chain, X.PrivKeyEC (X.PrivKeyEC_Named _ d)) <- loadFixture "web_ecdsa" "web_ecdsa"
+      checkKeyPair (chain, X.PrivKeyEC (X.PrivKeyEC_Named ECC.SEC_p384r1 d)) `shouldBe` Left CEKeyMismatch
+    it "should reject an empty certificate file" $ do
+      writeFile (testPath "empty.crt") ""
+      keyPairCheckFiles (testPath "empty.crt") (fixtureFile "web" ".key") `shouldReturn` Left CENoCertificate
+    it "should reject a missing key file and a malformed certificate file" $ do
+      writeFile (testPath "malformed.crt") "-----BEGIN CERTIFICATE-----\n"
+      loadCredential (credentialFiles (fixtureFile "web" ".crt") (testPath "missing.key")) >>= \case
+        Left (CEReadError _) -> pure ()
+        r -> expectationFailure $ "Expected CEReadError, got: " <> show (void r)
+      loadCredential (credentialFiles (testPath "malformed.crt") (fixtureFile "web" ".key")) >>= \case
+        Left (CEPEMError _) -> pure ()
+        r -> expectationFailure $ "Expected CEPEMError, got: " <> show (void r)
+    it "should reject an EC point that is not on its curve" $ do
+      Right (X.CertificateChain (signed : _), privateKey) <- loadFixture "web_ecdsa" "web_ecdsa"
+      X.PubKeyEC (X.PubKeyEC_Named curveName (X.SerializedPoint point)) <- pure . X.certPubKey $ X.getCertificate signed
+      let offCurvePoint = X.SerializedPoint $ B.take 1 point <> B.map (const '\x01') (B.drop 1 point)
+          certificate = (X.getCertificate signed) {X.certPubKey = X.PubKeyEC $ X.PubKeyEC_Named curveName offCurvePoint}
+          (offCurveSigned, ()) = X.objectToSignedExact (\_ -> ("", X.SignatureALG X.HashSHA256 X.PubKeyALG_EC, ())) certificate
+      checkKeyPair (X.CertificateChain [offCurveSigned], privateKey) `shouldBe` Left CEInvalidECPoint
+  describe "reload decision" $ do
+    it "should return RDUnchanged, RDRejected, RDRejectedAgain and RDAccepted for loaded credentials" $ do
+      Right current <- loadFixture "web" "web"
+      Right renewed <- loadFixture "web2" "web2"
+      Right mismatched <- loadFixture "web2" "web"
+      Right otherMismatched <- loadFixture "web" "web2"
+      let checkLoaded = checkLoadedCredential acceptCredential current
+          rejected = Just (Right mismatched)
+      checkLoaded Nothing (Right current) `shouldBe` RDUnchanged
+      checkLoaded Nothing (Right mismatched) `shouldBe` RDRejected CEKeyMismatch
+      checkLoaded rejected (Right mismatched) `shouldBe` RDRejectedAgain
+      checkLoaded rejected (Right otherMismatched) `shouldBe` RDRejected CEKeyMismatch
+      checkLoaded rejected (Left CENoPrivateKey) `shouldBe` RDRejected CENoPrivateKey
+      checkLoaded (Just (Left CENoPrivateKey)) (Left CENoPrivateKey) `shouldBe` RDRejectedAgain
+      checkLoaded rejected (Right renewed) `shouldBe` RDAccepted renewed
+      checkLoaded rejected (Right current) `shouldBe` RDUnchanged
+    it "should reject an RSA 2048 credential with checkHTTPSCredentials and accept it with acceptCredential" $ do
+      Right current <- loadFixture "web" "web"
+      Right rsa2048 <- loadFixture "web_rsa2048" "web_rsa2048"
+      checkLoadedCredential checkHTTPSCredentials current Nothing (Right rsa2048) `shouldBe` RDRejected CEUnsupportedHTTPSKey
+      checkLoadedCredential acceptCredential current Nothing (Right rsa2048) `shouldBe` RDAccepted rsa2048
+    it "should report the error of checkHTTPSCredentials before the key-pair check" $ do
+      Right current <- loadFixture "web" "web"
+      Right p384 <- loadFixture "web_ecdsa384" "web_ecdsa384"
+      checkLoadedCredential checkHTTPSCredentials current Nothing (Right p384) `shouldBe` RDRejected CEUnsupportedHTTPSKey
+      checkLoadedCredential acceptCredential current Nothing (Right p384) `shouldBe` RDRejected (CEUnsupportedCurve ECC.SEC_p384r1)
+  where
+    keyPairCheck certName keyName = keyPairCheckFiles (fixtureFile certName ".crt") (fixtureFile keyName ".key")
+    loadFixture certName keyName = loadCredential $ credentialFiles (fixtureFile certName ".crt") (fixtureFile keyName ".key")
+    keyPairCheckFiles certificateFile privateKeyFile = (checkKeyPair =<<) <$> loadCredential (credentialFiles certificateFile privateKeyFile)
+    credentialFiles certificateFile privateKeyFile = ServerCredentials {caCertificateFile = Nothing, certificateFile, privateKeyFile}
 
 createAndSecureQueue :: Transport c => THandleSMP c 'TClient -> SndPublicAuthKey -> IO (SenderId, RecipientId, RcvPrivateAuthKey, RcvDhSecret)
 createAndSecureQueue h sPub = do
@@ -2099,18 +2207,18 @@ testMsgNOTExpireOnInterval =
 
 testBlockMessageQueue :: SpecWith (ASrvTransport, AStoreType)
 testBlockMessageQueue =
-  -- TODO [postgres]
-  xit "should return BLOCKED error when queue is blocked" $ \ps@(ATransport (t :: TProxy c 'TServer), _) -> do
+  it "should return BLOCKED error when queue is blocked" $ \ps@(at@(ATransport (t :: TProxy c 'TServer)), msType) -> do
     g <- C.newRandom
-    (rId, sId) <- withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
+    let cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+    sId <- withSmpServerConfigOn at cfg' testPort $ runTest t $ \h -> do
       (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
-      Resp "abcd" rId1 (Ids rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
+      Resp "abcd" rId1 (Ids _rId sId _srvDh) <- signSendRecv h rKey ("abcd", NoEntity, New rPub dhPub)
       (rId1, NoEntity) #== "creates queue"
-      pure (rId, sId)
-
-    -- TODO [postgres] block via control port
-    withFile testStoreLogFile AppendMode $ \h -> B.hPutStrLn h $ strEncode $ BlockQueue rId $ BlockingInfo BRContent Nothing
+      [_, blocked] <- controlPortCommands cpPort ["auth admin", "block " <> B.unpack (strEncode sId) <> " " <> B.unpack (strEncode $ BlockingInfo BRContent Nothing)]
+      blocked `shouldStartWith` "ok, queue blocked"
+      pure sId
 
     withSmpServerStoreLogOn ps testPort $ runTest t $ \h -> do
       (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd448 g

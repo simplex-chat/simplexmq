@@ -78,7 +78,7 @@ import Simplex.Messaging.Server.Names (NamesConfig (..), RpcAuth (..))
 import Simplex.Messaging.Transport (supportedProxyClientSMPRelayVRange, alpnSupportedSMPHandshakes, supportedServerSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportHost (..), defaultSocksProxy)
 import Simplex.Messaging.Transport.HTTP2 (httpALPN11)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), mkTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), defaultCredentialCheckInterval, mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure)
@@ -553,7 +553,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
           port <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
           cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
           key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
-          pure WebHttpsParams {port, cert, key}
+          pure WebHttpsParams {port, cert, key, checkCredential = checkHTTPSCredentials, credentialCheckInterval = defaultCredentialCheckInterval}
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
     checkMsgStoreMode :: Ini -> AStoreType -> IO ()

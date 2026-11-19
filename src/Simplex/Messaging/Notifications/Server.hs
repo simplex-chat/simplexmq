@@ -177,7 +177,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
@@ -240,12 +240,14 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       env <- ask
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
+          saveMetrics = do
+            ts <- getCurrentTime
+            sm <- getNtfServerMetrics st ss rtsOpts
+            rtm <- getNtfRealTimeMetrics env
+            writeFileAtomic metricsFile (ntfPrometheusMetrics sm rtm ts)
       liftIO $ forever $ do
         threadDelay interval
-        ts <- getCurrentTime
-        sm <- getNtfServerMetrics st ss rtsOpts
-        rtm <- getNtfRealTimeMetrics env
-        T.writeFile metricsFile $ ntfPrometheusMetrics sm rtm ts
+        saveMetrics `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getNtfServerMetrics :: NtfPostgresStore -> NtfServerStats -> Text -> IO NtfServerMetrics
     getNtfServerMetrics st ss rtsOptions = do

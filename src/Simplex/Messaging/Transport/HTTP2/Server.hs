@@ -17,7 +17,7 @@ import Numeric.Natural (Natural)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Transport.Server (SNICredentialUsed, ServerCredentials, SocketState, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
+import Simplex.Messaging.Transport.Server (ReloadableCredential, SNICredentialUsed, ServerCredentials, SocketState, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
 import Simplex.Messaging.Util (threadDelay', unlessM)
 import UnliftIO (bracket_, finally)
 import UnliftIO.Concurrent (forkIO, killThread, myThreadId, threadDelay)
@@ -64,7 +64,7 @@ getHTTP2Server HTTP2ServerConfig {qSize, http2Port, bufferSize, bodyHeadSize, se
 closeHTTP2Server :: HTTP2Server -> IO ()
 closeHTTP2Server = uninterruptibleCancel . action
 
-runHTTP2Server :: SocketState -> TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe T.Credential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> IO ()
+runHTTP2Server :: SocketState -> TMVar Bool -> ServiceName -> BufferSize -> T.Supported -> T.Credential -> Maybe ReloadableCredential -> TransportServerConfig -> Maybe ExpirationConfig -> (SessionId -> IO ()) -> (SNICredentialUsed -> IO () -> HTTP2ServerFunc) -> IO ()
 runHTTP2Server ss started port bufferSize srvSupported srvCreds httpCreds_ transportConfig expCfg_ clientFinished = runHTTP2ServerWith_ expCfg_ (Just $ firstRequestTimeout transportConfig) clientFinished bufferSize setup
   where
     setup handler = do

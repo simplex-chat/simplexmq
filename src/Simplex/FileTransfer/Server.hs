@@ -282,6 +282,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       forever $ do
         liftIO $ threadDelay' interval
         expireServerFiles (Just 100000) expCfg
+          `catchAny` \e -> logError $ "Expired files error: " <> tshow e
 
     -- period stats are reset by the stats log, without it they are reset separately
     serverStatsThread_ :: XFTPServerConfig s -> [M s ()]
@@ -310,7 +311,7 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize} <- asks serverStats
       let interval = 1_000_000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
@@ -356,11 +357,13 @@ xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpira
       socketState <- asks sockets
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
+          saveMetrics = do
+            ts <- getCurrentTime
+            sm <- getFileServerMetrics ss socketState rtsOpts
+            writeFileAtomic metricsFile (xftpPrometheusMetrics sm ts)
       liftIO $ forever $ do
         threadDelay interval
-        ts <- getCurrentTime
-        sm <- getFileServerMetrics ss socketState rtsOpts
-        T.writeFile metricsFile $ xftpPrometheusMetrics sm ts
+        saveMetrics `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getFileServerMetrics :: FileServerStats -> SocketState -> T.Text -> IO FileServerMetrics
     getFileServerMetrics ss socketState rtsOptions = do
@@ -721,17 +724,18 @@ expireServerFiles itemDelay expCfg = do
     mbs bs = tshow (bs `div` 1048576) <> "mb"
     expireLoop st us now old = do
       expired <- liftIO $ expiredFiles st now old 10000
-      forM_ expired $ \(_, filePath_, fileSize) -> do
+      forM_ expired $ \(_, filePath_, _) ->
         forM_ filePath_ $ \fp ->
           whenM (doesFileExist fp) $
             (removeFile fp >> mapM_ threadDelay itemDelay) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
-        forM_ filePath_ $ \_ ->
-          atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
-        incFileStat filesExpired
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         liftIO $ deleteFiles st sIds
+        forM_ expired $ \(_, filePath_, fileSize) -> do
+          forM_ filePath_ $ \_ ->
+            atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
+          incFileStat filesExpired
         expireLoop st us now old
 
 -- | periodStatCounts resets day, week and month stats when called once a day
