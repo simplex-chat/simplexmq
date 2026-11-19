@@ -228,20 +228,13 @@ runHTTP2ClientWith bufferSize host setup client = setup $ \tls -> withHTTP2 buff
   where
     run :: TLS p -> H.Config -> IO a
     run tls cfg = do
-      closed <- newEmptyTMVarIO
       receiverStopped <- newTVarIO Nothing
-      let setClosed = atomically . void $ tryPutTMVar closed ()
-          readN n = do
-            s <- H.confReadN cfg n `E.onException` setClosed
-            when (B.length s < n) setClosed
-            pure s
-          readNWith stopped n = do
+      let readNWith stopped n = do
             whenM (isNothing <$> readTVarIO receiverStopped) $ atomically $ writeTVar receiverStopped (Just stopped)
-            race (atomically stopped) (readN n) >>= either (\() -> "" <$ setClosed) pure
-          connectionEnded = readTMVar closed `orElse` (readTVar receiverStopped >>= fromMaybe retrySTM)
+            H.confReadN cfg n
           untilClosed :: H.Client a
-          untilClosed sendReq aux = race (atomically connectionEnded) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
-      H.run clientConfig cfg {H.confReadN = readN, H.confReadNWith = Just readNWith} untilClosed
+          untilClosed sendReq aux = race (atomically $ readTVar receiverStopped >>= fromMaybe retrySTM) (client tls sendReq aux) >>= either (\() -> E.throwIO H.ConnectionIsClosed) pure
+      H.run clientConfig cfg {H.confReadNWith = Just readNWith} untilClosed
     clientConfig =
       H.defaultClientConfig
         { scheme = "https",
