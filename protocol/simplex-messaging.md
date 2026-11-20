@@ -1502,8 +1502,8 @@ trusted for it: a client MUST check that the record names the name it asked
 about, and reject the answer otherwise. A registry that does not record the
 label cannot answer a hashed query at all, and the router answers `ERR NAME
 RESOLVER` rather than a record it knows the client will reject. A name nobody
-holds is answered `available` or `reserved`, neither of which contains a name,
-so a hashed query of it does not depend on a recorded label.
+holds is answered `available` or `reserved`; in both, the name is omitted, so a
+hashed query of it is answered from the hash alone.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1519,7 +1519,7 @@ several configured servers can act on distinctly:
 | `RNAME` | the router read the registry | use it |
 | `ERR NAME NOT_FOUND` | below v22 only: every name that does not resolve. From v22 a router never sends it | stop, and do not read it as registrable |
 | `ERR NAME NO_RESOLVER` | this router has no resolver (names role not enabled) | skip this server, try the next |
-| `ERR NAME RESOLVER <detail>` | the router cannot state an answer completely: no registrar or price oracle for the TLD, an unreachable chain, a transport failure, a timeout, a registration it could not date or resolve | surface `<detail>`; retry only if it reads as transient |
+| `ERR NAME RESOLVER <detail>` | the router cannot state an answer completely: no registrar or price oracle for the TLD, an unreachable chain, a transport failure, a timeout, a registration it could not date or resolve; a `disputeUntil` that could not be read is left out instead | surface `<detail>`; retry only if it reads as transient |
 
 A client SHOULD NOT broadcast a `name` to further servers after a name-capable
 router has answered (`NOT_FOUND` or `RESOLVER`), since that router has already
@@ -1562,7 +1562,8 @@ registry's registrar can end it, such as the registry's controller contract on
 the request of its owner or guardian; a router then answers for the name as for
 a name never registered. On `.simplex`, a registration made through the
 registry's sponsor contract has a dispute period of 14 to 120 days from its
-registration.
+registration. As with `expires`, a client does not verify `disputeUntil`: a
+router can omit or misstate it.
 
 | Field | On | JSON type | Constraints |
 |---|---|---|---|
@@ -1607,7 +1608,8 @@ From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable": only
 A router that cannot state an answer completely MUST send `ERR NAME RESOLVER
 <detail>` rather than answer partially or guess. That covers a TLD with no
 registrar or price oracle, an unreachable chain, a timeout, a registration it
-could not date or resolve, and any status word it does not recognise.
+could not date or resolve, and any status word it does not recognise. The one
+exception is `disputeUntil`, which is left out when it could not be read.
 
 `nameRecord` MUST be a UTF-8 JSON object with the following schema:
 
