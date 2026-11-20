@@ -518,7 +518,7 @@ def dispute_end(registrar: str, token: int, now: int):
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
     """The registrar's `available(id)` is not enough on its own: it is also
-    true for a name nobody registered, since 0 + GRACE_PERIOD < now."""
+    true for a name with a zero expiry, since 0 + GRACE_PERIOD < now."""
     if expires == 0:
         return "unregistered"
     if expires > now:
