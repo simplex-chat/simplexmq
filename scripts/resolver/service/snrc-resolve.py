@@ -1211,7 +1211,7 @@ def registration(name: str):
                 "type": "registered",
                 "expires": reg["expires"],
                 "graceUntil": reg["graceEnds"],
-                **({"disputeUntil": reg["disputeUntil"]} if reg["disputeUntil"] else {}),
+                "disputeUntil": reg["disputeUntil"],
                 "reservedReason_": reg["reasonCode"],
                 "nameRecord": rec,
             })
