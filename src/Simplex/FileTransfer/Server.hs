@@ -737,13 +737,13 @@ incFileStat statSel = do
   liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
 
 subtractStoredFile :: Word32 -> M s ()
-subtractStoredFile size = do
+subtractStoredFile storedSize = do
   us <- asks usedStorage
-  atomically $ modifyTVar' us $ subtract (fromIntegral size)
+  atomically $ modifyTVar' us $ subtract (fromIntegral storedSize)
   stats <- asks serverStats
   liftIO $ do
     atomicModifyIORef'_ (filesCount stats) (subtract 1)
-    atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral size)
+    atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral storedSize)
 
 saveServerStats :: M s ()
 saveServerStats =
