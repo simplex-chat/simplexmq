@@ -65,9 +65,12 @@ On xftp-server:
 - Stored files are the file records with a path.
 - `getUsedStorage :: s -> IO (Int, Int64)` returns the count and the size of stored files; the used storage, `filesCount` and `filesSize` are set from it in `newXFTPServerEnv`.
 - `subtractStoredFile` lowers the used storage, `filesCount` and `filesSize` by one file.
-- `blockFile :: s -> SenderId -> BlockingInfo -> IO (Either XFTPErrorType ())` clears the path in both stores.
+- `blockFile :: s -> SenderId -> BlockingInfo -> IO (Either XFTPErrorType (Maybe FilePath))` clears the path in both stores and returns the path it cleared; in PostgreSQL, the row is read with `SELECT ... FOR UPDATE` and updated in one transaction.
+- `deleteFile :: s -> SenderId -> IO (Either XFTPErrorType (Maybe FilePath))` returns the path of the deleted record; in PostgreSQL, with `DELETE ... RETURNING`.
 - `deleteFiles :: s -> [SenderId] -> IO [(SenderId, Maybe FilePath, Word32)]` returns the deleted rows; in PostgreSQL, with `DELETE ... RETURNING`.
-- The stats backup is restored before the expiry at start; `filesCount` and `filesSize` of the backup are replaced by the values from the store.
+- In a deletion or a block, the file of the path returned by the store is subtracted and removed from disk; its removal error is logged.
+- The stats backup is restored before the expiry at start; `filesCount` and `filesSize` of the backup are replaced by the values from the store; when the expiry at start fails, the store is closed and the stats are saved.
+- In PostgreSQL, rows blocked before this change keep their path, and are counted until they expire.
 - Help texts:
   - `simplex_xftp_file_downloads`: `Started file downloads`;
   - `simplex_xftp_files_count_total`: `Stored files`;
@@ -440,11 +443,13 @@ newXFTPServerEnv:
 
 xftpServer start:
   restoreServerStats                         -- backup counters; count and size kept from the store
-  expireServerFiles Nothing
+  expireServerFiles Nothing                  -- on error: stopServer (store closed, stats saved)
 
 FPUT committed:        filesCount + 1; filesSize + size   (used storage reserved before the upload)
-FDEL, control delete:  file removed; deleteFile;  record had a path -> subtractStoredFile size
-control block:         file removed; blockFile (path cleared); record had a path -> subtractStoredFile size
+FDEL, control delete:  file of the read path removed
+                       path <- deleteFile                 -- path at deletion
+                       path -> subtractStoredFile size; file removed when on disk
+control block:         as deletion, with blockFile        -- path at blocking, then cleared
 expiry:                deleteFiles returns the deleted rows; row with a path -> subtractStoredFile size
 
 subtractStoredFile size:
@@ -467,8 +472,8 @@ flowchart LR
     DISK[file on disk]
     ST -- "added - count and size at start" --> ENV
     ENV --> G
-    DEL -- "added - after the store delete" --> SUB
-    BLK -- "added - after the store block, path cleared" --> SUB
+    DEL -- "added - path returned by the store delete" --> SUB
+    BLK -- "added - path returned by the store block, then cleared" --> SUB
     EXP -- "changed - deleted rows only" --> SUB
     SUB -- "added - all three lowered" --> G
     BK -- "counters except count and size" --> RS
@@ -687,7 +692,7 @@ flowchart LR
 - Stores (`CoreTests/XFTPStoreTests.hs`, in the PostgreSQL build):
   - `testAddRecipientsAtomically`, for both stores: with an id already stored or repeated in the call, `DUPLICATE_` is returned and the new recipient is not added; all recipients of a call with new ids are added; `AUTH` is returned for a missing file;
   - `testExpiredFilesTotalLimit`: of 6 expired PostgreSQL files of both kinds, 4 are returned with `limit = 4` and 6 with `limit = 10`;
-  - `testStorageAndCountForStore`, for both stores: `getUsedStorage` returns the count and size of files with a path; a blocked file is excluded; `deleteFiles` returns only the rows it deleted, with the path cleared for the blocked file, and `[]` when repeated.
+  - `testStorageAndCountForStore`, for both stores: `getUsedStorage` returns the count and size of files with a path; a blocked file is excluded; `blockFile` and `deleteFile` return the path, `Nothing` from a repeated block, and `AUTH` from a repeated deletion; `deleteFiles` returns only the rows it deleted, with the path cleared for the blocked file, and `[]` when repeated.
 - CLI (`CLITests.hs`):
   - `xftpServerTest`: `init` writes `disconnect = on`, `ttl = 21600` and `check_interval = 3600`;
   - `xftpServerMaintenanceTest`: `start --maintenance` ends within 5 s, with the maintenance message in its output and without `Listening on port 443...`;
@@ -703,7 +708,8 @@ flowchart LR
   - the wait after a file deletion;
   - the RTS defaults;
   - the help texts of metrics;
-  - a deletion or a block during an expiry batch.
+  - a deletion or a block during an expiry batch or an upload commit;
+  - a failed expiry at start.
 
 ## Measurements
 
