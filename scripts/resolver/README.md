@@ -237,8 +237,9 @@ holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so the
 resolver tells `unregistered` from `expired` by a zero expiry. On `.simplex`, a
 registration made through the controller's `registerSponsored` has a dispute
 period of 14 to 120 days, and the registrar stores its end as `disputeUntil`.
-Within it, a renewal is refused, and the controller's owner or guardian
-(`beneficiary`) can end the registration; the registrar then sets a zero expiry.
+Within it, a renewal is refused, and a registrar controller can end the
+registration, such as the controller on the request of its owner or guardian
+(`beneficiary`); the registrar then sets a zero expiry.
 The resolver reports that end as `disputeUntil` while it is later than `now`,
 and null otherwise. The call to a registrar from before dispute periods, such as
 `.testing`'s, reverts, and is read as none.

@@ -1557,10 +1557,11 @@ MUST NOT treat an answer as current without checking it.
 | `reserved` | held back by the registry and not registered. It carries no price, and a router MUST NOT quote one |
 
 A registration answered with `disputeUntil` is in its dispute period: until
-then, its renewal is refused, and the owner or the guardian of the registry's
-controller contract can end it; a router then answers for the name as for a name
-never registered. On `.simplex`, a registration made through the registry's
-sponsor contract has a dispute period of 14 to 120 days from its registration.
+then, its renewal is refused, and a controller of the registry's registrar can
+end it, such as the registry's controller contract on the request of its owner
+or guardian; a router then answers for the name as for a name never registered.
+On `.simplex`, a registration made through the registry's sponsor contract has a
+dispute period of 14 to 120 days from its registration.
 
 | Field | On | JSON type | Constraints |
 |---|---|---|---|
