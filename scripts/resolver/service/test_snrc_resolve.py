@@ -357,9 +357,11 @@ class NameStatusTests(unittest.TestCase):
 
     def test_a_reverted_dispute_end_is_reported_as_0(self):
         snrc.eth_call = self._saved[2]
-        with mock.patch.object(snrc, "_send_rpc", self._node({"error": {"code": 3, "message": "execution reverted"}})):
-            reg = snrc.name_status("alice.testing")
-        self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", 0))
+        for code in (3, -32000):
+            answer = {"error": {"code": code, "message": "execution reverted"}}
+            with self.subTest(code=code), mock.patch.object(snrc, "_send_rpc", self._node(answer)):
+                reg = snrc.name_status("alice.testing")
+                self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", 0))
 
     def test_a_dispute_end_the_node_could_not_read_is_unknown(self):
         snrc.eth_call = self._saved[2]
@@ -1020,11 +1022,11 @@ class RegistrationV2Tests(unittest.TestCase):
         _, body = registration("acme.testing")
         self.assertEqual(body["disputeUntil"], 0)
 
-    def test_a_dispute_end_the_node_could_not_read_is_absent(self):
+    def test_a_dispute_end_the_node_could_not_read_is_null(self):
         snrc.eth_call = self._chain(self.now + 3600, dispute_until=None)
         _, body = registration("acme.testing")
         self.assertEqual(body["type"], "registered")
-        self.assertNotIn("disputeUntil", body)
+        self.assertIsNone(body["disputeUntil"])
 
     def test_v1_reports_the_dispute_end_0_or_null(self):
         for until, reported in ((self.now + 600, self.now + 600), (0, 0), (None, None)):
