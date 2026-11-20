@@ -1135,12 +1135,12 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "available")
 
     def test_a_subname_under_a_2ld_with_zero_expiry_is_not_registered(self):
-        snrc.eth_call = self._chain(0, owner=self.FORMER_OWNER)
+        snrc.eth_call = self._chain(0, owner=self.FORMER_OWNER, holder=snrc.ZERO_ADDR)
         _, body = registration("sub.acme.testing")
         self.assertEqual(body["type"], "available")
 
     def test_v1_answers_404_for_a_subname_under_a_2ld_with_zero_expiry(self):
-        snrc.eth_call = self._chain(0, owner=self.FORMER_OWNER)
+        snrc.eth_call = self._chain(0, owner=self.FORMER_OWNER, holder=snrc.ZERO_ADDR)
         status, body = snrc.resolve("sub.acme.testing")
         self.assertEqual((status, body["error"]), (404, "unregistered"))
 
