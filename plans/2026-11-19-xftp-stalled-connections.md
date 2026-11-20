@@ -72,7 +72,7 @@ On xftp-server:
 - In a deletion or a block, the file of the path returned by the store is subtracted and removed from disk; its removal error is logged.
 - The stats backup is restored before the expiry at start; `filesCount` and `filesSize` of the backup are replaced by the values from the store; when the expiry at start fails, the store is closed and the stats are saved.
 - In PostgreSQL, rows blocked before this change keep their path, and are counted until they expire.
-- Each FPUT receives its chunk into its own `.tmp` file in `filesPath`, renamed to the chunk file after `setFilePath`; `.tmp` files are removed at start.
+- Each FPUT receives its chunk into its own `.tmp` file in `filesPath`, renamed to the chunk file before `setFilePath`; `.tmp` files are removed at start.
 - Help texts:
   - `simplex_xftp_file_downloads`: `Started file downloads`;
   - `simplex_xftp_files_count_total`: `Stored files`;
@@ -330,16 +330,21 @@ FPUT of a chunk without a path:
   tmpPath = filesPath/<sender id>.<16 random base64url characters>.tmp
   chunk received into tmpPath, limited by fileTimeout
   error -> reservation released; tmpPath removed; error returned
-  setFilePath store senderId (filesPath/<sender id>):
-    Right -> FPUT record logged; stats; tmpPath renamed to filesPath/<sender id>; OK
-    Left  -> reservation released; tmpPath removed
-             path of the record re-read with getFile: Just -> OK; Nothing or error -> AUTH
+  tmpPath renamed to fPath = filesPath/<sender id>
+  setFilePath store senderId fPath:
+    Right -> FPUT record logged; stats; OK
+    Left  -> reservation released
+             record re-read with getFile:
+               path Just                -> OK
+               path Nothing, active     -> AUTH
+               blocked, or record absent -> fPath removed; AUTH
+               store error              -> the error
 
 xftpServer start:
   files with the extension .tmp in filesPath removed
 ```
 
-Each upload writes its own file, so a repeated upload of a chunk is received while an earlier upload of it is open, and the cleanup of a failed upload removes only its own file. The first upload to be committed is kept; an upload committed later returns OK, as its digest is equal.
+Each upload writes its own file, so a repeated upload of a chunk is received while an earlier upload of it is open, and the cleanup of a failed upload removes only its own file. The chunk file is in place before its path is stored, so a stored path always names a complete file. The first upload to be committed is kept; an upload completed later replaces the chunk file with equal content and returns OK.
 
 Green: added. Red: removed.
 
@@ -353,7 +358,7 @@ sequenceDiagram
     S1->>D: write <sender id>.<a>.tmp
     C->>S2: FPUT on a new connection
     S2->>D: added - write <sender id>.<b>.tmp
-    S2->>D: added - setFilePath, rename to <sender id>
+    S2->>D: added - rename to <sender id>, then setFilePath
     S2-->>C: OK
     S1->>D: fileTimeout - remove <sender id>.<a>.tmp only
     Note over S2,D: removed - FILE_IO on the file lock, and the file of the first FPUT removed
@@ -720,6 +725,8 @@ flowchart LR
   - `testStalledRequestBody`: with `fileTimeout` of 2 s and expiry off, a connection whose request body is stalled after 1 byte is closed;
   - `testStalledCommittedUpload`: with `fileTimeout` of 2 s, `TIMEOUT` is returned within 5 s to a repeated FPUT of a committed chunk with a stalled body;
   - `testRepeatedUploadDuringStalledUpload`: with `fileTimeout` of 2 s, while an FPUT with a stalled body is open, an FPUT of the same chunk on a new connection returns OK, the chunk is downloaded before and after the stalled FPUT times out, and no `.tmp` file is left;
+  - `testUploadAfterCommittedUpload`: an FPUT whose body is sent after another FPUT of the same chunk is committed returns OK, and the chunk is downloaded;
+  - `testRemoveTmpUploads`: of a chunk file and a `.tmp` file in `filesPath` before start, only the chunk file is left after start;
   - `testNoRequestTimeout`: with `firstRequestTimeout` of 1 s, with expiry off and on, a TLS connection without a request is closed within 5 s, and a client after its handshake stays connected for 2 s and receives PONG;
   - `testInactiveClientExpiration`: as before, with the client helper `connectXFTPClient`;
   - `testFileStatsRestart`, with and without the stats backup: of a store log with an expired stored file, a stored file and a file without a chunk, the server exports `files_expired = 1`, `files_count_total = 1` and `files_size = 131072` after start; the memory store with a store log is used for both store types;
@@ -749,9 +756,7 @@ flowchart LR
   - the RTS defaults;
   - the help texts of metrics;
   - a deletion or a block during an expiry batch or an upload commit;
-  - a failed expiry at start;
-  - the removal of `.tmp` files at start;
-  - an upload committed after another upload of the same chunk.
+  - a failed expiry at start.
 
 ## Measurements
 
