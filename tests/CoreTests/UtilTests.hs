@@ -108,6 +108,13 @@ utilTests = do
       runExceptT (throwAsync ThreadKilled `catchAllOwnErrors` handleCatch) `shouldThrow` (\e -> e == ThreadKilled)
     it "should not throw if there are no errors" $
       runExceptT (noErrors `catchAllOwnErrors` throwError) `shouldReturn` Right "no errors"
+  describe "catchOwn_" $ do
+    it "should catch SomeException" $
+      (throwIO (userError "error") `catchOwn_` pure "caught") `shouldReturn` "caught"
+    it "should catch StackOverflow" $
+      (throwIO StackOverflow `catchOwn_` pure "caught") `shouldReturn` "caught"
+    it "should rethrow ThreadKilled" $
+      (throwIO ThreadKilled `catchOwn_` pure "caught") `shouldThrow` (\e -> e == ThreadKilled)
   where
     throwTestError :: ExceptT TestError IO String
     throwTestError = throwError $ TestError "error"

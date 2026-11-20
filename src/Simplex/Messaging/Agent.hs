@@ -292,7 +292,7 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
-      notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
+      notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchOwn_` pure []
       c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs notices =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t
@@ -2803,7 +2803,7 @@ runSmpQueueMsgDelivery c@AgentClient {subQ} sq@SndQueue {userId, connId, server,
       notifyDel msgId $ MERR (unId msgId) err
       msgIds_ <- withStore' c $ \db -> do
         msgIds_ <- getExpiredSndMessages db connId sq expireTs
-        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchAll_` pure ()
+        forM_ msgIds_ $ \msgId' -> deleteSndMsgDelivery db connId sq msgId' False `catchOwn_` pure ()
         pure msgIds_
       forM_ (L.nonEmpty msgIds_) $ \msgIds -> do
         notify $ MERRS (L.map unId msgIds) err

@@ -24,7 +24,6 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (mapConcurrently)
-import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -501,12 +500,14 @@ subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st sm
 
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     createSMPSubscriber v =
-      E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
-        q <- newTQueueIO
-        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
-        let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
-        atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
-        pure $ Just sub
+      ( do
+          q <- newTQueueIO
+          tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
+          let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
+          atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
+          pure $ Just sub
+      )
+        `catchOwn'` \e -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v
 
     waitForSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     waitForSMPSubscriber v =
