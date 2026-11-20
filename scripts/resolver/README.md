@@ -220,7 +220,7 @@ name already knows when it expires. Both timestamps are Unix seconds, and
 | `registered` | live; `expires` is when that ends |
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace; anyone may register it |
-| `unregistered` | never registered, and free to take |
+| `unregistered` | never registered, or its registration was ended in its dispute period; free to take |
 | `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
 
 A reservation is orthogonal to the status: a name held back by the registry
@@ -232,8 +232,9 @@ rather than assumed, and `now` is the latest block's timestamp rather than the
 host clock, which the registrar compares against too, so a machine with a wrong
 clock cannot misreport a registration. That rule alone is not enough: it also
 holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
-expiry is what separates *never registered* from *registered and since
-released*.
+expiry is what separates *not registered* from *registered and since
+released*. The registrar also sets a zero expiry when a registration is ended
+in its dispute period.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
@@ -247,7 +248,7 @@ which is free to change.
 
 ```jsonc
 {"name": "nope.testing", "error": "unregistered",
- "message": "this name has never been registered",
+ "message": "this name is not registered",
  "status": "unregistered", "expires": null, "graceEnds": null}
 ```
 
@@ -331,7 +332,7 @@ through `prices()`, in US cents per year, which is the unit this API carries.
 
 An ENS-shaped oracle exposes only `price1Letter()`..`price6Letter()`, in attoUSD
 per second, and charges a premium on a lapsed name that it does not expose. A
-quote from one is therefore only safe for a name that was never registered: an
+quote from one is therefore only safe for a name with a zero expiry: an
 `expired` name gets no price rather than one below what the registrar charges.
 
 **Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a

@@ -576,7 +576,7 @@ def read_oracle_prices(controller: str, oracle: str):
     """SimplexPriceOracle keeps the curve in US cents per year, the unit the SMP
     protocol carries. An ENS-shaped oracle prices in attoUSD per second and
     charges a premium on lapsed names that it does not expose, so a quote from
-    it is only safe for a name that was never registered."""
+    it is only safe for a name with a zero expiry."""
     # either oracle shape is answered in the same round trip
     prefetch([eth_call_read(*prices_call(oracle))] + [eth_call_read(*letter_price_call(oracle, n)) for n in LETTER_TIERS])
     try:
@@ -1240,7 +1240,7 @@ def resolve(name: str):
             **reg,
             "error": reg["status"],
             "message": (
-                "this name has never been registered"
+                "this name is not registered"
                 if reg["status"] == "unregistered"
                 else "this registration expired and is open to anyone"
             ),
