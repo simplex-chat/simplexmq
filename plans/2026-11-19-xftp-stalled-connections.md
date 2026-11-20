@@ -15,7 +15,11 @@ On xftp-server:
 - `xftp-server start` applies PostgreSQL migrations and starts the server in one command;
 - socket counts are exported to Prometheus by smp-server only;
 - errors of sending a file are printed to standard output, outside the log;
-- the server is run with the RTS defaults of GHC unless `+RTS` flags are given.
+- the server is run with the RTS defaults of GHC unless `+RTS` flags are given;
+- the Prometheus gauges of stored files are not lowered by file expiry, and start at 0 without the stats backup:
+  - `simplex_xftp_files_count_total`;
+  - `simplex_xftp_files_size`;
+- the help texts of file metrics state other quantities than the ones exported.
 
 ## Decisions
 
@@ -58,6 +62,17 @@ On xftp-server:
 - Errors of `sendEncFile` are logged with `logInfo` as `sendEncFile: <error>` and thrown again.
 - RTS defaults are compiled into the `xftp-server` executable; the allocation area limit (`-AL`) is left at the RTS default.
 - `xftp-server init` writes inactive-client expiry on; existing ini files are read as written.
+- Stored files are the file records with a path.
+- `getUsedStorage :: s -> IO (Int, Int64)` returns the count and the size of stored files; the used storage, `filesCount` and `filesSize` are set from it in `newXFTPServerEnv`.
+- `subtractStoredFile` lowers the used storage, `filesCount` and `filesSize` by one file.
+- `blockFile :: s -> SenderId -> BlockingInfo -> IO (Either XFTPErrorType ())` clears the path in both stores.
+- `deleteFiles :: s -> [SenderId] -> IO [(SenderId, Maybe FilePath, Word32)]` returns the deleted rows; in PostgreSQL, with `DELETE ... RETURNING`.
+- The stats backup is restored before the expiry at start; `filesCount` and `filesSize` of the backup are replaced by the values from the store.
+- Help texts:
+  - `simplex_xftp_file_downloads`: `Started file downloads`;
+  - `simplex_xftp_files_count_total`: `Stored files`;
+  - `simplex_xftp_files_size`: `Size of stored files, bytes`;
+  - `simplex_xftp_files_count_daily`, `_weekly`, `_monthly`: `Distinct files downloaded in the current day`, `week`, `month`.
 
 ## One connection
 
@@ -366,7 +381,9 @@ expireServerFiles itemDelay expCfg:
       removeFile path; then wait itemDelay
       error -> logged
     expired == [] -> end
-    DeleteFile records written; deleteFiles; used storage and stats updated
+    DeleteFile records written
+    deleted <- deleteFiles store (ids of the batch)
+    for each deleted row: subtractStoredFile when it has a path; filesExpired + 1
     loop
 
 itemDelay:
@@ -398,6 +415,7 @@ flowchart TD
     W[wait itemDelay]
     N{more files in the batch}
     D[batch deleted from the store]
+    A[subtractStoredFile and filesExpired, for the deleted rows]
     Q --> E
     E -- "yes" --> DONE
     E -- "no" --> P
@@ -408,8 +426,57 @@ flowchart TD
     R -- "error, logged" --> N
     N -- "yes" --> P
     N -- "no" --> D
-    D --> Q
-    linkStyle 4,5 stroke:#1155cc
+    D -- "changed - deleted rows returned" --> A
+    A --> Q
+    linkStyle 4,5,10 stroke:#1155cc
+```
+
+## Stored files
+
+```
+newXFTPServerEnv:
+  (count, size) <- getUsedStorage store      -- records with a path
+  usedStorage = size; filesCount = count; filesSize = size
+
+xftpServer start:
+  restoreServerStats                         -- backup counters; count and size kept from the store
+  expireServerFiles Nothing
+
+FPUT committed:        filesCount + 1; filesSize + size   (used storage reserved before the upload)
+FDEL, control delete:  file removed; deleteFile;  record had a path -> subtractStoredFile size
+control block:         file removed; blockFile (path cleared); record had a path -> subtractStoredFile size
+expiry:                deleteFiles returns the deleted rows; row with a path -> subtractStoredFile size
+
+subtractStoredFile size:
+  usedStorage - size; filesCount - 1; filesSize - size
+```
+
+Green: added. Blue: changed. Red: removed.
+
+```mermaid
+flowchart LR
+    ST[(store: records with a path)]
+    ENV[newXFTPServerEnv]
+    G[usedStorage, filesCount, filesSize]
+    SUB[subtractStoredFile]
+    DEL[FDEL, control delete]
+    BLK[control block]
+    EXP[expiry]
+    RS[restoreServerStats]
+    BK[(stats backup)]
+    DISK[file on disk]
+    ST -- "added - count and size at start" --> ENV
+    ENV --> G
+    DEL -- "added - after the store delete" --> SUB
+    BLK -- "added - after the store block, path cleared" --> SUB
+    EXP -- "changed - deleted rows only" --> SUB
+    SUB -- "added - all three lowered" --> G
+    BK -- "counters except count and size" --> RS
+    RS -- "changed - before the expiry at start" --> G
+    DISK -- "removed - count and size lowered when the file existed" --> G
+    linkStyle 0,2,3,5 stroke:#008800
+    linkStyle 4,7 stroke:#1155cc
+    linkStyle 8 stroke:#cc0000
 ```
 
 ## Period stats
@@ -609,7 +676,9 @@ flowchart LR
   - `testStalledRequestBody`: with `fileTimeout` of 2 s and expiry off, a connection whose request body is stalled after 1 byte is closed;
   - `testStalledCommittedUpload`: with `fileTimeout` of 2 s, `TIMEOUT` is returned within 5 s to a repeated FPUT of a committed chunk with a stalled body;
   - `testNoRequestTimeout`: with `firstRequestTimeout` of 1 s, with expiry off and on, a TLS connection without a request is closed within 5 s, and a client after its handshake stays connected for 2 s and receives PONG;
-  - `testInactiveClientExpiration`: as before, with the client helper `connectXFTPClient`.
+  - `testInactiveClientExpiration`: as before, with the client helper `connectXFTPClient`;
+  - `testFileStatsRestart`, with and without the stats backup: of a store log with an expired stored file, a stored file and a file without a chunk, the server exports `files_expired = 1`, `files_count_total = 1` and `files_size = 131072` after start; the memory store with a store log is used for both store types;
+  - `testFileStatsDelete`: after two uploads, `files_count_total = 2` and `files_size = 262144`; after the deletion of both, one with its chunk file removed from disk, `files_deleted = 2`, `files_count_total = 0` and `files_size = 0`.
 - Chunk receiving (`XFTPServerTests.hs`): with the chunk written to `/dev/null`, `Right ()` is returned by `receiveFile` and by `receiveEncFile` for the correct digest, and `DIGEST` for another one.
 - Transport (`CoreTests/TransportTests.hs`, with its own credentials and fingerprint loading):
   - `testCloseBlockedTLS`: while the client is not reading and the server sender thread is blocked, `closeConnection` of the server returns within 5 s, and the sender thread is ended by an exception within 5 s;
@@ -617,7 +686,8 @@ flowchart LR
   - `testServerUserTimeout`: `TCP_USER_TIMEOUT` of the accepted socket is 180000 with `tcpUserTimeout = Just 180000` and 0 with `Nothing`.
 - Stores (`CoreTests/XFTPStoreTests.hs`, in the PostgreSQL build):
   - `testAddRecipientsAtomically`, for both stores: with an id already stored or repeated in the call, `DUPLICATE_` is returned and the new recipient is not added; all recipients of a call with new ids are added; `AUTH` is returned for a missing file;
-  - `testExpiredFilesTotalLimit`: of 6 expired PostgreSQL files of both kinds, 4 are returned with `limit = 4` and 6 with `limit = 10`.
+  - `testExpiredFilesTotalLimit`: of 6 expired PostgreSQL files of both kinds, 4 are returned with `limit = 4` and 6 with `limit = 10`;
+  - `testStorageAndCountForStore`, for both stores: `getUsedStorage` returns the count and size of files with a path; a blocked file is excluded; `deleteFiles` returns only the rows it deleted, with the path cleared for the blocked file, and `[]` when repeated.
 - CLI (`CLITests.hs`):
   - `xftpServerTest`: `init` writes `disconnect = on`, `ttl = 21600` and `check_interval = 3600`;
   - `xftpServerMaintenanceTest`: `start --maintenance` ends within 5 s, with the maintenance message in its output and without `Listening on port 443...`;
@@ -631,7 +701,9 @@ flowchart LR
   - the retry of FNEW and FADD on duplicate ids;
   - the padding error response;
   - the wait after a file deletion;
-  - the RTS defaults.
+  - the RTS defaults;
+  - the help texts of metrics;
+  - a deletion or a block during an expiry batch.
 
 ## Measurements
 
