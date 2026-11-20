@@ -1723,14 +1723,14 @@ testServiceRequestExpiringReplyQueue ps@(t, _) =
     withAgent 2 agentCfg initAgentServers testDB2 $ \service -> do
       (_, CCLink connReq _) <- runRight $ A.createConnection service NRMInteractive 1 True True SCMContact (Just serviceUserLinkData) Nothing IKPQOn True SMSubscribe
       withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
-        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+        withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
           withAgent 1 agentCfg clientServers testDB $ \client ->
             withAsync (runExceptT $ sendServiceRequestAsync client 1 connReq (Just 1) Nothing "service request") $ \req -> do
               timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
               timeout 5_000000 (wait req) `shouldReturn` Just (Left $ AGENT $ A_SERVICE ASETimeout)
               get client =##> \case ("", "", DEL_CONNS [_]) -> True; _ -> False
               withTransaction (store $ agentEnv client) getConnIds `shouldReturn` []
-              atomically $ putTMVar opened ()
+              atomically $ putTMVar resume ()
               suspendAgent client 5_000000
               nGet client ##> ("", "", SUSPENDED)
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
@@ -4354,11 +4354,11 @@ testSwitchChangedWhileNewQueue changeSwitch err ps@(t, _) =
       (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
       setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
       withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
-        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+        withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
           withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
             timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
             void . runRight $ changeSwitch b aId
-            atomically $ putTMVar opened ()
+            atomically $ putTMVar resume ()
             timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED err)
             runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
             waitRcvQueueRecords b 1
@@ -4371,11 +4371,11 @@ testSwitchConnectionDeletedWhileNewQueue ps@(t, _) =
       (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
       setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
       withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
-        withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+        withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
           withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
             timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
             runRight_ $ deleteConnection b aId
-            atomically $ putTMVar opened ()
+            atomically $ putTMVar resume ()
             timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
 
@@ -4387,11 +4387,11 @@ testJoinConnectionDeletedWhileReplyQueue ps@(t, _) =
         (_, cReq) <- runRight $ createConnection a 1 True SCMInvitation Nothing SMSubscribe
         (aId, _) <- runRight $ A.prepareConnectionToJoin b 1 True cReq PQSupportOn
         withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
-          withGatedServerOn testPort2 testPort3 $ \accepted opened ->
+          withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
             withAsync (runExceptT $ A.joinConnection b NRMInteractive 1 aId True cReq "bob's connInfo" PQSupportOn SMSubscribe) $ \joined -> do
               timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
               runRight_ $ deleteConnection b aId
-              atomically $ putTMVar opened ()
+              atomically $ putTMVar resume ()
               timeout 5_000000 (wait joined) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
         storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
   where
