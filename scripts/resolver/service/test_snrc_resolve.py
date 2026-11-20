@@ -1074,7 +1074,8 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["error"], "unknown")
 
     def test_each_answer_carries_exactly_its_own_fields(self):
-        """The relay decodes by these names; an extra or missing one is a break."""
+        """The relay decodes by these names; with the set pinned, a key cannot be
+        renamed or added without the Haskell side."""
         cases = {
             "registered": (self._chain(self.now + 3600),
                            {"type", "expires", "graceUntil", "disputeUntil", "reservedReason_", "nameRecord"}),
