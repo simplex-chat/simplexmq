@@ -44,7 +44,7 @@ import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb, mb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), FileResponse (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpDecodeTClient, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), XFTPStoreConfig (..), defaultInactiveClientExpiration)
-import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile)
+import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile, logPutFile, serverFileName)
 import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), alpnSupportedXFTPhandshakes, receiveEncFile, receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
@@ -63,7 +63,7 @@ import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (canonicalizePath, doesDirectoryExist, getSymbolicLinkTarget, listDirectory, removeFile)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getSymbolicLinkTarget, listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, withAsync)
@@ -92,6 +92,9 @@ xftpServerTests = do
       it "should store file records to log and restore them after server restart" testFileLog
       it "should reset daily download stats without stats log" testPeriodStatsReset
       it "should export socket counts in Prometheus metrics" testSocketMetrics
+      it "should count stored files after restart without stats backup" $ testFileStatsRestart False
+      it "should count stored files after restart with stats backup" $ testFileStatsRestart True
+      it "should count stored files after deletion" testFileStatsDelete
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -481,6 +484,76 @@ testSocketMetrics fsType =
             Just name <- [T.stripPrefix "simplex_xftp_sockets_" =<< T.stripSuffix portLabel metric]
         ]
     portLabel = "{port=\"" <> T.pack xftpTestPort <> "\"}"
+
+testFileStatsRestart :: HasTestEnv => Bool -> AFStoreType -> Expectation
+testFileStatsRestart statsBackup _ = do
+  when statsBackup $ do
+    withXFTPServerCfg cfg $ \_ -> pure ()
+    doesFileExist testXFTPStatsBackupFile `shouldReturn` True
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  createDirectoryIfMissing True xftpServerFiles
+  sl <- openWriteStoreLog False testXFTPLogFile
+  let fileInfo = FileInfo {sndKey, size = chSize, digest = "digest"}
+      addTestFile sId expiresAt = logAddFile sl sId fileInfo (RoundedSystemTime 0) (Just $ RoundedSystemTime expiresAt) EntityActive
+      putTestFile sId = do
+        let path = xftpServerFiles </> serverFileName sId
+        void $ createTestChunk path
+        logPutFile sl sId path
+      expiredId = EntityId "expired_file____"
+      storedId = EntityId "stored_file_____"
+  addTestFile expiredId 3600
+  putTestFile expiredId
+  addTestFile storedId 4102444800
+  putTestFile storedId
+  addTestFile (EntityId "new_file________") 4102444800
+  closeStoreLog sl
+  withXFTPServerCfg cfg $ \_ -> threadDelay 1500000
+  fileMetrics `shouldReturn` [("expired", "1"), ("deleted", "0"), ("count_total", "1"), ("size", "131072")]
+  where
+    cfg =
+      testXFTPServerConfig
+        { serverStoreCfg = XSCMemory (Just testXFTPLogFile),
+          storeLogFile = Just testXFTPLogFile,
+          serverStatsBackupFile = if statsBackup then Just testXFTPStatsBackupFile else Nothing,
+          prometheusInterval = Just 1
+        }
+
+testFileStatsDelete :: HasTestEnv => AFStoreType -> Expectation
+testFileStatsDelete fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {prometheusInterval = Just 1}) $ \_ ->
+    testXFTPClient $ \c -> runRight_ $ do
+      g <- liftIO C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      void $ liftIO $ createTestChunk testChunkPath
+      digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
+      let file = FileInfo {sndKey, size = chSize, digest}
+          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      (sId1, _) <- createXFTPChunk c spKey file [rcvKey] Nothing
+      uploadXFTPChunk c spKey sId1 chunkSpec
+      (sId2, _) <- createXFTPChunk c spKey file [rcvKey] Nothing
+      uploadXFTPChunk c spKey sId2 chunkSpec
+      liftIO $ do
+        threadDelay 1500000
+        fileMetrics `shouldReturn` [("expired", "0"), ("deleted", "0"), ("count_total", "2"), ("size", "262144")]
+        removeFile $ xftpServerFiles </> serverFileName sId2
+      deleteXFTPChunk c spKey sId1
+      deleteXFTPChunk c spKey sId2
+      liftIO $ do
+        threadDelay 1500000
+        fileMetrics `shouldReturn` [("expired", "0"), ("deleted", "2"), ("count_total", "0"), ("size", "0")]
+
+fileMetrics :: HasTestEnv => IO [(T.Text, T.Text)]
+fileMetrics = do
+  metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+  pure
+    [ (name, n)
+      | l <- metrics,
+        [metric, n, _] <- [T.words l],
+        Just name <- [T.stripPrefix "simplex_xftp_files_" metric],
+        name `elem` ["expired", "deleted", "count_total", "size"]
+    ]
 
 testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =

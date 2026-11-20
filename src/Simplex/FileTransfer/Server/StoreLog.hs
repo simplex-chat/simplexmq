@@ -125,7 +125,7 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
         | otherwise -> pure $ Left AUTH
       AddRecipients sId rcps -> addRecipients st sId rcps
       DeleteFile sId -> deleteFile st sId
-      BlockFile sId info -> blockFile st sId info True
+      BlockFile sId info -> blockFile st sId info
       AckFile rId -> ackFile st rId
 
 writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()

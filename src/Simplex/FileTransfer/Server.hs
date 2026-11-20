@@ -134,8 +134,8 @@ data EntitlementChecked = EntNotChecked | EntChecked (Maybe SessionEntitlement)
 
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
-  expireServerFiles Nothing fileExpiration
   restoreServerStats
+  expireServerFiles Nothing fileExpiration
   raceAny_
     ( runServer
         : expireFiles fileExpiration
@@ -676,23 +676,16 @@ deleteServerFile_ fr@FileRec {senderId} = do
 blockServerFile :: FileStoreClass s => FileRec -> BlockingInfo -> M s (Either XFTPErrorType ())
 blockServerFile fr@FileRec {senderId} info = do
   withFileLog $ \sl -> logBlockFile sl senderId info
-  deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info True
+  deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info
 
 deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType ())) -> M s (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $ runExceptT $ do
   path <- readTVarIO filePath
-  stats <- asks serverStats
-  ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p >> deletedStats stats))
+  ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
   st <- asks fileStore
   ExceptT $ liftIO $ storeAction st
-  forM_ path $ \_ -> do
-    us <- asks usedStorage
-    atomically $ modifyTVar' us $ subtract (fromIntegral $ size fileInfo)
+  forM_ path $ \_ -> lift $ subtractStoredFile $ size fileInfo
   lift $ incFileStat stat
-  where
-    deletedStats stats = do
-      liftIO $ atomicModifyIORef'_ (filesCount stats) (subtract 1)
-      liftIO $ atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral $ size fileInfo)
 
 entitlementValid :: SystemSeconds -> SystemSeconds -> Bool
 entitlementValid now expiresAt = roundedSeconds expiresAt + 86400 > roundedSeconds now
@@ -706,12 +699,12 @@ expireServerFiles itemDelay expCfg = do
   old <- liftIO $ expireBeforeEpoch expCfg
   filesCount <- liftIO $ getFileCount st
   logNote $ "Expiration check: " <> tshow filesCount <> " files"
-  expireLoop st us now old
+  expireLoop st now old
   usedEnd <- readTVarIO us
   logNote $ "Used " <> mbs usedStart <> " -> " <> mbs usedEnd <> ", " <> mbs (usedStart - usedEnd) <> " reclaimed."
   where
     mbs bs = tshow (bs `div` 1048576) <> "mb"
-    expireLoop st us now old = do
+    expireLoop st now old = do
       expired <- liftIO $ expiredFiles st now old 10000
       forM_ expired $ \(_, filePath_, _) ->
         forM_ filePath_ $ \fp ->
@@ -720,12 +713,11 @@ expireServerFiles itemDelay expCfg = do
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
-        liftIO $ deleteFiles st sIds
-        forM_ expired $ \(_, filePath_, fileSize) -> do
-          forM_ filePath_ $ \_ ->
-            atomically $ modifyTVar' us $ subtract (fromIntegral fileSize)
+        deleted <- liftIO $ deleteFiles st sIds
+        forM_ deleted $ \(_, filePath_, fileSize) -> do
+          forM_ filePath_ $ \_ -> subtractStoredFile fileSize
           incFileStat filesExpired
-        expireLoop st us now old
+        expireLoop st now old
 
 periodStatsInterval :: Int64
 periodStatsInterval = 86400
@@ -744,6 +736,15 @@ incFileStat statSel = do
   stats <- asks serverStats
   liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
 
+subtractStoredFile :: Word32 -> M s ()
+subtractStoredFile size = do
+  us <- asks usedStorage
+  atomically $ modifyTVar' us $ subtract (fromIntegral size)
+  stats <- asks serverStats
+  liftIO $ do
+    atomicModifyIORef'_ (filesCount stats) (subtract 1)
+    atomicModifyIORef'_ (filesSize stats) (subtract $ fromIntegral size)
+
 saveServerStats :: M s ()
 saveServerStats =
   asks (serverStatsBackupFile . config)
@@ -754,7 +755,7 @@ saveServerStats =
       B.writeFile f $ strEncode stats
       logNote "server stats saved"
 
-restoreServerStats :: FileStoreClass s => M s ()
+restoreServerStats :: M s ()
 restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStats
   where
     restoreStats f = whenM (doesFileExist f) $ do
@@ -762,9 +763,8 @@ restoreServerStats = asks (serverStatsBackupFile . config) >>= mapM_ restoreStat
       liftIO (strDecode <$> B.readFile f) >>= \case
         Right d@FileServerStatsData {_filesCount = statsFilesCount, _filesSize = statsFilesSize} -> do
           s <- asks serverStats
-          st <- asks fileStore
-          _filesCount <- liftIO $ getFileCount st
-          _filesSize <- readTVarIO =<< asks usedStorage
+          _filesCount <- readIORef $ filesCount s
+          _filesSize <- readIORef $ filesSize s
           liftIO $ setFileServerStats s d {_filesCount, _filesSize}
           renameFile f $ f <> ".bak"
           logNote "server stats restored"

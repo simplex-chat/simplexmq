@@ -188,7 +188,7 @@ testBlockFile = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
-  blockFile st testSenderId blockInfo False `shouldReturn` Right ()
+  blockFile st testSenderId blockInfo `shouldReturn` Right ()
   result <- getFile st SFSender testSenderId
   case result of
     Right (FileRec {fileStatus}, _) -> readTVarIO fileStatus `shouldReturn` EntityBlocked blockInfo
@@ -269,20 +269,30 @@ testStorageAndCountForStore :: FileStoreClass s => s -> Expectation
 testStorageAndCountForStore st = do
   g <- C.newRandom
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-  getUsedStorage st `shouldReturn` 0
+  getUsedStorage st `shouldReturn` (0, 0)
   getFileCount st `shouldReturn` 0
   let fileInfoA = testFileInfo sndKey
       fileInfoB = fileInfoA {size = 64000}
       fileA = EntityId "file_a__________"
       fileB = EntityId "file_b__________"
+      fileC = EntityId "file_c__________"
   addFile st fileA fileInfoA testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addFile st fileB fileInfoB testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   getFileCount st `shouldReturn` 2
-  getUsedStorage st `shouldReturn` 0
+  getUsedStorage st `shouldReturn` (0, 0)
   setFilePath st fileA "/tmp/file_a" `shouldReturn` Right ()
-  getUsedStorage st `shouldReturn` 128000
+  getUsedStorage st `shouldReturn` (1, 128000)
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
-  getUsedStorage st `shouldReturn` 192000
+  getUsedStorage st `shouldReturn` (2, 192000)
+  blockFile st fileB BlockingInfo {reason = BRContent, notice = Nothing} `shouldReturn` Right ()
+  getUsedStorage st `shouldReturn` (1, 128000)
+  getFileCount st `shouldReturn` 2
+  addFile st fileC fileInfoA testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  deleteFile st fileC `shouldReturn` Right ()
+  deleteFiles st [fileA, fileB, fileC] >>= (`shouldMatchList` [(fileA, Just "/tmp/file_a", 128000), (fileB, Nothing, 64000)])
+  deleteFiles st [fileA, fileB] `shouldReturn` []
+  getUsedStorage st `shouldReturn` (0, 0)
+  getFileCount st `shouldReturn` 0
 
 -- Migration round-trip test
 

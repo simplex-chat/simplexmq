@@ -117,13 +117,14 @@ instance FileStoreClass PostgresFileStore where
     withLog "deleteFile" st $ \s -> logDeleteFile s sId
 
   deleteFiles st sIds = E.uninterruptibleMask_ $ do
-    withTransaction (dbStore st) $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id IN ?" (Only (In sIds))
-    withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s) sIds
+    deleted <- fmap toFileSizes $ withTransaction (dbStore st) $ \db ->
+      DB.query db "DELETE FROM files WHERE sender_id IN ? RETURNING sender_id, file_path, file_size" (Only (In sIds))
+    withLog "deleteFiles" st $ \s -> mapM_ (\(sId, _, _) -> logDeleteFile s sId) deleted
+    pure deleted
 
-  blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
+  blockFile st sId info = E.uninterruptibleMask_ $ runExceptT $ do
     assertUpdated $ withDB' "blockFile" st $ \db ->
-      DB.execute db "UPDATE files SET status = ? WHERE sender_id = ?" (EntityBlocked info, sId)
+      DB.execute db "UPDATE files SET status = ?, file_path = NULL WHERE sender_id = ?" (EntityBlocked info, sId)
     withLog "blockFile" st $ \s -> logBlockFile s sId info
 
   deleteRecipient st rId _fr =
@@ -154,19 +155,16 @@ instance FileStoreClass PostgresFileStore where
     withLog "ackFile" st $ \s -> logAckFile s rId
 
   expiredFiles st now old limit =
-    fmap toResult $ withTransaction (dbStore st) $ \db ->
+    fmap toFileSizes $ withTransaction (dbStore st) $ \db ->
       DB.query
         db
         "SELECT sender_id, file_path, file_size FROM ((SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)) expired LIMIT ?"
         (roundedSeconds now, limit, old - fileTimePrecision, limit, limit)
-    where
-      toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
-      toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))
 
   getUsedStorage st =
     withTransaction (dbStore st) $ \db -> do
-      [Only total] <- DB.query_ db "SELECT COALESCE(SUM(file_size::BIGINT), 0)::BIGINT FROM files WHERE file_path IS NOT NULL"
-      pure total
+      [(count, total)] <- DB.query_ db "SELECT COUNT(*), COALESCE(SUM(file_size::BIGINT), 0)::BIGINT FROM files WHERE file_path IS NOT NULL"
+      pure (fromIntegral (count :: Int64), total)
 
   getFileCount st =
     withTransaction (dbStore st) $ \db -> do
@@ -174,6 +172,9 @@ instance FileStoreClass PostgresFileStore where
       pure (fromIntegral (count :: Int64))
 
 -- Internal helpers
+
+toFileSizes :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
+toFileSizes = map (\(sId, path, size) -> (sId, path, fromIntegral size))
 
 mkFileRec :: SenderId -> FileInfo -> Maybe FilePath -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO FileRec
 mkFileRec senderId fileInfo path createdAt expiresAt status = do

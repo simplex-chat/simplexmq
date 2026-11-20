@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -81,14 +82,13 @@ class FileStoreClass s where
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipients :: s -> SenderId -> NonEmpty FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
-  deleteFiles :: s -> [SenderId] -> IO ()
-  deleteFiles s = mapM_ (void . deleteFile s)
-  blockFile :: s -> SenderId -> BlockingInfo -> Bool -> IO (Either XFTPErrorType ())
+  deleteFiles :: s -> [SenderId] -> IO [(SenderId, Maybe FilePath, Word32)]
+  blockFile :: s -> SenderId -> BlockingInfo -> IO (Either XFTPErrorType ())
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
   ackFile :: s -> RecipientId -> IO (Either XFTPErrorType ())
   expiredFiles :: s -> SystemSeconds -> Int64 -> Int -> IO [(SenderId, Maybe FilePath, Word32)]
-  getUsedStorage :: s -> IO Int64
+  getUsedStorage :: s -> IO (Int, Int64)
   getFileCount :: s -> IO Int
 
 -- STM in-memory store
@@ -140,15 +140,16 @@ instance FileStoreClass STMFileStore where
           forM_ rcps $ \(FileRecipient rId rKey) -> TM.insert rId (senderId, rKey) recipients
           pure $ Right ()
 
-  deleteFile STMFileStore {files, recipients} senderId = atomically $ do
-    TM.lookupDelete senderId files >>= \case
-      Just FileRec {recipientIds} -> do
-        readTVar recipientIds >>= mapM_ (`TM.delete` recipients)
-        pure $ Right ()
-      _ -> pure $ Left AUTH
+  deleteFile st senderId = atomically $ maybe (Left AUTH) (const $ Right ()) <$> deleteFileRec st senderId
 
-  blockFile st senderId info _deleted = atomically $
-    withFile st senderId $ \FileRec {fileStatus} -> do
+  deleteFiles st = fmap catMaybes . mapM (atomically . deleteFileSize)
+    where
+      deleteFileSize sId =
+        deleteFileRec st sId >>= mapM (\FileRec {fileInfo = FileInfo {size}, filePath} -> (sId,,size) <$> readTVar filePath)
+
+  blockFile st senderId info = atomically $
+    withFile st senderId $ \FileRec {filePath, fileStatus} -> do
+      writeTVar filePath Nothing
       writeTVar fileStatus $! EntityBlocked info
       pure $ Right ()
 
@@ -183,14 +184,18 @@ instance FileStoreClass STMFileStore where
               pure $ Just (sId, path, size)
             else pure Nothing
 
-  getUsedStorage STMFileStore {files} = foldM addSize 0 =<< readTVarIO files
+  getUsedStorage STMFileStore {files} = foldM addSize (0, 0) =<< readTVarIO files
     where
-      addSize acc FileRec {fileInfo = FileInfo {size}, filePath} =
-        ifM (isJust <$> readTVarIO filePath) (pure $! acc + fromIntegral size) (pure acc)
+      addSize acc@(!n, !used) FileRec {fileInfo = FileInfo {size}, filePath} =
+        ifM (isJust <$> readTVarIO filePath) (pure (n + 1, used + fromIntegral size)) (pure acc)
 
   getFileCount STMFileStore {files} = M.size <$> readTVarIO files
 
 -- Internal STM helpers
+
+deleteFileRec :: STMFileStore -> SenderId -> STM (Maybe FileRec)
+deleteFileRec STMFileStore {files, recipients} senderId =
+  TM.lookupDelete senderId files >>= mapM (\fr@FileRec {recipientIds} -> fr <$ (readTVar recipientIds >>= mapM_ (`TM.delete` recipients)))
 
 newFileRec :: SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> STM FileRec
 newFileRec senderId fileInfo createdAt expiresAt status = do

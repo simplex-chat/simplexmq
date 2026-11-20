@@ -217,7 +217,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
       st <- newFileStore dbCfg
       pure (StoreDatabase st, Nothing)
 #endif
-  used <- getUsedStorage (fromFileStore store)
+  (storedCount, used) <- getUsedStorage (fromFileStore store)
   usedStorage <- newTVarIO used
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
@@ -225,7 +225,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   tlsServerCreds <- loadServerCredential xftpCredentials
   httpServerCreds <- forM httpCredentials $ \creds -> newReloadableCredential acceptCredential creds =<< loadServerCredential creds
   Fingerprint fp <- loadFingerprint xftpCredentials
-  serverStats <- newFileServerStats =<< getCurrentTime
+  serverStats <- newFileServerStats storedCount used =<< getCurrentTime
   sockets <- newSocketState
   pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats, sockets}
 
