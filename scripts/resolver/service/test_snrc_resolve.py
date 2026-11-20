@@ -203,10 +203,14 @@ class NameStatusTests(unittest.TestCase):
 
     GRACE = 90 * 86400
 
-    def _expiry(self, value):
+    def _expiry(self, value, dispute_until=0):
         def eth_call(to, data):
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(self.GRACE)
+            if data.startswith(snrc.selector("disputeUntil(uint256)")):
+                if dispute_until is None:
+                    raise RuntimeError("execution reverted")
+                return "0x" + snrc.encode_uint(dispute_until)
             self.assertTrue(data.startswith(snrc.selector("nameExpires(uint256)")))
             return "0x" + snrc.encode_uint(value)
 
@@ -219,6 +223,7 @@ class NameStatusTests(unittest.TestCase):
             "lastBlockTs": self.now if read_at == -1 else read_at,
             "expires": expires,
             "graceEnds": grace_ends,
+            "disputeUntil": None,
             "reasonCode": None,
             "reason": None,
         }
@@ -333,6 +338,44 @@ class NameStatusTests(unittest.TestCase):
         snrc.name_status("x." + hashed + ".testing")
         self.assertTrue(seen[0].endswith(snrc.keccak(b"alice").hex()))
 
+    def test_a_dispute_end_after_the_block_is_reported(self):
+        snrc.eth_call = self._expiry(self.now + 3600, dispute_until=self.now + 1)
+        self.assertEqual(snrc.name_status("alice.testing")["disputeUntil"], self.now + 1)
+
+    def test_a_dispute_end_not_after_the_block_is_not_reported(self):
+        for until in (self.now, self.now - 1, 0):
+            with self.subTest(until=until):
+                snrc.eth_call = self._expiry(self.now + 3600, dispute_until=until)
+                self.assertIsNone(snrc.name_status("alice.testing")["disputeUntil"])
+
+    def test_a_registrar_reverting_the_dispute_end_reports_none(self):
+        snrc.eth_call = self._expiry(self.now + 3600, dispute_until=None)
+        reg = snrc.name_status("alice.testing")
+        self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
+
+    def test_a_registrar_answering_nothing_for_the_dispute_end_reports_none(self):
+        snrc.eth_call = self._saved[2]
+        answers = {
+            snrc.selector("nameExpires(uint256)"): "0x" + snrc.encode_uint(self.now + 3600),
+            snrc.selector("GRACE_PERIOD()"): "0x" + snrc.encode_uint(self.GRACE),
+            snrc.selector("disputeUntil(uint256)"): "0x",
+        }
+        snrc.rpc = lambda method, params: answers[params[0]["data"][:10]]
+        reg = snrc.name_status("alice.testing")
+        self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
+
+    def test_a_subname_reports_the_dispute_end_of_its_2ld(self):
+        alice = snrc.selector("disputeUntil(uint256)") + snrc.encode_uint(snrc.label_token("alice"))
+
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("disputeUntil(uint256)")):
+                self.assertEqual(data, alice)
+                return "0x" + snrc.encode_uint(self.now + 1)
+            return "0x" + snrc.encode_uint(self.now + 3600)
+
+        snrc.eth_call = eth_call
+        self.assertEqual(snrc.name_status("x.alice.testing")["disputeUntil"], self.now + 1)
+
     def test_unconfigured_tld_is_unknown_rather_than_unregistered(self):
         snrc.REGISTRARS = {"testing": ""}
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
@@ -347,6 +390,7 @@ class NameStatusTests(unittest.TestCase):
             "lastBlockTs",
             "expires",
             "graceEnds",
+            "disputeUntil",
             "reasonCode",
             "reason",
         }
@@ -585,6 +629,8 @@ class PricingTests(unittest.TestCase):
         def eth_call(to, data):
             if data.startswith(snrc.selector("nameExpires(uint256)")):
                 return "0x" + snrc.encode_uint(expires)
+            if data.startswith(snrc.selector("disputeUntil(uint256)")):
+                return "0x" + snrc.encode_uint(0)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(self.GRACE)
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
@@ -696,6 +742,8 @@ class EnsOracleTests(unittest.TestCase):
         def eth_call(to, data):
             if data.startswith(snrc.selector("nameExpires(uint256)")):
                 return "0x" + snrc.encode_uint(expires)
+            if data.startswith(snrc.selector("disputeUntil(uint256)")):
+                return "0x" + snrc.encode_uint(0)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(self.GRACE)
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
@@ -888,7 +936,7 @@ class RegistrationV2Tests(unittest.TestCase):
         return ("0x" + snrc.encode_uint(0x20) + snrc.encode_uint(len(value))
                 + (value + b"\x00" * pad).hex())
 
-    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None, holder=None, subname_holder=None):
+    def _chain(self, expires, reserved=0, oracle=None, label=b"acme", owner=None, holder=None, subname_holder=None, dispute_until=0):
         """The registry answers a zero resolver, so name_record returns the
         empty record a registered name still has. `label` is what the registrar
         recorded for the 2LD; b"" means it recorded none. `owner` is the owner of
@@ -904,6 +952,8 @@ class RegistrationV2Tests(unittest.TestCase):
                 return self._abi_bytes(label)
             if data.startswith(snrc.selector("nameExpires(uint256)")):
                 return "0x" + snrc.encode_uint(expires)
+            if data.startswith(snrc.selector("disputeUntil(uint256)")):
+                return "0x" + snrc.encode_uint(dispute_until)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(self.GRACE)
             if data.startswith(snrc.selector("reservedNames(bytes32)")):
@@ -952,6 +1002,19 @@ class RegistrationV2Tests(unittest.TestCase):
         _, body = registration("acme.testing")
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["reservedReason_"], "internal")
+
+    def test_a_registration_in_its_dispute_period_says_until_when(self):
+        snrc.eth_call = self._chain(self.now + 3600, dispute_until=self.now + 600)
+        _, body = registration("acme.testing")
+        self.assertEqual(body["type"], "registered")
+        self.assertEqual(body["disputeUntil"], self.now + 600)
+
+    def test_v1_reports_the_dispute_end_and_null_without_one(self):
+        for until, reported in ((self.now + 600, self.now + 600), (0, None)):
+            with self.subTest(until=until):
+                snrc.eth_call = self._chain(self.now + 3600, dispute_until=until)
+                status, body = snrc.resolve("acme.testing")
+                self.assertEqual((status, body["disputeUntil"]), (200, reported))
 
     def test_an_unregistered_name_is_available_with_its_pricing(self):
         snrc.eth_call = self._chain(0)
@@ -1421,6 +1484,13 @@ class BatchedReadsTests(FakeNodeTestCase):
         self.assertEqual(record["nickname"], "Acme")
         self.assertEqual(record["simplexChannel"], ["https://a.example/c#1", "https://b.example/c#2"])
         self.assertIsNone(record["btc"])
+
+    def test_the_dispute_end_is_read_in_the_round_of_the_expiry(self):
+        until = self.node.chain.now + 600
+        call = (FakeChain.REGISTRAR, snrc.selector("disputeUntil(uint256)") + snrc.encode_uint(snrc.label_token("acme")))
+        self.node.chain.answers[call] = "0x" + snrc.encode_uint(until)
+        _, body = self.assert_same_answer(snrc.registration, "acme.testing", 2)
+        self.assertEqual(body["registration"]["disputeUntil"], until)
 
     def test_a_hashed_query_is_named_from_the_same_round_trip(self):
         hashed = "[" + snrc.keccak(b"acme").hex() + "].testing"
