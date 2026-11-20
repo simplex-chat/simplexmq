@@ -786,7 +786,7 @@ class ErrorCodeTests(unittest.TestCase):
                 self.assertEqual(body["error"], code)
                 self.assertEqual(body["status"], code)
 
-    def test_the_message_does_not_claim_the_name_was_never_registered(self):
+    def test_a_zero_expiry_is_404_not_registered(self):
         snrc.eth_call = self._chain(0)
         status, body = snrc.resolve("alice.testing")
         self.assertEqual((status, body["message"]), (404, "this name is not registered"))
