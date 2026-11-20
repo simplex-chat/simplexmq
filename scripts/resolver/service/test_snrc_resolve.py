@@ -370,7 +370,7 @@ class NameStatusTests(unittest.TestCase):
                 reg = snrc.name_status("alice.testing")
                 self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
 
-    def test_a_subname_reports_the_dispute_end_of_its_2ld(self):
+    def test_a_subname_is_answered_with_the_dispute_end_of_its_2ld(self):
         alice = snrc.dispute_until_call(self.REGISTRAR, snrc.label_token("alice"))
 
         def eth_call(to, data):
@@ -1011,7 +1011,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["reservedReason_"], "internal")
 
-    def test_a_registration_in_its_dispute_period_says_until_when(self):
+    def test_a_registration_in_its_dispute_period_is_answered_with_its_end(self):
         snrc.eth_call = self._chain(self.now + 3600, dispute_until=self.now + 600)
         _, body = registration("acme.testing")
         self.assertEqual(body["type"], "registered")
@@ -1028,7 +1028,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertIsNone(body["disputeUntil"])
 
-    def test_v1_reports_the_dispute_end_0_or_null(self):
+    def test_v1_answers_contain_the_dispute_end(self):
         for until, reported in ((self.now + 600, self.now + 600), (0, 0), (None, None)):
             with self.subTest(until=until):
                 snrc.eth_call = self._chain(self.now + 3600, dispute_until=until)
