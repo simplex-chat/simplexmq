@@ -112,9 +112,10 @@ instance FileStoreClass PostgresFileStore where
     withLog "addRecipients" st $ \s -> logAddRecipients s senderId rcps
 
   deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "deleteFile" st $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id = ?" (Only sId)
+    path <- withDB "deleteFile" st $ \db ->
+      firstRow fromOnly AUTH $ DB.query db "DELETE FROM files WHERE sender_id = ? RETURNING file_path" (Only sId)
     withLog "deleteFile" st $ \s -> logDeleteFile s sId
+    pure path
 
   deleteFiles st sIds = E.uninterruptibleMask_ $ do
     deleted <- fmap toFileSizes $ withTransaction (dbStore st) $ \db ->
@@ -123,9 +124,11 @@ instance FileStoreClass PostgresFileStore where
     pure deleted
 
   blockFile st sId info = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "blockFile" st $ \db ->
-      DB.execute db "UPDATE files SET status = ?, file_path = NULL WHERE sender_id = ?" (EntityBlocked info, sId)
+    path <- withDB "blockFile" st $ \db ->
+      firstRow fromOnly AUTH (DB.query db "SELECT file_path FROM files WHERE sender_id = ? FOR UPDATE" (Only sId))
+        >>= mapM (\p -> p <$ DB.execute db "UPDATE files SET status = ?, file_path = NULL WHERE sender_id = ?" (EntityBlocked info, sId))
     withLog "blockFile" st $ \s -> logBlockFile s sId info
+    pure path
 
   deleteRecipient st rId _fr =
     void $ runExceptT $ withDB' "deleteRecipient" st $ \db ->

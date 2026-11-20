@@ -135,7 +135,7 @@ data EntitlementChecked = EntNotChecked | EntChecked (Maybe SessionEntitlement)
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
   restoreServerStats
-  expireServerFiles Nothing fileExpiration
+  expireServerFiles Nothing fileExpiration `onException` stopServer
   raceAny_
     ( runServer
         : expireFiles fileExpiration
@@ -678,13 +678,16 @@ blockServerFile fr@FileRec {senderId} info = do
   withFileLog $ \sl -> logBlockFile sl senderId info
   deleteOrBlockServerFile_ fr filesBlocked $ \st -> blockFile st senderId info
 
-deleteOrBlockServerFile_ :: FileStoreClass s => FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType ())) -> M s (Either XFTPErrorType ())
+deleteOrBlockServerFile_ :: FileRec -> (FileServerStats -> IORef Int) -> (s -> IO (Either XFTPErrorType (Maybe FilePath))) -> M s (Either XFTPErrorType ())
 deleteOrBlockServerFile_ FileRec {filePath, fileInfo} stat storeAction = mask_ $ runExceptT $ do
   path <- readTVarIO filePath
   ExceptT $ first (\(_ :: SomeException) -> FILE_IO) <$> try (forM_ path $ \p -> whenM (doesFileExist p) (removeFile p))
   st <- asks fileStore
-  ExceptT $ liftIO $ storeAction st
-  forM_ path $ \_ -> lift $ subtractStoredFile $ size fileInfo
+  removed <- ExceptT $ liftIO $ storeAction st
+  forM_ removed $ \p -> lift $ do
+    subtractStoredFile $ size fileInfo
+    whenM (doesFileExist p) $
+      removeFile p `catch` \(e :: SomeException) -> logError $ "failed to remove file " <> tshow p <> ": " <> tshow e
   lift $ incFileStat stat
 
 entitlementValid :: SystemSeconds -> SystemSeconds -> Bool

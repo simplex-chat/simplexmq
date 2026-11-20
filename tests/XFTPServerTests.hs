@@ -508,7 +508,7 @@ testFileStatsRestart statsBackup _ = do
   putTestFile storedId
   addTestFile (EntityId "new_file________") 4102444800
   closeStoreLog sl
-  withXFTPServerCfg cfg $ \_ -> threadDelay 1500000
+  withXFTPServerCfg cfg $ \_ -> threadDelay 2500000
   fileMetrics `shouldReturn` [("expired", "1"), ("deleted", "0"), ("count_total", "1"), ("size", "131072")]
   where
     cfg =

@@ -81,9 +81,9 @@ class FileStoreClass s where
   addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
   setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
   addRecipients :: s -> SenderId -> NonEmpty FileRecipient -> IO (Either XFTPErrorType ())
-  deleteFile :: s -> SenderId -> IO (Either XFTPErrorType ())
+  deleteFile :: s -> SenderId -> IO (Either XFTPErrorType (Maybe FilePath))
   deleteFiles :: s -> [SenderId] -> IO [(SenderId, Maybe FilePath, Word32)]
-  blockFile :: s -> SenderId -> BlockingInfo -> IO (Either XFTPErrorType ())
+  blockFile :: s -> SenderId -> BlockingInfo -> IO (Either XFTPErrorType (Maybe FilePath))
   deleteRecipient :: s -> RecipientId -> FileRec -> IO ()
   getFile :: s -> SFileParty p -> XFTPFileId -> IO (Either XFTPErrorType (FileRec, C.APublicAuthKey))
   ackFile :: s -> RecipientId -> IO (Either XFTPErrorType ())
@@ -140,7 +140,7 @@ instance FileStoreClass STMFileStore where
           forM_ rcps $ \(FileRecipient rId rKey) -> TM.insert rId (senderId, rKey) recipients
           pure $ Right ()
 
-  deleteFile st senderId = atomically $ maybe (Left AUTH) (const $ Right ()) <$> deleteFileRec st senderId
+  deleteFile st senderId = atomically $ deleteFileRec st senderId >>= maybe (pure $ Left AUTH) (fmap Right . readTVar . filePath)
 
   deleteFiles st = fmap catMaybes . mapM (atomically . deleteFileSize)
     where
@@ -149,9 +149,9 @@ instance FileStoreClass STMFileStore where
 
   blockFile st senderId info = atomically $
     withFile st senderId $ \FileRec {filePath, fileStatus} -> do
-      writeTVar filePath Nothing
+      path <- swapTVar filePath Nothing
       writeTVar fileStatus $! EntityBlocked info
-      pure $ Right ()
+      pure $ Right path
 
   deleteRecipient STMFileStore {recipients} rId FileRec {recipientIds} = atomically $ do
     TM.delete rId recipients

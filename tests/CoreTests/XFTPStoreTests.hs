@@ -176,7 +176,7 @@ testDeleteFileCascade = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Right ()
-  deleteFile st testSenderId `shouldReturn` Right ()
+  deleteFile st testSenderId `shouldReturn` Right Nothing
   -- File and recipient should both be gone
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
@@ -188,7 +188,7 @@ testBlockFile = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
-  blockFile st testSenderId blockInfo `shouldReturn` Right ()
+  blockFile st testSenderId blockInfo `shouldReturn` Right Nothing
   result <- getFile st SFSender testSenderId
   case result of
     Right (FileRec {fileStatus}, _) -> readTVarIO fileStatus `shouldReturn` EntityBlocked blockInfo
@@ -284,11 +284,15 @@ testStorageAndCountForStore st = do
   getUsedStorage st `shouldReturn` (1, 128000)
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
   getUsedStorage st `shouldReturn` (2, 192000)
-  blockFile st fileB BlockingInfo {reason = BRContent, notice = Nothing} `shouldReturn` Right ()
+  let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
+  blockFile st fileB blockInfo `shouldReturn` Right (Just "/tmp/file_b")
+  blockFile st fileB blockInfo `shouldReturn` Right Nothing
   getUsedStorage st `shouldReturn` (1, 128000)
   getFileCount st `shouldReturn` 2
   addFile st fileC fileInfoA testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  deleteFile st fileC `shouldReturn` Right ()
+  setFilePath st fileC "/tmp/file_c" `shouldReturn` Right ()
+  deleteFile st fileC `shouldReturn` Right (Just "/tmp/file_c")
+  deleteFile st fileC `shouldReturn` Left AUTH
   deleteFiles st [fileA, fileB, fileC] >>= (`shouldMatchList` [(fileA, Just "/tmp/file_a", 128000), (fileB, Nothing, 64000)])
   deleteFiles st [fileA, fileB] `shouldReturn` []
   getUsedStorage st `shouldReturn` (0, 0)
