@@ -195,7 +195,7 @@ alongside its fields.
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
   "owner": "0xd83b…", "resolver": "0x80fa…",
   "status": "registered",      // registered | grace | expired | unregistered | unknown
-  "expires": 1780000000,       // Unix seconds; when the registration ends
+  "expires": 1780000000,       // Unix seconds; when the registration ends, unless it is ended in its dispute period
   "graceEnds": 1787776000,     // expires + GRACE_PERIOD; last moment the owner can renew
   "reasonCode": null,          // set when the name is held back as well
   "reason": null               // set when the name is held back as well
@@ -217,7 +217,7 @@ name already knows when it expires. Both timestamps are Unix seconds, and
 
 | `status` | Meaning |
 |---|---|
-| `registered` | live; `expires` is when that ends |
+| `registered` | live; `expires` is when that ends, unless the registration is ended in its dispute period |
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace; anyone may register it |
 | `unregistered` | never registered, or its registration was ended in its dispute period; free to take |
@@ -232,9 +232,10 @@ rather than assumed, and `now` is the latest block's timestamp rather than the
 host clock, which the registrar compares against too, so a machine with a wrong
 clock cannot misreport a registration. That rule alone is not enough: it also
 holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
-expiry is what separates *not registered* from *registered and since
-released*. The registrar also sets a zero expiry when a registration is ended
-in its dispute period.
+expiry is what separates `unregistered` from `expired`. The registrar also sets
+a zero expiry when a registration is ended in its dispute period: the 14 to 120
+days after a registration paid through the store, within which the registry's
+guardian or admin can end it.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
@@ -287,7 +288,9 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
 returns the same record. The registrar keys `nameExpires` and `reservedNames` on
 the labelhash too, so the status fields do not need the label either. The
-resolver learns the name only by guessing the label and hashing it.
+resolver learns a name never registered only by guessing the label and hashing
+it; the registrar keeps the label of a name registered before, also after it
+expired or its registration was ended in its dispute period.
 
 Only the second-level label is a registry key, and `status` decodes a bracket
 there at any depth. The record does not: a bracket is decoded only in a

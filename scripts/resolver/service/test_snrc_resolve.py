@@ -512,11 +512,6 @@ class ReservedReasonTests(unittest.TestCase):
         _, body = snrc.resolve("acme.testing")
         self.assertNotIn("trademark", body["message"])
 
-    def test_the_message_does_not_claim_the_name_was_never_registered(self):
-        snrc.eth_call = self._chain(0, False)
-        _, body = snrc.resolve("acme.testing")
-        self.assertNotIn("never", body["message"])
-
     def test_an_unregistered_name_has_no_reason(self):
         snrc.eth_call = self._chain(0, False)
         status, body = snrc.resolve("acme.testing")
@@ -719,7 +714,7 @@ class EnsOracleTests(unittest.TestCase):
 
         return eth_call
 
-    def test_a_never_registered_name_is_priced_from_the_letter_curve(self):
+    def test_a_zero_expiry_name_is_priced_from_the_letter_curve(self):
         snrc.eth_call = self._chain(0)
         reg = snrc.name_status("ghost.testing")
         self.assertEqual(reg["status"], "unregistered")
@@ -790,6 +785,11 @@ class ErrorCodeTests(unittest.TestCase):
                 _, body = snrc.resolve("alice.testing")
                 self.assertEqual(body["error"], code)
                 self.assertEqual(body["status"], code)
+
+    def test_the_message_does_not_claim_the_name_was_never_registered(self):
+        snrc.eth_call = self._chain(0)
+        _, body = snrc.resolve("alice.testing")
+        self.assertNotIn("never", body["message"])
 
     def test_a_name_in_grace_still_resolves(self):
         snrc.eth_call = self._chain(int(time.time()) - 3600)
