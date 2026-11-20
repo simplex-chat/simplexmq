@@ -22,6 +22,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -208,22 +209,28 @@ class NameStatusTests(unittest.TestCase):
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(self.GRACE)
             if data.startswith(snrc.selector("disputeUntil(uint256)")):
-                if dispute_until is None:
-                    raise RuntimeError("execution reverted")
                 return "0x" + snrc.encode_uint(dispute_until)
             self.assertTrue(data.startswith(snrc.selector("nameExpires(uint256)")))
             return "0x" + snrc.encode_uint(value)
 
         return eth_call
 
-    def _keys(self, status, expires, grace_ends, read_at=-1):
+    def _node(self, dispute_answer):
+        answers = {
+            snrc.selector("nameExpires(uint256)"): {"result": "0x" + snrc.encode_uint(self.now + 3600)},
+            snrc.selector("GRACE_PERIOD()"): {"result": "0x" + snrc.encode_uint(self.GRACE)},
+            snrc.selector("disputeUntil(uint256)"): dispute_answer,
+        }
+        return lambda payload: answers[payload["params"][0]["data"][:10]]
+
+    def _keys(self, status, expires, grace_ends, read_at=-1, dispute_until=0):
         """Every branch answers with the same keys; only some carry values."""
         return {
             "status": status,
             "lastBlockTs": self.now if read_at == -1 else read_at,
             "expires": expires,
             "graceEnds": grace_ends,
-            "disputeUntil": None,
+            "disputeUntil": dispute_until,
             "reasonCode": None,
             "reason": None,
         }
@@ -342,27 +349,24 @@ class NameStatusTests(unittest.TestCase):
         snrc.eth_call = self._expiry(self.now + 3600, dispute_until=self.now + 1)
         self.assertEqual(snrc.name_status("alice.testing")["disputeUntil"], self.now + 1)
 
-    def test_a_dispute_end_not_after_the_block_is_not_reported(self):
+    def test_a_dispute_end_not_after_the_block_is_reported_as_0(self):
         for until in (self.now, self.now - 1, 0):
             with self.subTest(until=until):
                 snrc.eth_call = self._expiry(self.now + 3600, dispute_until=until)
-                self.assertIsNone(snrc.name_status("alice.testing")["disputeUntil"])
+                self.assertEqual(snrc.name_status("alice.testing")["disputeUntil"], 0)
 
-    def test_a_registrar_reverting_the_dispute_end_reports_none(self):
-        snrc.eth_call = self._expiry(self.now + 3600, dispute_until=None)
-        reg = snrc.name_status("alice.testing")
-        self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
-
-    def test_a_registrar_answering_nothing_for_the_dispute_end_reports_none(self):
+    def test_a_reverted_dispute_end_is_reported_as_0(self):
         snrc.eth_call = self._saved[2]
-        answers = {
-            snrc.selector("nameExpires(uint256)"): "0x" + snrc.encode_uint(self.now + 3600),
-            snrc.selector("GRACE_PERIOD()"): "0x" + snrc.encode_uint(self.GRACE),
-            snrc.selector("disputeUntil(uint256)"): "0x",
-        }
-        snrc.rpc = lambda method, params: answers[params[0]["data"][:10]]
-        reg = snrc.name_status("alice.testing")
-        self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
+        with mock.patch.object(snrc, "_send_rpc", self._node({"error": {"code": 3, "message": "execution reverted"}})):
+            reg = snrc.name_status("alice.testing")
+        self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", 0))
+
+    def test_a_dispute_end_the_node_could_not_read_is_unknown(self):
+        snrc.eth_call = self._saved[2]
+        for answer in ({"error": {"code": -32000, "message": "header not found"}}, {"result": "0x"}):
+            with self.subTest(answer=answer), mock.patch.object(snrc, "_send_rpc", self._node(answer)):
+                reg = snrc.name_status("alice.testing")
+                self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
 
     def test_a_subname_reports_the_dispute_end_of_its_2ld(self):
         alice = snrc.selector("disputeUntil(uint256)") + snrc.encode_uint(snrc.label_token("alice"))
@@ -381,7 +385,7 @@ class NameStatusTests(unittest.TestCase):
         snrc.eth_call = lambda *a: self.fail("must not reach the chain")
         self.assertEqual(
             snrc.name_status("alice.testing"),
-            self._keys("unknown", None, None, read_at=None),
+            self._keys("unknown", None, None, read_at=None, dispute_until=None),
         )
 
     def test_every_branch_returns_the_same_keys(self):
@@ -953,6 +957,8 @@ class RegistrationV2Tests(unittest.TestCase):
             if data.startswith(snrc.selector("nameExpires(uint256)")):
                 return "0x" + snrc.encode_uint(expires)
             if data.startswith(snrc.selector("disputeUntil(uint256)")):
+                if dispute_until is None:
+                    raise RuntimeError({"code": -32000, "message": "header not found"})
                 return "0x" + snrc.encode_uint(dispute_until)
             if data.startswith(snrc.selector("GRACE_PERIOD()")):
                 return "0x" + snrc.encode_uint(self.GRACE)
@@ -1009,13 +1015,19 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["disputeUntil"], self.now + 600)
 
-    def test_a_registration_without_a_dispute_period_has_a_null_dispute_end(self):
+    def test_a_registration_without_a_dispute_period_has_a_dispute_end_of_0(self):
         snrc.eth_call = self._chain(self.now + 3600)
         _, body = registration("acme.testing")
-        self.assertIsNone(body["disputeUntil"])
+        self.assertEqual(body["disputeUntil"], 0)
 
-    def test_v1_reports_the_dispute_end_and_null_without_one(self):
-        for until, reported in ((self.now + 600, self.now + 600), (0, None)):
+    def test_a_dispute_end_the_node_could_not_read_is_absent(self):
+        snrc.eth_call = self._chain(self.now + 3600, dispute_until=None)
+        _, body = registration("acme.testing")
+        self.assertEqual(body["type"], "registered")
+        self.assertNotIn("disputeUntil", body)
+
+    def test_v1_reports_the_dispute_end_0_or_null(self):
+        for until, reported in ((self.now + 600, self.now + 600), (0, 0), (None, None)):
             with self.subTest(until=until):
                 snrc.eth_call = self._chain(self.now + 3600, dispute_until=until)
                 status, body = snrc.resolve("acme.testing")
@@ -1507,6 +1519,16 @@ class BatchedReadsTests(FakeNodeTestCase):
         self.node.chain.answers[call] = "0x" + snrc.encode_uint(until)
         _, body = self.assert_same_answer(snrc.registration, "acme.testing", 2)
         self.assertEqual(body["registration"]["disputeUntil"], until)
+
+    def test_a_reverted_dispute_end_is_0_in_a_multicall(self):
+        _, body = self.assert_same_answer(snrc.registration, "acme.testing", 2)
+        self.assertEqual(body["registration"]["disputeUntil"], 0)
+
+    def test_a_reverted_dispute_end_is_0_in_a_batch(self):
+        self.node.multicall = False
+        with self.assertLogs("snrc_resolve", "WARNING"):
+            _, body = self.assert_same_answer(snrc.registration, "acme.testing", 4)
+        self.assertEqual(body["registration"]["disputeUntil"], 0)
 
     def test_a_hashed_query_is_named_from_the_same_round_trip(self):
         hashed = "[" + snrc.keccak(b"acme").hex() + "].testing"
