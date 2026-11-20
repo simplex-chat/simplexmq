@@ -1452,8 +1452,8 @@ class RpcTransportTests(FakeNodeTestCase):
         self.assertEqual(self.node.requests, 1)
 
     def test_a_node_failure_is_not_a_reverted_call(self):
-        """Callers read RuntimeError as the call reverting and fall back to an
-        empty value, so a node failure must not look like one."""
+        """Callers read RuntimeError as a failed call and CallReverted as a revert,
+        so a node failure must be neither."""
         self.node.status = 502
         with self.assertRaises(HTTPError) as cm:
             snrc.rpc("eth_blockNumber", [])
