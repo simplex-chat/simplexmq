@@ -1167,12 +1167,15 @@ checkBatchOutsideConnLock c qs batch = tryAllErrors' (checkNoConnLock c) >>= eit
 #else
 withLockHolder :: AgentClient -> Text -> m a -> m a
 withLockHolder _ _ = id
+{-# INLINE withLockHolder #-}
 
 checkNoConnLock :: AgentClient -> AM ()
 checkNoConnLock _ = pure ()
+{-# INLINE checkNoConnLock #-}
 
 checkBatchOutsideConnLock :: AgentClient -> [q] -> AM' [(q, Either AgentErrorType r)] -> AM' [(q, Either AgentErrorType r)]
 checkBatchOutsideConnLock _ _ = id
+{-# INLINE checkBatchOutsideConnLock #-}
 #endif
 
 withClient_ :: forall a v err msg. ProtocolServerClient v err msg => AgentClient -> NetworkRequestMode -> TransportSession msg -> (Client msg -> AM a) -> AM a
