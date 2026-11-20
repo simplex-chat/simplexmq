@@ -1556,18 +1556,19 @@ MUST NOT treat an answer as current without checking it.
 | `available` | held by nobody and registrable now, at `pricing` |
 | `reserved` | held back by the registry and not registered. It carries no price, and a router MUST NOT quote one |
 
-A registration answered with `disputeUntil` is in its dispute period: until
-then, its renewal is refused, and a controller of the registry's registrar can
-end it, such as the registry's controller contract on the request of its owner
-or guardian; a router then answers for the name as for a name never registered.
-On `.simplex`, a registration made through the registry's sponsor contract has a
-dispute period of 14 to 120 days from its registration.
+A registration answered with a `disputeUntil` after `lastBlockTs` is in its
+dispute period: until then, its renewal is refused, and a controller of the
+registry's registrar can end it, such as the registry's controller contract on
+the request of its owner or guardian; a router then answers for the name as for
+a name never registered. On `.simplex`, a registration made through the
+registry's sponsor contract has a dispute period of 14 to 120 days from its
+registration.
 
 | Field | On | JSON type | Constraints |
 |---|---|---|---|
 | `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
 | `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
-| `disputeUntil` | `registered` | number | the end of the dispute period, present only when after `lastBlockTs`. It is also absent when it could not be read, and from a router or resolver that predates it, so a client MUST NOT conclude from its absence that the registration cannot be ended |
+| `disputeUntil` | `registered` | number | after `lastBlockTs`: the end of the dispute period; 0: the registration cannot be ended. A client compares a time with `lastBlockTs`, and reads one not after it as 0. Absent when unknown: when it could not be read, and from a router or resolver that predates it; a client MUST NOT read its absence as 0 |
 | `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
 | `nameRecord` | `registered` | object | the record, schema below |
 | `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |
