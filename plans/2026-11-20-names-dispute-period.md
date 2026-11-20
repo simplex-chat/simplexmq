@@ -15,7 +15,7 @@ To be merged together with simplex-network/ens-contracts#51, the dispute period 
 | 2 | message of a v1 404 `unregistered`: "this name is not registered" |
 | 3 | price quotes of a name with expiry 0 unchanged |
 | 4 | the registrar's `disputeUntil(uint256)` read for the 2LD's token, in the round of `nameExpires` |
-| 5 | `disputeUntil`: the registrar's value while later than `lastBlockTs`, otherwise 0; unknown when the node answers the read with another error: null in v2 and v1, absent in RNAME |
+| 5 | `disputeUntil`: the registrar's value while later than `lastBlockTs`, otherwise 0; unknown when the node answers the read with another error, or with an empty answer: null in v2 and v1, absent in RNAME |
 | 6 | a revert of the `disputeUntil` call read as 0: a JSON-RPC error with code 3, or with code -32000 and the message "execution reverted", or a failed call in a multicall; another JSON-RPC error and an empty answer read as unknown; a failed request to the node answered 502 |
 | 7 | a subname reported with its 2LD's `disputeUntil` |
 | 8 | `NRRegistered.disputeUntil :: Maybe SystemSeconds`, after `graceUntil`, JSON derived as for the other fields; its Haddock states a date, 0 and absent |
@@ -42,18 +42,21 @@ stateDiagram-v2
   [*] --> final: registration without a dispute period
   disputable --> final: at disputeUntil
   disputable --> unregistered: ended by a controller of the registrar
+  final --> lapsed: expiry and grace passed
   unregistered --> [*]: available to any registration
+  lapsed --> [*]: available to any registration
 ```
 
-For a 2LD:
+For a 2LD, with `disputeUntil` a field of `registered` alone (– in the other types):
 
 | State | v2 `type` | v2 `disputeUntil` | RNAME `disputeUntil` | v1 `status` | v1 `disputeUntil` |
 |---|---|---|---|---|---|
 | disputable | `registered` | its end | its end | `registered` | its end |
 | final | `registered` | 0 | 0 | `registered` or `grace` | 0 |
-| unregistered | `available` or `reserved` | not a field | not a field | `unregistered`, "this name is not registered" | 0 |
+| lapsed | `available` or `reserved` | – | – | `expired` (410) | 0 |
+| unregistered | `available` or `reserved` | – | – | `unregistered` (404), "this name is not registered" | 0 |
 
-A `disputeUntil` read answered with another JSON-RPC error: null in v2 and v1, absent in RNAME.
+A `disputeUntil` read answered with another JSON-RPC error, or with an empty answer: null in v2 and v1, absent in RNAME.
 
 ```mermaid
 sequenceDiagram
@@ -77,7 +80,7 @@ sequenceDiagram
 
 - A router or its resolver can omit `disputeUntil` or state a false one, as it can `expires`; a client verifies it only by reading the registrar.
 - `disputeUntil` is public on chain ([contract plan, D9](https://github.com/brenzi/simplex-namespace-contract/blob/main/docs/plans/dispute-period.md#L21)), and with it the dispute days of the payment: 0, 14 or 120. In the answer, it is disclosed to the router and the client as on chain.
-- A JSON-RPC error of the `disputeUntil` call alone, other than a revert, leaves the dispute end unknown, and the name is answered without it.
+- After a JSON-RPC error of the `disputeUntil` call alone, other than a revert, the dispute end is unknown: null from the resolver, left out of RNAME.
 - A revert answered by the node is read as 0, so the resolver relies on its node for 0 as for every other read.
 - A label the registrar recorded stays recorded after the registration expired or was ended, so whoever runs the resolver matches a hashed query of such a name to its label.
 
@@ -142,7 +145,7 @@ Regression tests, passing in CI on the commit before their change as well:
 
 - `RegistrationV2Tests`: a subname under a 2LD with expiry 0, whose node has no owner while the subnode keeps a former holder: v2 `available`, v1 404
 - `NameStatusTests`: another JSON-RPC error and an empty answer read as unknown
-- `tests/SMPNamesTests.hs`: a dispute end of 0, as the resolver serves it, decoded into `NRRegistered`, and its JSON round trip
+- `tests/SMPNamesTests.hs`: a dispute end of 0, as the resolver serves it, decoded into `NRRegistered`, and its JSON round trip; a null dispute end decoded as `Nothing`, and left out of RNAME
 
 `tests/SMPNamesTests.hs`: the router's answer to a registration with `disputeUntil`, as the resolver serves it, decoded into `NRRegistered`; the JSON round trip of that value.
 
