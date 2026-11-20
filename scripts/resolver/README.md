@@ -153,11 +153,12 @@ carries are specified once, in the **Name response** section of
 [`protocol/simplex-messaging.md`](../../protocol/simplex-messaging.md). It is
 the wire format, so it is documented with the wire.
 
-Two things follow from that and are worth stating here. Expiry and grace belong
-to the registration, not to the record: `expires` and `graceUntil` sit beside
-`nameRecord`, not inside it. And a name nobody holds is not an error: it
-answers 200 with `type: available` and its price, so no status code from this
-route means "not registered".
+Two things follow from that and are worth stating here. Expiry, grace and the
+dispute end belong to the registration, not to the record: `expires`,
+`graceUntil` and `disputeUntil` are fields beside `nameRecord`, not inside it.
+And a name nobody holds is not an error: it is answered 200 with
+`type: available` and its price, so no status code from this route means
+"not registered".
 
 | Status | Meaning |
 |---|---|
@@ -195,6 +196,7 @@ flat, and `status`, `expires`, `graceEnds`, `disputeUntil`, `reasonCode` and
   "eth": null, "btc": "bc1q…", "xmr": "4ANz…", "dot": "139G…",
   "owner": "0xd83b…", "resolver": "0x80fa…",
   "status": "registered",      // registered | grace | expired | unregistered | unknown
+  "lastBlockTs": 1779990000,   // Unix seconds; the block the status was read at
   "expires": 1780000000,       // Unix seconds; when the registration ends, unless it is ended in its dispute period
   "graceEnds": 1787776000,     // expires + GRACE_PERIOD; last moment the owner can renew
   "disputeUntil": 0,           // Unix seconds; until then the registration can be ended and cannot be renewed; 0 when it cannot be ended, null when unknown
@@ -215,8 +217,9 @@ A response contains `status`, `expires`, `graceEnds` and `disputeUntil`
 whenever the resolver read them, a successful resolve included, so a client that
 has just resolved a name already knows when it expires. The timestamps are Unix
 seconds. All are `null` when no registrar is configured, `expires` and
-`graceEnds` also for a zero expiry, and `disputeUntil` also when the node failed
-its read; `disputeUntil` is 0 when the registration cannot be ended.
+`graceEnds` also for a zero expiry, and `disputeUntil` also when the node
+answered its read with an error other than a revert; `disputeUntil` is 0 when
+the registration cannot be ended.
 
 | `status` | Meaning |
 |---|---|
@@ -244,8 +247,9 @@ registration, such as the controller on the request of its owner or guardian
 The resolver reports that end as `disputeUntil` while it is later than `now`,
 and 0 otherwise. The call to a registrar from before dispute periods, such as
 `.testing`'s, reverts, and is read as 0: a revert is a JSON-RPC error with code
-3, or a failed call in a multicall. Any other error and an empty answer leave
-`disputeUntil` unknown, and null.
+3, or a failed call in a multicall. With any other JSON-RPC error, or an empty
+answer, `disputeUntil` is unknown and null; when a request to the node fails,
+the lookup is answered 502.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
@@ -262,6 +266,7 @@ which is free to change.
  "message": "this name is not registered",
  "status": "unregistered", "lastBlockTs": 1780000000, "expires": null,
  "graceEnds": null, "disputeUntil": 0, "reasonCode": null, "reason": null}
+// with a price oracle configured, also registrationPrices, basePrice and minLabelLength
 ```
 
 The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
@@ -305,8 +310,8 @@ Only the second-level label is a registry key, and `status` decodes a bracket
 there at any depth. The record does not: a bracket is decoded only in a
 two-label name, so `sub.[<hash>].testing` is not a supported query. Subname
 labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
-from v22 send every 2LD this way, so the label of a name never registered
-normally never reaches this service.
+from v22 send every 2LD this way, so a name never registered is normally looked
+up here by its hash alone.
 
 On v2, read `type`: only `available` means the name is free. On v1, read
 `status`: a name is free on `unregistered` (404) and on `expired` (410), every
