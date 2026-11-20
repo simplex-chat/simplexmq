@@ -1558,10 +1558,9 @@ MUST NOT treat an answer as current without checking it.
 
 A registration answered with a `disputeUntil` after `lastBlockTs` is in its
 dispute period: until then, its renewal is refused, and a controller of the
-registry's registrar can end it, such as the registry's controller contract on
-the request of its owner or guardian; a router then answers for the name as for
-a name never registered. On `.simplex`, a registration made through the
-registry's sponsor contract has a dispute period of 14 to 120 days from its
+registry's registrar can end it; a router then answers for the name as for a
+name never registered. On `.simplex`, a registration made with the controller's
+`registerSponsored` has a dispute period of 14 to 120 days from its
 registration. As with `expires`, a client does not verify `disputeUntil`: a
 router can omit or misstate it.
 

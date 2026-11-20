@@ -80,7 +80,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 **4. the route your router will call** (check 3 passes on an older resolver too):
 ```sh
 curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
-# → {"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}
+# → {"lastBlockTs":1779990000,"registration":{"type":"registered","expires":1780000000,"graceUntil":…,"disputeUntil":0,"reservedReason_":null,"nameRecord":{…}}}
 ```
 
 **Wire your smp-server:** in its `[NAMES]` section set
@@ -218,8 +218,8 @@ whenever the resolver read them, a successful resolve included, so a client that
 has just resolved a name already knows when it expires. The timestamps are Unix
 seconds. All are `null` when no registrar is configured, `expires` and
 `graceEnds` also for a zero expiry, and `disputeUntil` also when the node
-answered its read with an error other than a revert; `disputeUntil` is 0 when
-the registration cannot be ended.
+answered its read with an error other than a revert, or with an empty answer;
+`disputeUntil` is 0 when the registration cannot be ended.
 
 | `status` | Meaning |
 |---|---|
