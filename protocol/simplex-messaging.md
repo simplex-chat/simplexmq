@@ -1501,9 +1501,9 @@ look up what the hash stands for without ever being told. The router is not
 trusted for it: a client MUST check that the record names the name it asked
 about, and reject the answer otherwise. A registry that does not record the
 label cannot answer a hashed query at all, and the router answers `ERR NAME
-RESOLVER` rather than a record it knows the client will reject. The registrar
-records a label only when it registers a name, so a hashed query of a name never
-registered cannot be answered with its name either.
+RESOLVER` rather than a record it knows the client will reject. A name nobody
+holds is answered `available`, which contains no name, so a hashed query of it
+does not depend on a recorded label.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1556,7 +1556,10 @@ MUST NOT treat an answer as current without checking it.
 | `available` | held by nobody and registrable now, at `pricing` |
 | `reserved` | held back by the registry and not registered. It carries no price, and a router MUST NOT quote one |
 
-On `.simplex`, a registration made through the sponsor (`registerWithCredit`) has a dispute period of 14 to 120 days from its registration, which the router does not report. Within it, the registry's guardian or admin can end the registration, after which the name answers `available`, and no renewal of it is accepted.
+On `.simplex`, a sponsored registration has a dispute period of 14 to 120 days
+from its registration, which the router does not report. Within it, a renewal is
+refused, and the registry's owner or guardian can end the registration; a router
+then answers for the name as for a name never registered.
 
 | Field | On | JSON type | Constraints |
 |---|---|---|---|

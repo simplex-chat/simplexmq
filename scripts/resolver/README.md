@@ -231,12 +231,12 @@ rule, `expires + GRACE_PERIOD < now`. `GRACE_PERIOD` is read from the contract
 rather than assumed, and `now` is the latest block's timestamp rather than the
 host clock, which the registrar compares against too, so a machine with a wrong
 clock cannot misreport a registration. That rule alone is not enough: it also
-holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so a zero
-expiry is what separates `unregistered` from `expired`. On `.simplex`, the
-registrar also sets a zero expiry when the registry's guardian or admin ends a
-registration within its dispute period: 14 to 120 days from a registration made
-through the sponsor (`registerWithCredit`), whose end the registrar stores as
-`disputeUntil`.
+holds for a name nobody ever registered (`0 + GRACE_PERIOD < now`), so the
+resolver tells `unregistered` from `expired` by a zero expiry. On `.simplex`, a
+registration made through the controller's `registerSponsored` has a dispute
+period of 14 to 120 days, and the registrar stores its end as `disputeUntil`.
+Within it, a renewal is refused, and the controller's owner or guardian
+(`beneficiary`) can end the registration; the registrar then sets a zero expiry.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
@@ -288,10 +288,7 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 
 namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
 returns the same record. The registrar keys `nameExpires` and `reservedNames` on
-the labelhash too, so the status fields do not need the label either. Whoever
-runs the resolver learns a name never registered only by hashing guessed labels;
-a label the registrar recorded stays recorded, also after the name expired or
-its registration was ended in its dispute period.
+the labelhash too, so the status fields do not need the label either.
 
 Only the second-level label is a registry key, and `status` decodes a bracket
 there at any depth. The record does not: a bracket is decoded only in a
@@ -323,12 +320,13 @@ created by the 2LD's owner. A bracket label in a subname is hashed as written,
 so it points at a node nobody can own. ENS tooling accepts the bracketed form at
 any depth; this resolver does not, on purpose.
 
-This hides interest only in a name whose label the registrar has not recorded:
-for a name registered before, also one expired or ended in its dispute period,
-the resolver reads the recorded label (`labelOf`) with the query. The
-registration itself is public, and commit-reveal covers that step. A short or well-known label is easy
-to guess by hashing candidates, and the reveal publishes the labelhash, so an
-operator who logged the query can match it to the name afterwards.
+Interest in a name is hidden only while the registrar has no label recorded for
+it: for a name registered before, also one expired or ended in its dispute
+period, the resolver reads the recorded label (`labelOf`) with the query. The
+registration itself is public, and commit-reveal covers that step. A short or
+well-known label is easy to guess by hashing candidates, and the reveal
+publishes the labelhash, so an operator who logged the query can match it to the
+name afterwards.
 
 ### What a name costs
 
