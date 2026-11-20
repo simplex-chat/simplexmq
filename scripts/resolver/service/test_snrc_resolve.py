@@ -267,7 +267,7 @@ class NameStatusTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             snrc.name_status("alice.testing")
 
-    def test_zero_expiry_means_not_registered(self):
+    def test_zero_expiry_means_unregistered(self):
         snrc.eth_call = self._expiry(0)
         self.assertEqual(
             snrc.name_status("alice.testing"),
@@ -301,7 +301,7 @@ class NameStatusTests(unittest.TestCase):
             self._keys("registered", future, future + self.GRACE),
         )
 
-    def test_not_registered_is_not_confused_with_claimable(self):
+    def test_zero_expiry_is_not_confused_with_claimable(self):
         """`available(id)` is true for both, since 0 + GRACE < now."""
         snrc.eth_call = self._expiry(0)
         self.assertEqual(snrc.name_status("alice.testing")["status"], "unregistered")
@@ -788,8 +788,8 @@ class ErrorCodeTests(unittest.TestCase):
 
     def test_the_message_does_not_claim_the_name_was_never_registered(self):
         snrc.eth_call = self._chain(0)
-        _, body = snrc.resolve("alice.testing")
-        self.assertNotIn("never", body["message"])
+        status, body = snrc.resolve("alice.testing")
+        self.assertEqual((status, body["message"]), (404, "this name is not registered"))
 
     def test_a_name_in_grace_still_resolves(self):
         snrc.eth_call = self._chain(int(time.time()) - 3600)
