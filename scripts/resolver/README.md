@@ -197,7 +197,7 @@ flat, and `status`, `expires`, `graceEnds`, `disputeUntil`, `reasonCode` and
   "status": "registered",      // registered | grace | expired | unregistered | unknown
   "expires": 1780000000,       // Unix seconds; when the registration ends, unless it is ended in its dispute period
   "graceEnds": 1787776000,     // expires + GRACE_PERIOD; last moment the owner can renew
-  "disputeUntil": null,        // Unix seconds; until then the registration can be ended and cannot be renewed
+  "disputeUntil": 0,           // Unix seconds; until then the registration can be ended and cannot be renewed; 0 when it cannot be ended, null when unknown
   "reasonCode": null,          // set when the name is held back as well
   "reason": null               // set when the name is held back as well
 }
@@ -215,8 +215,8 @@ A response contains `status`, `expires`, `graceEnds` and `disputeUntil`
 whenever the resolver read them, a successful resolve included, so a client that
 has just resolved a name already knows when it expires. The timestamps are Unix
 seconds. All are `null` when no registrar is configured, `expires` and
-`graceEnds` also for a zero expiry, and `disputeUntil` also when no dispute
-period is in effect or it could not be read.
+`graceEnds` also for a zero expiry, and `disputeUntil` also when the node failed
+its read; `disputeUntil` is 0 when the registration cannot be ended.
 
 | `status` | Meaning |
 |---|---|
@@ -242,8 +242,10 @@ Within it, a renewal is refused, and a registrar controller can end the
 registration, such as the controller on the request of its owner or guardian
 (`beneficiary`); the registrar then sets a zero expiry.
 The resolver reports that end as `disputeUntil` while it is later than `now`,
-and null otherwise. The call to a registrar from before dispute periods, such as
-`.testing`'s, reverts, and is read as none.
+and 0 otherwise. The call to a registrar from before dispute periods, such as
+`.testing`'s, reverts, and is read as 0: a revert is a JSON-RPC error with code
+3, or a failed call in a multicall. Any other error and an empty answer leave
+`disputeUntil` unknown, and null.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
@@ -259,7 +261,7 @@ which is free to change.
 {"name": "nope.testing", "error": "unregistered",
  "message": "this name is not registered",
  "status": "unregistered", "lastBlockTs": 1780000000, "expires": null,
- "graceEnds": null, "disputeUntil": null, "reasonCode": null, "reason": null}
+ "graceEnds": null, "disputeUntil": 0, "reasonCode": null, "reason": null}
 ```
 
 The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,

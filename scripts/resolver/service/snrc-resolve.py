@@ -326,6 +326,14 @@ def request_reads():
         del _request.reads
 
 
+class CallReverted(RuntimeError):
+    pass
+
+
+def rpc_error(error) -> RuntimeError:
+    return CallReverted(error) if isinstance(error, dict) and error.get("code") == 3 else RuntimeError(error)
+
+
 def rpc(method, params):
     reads = getattr(_request, "reads", None)
     if reads is not None:
@@ -336,7 +344,7 @@ def rpc(method, params):
             return read
     res = _send_rpc({"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
     if "error" in res:
-        raise RuntimeError(res["error"])
+        raise rpc_error(res["error"])
     return res["result"]
 
 
@@ -359,7 +367,7 @@ _multicall_failed_logged = False
 def _remember(reads, requests, answers):
     for (m, p), r in zip(requests, answers, strict=True):
         if r is not None and ("result" in r or "error" in r):
-            reads[_read_key(m, p)] = RuntimeError(r["error"]) if "error" in r else r["result"]
+            reads[_read_key(m, p)] = rpc_error(r["error"]) if "error" in r else r["result"]
 
 
 def prefetch(requests):
@@ -397,7 +405,7 @@ def prefetch(requests):
         _remember(reads, calls, _send_batch(calls))
         return
     for (m, p), (success, data) in zip(calls, results, strict=True):
-        reads[_read_key(m, p)] = "0x" + data.hex() if success else RuntimeError("execution reverted")
+        reads[_read_key(m, p)] = "0x" + data.hex() if success else CallReverted("execution reverted")
 
 
 AGGREGATE3 = "0x82ad56cb"  # aggregate3((address,bool,bytes)[])
@@ -511,9 +519,11 @@ def grace_period(registrar: str) -> int:
 def dispute_end(registrar: str, token: int, now: int):
     try:
         until = decode_uint(eth_call(*dispute_until_call(registrar, token)))
+    except CallReverted:
+        return 0
     except RuntimeError:
         return None
-    return until if until > now else None
+    return until if until > now else 0
 
 
 def expiry_status(expires: int, grace: int, now: int) -> str:
@@ -1211,7 +1221,7 @@ def registration(name: str):
                 "type": "registered",
                 "expires": reg["expires"],
                 "graceUntil": reg["graceEnds"],
-                "disputeUntil": reg["disputeUntil"],
+                **({"disputeUntil": reg["disputeUntil"]} if reg["disputeUntil"] is not None else {}),
                 "reservedReason_": reg["reasonCode"],
                 "nameRecord": rec,
             })
