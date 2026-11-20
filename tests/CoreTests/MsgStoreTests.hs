@@ -50,7 +50,7 @@ import Util
 
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
 import qualified Control.Exception as E
 import Data.List (sortOn)
 import Database.PostgreSQL.Simple (Only (..))

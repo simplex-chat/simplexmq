@@ -352,6 +352,18 @@ testReceiveFileTimeout :: HasTestEnv => Expectation
 testReceiveFileTimeout =
   timeout 100000 (runExceptT $ receiveFile (\_ -> "" <$ threadDelay maxBound) $ XFTPRcvChunkSpec testChunkPath chSize "") `shouldReturn` Nothing
 
+testTLSHandshakeTimeout :: HasTestEnv => Expectation
+testTLSHandshakeTimeout =
+  withStallingServerOn xftpTestPort $
+    timeout 1000000 (runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort Nothing $ \(_ :: TLS 'TClient) -> pure ())
+      `shouldReturn` Nothing
+  where
+    cfg = defaultTransportClientConfig {logTLSErrors = True}
+
+testReceiveFileTimeout :: HasTestEnv => Expectation
+testReceiveFileTimeout =
+  timeout 100000 (runExceptT $ receiveFile (\_ -> "" <$ threadDelay maxBound) $ XFTPRcvChunkSpec testChunkPath chSize "") `shouldReturn` Nothing
+
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
   \_ -> testXFTPClient $ \c -> runRight_ $ do
