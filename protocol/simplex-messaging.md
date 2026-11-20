@@ -1502,8 +1502,8 @@ trusted for it: a client MUST check that the record names the name it asked
 about, and reject the answer otherwise. A registry that does not record the
 label cannot answer a hashed query at all, and the router answers `ERR NAME
 RESOLVER` rather than a record it knows the client will reject. A name nobody
-holds is answered `available`, which contains no name, so a hashed query of it
-does not depend on a recorded label.
+holds is answered `available` or `reserved`, neither of which contains a name,
+so a hashed query of it does not depend on a recorded label.
 
 **Server-side validation.** The names router parses `domain` as a
 fully-qualified name (TLD required — bare labels are rejected) and forwards it
@@ -1552,20 +1552,21 @@ MUST NOT treat an answer as current without checking it.
 
 | `type` | Meaning |
 |---|---|
-| `registered` | held by someone until `expires`, renewable by its owner alone until `graceUntil`. It always carries `nameRecord`: where the owner set none, every field is unset and the resolver address is zero |
+| `registered` | held by someone until `expires`, unless the registration is ended before `disputeUntil`; renewable by its owner alone until `graceUntil`, and not before `disputeUntil`. It always carries `nameRecord`: where the owner set none, every field is unset and the resolver address is zero |
 | `available` | held by nobody and registrable now, at `pricing` |
 | `reserved` | held back by the registry and not registered. It carries no price, and a router MUST NOT quote one |
 
-On `.simplex`, a sponsored registration has a dispute period of 14 to 120 days
-from its registration, which ends at `disputeUntil`. Within it, a renewal is
-refused, and the registry's owner or guardian can end the registration; a router
-then answers for the name as for a name never registered.
+A registration answered with `disputeUntil` is in its dispute period: until
+then, its renewal is refused, and the owner or the guardian of the registry's
+controller contract can end it; a router then answers for the name as for a name
+never registered. On `.simplex`, a registration made through the registry's
+sponsor contract has a dispute period of 14 to 120 days from its registration.
 
 | Field | On | JSON type | Constraints |
 |---|---|---|---|
 | `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
 | `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
-| `disputeUntil` | `registered` | number | the end of the dispute period, present only when after `lastBlockTs`. A router or resolver that predates the field omits it, so a client MUST NOT conclude from its absence that the registration cannot be ended |
+| `disputeUntil` | `registered` | number | the end of the dispute period, present only when after `lastBlockTs`. It is also absent when it could not be read, and from a router or resolver that predates it, so a client MUST NOT conclude from its absence that the registration cannot be ended |
 | `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
 | `nameRecord` | `registered` | object | the record, schema below |
 | `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |
