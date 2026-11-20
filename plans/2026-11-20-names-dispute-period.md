@@ -4,8 +4,8 @@ To be merged together with simplex-network/ens-contracts#51, the dispute period 
 
 ## Problems
 
-1. After #51, the owner or the guardian of the `.simplex` controller can end a registration in its dispute period, and the registrar sets the name's expiry to 0. On its v1 route, the resolver answers every name with expiry 0 with the message "this name has never been registered". The resolver's README describes `unregistered` as never registered and `registered` as held until `expires`, and the protocol describes a registered name as held until `expires`.
-2. Clients do not learn until when a registration can be ended. Until then, the registration can be ended also after a claim moved the name to a recipient, and its renewal is refused. In the contract plan, decision D8 has clients show the dispute end before a claim.
+1. After #51, the owner or the guardian of the `.simplex` controller can end a registration in its dispute period, and the registrar sets the name's expiry to 0. On its v1 route, the resolver answers every name with expiry 0 with the message "this name has never been registered". In the resolver's README, `unregistered` is described as never registered and `registered` as held until `expires`, and in the protocol a registered name is described as held until `expires`.
+2. Clients do not learn until when a registration can be ended. Until then, the registration can be ended also after a claim moved the name to a recipient, and its renewal is refused. By decision D8 of the contract plan, clients show the dispute end before a claim.
 
 ## Decisions
 
@@ -15,11 +15,11 @@ To be merged together with simplex-network/ens-contracts#51, the dispute period 
 | 2 | message of a v1 404 `unregistered`: "this name is not registered" |
 | 3 | price quotes of a name with expiry 0 unchanged |
 | 4 | the registrar's `disputeUntil(uint256)` read for the 2LD's token, in the round of `nameExpires` |
-| 5 | `disputeUntil` reported while later than `lastBlockTs`; otherwise null in v1, absent in v2 |
+| 5 | `disputeUntil` reported while later than `lastBlockTs`, otherwise null; the router omits a null one in RNAME |
 | 6 | a `disputeUntil` call that reverts or answers nothing read as no dispute period; `.testing`'s registrar predates #51 |
 | 7 | a subname reported with its 2LD's `disputeUntil` |
 | 8 | `NRRegistered.disputeUntil :: Maybe SystemSeconds`, after `graceUntil`, JSON derived as for the other fields |
-| 9 | no SMP version, as section "Version" states |
+| 9 | no SMP version; a client does not read the absence of `disputeUntil` as the end of a dispute period |
 
 ## What the resolver answers
 
@@ -36,16 +36,18 @@ name_status(name):
 stateDiagram-v2
   [*] --> disputable: sponsored registration, 14 to 120 days
   [*] --> final: registration without a dispute period
-  disputable --> final: the block's timestamp reaches disputeUntil
+  disputable --> final: at disputeUntil
   disputable --> unregistered: ended by the controller's owner or guardian
   unregistered --> [*]: available to any registration
 ```
 
-| State | v2 `type` | v2 `disputeUntil` | v1 `status` | v1 `disputeUntil` |
-|---|---|---|---|---|
-| disputable | `registered` | its end | `registered` | its end |
-| final | `registered` | absent | `registered` or `grace` | null |
-| unregistered | `available` or `reserved` | absent | `unregistered`, "this name is not registered" | null |
+For a 2LD:
+
+| State | v2 `type` | v2 `disputeUntil` | RNAME `disputeUntil` | v1 `status` | v1 `disputeUntil` |
+|---|---|---|---|---|---|
+| disputable | `registered` | its end | its end | `registered` | its end |
+| final | `registered` | null | absent | `registered` or `grace` | null |
+| unregistered | `available` or `reserved` | not a field | not a field | `unregistered`, "this name is not registered" | null |
 
 ```mermaid
 sequenceDiagram
@@ -59,25 +61,16 @@ sequenceDiagram
   R->>S: GET /v2/resolve/query
   S->>N: one multicall: nameExpires, disputeUntil (added), GRACE_PERIOD and the other reads of the round
   N-->>S: disputeUntil reverted by a registrar before #51
-  S-->>R: registered, with disputeUntil when later than lastBlockTs (added)
-  R->>R: decoded into NRRegistered with disputeUntil (added)
+  S-->>R: registered, with disputeUntil when later than lastBlockTs, else null (added)
+  R->>R: decoded into NRRegistered with disputeUntil, null decoded as Nothing (added)
   R-->>P: RRES with RNAME, encoded at the forwarded version, at most 23
   P-->>C: PRES
 ```
 
-## Version
-
-No SMP version is added for `disputeUntil`, because a version would not tell a client "no dispute period" from "not reported":
-
-- forwarded RSLV, the path clients SHOULD prefer, is answered at the version the proxy negotiated, at most `proxiedSMPRelayVersion` (23, `proxyResp` in `Server.hs`); a field gated on v24 would be withheld on that path until proxies raise that version, and the session version would not show the names router's support;
-- a router passes what its resolver answers, and the resolver's API is versioned apart from SMP; a v24 router with an older resolver would omit the field as well.
-
-The field is optional, and receivers tolerate unknown fields, so routers and clients before it decode the answers unchanged, as for `NRAvailable.nameTerms`. A client MUST NOT conclude from the field's absence that the registration cannot be ended: it is absent when no dispute period is in effect at `lastBlockTs`, and from a router or resolver that predates it.
-
 ## Threat model
 
 - A router or its resolver can omit `disputeUntil` or state a false one, as it can `expires`; a client verifies it only by reading the registrar.
-- `disputeUntil` is public on chain (contract plan, D9), and with it the dispute days of the payment: 0, 14 or 120. The answer discloses to the router and the client what the chain discloses.
+- `disputeUntil` is public on chain (contract plan, D9), and with it the dispute days of the payment: 0, 14 or 120. In the answer, it is disclosed to the router and the client as on chain.
 - A JSON-RPC error of the `disputeUntil` call alone is read as a revert, as for records and `namePolicy()`, and the name is answered without a dispute end.
 - A label the registrar recorded stays recorded after the registration expired or was ended, so whoever runs the resolver matches a hashed query of such a name to its label.
 
@@ -90,7 +83,9 @@ The field is optional, and receivers tolerate unknown fields, so routers and cli
 - `dispute_until_call`, read in `lookup_reads`
 - `dispute_end`: the registrar's `disputeUntil` when later than the block, else None
 - `name_status`: `disputeUntil`, also in v1 answers
-- `registration`: `disputeUntil` in `registered` when set
+- `registration`: `disputeUntil` in `registered`, null when unset
+- the comment on the reads keyed on the labelhash: `disputeUntil`
+- the docstring of `expiry_status`: any name with a zero expiry
 
 `scripts/resolver/README.md`:
 
@@ -102,12 +97,15 @@ The field is optional, and receivers tolerate unknown fields, so routers and cli
 - the premium paragraph
 - `disputeUntil` in the v1 example, in `registered` and in the definition of the dispute period
 - a subname's dispute end in v2
+- `disputeUntil` in the lists of status fields and of the registrar's reads
 
 `protocol/simplex-messaging.md`:
 
-- a hashed query of a name nobody holds
-- the dispute period, after the registration types
-- `disputeUntil` in the fields of `registered`
+- a hashed query of a name nobody holds: `available` or `reserved`
+- `registered`: unless ended before `disputeUntil`, and renewable not before it
+- the dispute period, defined by `disputeUntil`
+- `disputeUntil` in the fields of `registered`, also absent when it could not be read
+- an answer below v22: no dispute end
 
 `src/Simplex/Messaging/Names/Record.hs`: `NRRegistered.disputeUntil`.
 
@@ -122,10 +120,10 @@ The tests of changed behavior are committed before the change, and fail on that 
 - `ErrorCodeTests`: a name with expiry 0 answered 404 with "this name is not registered"
 - three test names that equate expiry 0 with never registered
 - `NameStatusTests`: a `disputeUntil` later than the block reported; one at the block, one before it and 0 not reported; a registrar that reverts or answers nothing read as none; a subname read with its 2LD's token; `disputeUntil` in the keys of every branch
-- `RegistrationV2Tests`: v2 `registered` with `disputeUntil`; v1 with it and with null
+- `RegistrationV2Tests`: v2 `registered` with `disputeUntil`, and null in the pinned keys of `registered`; v1 with it and with null; a subname under a 2LD with expiry 0, whose node a former holder owns: v2 `available`, v1 404
 - `BatchedReadsTests`: `disputeUntil` read in the round of `nameExpires`, in two round trips
 - the fakes of the registrar answer `disputeUntil`
 
-`tests/SMPNamesTests.hs`: the router's answer equal to the resolver's JSON of a registration with `disputeUntil`.
+`tests/SMPNamesTests.hs`: the router's answer to a registration with `disputeUntil`, as the resolver serves it, decoded into `NRRegistered`; the JSON round trip of that value.
 
-`tests/RSLVTests.hs`: RNAME, direct and forwarded through a proxy, equal to the resolver's JSON of a registration with `disputeUntil`.
+`tests/RSLVTests.hs`: RNAME of that registration, direct and forwarded through a proxy.
