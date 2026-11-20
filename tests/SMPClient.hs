@@ -431,21 +431,21 @@ withStallingServerOn' port action = do
     (pure ())
     (const $ action accepted closed)
 
-withGatedServerOn :: HasCallStack => ServiceName -> ServiceName -> (TMVar () -> TMVar () -> IO a) -> IO a
-withGatedServerOn port srvPort action = do
+withPausedProxyOn :: HasCallStack => ServiceName -> ServiceName -> (TMVar () -> TMVar () -> IO a) -> IO a
+withPausedProxyOn port srvPort action = do
   accepted <- newEmptyTMVarIO
-  opened <- newEmptyTMVarIO
+  resume <- newEmptyTMVarIO
   let forward from to = recv from 4096 >>= \s -> unless (B.null s) $ sendAll to s >> forward from to
   serverBracket
     (\started -> runLocalTCPServer started port $ \sock -> do
         void $ atomically $ tryPutTMVar accepted ()
-        atomically $ readTMVar opened
+        atomically $ readTMVar resume
         addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just srvPort)
         E.bracket (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)) close $ \srvSock -> do
           connect srvSock $ addrAddress addr
           race_ (forward sock srvSock) (forward srvSock sock))
     (pure ())
-    (const $ action accepted opened)
+    (const $ action accepted resume)
 
 withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const
