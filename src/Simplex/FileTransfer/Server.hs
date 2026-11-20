@@ -618,6 +618,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                 tmpPath = fPath <> "." <> B.unpack (strEncode tmpId) <> tmpUploadExtension
             (restore (receiveChunk $ XFTPRcvChunkSpec tmpPath size digest) `onException` release tmpPath) >>= \case
               Right () -> do
+                renameFile tmpPath fPath
                 stats <- asks serverStats
                 st <- asks fileStore
                 liftIO (setFilePath st senderId fPath) >>= \case
@@ -626,19 +627,24 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                     incFileStat filesUploaded
                     incFileStat filesCount
                     liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
-                    renameFile tmpPath fPath
                     pure FROk
-                  Left _e -> release tmpPath >> uploadedResponse
+                  Left _e -> releaseQuota >> uploadedResponse fPath
               Left e -> FRErr e <$ release tmpPath
-          uploadedResponse = do
+          uploadedResponse fPath = do
             st <- asks fileStore
             liftIO (getFile st SFSender senderId) >>= \case
-              Right (FileRec {filePath = uploadedPath}, _) -> maybe (FRErr AUTH) (const FROk) <$> readTVarIO uploadedPath
-              Left _ -> pure $ FRErr AUTH
-          release fPath = do
+              Right (FileRec {filePath = uploadedPath, fileStatus}, _) ->
+                (,) <$> readTVarIO uploadedPath <*> readTVarIO fileStatus >>= \case
+                  (Just _, _) -> pure FROk
+                  (Nothing, EntityActive) -> pure $ FRErr AUTH
+                  _ -> FRErr AUTH <$ removeUpload fPath
+              Left AUTH -> FRErr AUTH <$ removeUpload fPath
+              Left e -> pure $ FRErr e
+          release fPath = releaseQuota >> removeUpload fPath
+          releaseQuota = do
             us <- asks usedStorage
             atomically $ modifyTVar' us $ subtract (fromIntegral size)
-            liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
+          removeUpload fPath = liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
           receiveChunk spec = do
             t <- asks $ fileTimeout . config
             liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT $ receiveFile getBody spec)

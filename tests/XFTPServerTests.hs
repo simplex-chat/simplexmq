@@ -66,7 +66,7 @@ import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getSymbolicLinkTarget, listDirectory, removeFile)
 import System.FilePath (takeExtension, (</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, withAsync)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, wait, withAsync)
 import UnliftIO.Exception (tryAny)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
@@ -108,6 +108,8 @@ xftpServerTests = do
       it "should close connection when request body stalls" testStalledRequestBody
       it "should time out a stalled upload of a committed chunk" testStalledCommittedUpload
       it "should accept a repeated upload of a chunk while its first upload is stalled" testRepeatedUploadDuringStalledUpload
+      it "should return OK to an upload completed after another upload of the chunk" testUploadAfterCommittedUpload
+      it "should remove unfinished uploads at start" testRemoveTmpUploads
       it "should close connections without requests" testNoRequestTimeout
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
@@ -553,7 +555,7 @@ fileMetrics = do
       | l <- metrics,
         [metric, n, _] <- [T.words l],
         Just name <- [T.stripPrefix "simplex_xftp_files_" metric],
-        name `elem` ["expired", "deleted", "count_total", "size"]
+        name `elem` (["expired", "deleted", "count_total", "size"] :: [T.Text])
     ]
 
 testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
@@ -674,6 +676,42 @@ testRepeatedUploadDuringStalledUpload fsType =
           threadDelay 2500000
           download c'
         filter ((".tmp" ==) . takeExtension) <$> listDirectory xftpServerFiles `shouldReturn` []
+
+testUploadAfterCommittedUpload :: HasTestEnv => AFStoreType -> Expectation
+testUploadAfterCommittedUpload fsType =
+  withXFTPServerConfigOn (cfgFS fsType) $ \_ ->
+    testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      bytes <- createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      (sId, [rId]) <- runRight $ createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
+      t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+      bodyAllowed <- newEmptyTMVarIO
+      let req = H2.requestStreaming "POST" "/" [] $ \send flush -> do
+            send (byteString t) >> flush
+            atomically $ takeTMVar bodyAllowed
+            send (byteString bytes) >> flush
+      withAsync (HC.sendRequest http2Client req Nothing) $ \firstUpload -> do
+        threadDelay 500000
+        testXFTPClient $ \c' -> runRight_ $ uploadXFTPChunk c' spKey sId chunkSpec
+        atomically $ putTMVar bodyAllowed ()
+        wait firstUpload >>= \case
+          Right HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead}} -> case xftpDecodeTClient thParams bodyHead of
+            Right (_, _, Right FROk) -> pure ()
+            r -> expectationFailure $ "unexpected response: " <> show r
+          Left e -> expectationFailure $ "request error: " <> show e
+      runRight_ $ downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
+      B.readFile (testPath "received_chunk") `shouldReturn` bytes
+
+testRemoveTmpUploads :: HasTestEnv => AFStoreType -> Expectation
+testRemoveTmpUploads _ = do
+  createDirectoryIfMissing True xftpServerFiles
+  writeFile (xftpServerFiles </> "chunk") "chunk"
+  writeFile (xftpServerFiles </> "chunk.upload.tmp") "partial upload"
+  withXFTPServerThreadOn $ \_ -> listDirectory xftpServerFiles `shouldReturn` ["chunk"]
 
 testNoRequestTimeout :: HasTestEnv => AFStoreType -> Expectation
 testNoRequestTimeout fsType =
