@@ -119,7 +119,9 @@ module Simplex.Messaging.Client
     PCTransmission,
     mkTransmission,
     authTransmission,
+    pClientSndQ,
     smpClientStub,
+    sendProtocolCommand_,
 
     -- * For debugging
     TBQueueInfo (..),
@@ -253,6 +255,9 @@ smpClientStub g sessionId thVersion thAuth = do
               msgQ = Nothing
             }
       }
+
+pClientSndQ :: ProtocolClient v err msg -> TBQueue (Maybe (Request err msg), ByteString)
+pClientSndQ ProtocolClient {client_ = PClient {sndQ}} = sndQ
 
 type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 
@@ -1379,10 +1384,11 @@ sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THan
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
         | otherwise -> do
-            nonBlockingWriteTBQueue sndQ (Just r, s)
-            response <$> getResponse c nm tOut r
+            sent <- atomically $ tryWriteTBQueue sndQ (Just r, s)
+            response <$> if sent then getResp else withAsync (atomically $ writeTBQueue sndQ (Just r, s)) (const getResp)
         where
           s = tEncodeBatch1 serviceAuth t
+          getResp = getResponse c nm tOut r
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
