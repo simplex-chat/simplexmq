@@ -82,7 +82,7 @@ resolved registration = NameResponse {lastBlockTs = Just (RoundedSystemTime 1813
 -- | What `registeredBody testNameRecord` resolves to.
 registeredAlice :: NameRegistration
 registeredAlice =
-  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Nothing, nameRecord = testNameRecord}
+  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Nothing, nameRecord = testNameRecord}
 
 smpNamesTests :: Spec
 smpNamesTests = do
@@ -168,7 +168,7 @@ availabilitySpec = do
     answers (registeredBody testNameRecord) (resolved registeredAlice)
   it "a registered name can be held back too" $
     answers heldBackBody . resolved $
-      NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
+      NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
   it "a registration in its dispute period is answered with its end, as the resolver sent it" $
     withResolverServer (resolveResp status200 disputedBody) $ \port _ -> do
       env <- newNamesEnv (testNamesConfig port)
@@ -185,7 +185,7 @@ availabilitySpec = do
     mapM_
       (\a -> J.eitherDecodeStrict (LB.toStrict (J.encode a)) `shouldBe` Right a)
       [ registeredAlice,
-        NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord},
+        NRRegistered {expires = Nothing, graceUntil = Nothing, disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord},
         NRAvailable {pricing = testPricing, nameTerms = Nothing},
         NRReserved NRRInternal,
         NRReserved NRRTrademark,

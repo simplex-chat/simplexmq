@@ -87,6 +87,8 @@ data NameRegistration
         expires :: Maybe SystemSeconds,
         -- | unix seconds, > expires: until here only the owner may renew
         graceUntil :: Maybe SystemSeconds,
+        -- | unix seconds, > lastBlockTs: until here the registration can be ended and cannot be renewed; absent also from a router or resolver that predates it
+        disputeUntil :: Maybe SystemSeconds,
         -- | held back as well, which is why it will not free up at expiry
         reservedReason_ :: Maybe NameReservedReason,
         nameRecord :: NameRecord

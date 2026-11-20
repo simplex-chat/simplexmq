@@ -237,7 +237,7 @@ testRslvOldClientRecord =
   withResolverServer (status200, registeredBody testNameRecord) $ do
     pc <- oldClient
     r <- runExceptT' (directResolveName pc NRMInteractive (domain "alice.simplex"))
-    r `shouldBe` NameResponse Nothing (NRRegistered Nothing Nothing Nothing testNameRecord)
+    r `shouldBe` NameResponse Nothing (NRRegistered Nothing Nothing Nothing Nothing testNameRecord)
 
 testRslvOldClientNotFound :: HasTestEnv => IO ()
 testRslvOldClientNotFound =

@@ -1557,7 +1557,7 @@ MUST NOT treat an answer as current without checking it.
 | `reserved` | held back by the registry and not registered. It carries no price, and a router MUST NOT quote one |
 
 On `.simplex`, a sponsored registration has a dispute period of 14 to 120 days
-from its registration, which the router does not report. Within it, a renewal is
+from its registration, which ends at `disputeUntil`. Within it, a renewal is
 refused, and the registry's owner or guardian can end the registration; a router
 then answers for the name as for a name never registered.
 
@@ -1565,6 +1565,7 @@ then answers for the name as for a name never registered.
 |---|---|---|---|
 | `expires` | `registered` | number | absent only from a v20/v21 router, which sent the record alone |
 | `graceUntil` | `registered` | number | after `expires`; until here only the owner may renew. Absent on the same condition as `expires` |
+| `disputeUntil` | `registered` | number | the end of the dispute period, present only when after `lastBlockTs`. A router or resolver that predates the field omits it, so a client MUST NOT conclude from its absence that the registration cannot be ended |
 | `reservedReason_` | `registered` | string | a reason word, present only when the name is held back as well |
 | `nameRecord` | `registered` | object | the record, schema below |
 | `pricing` | `available` | object | `registrationPrices`, `basePrice` and `minLabelLength`, below |

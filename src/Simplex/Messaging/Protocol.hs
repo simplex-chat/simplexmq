@@ -2109,7 +2109,7 @@ instance ProtocolEncoding SMPVersion ErrorType BrokerMsg where
       | otherwise -> fmap (RNAME . oldResponse) . J.eitherDecodeStrict . unTail <$?> _smpP
     where
       oldResponse nameRecord =
-        NameResponse {lastBlockTs = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
+        NameResponse {lastBlockTs = Nothing, registration = NRRegistered {expires = Nothing, graceUntil = Nothing, disputeUntil = Nothing, reservedReason_ = Nothing, nameRecord}}
       serviceRespP resp
         | v >= rcvServiceSMPVersion = resp <$> _smpP <*> smpP
         | otherwise = resp <$> _smpP <*> pure mempty
