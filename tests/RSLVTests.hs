@@ -14,6 +14,7 @@ module RSLVTests (rslvTests) where
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
+import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.IORef (IORef, readIORef)
@@ -29,7 +30,7 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
-import SMPNamesTests (availableBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
+import SMPNamesTests (availableBody, disputedBody, jsonValue, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -93,8 +94,10 @@ rslvTests = do
   describe "RSLV forwarded (PFWD)" $ do
     it "PFWD-wrapped RSLV reaches resolver via proxy (PCEProtocolError (NAME RESOLVER))" testRslvForwarded
     it "PFWD-wrapped RSLV success returns RNAME (record JSON frames over the proxy)" testRslvForwardedSuccess
+    it "PFWD-wrapped RNAME includes the dispute end the resolver sent" testRslvForwardedDisputeEnd
   describe "RSLV success path (RNAME response)" $ do
     it "returns RNAME with NameRecord" testRslvSuccess
+    it "RNAME includes the dispute end the resolver sent" testRslvDisputeEnd
   describe "RSLV availability (RNAME response)" $ do
     it "unregistered comes back AVAILABLE" testRslvAvailable
     it "reserved comes back with the reason" testRslvReserved
@@ -175,6 +178,13 @@ testRslvForwardedSuccess =
       Right (Right NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
       _ -> expectationFailure $ "expected Right (Right NRRegistered), got: " <> show r
 
+testRslvForwardedDisputeEnd :: HasTestEnv => IO ()
+testRslvForwardedDisputeEnd =
+  withProxyAndResolver (status200, disputedBody) $
+    forwardedResolveAlice >>= \case
+      Right (Right res) -> J.toJSON res `shouldBe` jsonValue disputedBody
+      r -> expectationFailure $ "expected Right (Right NameResponse), got: " <> show r
+
 testRslvSuccess :: HasTestEnv => IO ()
 testRslvSuccess =
   withResolverServer (status200, registeredBody testNameRecord) $
@@ -184,6 +194,15 @@ testRslvSuccess =
       case resp of
         Right (RNAME NameResponse {registration = NRRegistered {nameRecord}}) -> nameRecord `shouldBe` testNameRecord
         _ -> expectationFailure $ "expected Right (RNAME NRRegistered), got: " <> show resp
+
+testRslvDisputeEnd :: HasTestEnv => IO ()
+testRslvDisputeEnd =
+  withResolverServer (status200, disputedBody) $
+    testSMPClient @TLS $ \h -> do
+      (_, _, resp) <- sendRslv h "rs08" (domain "alice.simplex")
+      case resp of
+        Right (RNAME res) -> J.toJSON res `shouldBe` jsonValue disputedBody
+        _ -> expectationFailure $ "expected Right (RNAME _), got: " <> show resp
 
 testRslvAvailable :: HasTestEnv => IO ()
 testRslvAvailable =

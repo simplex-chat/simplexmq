@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, responseBody, resolved) where
+module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, disputedBody, availableBody, reservedBody, responseBody, resolved, jsonValue) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -55,6 +55,13 @@ testNameRecord =
 registeredBody :: NameRecord -> LB.ByteString
 registeredBody nameRec =
   responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+
+disputedBody :: LB.ByteString
+disputedBody =
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":1813100000,\"nameRecord\":" <> J.encode testNameRecord <> "}"
+
+jsonValue :: LB.ByteString -> J.Value
+jsonValue = either error id . J.eitherDecode
 
 availableBody :: LB.ByteString
 availableBody = responseBody "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
@@ -162,6 +169,10 @@ availabilitySpec = do
   it "a registered name can be held back too" $
     answers heldBackBody . resolved $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
+  it "a registration in its dispute period is answered with its end, as the resolver sent it" $
+    withResolverServer (resolveResp status200 disputedBody) $ \port _ -> do
+      env <- newNamesEnv (testNamesConfig port)
+      (fmap J.toJSON <$> resolveName env aliceQuery) `shouldReturn` Right (jsonValue disputedBody)
   it "an unregistered name answers with the price" $
     answers availableBody (resolved NRAvailable {pricing = testPricing, nameTerms = Nothing})
   it "reserved carries the reason and no price" $
