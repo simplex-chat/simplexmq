@@ -636,7 +636,7 @@ withDB' op st action = withDB op st $ fmap Right . action
 
 withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
 withDB op st action =
-  ExceptT $ E.try (withTransaction (dbStore st) action) >>= either logErr pure
+  ExceptT $ E.try (withRetriedTransaction (dbStore st) action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)

@@ -60,6 +60,8 @@ module AgentTests.FunctionalAPITests
     testServerInformation,
 #if defined(dbPostgres)
     workItemReadTests,
+    transactionDeadlockTests,
+    abortedTransactionTests,
 #endif
   )
 where
@@ -138,11 +140,12 @@ import XFTPClient (testXFTPServer, withXFTPServerThreadOn)
 #if defined(dbPostgres)
 import Database.PostgreSQL.Simple (Only (..), Query)
 import Fixtures
-import Simplex.Messaging.Agent.Client (withStoreIsolation', withWork, withWorkItems)
+import Simplex.Messaging.Agent.Client (withStore, withStore', withStoreBatch', withStoreIsolation', withWork, withWorkItems)
 import Simplex.Messaging.Agent.Env.SQLite (AM)
-import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
+import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), ConnData (..), InternalId (..), RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNewConn, createNtfSubscription, createServer, createSndFile, createSndMsgDelivery, createUserRecord, deleteClientService, deleteConn, deleteSndMsgDelivery, deleteUserRecord, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile, updateNewConnSnd)
 import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
+import Simplex.Messaging.Agent.Store.Entity (DBEntityId' (..))
 import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
@@ -552,6 +555,9 @@ functionalAPITests ps = do
   describe "Batch send messages" $ do
     it "should send multiple messages to the same connection" $ withSmpServer ps testSendMessagesB
     it "should send messages to the 2 connections" $ withSmpServer ps testSendMessagesB2
+#if defined(dbPostgres)
+    it "should report every message of a batch rolled back after a database error" $ withSmpServer ps testSendMessagesRolledBack
+#endif
   describe "Async agent commands" $ do
     describe "connect using async agent commands" $
       testBasicMatrix2 ps testAsyncCommands
@@ -5059,10 +5065,35 @@ workItemReadTests = do
       let st = store $ agentEnv a
       withTransaction st $ \db -> createCmd db >> DB.execute_ db "UPDATE commands SET command = 'bad'::bytea"
       doWork <- newTMVarIO ()
-      runReaderT (runExceptT $ readCommand a doWork $ \_ -> pure ()) (agentEnv a) `shouldReturn` Right ()
+      runAM a (readCommand a doWork $ \_ -> pure ()) `shouldReturn` Right ()
       events <- atomically $ flushTBQueue $ subQ a
       length (filter workerError events) `shouldBe` 1
       withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
+  it "should mark a command failed when a server error aborts its read" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> do
+        createCmd db
+        DB.execute_ db "CREATE FUNCTION fail_read() RETURNS BOOLEAN LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = 'XX001'; END $$; ALTER TABLE connections ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY; CREATE POLICY fail_read ON connections FOR SELECT USING (fail_read())"
+      doWork <- newTMVarIO ()
+      runAM a (readCommand a doWork $ \_ -> pure ()) `shouldReturn` Right ()
+      events <- atomically $ flushTBQueue $ subQ a
+      filter workerError events `shouldBe` []
+      withTransaction st (`DB.query_` "SELECT failed FROM commands") `shouldReturn` [Only (1 :: Int)]
+  it "should report INTERNAL when a server error aborts the read of a command that stays unmarked" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> do
+        createCmd db
+        DB.execute_ db "CREATE FUNCTION fail_read() RETURNS BOOLEAN LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = 'XX001'; END $$; ALTER TABLE connections ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY; CREATE POLICY fail_read ON connections FOR SELECT USING (fail_read())"
+        DB.execute_ db "CREATE FUNCTION skip_update() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER skip_update BEFORE UPDATE ON commands FOR EACH ROW EXECUTE FUNCTION skip_update()"
+      doWork <- newTMVarIO ()
+      Just (Left (A.INTERNAL e)) <- timeout 5000000 $ runAM a (readCommand a doWork $ \_ -> pure ())
+      e `shouldContain` "sqlState = \\\"XX001\\\""
+  it "should mark a ntf subscription failed when a server error aborts its read in a batch" $
+    readBatchAfterServerError (NSANtf NSACreate) "ntf_failed" (readNtfActions testNtfServer)
+  it "should mark a ntf SMP action failed when a server error aborts its read in a batch" $
+    readBatchAfterServerError (NSASMP NSASmpKey) "smp_failed" (readSMPActions testSMPServer)
   it "should retry the read 3 times on the same connection after serialization failures" $ do
     (r, pids) <- readWithErrors 3 "40001"
     r `shouldBe` Right ()
@@ -5096,6 +5127,22 @@ workItemReadTests = do
       createNtfSubscription db (newNtfSubscription 1 "conn1" testSMPServer Nothing testNtfServer NASNew) action `shouldReturn` Right ()
     readNtfActions srv a doWork = withWorkItems a doWork $ withStoreIsolation' a RepeatableRead $ \db -> getNextNtfSubNTFActions db srv 10
     readSMPActions srv a doWork = withWorkItems a doWork $ withStoreIsolation' a RepeatableRead $ \db -> getNextNtfSubSMPActions db srv 10
+    readBatchAfterServerError :: HasTestEnv => NtfSubAction -> Query -> (AgentClient -> TMVar () -> (NonEmpty a -> AM ()) -> AM ()) -> IO ()
+    readBatchAfterServerError action failedColumn readItems = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+      withTransaction st $ \db -> do
+        createNtfSub action db
+        DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (1 :: Int64, "conn2" :: ConnId, SCMInvitation)
+        createNtfSubscription db (newNtfSubscription 1 "conn2" testSMPServer Nothing testNtfServer NASNew) action `shouldReturn` Right ()
+        DB.execute_ db $ "UPDATE ntf_subscriptions SET updated_by_supervisor = 1; CREATE FUNCTION fail_update() RETURNS TRIGGER LANGUAGE plpgsql AS $$ BEGIN IF NEW.conn_id = 'conn1' AND NEW." <> failedColumn <> " = OLD." <> failedColumn <> " THEN RAISE EXCEPTION 'test' USING ERRCODE = 'XX001'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_update BEFORE UPDATE ON ntf_subscriptions FOR EACH ROW EXECUTE FUNCTION fail_update()"
+      doWork <- newTMVarIO ()
+      itemsRead <- newTVarIO (0 :: Int)
+      runAM a (readItems a doWork $ atomically . writeTVar itemsRead . length) `shouldReturn` Right ()
+      readTVarIO itemsRead `shouldReturn` 1
+      events <- atomically $ flushTBQueue $ subQ a
+      filter workerError events `shouldBe` []
+      withTransaction st (\db -> DB.query_ db $ "SELECT conn_id, " <> failedColumn <> ", updated_by_supervisor FROM ntf_subscriptions ORDER BY conn_id")
+        `shouldReturn` [("conn1" :: ConnId, 1 :: Int, 0 :: Int), ("conn2", 0, 0)]
     createSndFile' :: DB.Connection -> IO ()
     createSndFile' db = do
       g <- C.newRandom
@@ -5120,7 +5167,7 @@ readWhileDeleting createItem lockItem waitingQuery deleteItem readItem = withAge
   reading <- withTransaction st $ \db -> do
     lockItem db
     [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
-    r <- async $ runReaderT (runExceptT $ readItem a doWork $ \_ -> atomically $ writeTVar itemRead True) (agentEnv a)
+    r <- async $ runAM a (readItem a doWork $ \_ -> atomically $ writeTVar itemRead True)
     waitForLock st holder waitingQuery
     DB.execute_ db deleteItem
     pure r
@@ -5138,7 +5185,7 @@ workerError (_, _, AEvt _ e) = case e of
 readWithErrors :: HasTestEnv => Int -> Query -> IO (Either AgentErrorType (), [Int])
 readWithErrors failures errCode = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
   pids <- newIORef []
-  r <- runReaderT (runExceptT $ withStoreIsolation' a RepeatableRead $ readItem pids) (agentEnv a)
+  r <- runAM a (withStoreIsolation' a RepeatableRead $ readItem pids)
   (r,) <$> readIORef pids
   where
     readItem pids db = do
@@ -5154,6 +5201,111 @@ waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Jus
         withTransaction st $ \db ->
           DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY (pg_blocking_pids(pid)) AND position(? IN query) > 0)" (holder, waitingQuery)
       unless waiting $ threadDelay 10000 >> waitLoop
+
+transactionDeadlockTests :: Spec
+transactionDeadlockTests = do
+  it "should retry deadlocked deletions of a delivered message and its user" $
+    deleteWithDeliveredMessage "DELETE FROM users" deleteUserInTransaction 0
+  it "should retry deadlocked deletions of a delivered message and its user after deadlock_timeout" $
+    deleteWithDeliveredMessage "DELETE FROM users" deleteUserInTransaction 2000000
+  it "should retry deadlocked deletions of a delivered message and its connection in a batch" $
+    deleteWithDeliveredMessage "DELETE FROM connections" deleteConnInBatch 2000000
+  it "should retry the creation of a connection after a conflict" $
+    createConnAfterConflict "conn1" `shouldReturn` Right "conn1"
+  it "should retry the creation of a connection with a random ID after a conflict" $
+    isRight <$> createConnAfterConflict "" `shouldReturn` True
+  where
+    deleteUserInTransaction a recordPid userId _ = runAM a (withStore a $ \db -> recordPid db >> deleteUserRecord db userId) `shouldReturn` Right ()
+    deleteConnInBatch a recordPid _ connId = runReaderT (withStoreBatch' a $ \db -> [recordPid db >> deleteConn db Nothing connId]) (agentEnv a) `shouldReturn` ([Right (Just connId)] :: [Either AgentErrorType (Maybe ConnId)])
+
+abortedTransactionTests :: Spec
+abortedTransactionTests = do
+  it "should keep the transaction that creates a command for a deleted connection" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      runAM a (withStore a $ \db -> createUserRecord db >> createCommand db "1" "deleted" Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False)) `shouldReturn` Right ()
+      withTransaction (store $ agentEnv a) (`DB.query_` "SELECT count(*) FROM users") `shouldReturn` [Only (2 :: Int)]
+  it "should report every item of a batch rolled back after a database error" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      rs <- runReaderT (withStoreBatch' a $ \db -> [void $ createUserRecord db, DB.execute_ db "DO $$ BEGIN RAISE EXCEPTION 'test' USING ERRCODE = '23505'; END $$"]) (agentEnv a)
+      map isRight rs `shouldBe` [False, False]
+      withTransaction (store $ agentEnv a) (`DB.query_` "SELECT count(*) FROM users") `shouldReturn` [Only (1 :: Int)]
+
+testSendMessagesRolledBack :: HasTestEnv => IO ()
+testSendMessagesRolledBack = withAgentClients2 $ \a b -> do
+  (_, bId1) <- runRight $ makeConnection a b
+  (_, bId2) <- runRight $ makeConnection a b
+  withTransaction (store $ agentEnv a) $ \db -> do
+    DB.execute_ db "CREATE TABLE failing_conns (conn_id BYTEA); CREATE FUNCTION fail_snd_message() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.conn_id IN (SELECT conn_id FROM failing_conns) THEN RAISE EXCEPTION 'test' USING ERRCODE = '23505'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_snd_message BEFORE INSERT ON snd_messages FOR EACH ROW EXECUTE FUNCTION fail_snd_message()"
+    DB.execute db "INSERT INTO failing_conns (conn_id) VALUES (?)" (Only bId2)
+  rs <- runRight $ sendMessages a [(bId1, PQEncOn, SMP.noMsgFlags, vrValue "hello"), (bId2, PQEncOn, SMP.noMsgFlags, vrValue "hello")]
+  map isRight rs `shouldBe` [False, False]
+
+runAM :: AgentClient -> AM a -> IO (Either AgentErrorType a)
+runAM a action = runReaderT (runExceptT action) (agentEnv a)
+
+createConnAfterConflict :: HasTestEnv => ConnId -> IO (Either AgentErrorType ConnId)
+createConnAfterConflict connId = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  withTransaction (store $ agentEnv a) (`DB.execute_` "CREATE SEQUENCE inserts; CREATE FUNCTION fail_first_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('inserts') = 1 THEN RAISE EXCEPTION 'test' USING ERRCODE = '40P01'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_first_insert BEFORE INSERT ON connections FOR EACH ROW EXECUTE FUNCTION fail_first_insert()")
+  g <- C.newRandom
+  runAM a . withStore a $ \db ->
+    createNewConn db g ConnData {userId = 1, connId, connAgentVersion = VersionSMPA 1, enableNtfs = True, lastExternalSndId = 0, deleted = False, ratchetSyncState = RSOk, pqSupport = PQSupportOn, serviceRequestExpiresAt = Nothing} SCMInvitation
+
+deleteWithDeliveredMessage :: HasTestEnv => String -> (AgentClient -> (DB.Connection -> IO ()) -> UserId -> ConnId -> IO ()) -> Int -> IO ()
+deleteWithDeliveredMessage deleteQuery deleteRecord lockTime = withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+  let st = store $ agentEnv a
+  g <- C.newRandom
+  (userId, sq) <- withTransaction st $ createMessage g
+  msgPids <- newIORef []
+  deleterPids <- newIORef []
+  (deletingMsg, deleting) <- withTransaction st $ \db -> do
+    void (DB.query db "SELECT 1 FROM commands WHERE conn_id = ? FOR UPDATE" (Only connId) :: IO [Only Int])
+    [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
+    deleting <- async $ deleteRecord a (recordPid deleterPids) userId connId
+    waitForLock st holder deleteQuery
+    [deleter] <- readIORef deleterPids
+    deletingMsg <- async $ runAM a (withStore' a $ \db' -> recordPid msgPids db' >> deleteSndMsgDelivery db' connId sq (InternalId 1) False) `shouldReturn` Right ()
+    waitForLock st deleter "DELETE FROM messages"
+    threadDelay lockTime
+    pure (deletingMsg, deleting)
+  wait deletingMsg
+  wait deleting
+  withTransaction st (\db -> DB.query db "SELECT count(*) FROM connections WHERE conn_id = ?" (Only connId)) `shouldReturn` [Only (0 :: Int)]
+  attempts <- (+) <$> (length <$> readIORef msgPids) <*> (length <$> readIORef deleterPids)
+  attempts `shouldSatisfy` (> 2)
+  where
+    connId = "conn1" :: ConnId
+    recordPid :: IORef [Int] -> DB.Connection -> IO ()
+    recordPid pids db = do
+      [Only pid] <- DB.query_ db "SELECT pg_backend_pid()"
+      atomicModifyIORef' pids $ \ps -> (pid : ps, ())
+    createMessage g db = do
+      userId <- createUserRecord db
+      DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (?,?,?)" (userId, connId, SCMInvitation)
+      (_, sndPrivateKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPubKey, dhPrivKey) <- atomically $ C.generateKeyPair g
+      let newSq =
+            SndQueue
+              { userId,
+                connId,
+                server = testSMPServer,
+                sndId = SMP.EntityId "1234",
+                queueMode = Just SMP.QMMessaging,
+                sndPrivateKey,
+                e2ePubKey = Nothing,
+                e2eDhSecret = C.dh' dhPubKey dhPrivKey,
+                status = New,
+                dbQueueId = DBNewEntity,
+                primary = True,
+                dbReplaceQueueId = Nothing,
+                sndSwchStatus = Nothing,
+                smpClientVersion = SMP.VersionSMPC 1
+              }
+      Right sq <- updateNewConnSnd db connId newSq
+      DB.execute db "INSERT INTO messages (conn_id, internal_id, internal_ts, internal_snd_id, msg_type) VALUES (?, 1, now(), 1, '')" (Only connId)
+      DB.execute db "INSERT INTO snd_messages (conn_id, internal_snd_id, internal_id, internal_hash) VALUES (?, 1, 1, '')" (Only connId)
+      createSndMsgDelivery db sq (InternalId 1)
+      createCommand db "1" connId Nothing (AClientCommand $ NEW True (ACM SCMInvitation) IKPQOn SMSubscribe False) `shouldReturn` Right ()
+      pure (userId, sq)
 #endif
 
 testClientServiceConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()

@@ -757,7 +757,7 @@ withDB op st = withDB_ op st False
 
 withDB_ :: forall a. Text -> NtfPostgresStore -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB_ op st priority action =
-  E.uninterruptibleMask_ $ E.try (withTransactionPriority (dbStore st) priority action) >>= either logErr pure
+  E.uninterruptibleMask_ $ E.try (withRetriedTransactionPriority (dbStore st) priority action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)
@@ -766,7 +766,7 @@ withDB_ op st priority action =
 
 withClientDB :: Text -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either SMPClientError a)
 withClientDB op st action =
-  E.uninterruptibleMask_ $ E.try (withTransaction (dbStore st) action) >>= bimapM logErr pure
+  E.uninterruptibleMask_ $ E.try (withRetriedTransaction (dbStore st) action) >>= bimapM logErr pure
   where
     logErr :: E.SomeException -> IO SMPClientError
     logErr e = logError ("STORE: " <> op <> ", withDB, " <> tshow e) $> PCEIOError (E.displayException e)
