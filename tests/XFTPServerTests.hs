@@ -263,6 +263,7 @@ testTLSHandshakeTimeout =
     timeout 1000000 (runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort Nothing $ \(_ :: TLS 'TClient) -> pure ())
       `shouldReturn` Nothing
   where
+    cfg :: TransportClientConfig
     cfg = defaultTransportClientConfig {logTLSErrors = True}
 
 testReceiveFileTimeout :: HasTestEnv => Expectation
