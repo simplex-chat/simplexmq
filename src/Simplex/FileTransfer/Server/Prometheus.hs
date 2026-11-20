@@ -90,7 +90,7 @@ xftpPrometheusMetrics sm ts =
       \simplex_xftp_files_blocked " <> mshow _filesBlocked <> "\n\
       \# filesBlocked\n\
       \\n\
-      \# HELP simplex_xftp_file_downloads File downloads\n\
+      \# HELP simplex_xftp_file_downloads Started file downloads\n\
       \# TYPE simplex_xftp_file_downloads counter\n\
       \simplex_xftp_file_downloads " <> mshow _fileDownloads <> "\n\
       \# fileDownloads\n\
@@ -100,27 +100,27 @@ xftpPrometheusMetrics sm ts =
       \simplex_xftp_file_download_acks " <> mshow _fileDownloadAcks <> "\n\
       \# fileDownloadAcks\n\
       \\n\
-      \# HELP simplex_xftp_files_count_total Total files count \n\
+      \# HELP simplex_xftp_files_count_total Stored files\n\
       \# TYPE simplex_xftp_files_count_total gauge\n\
       \simplex_xftp_files_count_total " <> mshow _filesCount <> "\n\
       \# filesCount\n\
       \\n\
-      \# HELP simplex_xftp_files_size Size of files \n\
+      \# HELP simplex_xftp_files_size Size of stored files, bytes\n\
       \# TYPE simplex_xftp_files_size gauge\n\
       \simplex_xftp_files_size " <> mshow _filesSize <> "\n\
       \# filesSize \n\
       \\n\
-      \# HELP simplex_xftp_files_count_daily Daily files count\n\
+      \# HELP simplex_xftp_files_count_daily Distinct files downloaded in the current day\n\
       \# TYPE simplex_xftp_files_count_daily gauge\n\
       \simplex_xftp_files_count_daily " <> mstr (dayCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.dayCount\n\
       \\n\
-      \# HELP simplex_xftp_files_count_weekly Weekly files count\n\
+      \# HELP simplex_xftp_files_count_weekly Distinct files downloaded in the current week\n\
       \# TYPE simplex_xftp_files_count_weekly gauge\n\
       \simplex_xftp_files_count_weekly " <> mstr (weekCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.weekCount\n\
       \\n\
-      \# HELP simplex_xftp_files_count_monthly Monthly files count\n\
+      \# HELP simplex_xftp_files_count_monthly Distinct files downloaded in the current month\n\
       \# TYPE simplex_xftp_files_count_monthly gauge\n\
       \simplex_xftp_files_count_monthly " <> mstr (monthCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.monthCount\n\
