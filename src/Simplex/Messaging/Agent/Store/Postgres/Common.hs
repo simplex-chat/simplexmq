@@ -10,6 +10,7 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
     DBStorePool (..),
     DBOpts (..),
     IsolationLevel (..),
+    RetryAfter (..),
     newDBStorePool,
     withConnection,
     withConnection',
@@ -25,7 +26,7 @@ module Simplex.Messaging.Agent.Store.Postgres.Common
   )
 where
 
-import Control.Logger.Simple (logWarn)
+import Control.Logger.Simple (logError, logWarn)
 import Control.Monad (void)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
@@ -108,10 +109,26 @@ withTransactionPriority st priority action = withConnectionPriority st priority 
 -- isolation for agent transactions; postgresql-simple is not a dependency of SQLite builds
 data IsolationLevel = ReadCommitted | RepeatableRead
 
+data RetryAfter = RetryAfter (IO ()) String
+
+instance Show RetryAfter where
+  show (RetryAfter _ reason) = reason
+
+instance E.Exception RetryAfter
+
 withTransactionIsolation :: DBStore -> IsolationLevel -> (PSQL.Connection -> IO a) -> IO a
-withTransactionIsolation st isolation action = withConnection st transaction
+withTransactionIsolation st isolation action = withConnection st $ transaction (3 :: Int)
   where
-    transaction conn = retryTransaction 3 $ PSQL.withTransactionLevel level conn $ action conn
+    transaction n conn
+      | n > 0 =
+          E.try (inTransaction conn $ action conn) >>= \case
+            Right r -> pure r
+            Left e@(RetryAfter prepare _) -> do
+              logError $ "transaction rolled back after " <> tshow e
+              inTransaction conn prepare
+              transaction (n - 1) conn
+      | otherwise = inTransaction conn $ action conn
+    inTransaction conn = retryTransaction 3 . PSQL.withTransactionLevel level conn
     level = case isolation of
       ReadCommitted -> PSQL.ReadCommitted
       RepeatableRead -> PSQL.RepeatableRead
