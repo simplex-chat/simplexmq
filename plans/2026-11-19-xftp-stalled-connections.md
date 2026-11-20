@@ -20,7 +20,8 @@ On xftp-server:
   - `simplex_xftp_files_count_total`;
   - `simplex_xftp_files_size`;
 - the help texts of file metrics state other quantities than the ones exported;
-- a repeated upload of a chunk while an earlier upload of it is open returns `FILE_IO`, and the file send of the client fails.
+- a repeated upload of a chunk while an earlier upload of it is open returns `FILE_IO`, and the file send of the client fails;
+- an upload that exceeds `fileTimeout` returns `FILE_IO` instead of `TIMEOUT`, as the timeout exception is caught by `receiveFile`.
 
 ## Decisions
 
@@ -73,6 +74,7 @@ On xftp-server:
 - The stats backup is restored before the expiry at start; `filesCount` and `filesSize` of the backup are replaced by the values from the store; when the expiry at start fails, the store is closed and the stats are saved.
 - In PostgreSQL, rows blocked before this change keep their path, and are counted until they expire.
 - Each FPUT receives its chunk into its own `.tmp` file in `filesPath`, renamed to the chunk file before `setFilePath`; `.tmp` files are removed at start.
+- Asynchronous exceptions are thrown again by the handlers of `receiveFile`, so the timeout of `fileTimeout` returns `TIMEOUT`, and an upload ended by http2 (`KilledByHttp2ThreadManager`) ends its request without a response.
 - Help texts:
   - `simplex_xftp_file_downloads`: `Started file downloads`;
   - `simplex_xftp_files_count_total`: `Stored files`;
@@ -723,7 +725,7 @@ flowchart LR
   - `testStalledDownload`: with `fileTimeout` of 2 s and expiry off, a connection with an unread FGET response is closed, and the chunk file is closed by the server;
   - `testStalledDownloadEnd`: with `fileTimeout` of 2 s, `ttl = 1` and `checkInterval = 1`, a connection is closed when the last 1 MB + k kB of a 4 MB response are unread, for k from 0 to 320 in steps of 64;
   - `testStalledRequestBody`: with `fileTimeout` of 2 s and expiry off, a connection whose request body is stalled after 1 byte is closed;
-  - `testStalledCommittedUpload`: with `fileTimeout` of 2 s, `TIMEOUT` is returned within 5 s to a repeated FPUT of a committed chunk with a stalled body;
+  - `testStalledUpload`: with `fileTimeout` of 2 s, `TIMEOUT` is returned within 5 s to an FPUT with a stalled body, of a committed chunk and of a new one;
   - `testRepeatedUploadDuringStalledUpload`: with `fileTimeout` of 2 s, while an FPUT with a stalled body is open, an FPUT of the same chunk on a new connection returns OK, the chunk is downloaded before and after the stalled FPUT times out, and no `.tmp` file is left;
   - `testUploadAfterCommittedUpload`: an FPUT whose body is sent after another FPUT of the same chunk is committed returns OK, and the chunk is downloaded;
   - `testRemoveTmpUploads`: of a chunk file and a `.tmp` file in `filesPath` before start, only the chunk file is left after start;
