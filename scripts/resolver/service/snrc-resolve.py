@@ -660,7 +660,7 @@ def name_status(name: str):
             "reason": None,
         }
 
-    # nameExpires and reservedNames are keyed on uint256(keccak(label)).
+    # nameExpires, disputeUntil and reservedNames are keyed on uint256(keccak(label)).
     # The 2LD's label is that key at any depth. node_of decodes a bracket only
     # in a two-label name, so a bracket subname gets a status but no record.
     token = label_token(labels[-2])

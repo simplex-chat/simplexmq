@@ -172,17 +172,17 @@ Error bodies carry `name` and a fixed `error` code to branch on. Only
 label, so a hashed query cannot be answered with a name. See
 [Querying by labelhash](#querying-by-labelhash).
 
-A subname is answered with the expiry, grace and dispute end of its 2LD, which
-bounds its lifetime. A subname is answered only while it is held: owned in the
-registry by the 2LD's holder, or by the subname registrar that the registrar's
-`subnameHook()` names, while its `ownerOf` names a holder. Any other subname,
-created or not, reports as not registered.
+A subname is answered with the expiry, grace and dispute end of its 2LD, on
+which its lifetime depends. A subname is answered only while it is held: owned
+in the registry by the 2LD's holder, or by the subname registrar that the
+registrar's `subnameHook()` names, while its `ownerOf` names a holder. Any other
+subname, created or not, is answered as not registered.
 
 ### v1: `/resolve/<name>`
 
 What routers before SMP v22 call. Its shape is unrelated to v2's: the record is
-flat, and `status`, `expires`, `graceEnds`, `reasonCode` and `reason` sit
-alongside its fields.
+flat, and `status`, `expires`, `graceEnds`, `disputeUntil`, `reasonCode` and
+`reason` are keys beside its fields.
 
 #### v1 response shape
 
@@ -211,10 +211,11 @@ identically (`bar.foobar.testing`).
 
 #### v1 registration status and expiry
 
-A response carries `status`, `expires` and `graceEnds` whenever the resolver
-read them, a successful resolve included, so a client that has just resolved a
-name already knows when it expires. Both timestamps are Unix seconds, and
-`null` when they could not be read.
+A response contains `status`, `expires`, `graceEnds` and `disputeUntil`
+whenever the resolver read them, a successful resolve included, so a client that
+has just resolved a name already knows when it expires. The timestamps are Unix
+seconds, and `null` when they could not be read; `disputeUntil` is also `null`
+when no dispute period is in effect.
 
 | `status` | Meaning |
 |---|---|
@@ -291,8 +292,9 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 ```
 
 namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
-returns the same record. The registrar keys `nameExpires` and `reservedNames` on
-the labelhash too, so the status fields do not need the label either.
+returns the same record. The registrar keys `nameExpires`, `disputeUntil` and
+`reservedNames` on the labelhash too, so the status fields are read without the
+label as well.
 
 Only the second-level label is a registry key, and `status` decodes a bracket
 there at any depth. The record does not: a bracket is decoded only in a
@@ -376,15 +378,16 @@ controller names, and the subname registrar a registrar names.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
 it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
-is where every expiry field comes from, and `labelOf`, which is how a hashed
-query is answered with a name. A name registered without recording its label
-cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
-the client will reject. Its `subnameHook()` names the subname registrar, whose
-`ownerOf` says who holds a subname it owns. With no registrar for a TLD,
-`/resolve` still works and reports `"status": "unknown"`, and only subnames the
-2LD's holder owns in the registry are answered. The **controller** holds
-`reservedNames`, which is where `reasonCode` comes from. With no controller a
-held-back name reads as not reserved, and no name can be priced.
+is where every expiry field comes from, `disputeUntil`, the end of a dispute
+period, and `labelOf`, which is how a hashed query is answered with a name. A
+name registered without recording its label cannot answer one, and
+`/v2/resolve` refuses it rather than answer with a name the client will reject.
+Its `subnameHook()` names the subname registrar, whose `ownerOf` says who holds
+a subname it owns. With no registrar for a TLD, `/resolve` still works and
+reports `"status": "unknown"`, and only subnames the 2LD's holder owns in the
+registry are answered. The **controller** holds `reservedNames`, which is where
+`reasonCode` comes from. With no controller a held-back name reads as not
+reserved, and no name can be priced.
 
 All three default to the mainnet `.testing` deployment. `.simplex` is unset
 until it is deployed.

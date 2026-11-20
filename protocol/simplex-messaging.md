@@ -1596,7 +1596,7 @@ refuses: a hashed query carries no length, so only the client can check it.
 
 Below v22, `RNAME` carries the bare record and nothing else, and every answer
 without one is `ERR NAME NOT_FOUND`. A v22 client reads such an answer as
-`registered` with no expiry, grace or reservation.
+`registered` with no expiry, grace, dispute end or reservation.
 
 From v22 a client MUST NOT read `ERR NAME NOT_FOUND` as "registrable": only
 `available` says that.
