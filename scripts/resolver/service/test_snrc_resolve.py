@@ -371,11 +371,11 @@ class NameStatusTests(unittest.TestCase):
                 self.assertEqual((reg["status"], reg["disputeUntil"]), ("registered", None))
 
     def test_a_subname_reports_the_dispute_end_of_its_2ld(self):
-        alice = snrc.selector("disputeUntil(uint256)") + snrc.encode_uint(snrc.label_token("alice"))
+        alice = snrc.dispute_until_call(self.REGISTRAR, snrc.label_token("alice"))
 
         def eth_call(to, data):
             if data.startswith(snrc.selector("disputeUntil(uint256)")):
-                self.assertEqual(data, alice)
+                self.assertEqual((to, data), alice)
                 return "0x" + snrc.encode_uint(self.now + 1)
             return "0x" + snrc.encode_uint(self.now + 3600)
 
@@ -1517,8 +1517,7 @@ class BatchedReadsTests(FakeNodeTestCase):
 
     def test_the_dispute_end_is_read_in_the_round_of_the_expiry(self):
         until = self.node.chain.now + 600
-        call = (FakeChain.REGISTRAR, snrc.selector("disputeUntil(uint256)") + snrc.encode_uint(snrc.label_token("acme")))
-        self.node.chain.answers[call] = "0x" + snrc.encode_uint(until)
+        self.node.chain.answers[snrc.dispute_until_call(FakeChain.REGISTRAR, snrc.label_token("acme"))] = "0x" + snrc.encode_uint(until)
         _, body = self.assert_same_answer(snrc.registration, "acme.testing", 2)
         self.assertEqual(body["registration"]["disputeUntil"], until)
 
