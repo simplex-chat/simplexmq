@@ -54,7 +54,11 @@ testNameRecord =
 -- from the Haskell value: the literal JSON is the contract with the resolver.
 registeredBody :: NameRecord -> LB.ByteString
 registeredBody nameRec =
-  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":null,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+
+finalBody :: LB.ByteString
+finalBody =
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":0,\"reservedReason_\":null,\"nameRecord\":" <> J.encode testNameRecord <> "}"
 
 disputedBody :: LB.ByteString
 disputedBody =
@@ -80,6 +84,10 @@ resolved registration = NameResponse {lastBlockTs = Just (RoundedSystemTime 1813
 registeredAlice :: NameRegistration
 registeredAlice =
   NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Nothing, nameRecord = testNameRecord}
+
+finalAlice :: NameRegistration
+finalAlice =
+  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Just (RoundedSystemTime 0), reservedReason_ = Nothing, nameRecord = testNameRecord}
 
 disputedAlice :: NameRegistration
 disputedAlice =
@@ -172,6 +180,8 @@ availabilitySpec = do
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
   it "a registration in its dispute period is answered with its end" $
     answers disputedBody (resolved disputedAlice)
+  it "a registration that cannot be ended is answered with a dispute end of 0" $
+    answers finalBody (resolved finalAlice)
   it "an unregistered name answers with the price" $
     answers availableBody (resolved NRAvailable {pricing = testPricing, nameTerms = Nothing})
   it "reserved carries the reason and no price" $
@@ -184,6 +194,7 @@ availabilitySpec = do
     mapM_
       (\a -> J.eitherDecodeStrict (LB.toStrict (J.encode a)) `shouldBe` Right a)
       [ registeredAlice,
+        finalAlice,
         disputedAlice,
         NRRegistered {expires = Nothing, graceUntil = Nothing, disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord},
         NRAvailable {pricing = testPricing, nameTerms = Nothing},
