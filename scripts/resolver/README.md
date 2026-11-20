@@ -214,8 +214,9 @@ identically (`bar.foobar.testing`).
 A response contains `status`, `expires`, `graceEnds` and `disputeUntil`
 whenever the resolver read them, a successful resolve included, so a client that
 has just resolved a name already knows when it expires. The timestamps are Unix
-seconds, and `null` when they could not be read; `disputeUntil` is also `null`
-when no dispute period is in effect.
+seconds. All are `null` when no registrar is configured, `expires` and
+`graceEnds` also for a zero expiry, and `disputeUntil` also when no dispute
+period is in effect or it could not be read.
 
 | `status` | Meaning |
 |---|---|
@@ -257,7 +258,8 @@ which is free to change.
 ```jsonc
 {"name": "nope.testing", "error": "unregistered",
  "message": "this name is not registered",
- "status": "unregistered", "expires": null, "graceEnds": null}
+ "status": "unregistered", "lastBlockTs": 1780000000, "expires": null,
+ "graceEnds": null, "disputeUntil": null, "reasonCode": null, "reason": null}
 ```
 
 The codes are `tldNotConfigured`, `notFullyQualified`, `unregistered`,
@@ -293,16 +295,16 @@ curl -s "http://127.0.0.1:8000/resolve/[$(printf acme | keccak-256sum | cut -d' 
 ```
 
 namehash is `keccak(parent || keccak(label))`, so this reaches the same node and
-returns the same record. The registrar keys `nameExpires`, `disputeUntil` and
-`reservedNames` on the labelhash too, so the status fields are read without the
-label as well.
+returns the same record. The registrar keys `nameExpires` and `disputeUntil`,
+and the name policy or the controller keys `reservedNames`, on the labelhash
+too, so the status fields are read without the label as well.
 
 Only the second-level label is a registry key, and `status` decodes a bracket
 there at any depth. The record does not: a bracket is decoded only in a
 two-label name, so `sub.[<hash>].testing` is not a supported query. Subname
 labels stay text; a bracket label left of the 2LD is an ordinary label. Routers
-from v22 send every 2LD this way, so a registrable name normally never reaches
-this service.
+from v22 send every 2LD this way, so the label of a name never registered
+normally never reaches this service.
 
 On v2, read `type`: only `available` means the name is free. On v1, read
 `status`: a name is free on `unregistered` (404) and on `expired` (410), every
@@ -378,9 +380,9 @@ The resolver reads three contracts, each configured per TLD, the name policy a
 controller names, and the subname registrar a registrar names.
 
 The **registry** answers who owns a node, and `/resolve` reads the records from
-it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, which
-is where every expiry field comes from, `disputeUntil`, the end of a dispute
-period, and `labelOf`, which is how a hashed query is answered with a name. A
+it. The **registrar** (ERC-721) holds `nameExpires` and `GRACE_PERIOD`, the
+source of every expiry field; `disputeUntil`, the end of a dispute period; and
+`labelOf`, which is how a hashed query is answered with a name. A
 name registered without recording its label cannot answer one, and
 `/v2/resolve` refuses it rather than answer with a name the client will reject.
 Its `subnameHook()` names the subname registrar, whose `ownerOf` says who holds
