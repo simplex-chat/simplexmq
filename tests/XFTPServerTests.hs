@@ -32,14 +32,14 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
 import qualified Network.TLS as T
-import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -74,6 +74,8 @@ xftpServerTests = do
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
+      it "should time out TLS handshake when TLS errors are logged" $ \_ -> testTLSHandshakeTimeout
+      it "should time out receiving file chunk" $ \_ -> testReceiveFileTimeout
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
@@ -255,6 +257,18 @@ testCancelledClientConnect =
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
     cancel a
     timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
+testTLSHandshakeTimeout :: HasTestEnv => Expectation
+testTLSHandshakeTimeout =
+  withStallingServerOn xftpTestPort $
+    timeout 1000000 (runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort Nothing $ \(_ :: TLS 'TClient) -> pure ())
+      `shouldReturn` Nothing
+  where
+    cfg = defaultTransportClientConfig {logTLSErrors = True}
+
+testReceiveFileTimeout :: HasTestEnv => Expectation
+testReceiveFileTimeout =
+  timeout 100000 (runExceptT $ receiveFile (\_ -> "" <$ threadDelay maxBound) $ XFTPRcvChunkSpec testChunkPath chSize "") `shouldReturn` Nothing
 
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
