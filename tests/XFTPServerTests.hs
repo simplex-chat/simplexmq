@@ -106,7 +106,8 @@ xftpServerTests = do
       it "should close connection and file when download stalls" testStalledDownload
       it "should close connection when the end of a download stalls" testStalledDownloadEnd
       it "should close connection when request body stalls" testStalledRequestBody
-      it "should time out a stalled upload of a committed chunk" testStalledCommittedUpload
+      it "should time out a stalled upload of a committed chunk" $ testStalledUpload True
+      it "should time out a stalled upload of a new chunk" $ testStalledUpload False
       it "should accept a repeated upload of a chunk while its first upload is stalled" testRepeatedUploadDuringStalledUpload
       it "should return OK to an upload completed after another upload of the chunk" testUploadAfterCommittedUpload
       it "should remove unfinished uploads at start" testRemoveTmpUploads
@@ -630,8 +631,8 @@ testStalledRequestBody fsType =
     let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
     withAsync (HC.sendRequest http2Client req Nothing) $ \_ -> expectDisconnected disconnected
 
-testStalledCommittedUpload :: HasTestEnv => AFStoreType -> Expectation
-testStalledCommittedUpload fsType =
+testStalledUpload :: HasTestEnv => Bool -> AFStoreType -> Expectation
+testStalledUpload committed fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000}) $ \_ ->
     testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
       g <- C.newRandom
@@ -642,7 +643,8 @@ testStalledCommittedUpload fsType =
       let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
       sId <- runRight $ do
         (sId, _) <- createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
-        sId <$ uploadXFTPChunk c spKey sId chunkSpec
+        when committed $ uploadXFTPChunk c spKey sId chunkSpec
+        pure sId
       t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
       let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send (byteString t) >> flush >> threadDelay maxBound
       timeout 5000000 (HC.sendRequest http2Client req Nothing) >>= \case
