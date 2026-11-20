@@ -183,6 +183,9 @@ availabilitySpec = do
     answers disputedBody (resolved disputedAlice)
   it "a registration that cannot be ended is answered with a dispute end of 0" $
     answers finalBody (resolved finalAlice)
+  it "an unknown dispute end is answered as unknown, and left out of RNAME" $ do
+    answers (registeredBodyWith "\"disputeUntil\":null,\"reservedReason_\":null," testNameRecord) (resolved registeredAlice)
+    LB.toStrict (J.encode (resolved registeredAlice)) `shouldNotSatisfy` B.isInfixOf "disputeUntil"
   it "an unregistered name answers with the price" $
     answers availableBody (resolved NRAvailable {pricing = testPricing, nameTerms = Nothing})
   it "reserved carries the reason and no price" $
