@@ -177,7 +177,7 @@ testConcurrentWrites =
 
 testBusyCommit :: SpecWith (DBStore, DBStore)
 testBusyCommit =
-  it "should retry busy commit without repeating transaction" $ \(s1, s2) -> do
+  it "should roll back busy commit and repeat transaction" $ \(s1, s2) -> do
     reading <- newEmptyMVar
     commits <- newTVarIO (0 :: Int)
     attempts <- newTVarIO (0 :: Int)
@@ -192,7 +192,7 @@ testBusyCommit =
           timeout 5000000 (atomically $ readTVar commits >>= check . (> 1)) `shouldReturn` Just ()
       )
       (takeMVar reading >> withTransaction' s1 insert)
-    readTVarIO attempts `shouldReturn` 1
+    readTVarIO attempts >>= (`shouldSatisfy` (> 1))
     withTransaction' s1 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
 
 testBusyCommitBudget :: SpecWith (DBStore, DBStore)
