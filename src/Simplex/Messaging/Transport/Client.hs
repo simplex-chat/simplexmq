@@ -60,7 +60,7 @@ import Simplex.Messaging.Parsers (parseAll, parseString)
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.KeepAlive
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll_, tshow, (<$?>))
+import Simplex.Messaging.Util (bshow, catchAll_, catchOwn, tshow, (<$?>))
 import System.IO.Error
 import Text.Read (readMaybe)
 import UnliftIO.Exception (IOException)
@@ -175,7 +175,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
   h <- newIORef Nothing
   let set hc = (>>= \c -> writeIORef h (Just $ hc c) $> c)
   E.bracket (set CHSocket $ connectTCP port) (\_ -> closeConn h) $ \sock -> do
-    mapM_ (setSocketKeepAlive sock) tcpKeepAlive `E.catchAny` \e -> logError ("Error setting TCP keep-alive " <> tshow e)
+    mapM_ (setSocketKeepAlive sock) tcpKeepAlive `catchOwn` \e -> logError ("Error setting TCP keep-alive " <> tshow e)
     let tCfg = clientTransportConfig cfg
     -- No TLS timeout to avoid failing connections via SOCKS
     tls <- set CHContext $ connectTLS (Just hostName) tCfg clientParams sock
