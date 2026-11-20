@@ -29,7 +29,7 @@ import Simplex.Messaging.Server.Names
   )
 import Simplex.Messaging.Server.Names.HttpResolver (ResolverError (..))
 import Simplex.Messaging.SimplexName (SimplexDomain (..), SimplexTLD (..), labelHash)
-import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..), SystemSeconds)
 import Simplex.Messaging.Transport (nameAvailSMPVersion, serverInfoSMPVersion)
 import Test.Hspec
 
@@ -53,16 +53,17 @@ testNameRecord =
 -- | What the resolver serves on /v2/resolve. Spelled out rather than encoded
 -- from the Haskell value: the literal JSON is the contract with the resolver.
 registeredBody :: NameRecord -> LB.ByteString
-registeredBody nameRec =
-  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+registeredBody = registeredBodyWith "\"reservedReason_\":null,"
+
+registeredBodyWith :: LB.ByteString -> NameRecord -> LB.ByteString
+registeredBodyWith fields nameRec =
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483," <> fields <> "\"nameRecord\":" <> J.encode nameRec <> "}"
 
 finalBody :: LB.ByteString
-finalBody =
-  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":0,\"reservedReason_\":null,\"nameRecord\":" <> J.encode testNameRecord <> "}"
+finalBody = registeredBodyWith "\"disputeUntil\":0,\"reservedReason_\":null," testNameRecord
 
 disputedBody :: LB.ByteString
-disputedBody =
-  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":1813100000,\"reservedReason_\":null,\"nameRecord\":" <> J.encode testNameRecord <> "}"
+disputedBody = registeredBodyWith "\"disputeUntil\":1813100000,\"reservedReason_\":null," testNameRecord
 
 availableBody :: LB.ByteString
 availableBody = responseBody "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
@@ -82,16 +83,17 @@ resolved registration = NameResponse {lastBlockTs = Just (RoundedSystemTime 1813
 
 -- | What `registeredBody testNameRecord` resolves to.
 registeredAlice :: NameRegistration
-registeredAlice =
-  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Nothing, nameRecord = testNameRecord}
+registeredAlice = aliceWith Nothing Nothing
+
+aliceWith :: Maybe SystemSeconds -> Maybe NameReservedReason -> NameRegistration
+aliceWith dispute reason =
+  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = dispute, reservedReason_ = reason, nameRecord = testNameRecord}
 
 finalAlice :: NameRegistration
-finalAlice =
-  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Just (RoundedSystemTime 0), reservedReason_ = Nothing, nameRecord = testNameRecord}
+finalAlice = aliceWith (Just (RoundedSystemTime 0)) Nothing
 
 disputedAlice :: NameRegistration
-disputedAlice =
-  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Just (RoundedSystemTime 1813100000), reservedReason_ = Nothing, nameRecord = testNameRecord}
+disputedAlice = aliceWith (Just (RoundedSystemTime 1813100000)) Nothing
 
 smpNamesTests :: Spec
 smpNamesTests = do
@@ -176,8 +178,7 @@ availabilitySpec = do
   it "a registered name answers with its record and dates" $
     answers (registeredBody testNameRecord) (resolved registeredAlice)
   it "a registered name can be held back too" $
-    answers heldBackBody . resolved $
-      NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
+    answers heldBackBody . resolved $ aliceWith Nothing (Just NRRInternal)
   it "a registration in its dispute period is answered with its end" $
     answers disputedBody (resolved disputedAlice)
   it "a registration that cannot be ended is answered with a dispute end of 0" $
@@ -208,8 +209,7 @@ availabilitySpec = do
     J.encode (NRRUnknown "seasonal") `shouldBe` "\"seasonal\""
     J.encode NRRTrademark `shouldBe` "\"trademark\""
   where
-    heldBackBody =
-      responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":\"internal\",\"nameRecord\":" <> J.encode testNameRecord <> "}"
+    heldBackBody = registeredBodyWith "\"reservedReason_\":\"internal\"," testNameRecord
     answers body a =
       withResolverServer (resolveResp status200 body) $ \port _ -> do
         env <- newNamesEnv (testNamesConfig port)
