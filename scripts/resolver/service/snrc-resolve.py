@@ -331,7 +331,9 @@ class CallReverted(RuntimeError):
 
 
 def rpc_error(error) -> RuntimeError:
-    return CallReverted(error) if isinstance(error, dict) and error.get("code") == 3 else RuntimeError(error)
+    code, message = (error.get("code"), error.get("message")) if isinstance(error, dict) else (None, None)
+    reverted = code == 3 or (code, message) == (-32000, "execution reverted")
+    return CallReverted(error) if reverted else RuntimeError(error)
 
 
 def rpc(method, params):
@@ -1221,7 +1223,7 @@ def registration(name: str):
                 "type": "registered",
                 "expires": reg["expires"],
                 "graceUntil": reg["graceEnds"],
-                **({"disputeUntil": reg["disputeUntil"]} if reg["disputeUntil"] is not None else {}),
+                "disputeUntil": reg["disputeUntil"],
                 "reservedReason_": reg["reasonCode"],
                 "nameRecord": rec,
             })

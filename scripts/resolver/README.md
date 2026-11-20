@@ -247,9 +247,10 @@ registration, such as the controller on the request of its owner or guardian
 The resolver reports that end as `disputeUntil` while it is later than `now`,
 and 0 otherwise. The call to a registrar from before dispute periods, such as
 `.testing`'s, reverts, and is read as 0: a revert is a JSON-RPC error with code
-3, or a failed call in a multicall. With any other JSON-RPC error, or an empty
-answer, `disputeUntil` is unknown and null; when a request to the node fails,
-the lookup is answered 502.
+3, or with code -32000 and the message "execution reverted", or a failed call in
+a multicall. With any other JSON-RPC error, or an empty answer, `disputeUntil`
+is unknown and null, also on v2; when a request to the node fails, the lookup is
+answered 502.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
