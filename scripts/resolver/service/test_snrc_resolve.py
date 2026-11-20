@@ -1009,6 +1009,11 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["disputeUntil"], self.now + 600)
 
+    def test_a_registration_without_a_dispute_period_has_a_null_dispute_end(self):
+        snrc.eth_call = self._chain(self.now + 3600)
+        _, body = registration("acme.testing")
+        self.assertIsNone(body["disputeUntil"])
+
     def test_v1_reports_the_dispute_end_and_null_without_one(self):
         for until, reported in ((self.now + 600, self.now + 600), (0, None)):
             with self.subTest(until=until):
@@ -1069,10 +1074,10 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["error"], "unknown")
 
     def test_each_answer_carries_exactly_its_own_fields(self):
-        """The relay decodes by these names; an extra or missing one is a break."""
+        """The relay decodes by these names; a missing one is a break."""
         cases = {
             "registered": (self._chain(self.now + 3600),
-                           {"type", "expires", "graceUntil", "reservedReason_", "nameRecord"}),
+                           {"type", "expires", "graceUntil", "disputeUntil", "reservedReason_", "nameRecord"}),
             "available": (self._chain(0), {"type", "pricing"}),
             "reserved": (self._chain(0, reserved=1), {"type", "reservedReason"}),
         }
@@ -1128,6 +1133,16 @@ class RegistrationV2Tests(unittest.TestCase):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.FORMER_OWNER, holder=self.OWNER)
         _, body = registration("sub.acme.testing")
         self.assertEqual(body["type"], "available")
+
+    def test_a_subname_under_a_2ld_with_zero_expiry_is_not_registered(self):
+        snrc.eth_call = self._chain(0, owner=self.FORMER_OWNER)
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_v1_answers_404_for_a_subname_under_a_2ld_with_zero_expiry(self):
+        snrc.eth_call = self._chain(0, owner=self.FORMER_OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual((status, body["error"]), (404, "unregistered"))
 
     def test_v1_does_not_resolve_a_subnode_a_former_holder_owns(self):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.FORMER_OWNER, holder=self.OWNER)
