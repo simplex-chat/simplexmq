@@ -82,14 +82,14 @@ import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import System.Environment (lookupEnv)
 import System.Exit (exitFailure)
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
 import System.IO (hPrint, hPutStrLn, universalNewlineMode)
 #ifdef slow_servers
 import System.Random (getStdRandom, randomR)
 #endif
 import UnliftIO
 import UnliftIO.Concurrent (threadDelay)
-import UnliftIO.Directory (canonicalizePath, doesFileExist, removeFile, renameFile)
+import UnliftIO.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory, removeFile, renameFile)
 import qualified UnliftIO.Exception as E
 
 type M s a = ReaderT (XFTPEnv s) IO a
@@ -134,6 +134,7 @@ data EntitlementChecked = EntNotChecked | EntChecked (Maybe SessionEntitlement)
 
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
+  removeTmpUploads
   restoreServerStats
   expireServerFiles Nothing fileExpiration `onException` stopServer
   raceAny_
@@ -612,8 +613,10 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
           receive restore = do
             path <- asks $ filesPath . config
+            tmpId <- randomId 12
             let fPath = path </> serverFileName senderId
-            (restore (receiveChunk $ XFTPRcvChunkSpec fPath size digest) `onException` release fPath) >>= \case
+                tmpPath = fPath <> "." <> B.unpack (strEncode tmpId) <> tmpUploadExtension
+            (restore (receiveChunk $ XFTPRcvChunkSpec tmpPath size digest) `onException` release tmpPath) >>= \case
               Right () -> do
                 stats <- asks serverStats
                 st <- asks fileStore
@@ -623,9 +626,15 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                     incFileStat filesUploaded
                     incFileStat filesCount
                     liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
+                    renameFile tmpPath fPath
                     pure FROk
-                  Left _e -> FRErr AUTH <$ release fPath
-              Left e -> FRErr e <$ release fPath
+                  Left _e -> release tmpPath >> uploadedResponse
+              Left e -> FRErr e <$ release tmpPath
+          uploadedResponse = do
+            st <- asks fileStore
+            liftIO (getFile st SFSender senderId) >>= \case
+              Right (FileRec {filePath = uploadedPath}, _) -> maybe (FRErr AUTH) (const FROk) <$> readTVarIO uploadedPath
+              Left _ -> pure $ FRErr AUTH
           release fPath = do
             us <- asks usedStorage
             atomically $ modifyTVar' us $ subtract (fromIntegral size)
@@ -738,6 +747,15 @@ incFileStat :: (FileServerStats -> IORef Int) -> M s ()
 incFileStat statSel = do
   stats <- asks serverStats
   liftIO $ atomicModifyIORef'_ (statSel stats) (+ 1)
+
+tmpUploadExtension :: String
+tmpUploadExtension = ".tmp"
+
+removeTmpUploads :: M s ()
+removeTmpUploads = do
+  path <- asks $ filesPath . config
+  whenM (doesDirectoryExist path) $
+    listDirectory path >>= mapM_ (removeFile . (path </>)) . filter ((tmpUploadExtension ==) . takeExtension)
 
 subtractStoredFile :: Word32 -> M s ()
 subtractStoredFile storedSize = do

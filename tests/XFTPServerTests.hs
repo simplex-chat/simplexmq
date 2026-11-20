@@ -64,7 +64,7 @@ import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileF
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getSymbolicLinkTarget, listDirectory, removeFile)
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, withAsync)
 import UnliftIO.Exception (tryAny)
@@ -107,6 +107,7 @@ xftpServerTests = do
       it "should close connection when the end of a download stalls" testStalledDownloadEnd
       it "should close connection when request body stalls" testStalledRequestBody
       it "should time out a stalled upload of a committed chunk" testStalledCommittedUpload
+      it "should accept a repeated upload of a chunk while its first upload is stalled" testRepeatedUploadDuringStalledUpload
       it "should close connections without requests" testNoRequestTimeout
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
@@ -648,6 +649,31 @@ testStalledCommittedUpload fsType =
           r -> expectationFailure $ "unexpected response: " <> show r
         Just (Left e) -> expectationFailure $ "request error: " <> show e
         Nothing -> expectationFailure "no response within 5 seconds"
+
+testRepeatedUploadDuringStalledUpload :: HasTestEnv => AFStoreType -> Expectation
+testRepeatedUploadDuringStalledUpload fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000}) $ \_ ->
+    testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      bytes <- createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      (sId, [rId]) <- runRight $ createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
+      t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+      let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send (byteString t) >> flush >> threadDelay maxBound
+          download c' = do
+            runRight_ $ downloadXFTPChunk g c' rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
+            B.readFile (testPath "received_chunk") `shouldReturn` bytes
+      withAsync (HC.sendRequest http2Client req Nothing) $ \_ -> do
+        threadDelay 500000
+        testXFTPClient $ \c' -> do
+          runRight_ $ uploadXFTPChunk c' spKey sId chunkSpec
+          download c'
+          threadDelay 2500000
+          download c'
+        filter ((".tmp" ==) . takeExtension) <$> listDirectory xftpServerFiles `shouldReturn` []
 
 testNoRequestTimeout :: HasTestEnv => AFStoreType -> Expectation
 testNoRequestTimeout fsType =
