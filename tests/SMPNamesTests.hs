@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, disputedBody, availableBody, reservedBody, responseBody, resolved, jsonValue) where
+module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, disputedBody, disputedAlice, availableBody, reservedBody, responseBody, resolved) where
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -54,14 +54,11 @@ testNameRecord =
 -- from the Haskell value: the literal JSON is the contract with the resolver.
 registeredBody :: NameRecord -> LB.ByteString
 registeredBody nameRec =
-  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":null,\"reservedReason_\":null,\"nameRecord\":" <> J.encode nameRec <> "}"
 
 disputedBody :: LB.ByteString
 disputedBody =
-  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":1813100000,\"nameRecord\":" <> J.encode testNameRecord <> "}"
-
-jsonValue :: LB.ByteString -> J.Value
-jsonValue = either error id . J.eitherDecode
+  responseBody $ "{\"type\":\"registered\",\"expires\":1813853483,\"graceUntil\":1821629483,\"disputeUntil\":1813100000,\"reservedReason_\":null,\"nameRecord\":" <> J.encode testNameRecord <> "}"
 
 availableBody :: LB.ByteString
 availableBody = responseBody "{\"type\":\"available\",\"pricing\":{\"registrationPrices\":{\"3\":12793,\"4\":3198},\"basePrice\":100,\"minLabelLength\":3}}"
@@ -83,6 +80,10 @@ resolved registration = NameResponse {lastBlockTs = Just (RoundedSystemTime 1813
 registeredAlice :: NameRegistration
 registeredAlice =
   NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Nothing, nameRecord = testNameRecord}
+
+disputedAlice :: NameRegistration
+disputedAlice =
+  NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Just (RoundedSystemTime 1813100000), reservedReason_ = Nothing, nameRecord = testNameRecord}
 
 smpNamesTests :: Spec
 smpNamesTests = do
@@ -169,10 +170,8 @@ availabilitySpec = do
   it "a registered name can be held back too" $
     answers heldBackBody . resolved $
       NRRegistered {expires = Just (RoundedSystemTime 1813853483), graceUntil = Just (RoundedSystemTime 1821629483), disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord}
-  it "a registration in its dispute period is answered with its end, as the resolver sent it" $
-    withResolverServer (resolveResp status200 disputedBody) $ \port _ -> do
-      env <- newNamesEnv (testNamesConfig port)
-      (fmap J.toJSON <$> resolveName env aliceQuery) `shouldReturn` Right (jsonValue disputedBody)
+  it "a registration in its dispute period is answered with its end" $
+    answers disputedBody (resolved disputedAlice)
   it "an unregistered name answers with the price" $
     answers availableBody (resolved NRAvailable {pricing = testPricing, nameTerms = Nothing})
   it "reserved carries the reason and no price" $
@@ -185,6 +184,7 @@ availabilitySpec = do
     mapM_
       (\a -> J.eitherDecodeStrict (LB.toStrict (J.encode a)) `shouldBe` Right a)
       [ registeredAlice,
+        disputedAlice,
         NRRegistered {expires = Nothing, graceUntil = Nothing, disputeUntil = Nothing, reservedReason_ = Just NRRInternal, nameRecord = testNameRecord},
         NRAvailable {pricing = testPricing, nameTerms = Nothing},
         NRReserved NRRInternal,

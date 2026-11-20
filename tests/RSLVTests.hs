@@ -14,7 +14,6 @@ module RSLVTests (rslvTests) where
 import Control.Concurrent (threadDelay)
 import Control.Monad (forM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
-import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 import Data.IORef (IORef, readIORef)
@@ -30,7 +29,7 @@ import SMPClient
 import Simplex.Messaging.Client
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (strDecode)
-import SMPNamesTests (availableBody, disputedBody, jsonValue, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
+import SMPNamesTests (availableBody, disputedAlice, disputedBody, registeredBody, reservedBody, resolved, testNameRecord, testPricing)
 import Simplex.Messaging.Protocol
   ( BrokerMsg (..),
     Cmd (..),
@@ -182,7 +181,7 @@ testRslvForwardedDisputeEnd :: HasTestEnv => IO ()
 testRslvForwardedDisputeEnd =
   withProxyAndResolver (status200, disputedBody) $
     forwardedResolveAlice >>= \case
-      Right (Right res) -> J.toJSON res `shouldBe` jsonValue disputedBody
+      Right (Right res) -> res `shouldBe` resolved disputedAlice
       r -> expectationFailure $ "expected Right (Right NameResponse), got: " <> show r
 
 testRslvSuccess :: HasTestEnv => IO ()
@@ -200,9 +199,7 @@ testRslvDisputeEnd =
   withResolverServer (status200, disputedBody) $
     testSMPClient @TLS $ \h -> do
       (_, _, resp) <- sendRslv h "rs08" (domain "alice.simplex")
-      case resp of
-        Right (RNAME res) -> J.toJSON res `shouldBe` jsonValue disputedBody
-        _ -> expectationFailure $ "expected Right (RNAME _), got: " <> show resp
+      resp `shouldBe` Right (RNAME (resolved disputedAlice))
 
 testRslvAvailable :: HasTestEnv => IO ()
 testRslvAvailable =
