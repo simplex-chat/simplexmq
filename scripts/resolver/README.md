@@ -172,7 +172,7 @@ Error bodies carry `name` and a fixed `error` code to branch on. Only
 label, so a hashed query cannot be answered with a name. See
 [Querying by labelhash](#querying-by-labelhash).
 
-A subname reports the expiry and grace of the 2LD above it, since that is what
+A subname is answered with the expiry, grace and dispute end of its 2LD, which
 bounds its lifetime. A subname is answered only while it is held: owned in the
 registry by the 2LD's holder, or by the subname registrar that the registrar's
 `subnameHook()` names, while its `ownerOf` names a holder. Any other subname,
@@ -197,6 +197,7 @@ alongside its fields.
   "status": "registered",      // registered | grace | expired | unregistered | unknown
   "expires": 1780000000,       // Unix seconds; when the registration ends, unless it is ended in its dispute period
   "graceEnds": 1787776000,     // expires + GRACE_PERIOD; last moment the owner can renew
+  "disputeUntil": null,        // Unix seconds; until then the registration can be ended and cannot be renewed
   "reasonCode": null,          // set when the name is held back as well
   "reason": null               // set when the name is held back as well
 }
@@ -217,7 +218,7 @@ name already knows when it expires. Both timestamps are Unix seconds, and
 
 | `status` | Meaning |
 |---|---|
-| `registered` | live; `expires` is when that ends, unless the registration is ended in its dispute period |
+| `registered` | live; `expires` is when that ends, unless the registration is ended before `disputeUntil` |
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace; anyone may register it |
 | `unregistered` | never registered, or its registration was ended in its dispute period; free to take |
@@ -237,6 +238,9 @@ registration made through the controller's `registerSponsored` has a dispute
 period of 14 to 120 days, and the registrar stores its end as `disputeUntil`.
 Within it, a renewal is refused, and the controller's owner or guardian
 (`beneficiary`) can end the registration; the registrar then sets a zero expiry.
+The resolver reports that end as `disputeUntil` while it is later than `now`,
+and null otherwise. The call to a registrar from before dispute periods, such as
+`.testing`'s, reverts, and is read as none.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404

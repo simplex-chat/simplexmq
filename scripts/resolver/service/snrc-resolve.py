@@ -508,6 +508,14 @@ def grace_period(registrar: str) -> int:
     return decode_uint(eth_call(*grace_call(registrar)))
 
 
+def dispute_end(registrar: str, token: int, now: int):
+    try:
+        until = decode_uint(eth_call(*dispute_until_call(registrar, token)))
+    except RuntimeError:
+        return None
+    return until if until > now else None
+
+
 def expiry_status(expires: int, grace: int, now: int) -> str:
     """The registrar's `available(id)` is not enough on its own: it is also
     true for a name nobody registered, since 0 + GRACE_PERIOD < now."""
@@ -647,6 +655,7 @@ def name_status(name: str):
             "lastBlockTs": None,
             "expires": None,
             "graceEnds": None,
+            "disputeUntil": None,
             "reasonCode": None,
             "reason": None,
         }
@@ -671,6 +680,7 @@ def name_status(name: str):
         "lastBlockTs": now,
         "expires": expires or None,
         "graceEnds": (expires + grace) if expires else None,
+        "disputeUntil": dispute_end(registrar, token, now),
         "reasonCode": reason[0] if reason else None,
         "reason": reason[1] if reason else None,
     }
@@ -803,6 +813,10 @@ def expires_call(registrar: str, token: int):
     return registrar, selector("nameExpires(uint256)") + encode_uint(token)
 
 
+def dispute_until_call(registrar: str, token: int):
+    return registrar, selector("disputeUntil(uint256)") + encode_uint(token)
+
+
 def grace_call(registrar: str):
     return registrar, selector("GRACE_PERIOD()")
 
@@ -863,7 +877,7 @@ def lookup_reads(name: str):
     registrar = REGISTRARS.get(tld)
     if registrar and len(labels) >= 2:
         token = label_token(labels[-2])
-        reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*grace_call(registrar))]
+        reads += [BLOCK_READ, eth_call_read(*expires_call(registrar, token)), eth_call_read(*dispute_until_call(registrar, token)), eth_call_read(*grace_call(registrar))]
         if len(labels) == 2 and is_encoded_labelhash(labels[0]):
             reads.append(eth_call_read(*label_call(registrar, token)))
         if len(labels) > 2:
@@ -1197,6 +1211,7 @@ def registration(name: str):
                 "type": "registered",
                 "expires": reg["expires"],
                 "graceUntil": reg["graceEnds"],
+                **({"disputeUntil": reg["disputeUntil"]} if reg["disputeUntil"] else {}),
                 "reservedReason_": reg["reasonCode"],
                 "nameRecord": rec,
             })
