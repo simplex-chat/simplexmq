@@ -276,7 +276,7 @@ sequenceDiagram
 - Ciphers of `defaultSupportedParams`, by their tls 2.1 names:
   - `cipher13_CHACHA20_POLY1305_SHA256`: 0x1303, TLS 1.3;
   - `cipher_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256`: 0xCCA9, TLS 1.2.
-- Extended main secret: `supportedExtendedMainSecret` is the default of tls 2.1.6, `RequireEMS`, in `defaultSupportedParams`, `defaultSupportedParamsHTTPS` and `http2TLSParams`. It is required in TLS 1.2 handshakes of clients and servers; tls 1.9 peers offer it (`AllowEMS`).
+- Extended master secret (RFC 7627; `supportedExtendedMainSecret` in tls 2.1): the default of tls 2.1.6, `RequireEMS`, is kept in `defaultSupportedParams`, `defaultSupportedParamsHTTPS` and `http2TLSParams`. It is required in TLS 1.2 handshakes of clients and servers; tls 1.9 peers offer it (`AllowEMS`).
 
 ## Build
 
@@ -302,7 +302,7 @@ sequenceDiagram
 
 ## Composition
 
-Green: added or changed. Red: removed.
+Green: added or changed. Red: removed. Grey, dashed: to be changed in simplex-chat.
 
 ```mermaid
 flowchart LR
@@ -348,7 +348,8 @@ flowchart LR
     class H4,T1,WF removed
     class H5,T2,W4 added
     linkStyle 14,15,17 stroke:#cc0000
-    linkStyle 1,3,4,5,7,9,11,13,16,18 stroke:#008800
+    linkStyle 1,3,4,5,9,11,13,16,18 stroke:#008800
+    linkStyle 7 stroke:#999999,stroke-dasharray:4
 ```
 
 ## For simplex-chat
@@ -388,10 +389,14 @@ flowchart LR
   - `testInterruptedUploadStorage`;
   - `smpServerTestStatic`.
 - The limit of `closeTLS` is tested in #2058 (`testCloseBlockedTLS`), with the same `closeTLS`.
+- Both tests are in the group "XFTP HTTP/2" (`xftpHTTP2Tests`), run once, without a store type.
+- Untested:
+  - the release of the stream of a request cancelled while it is queued in `sendRequest`;
+  - `closeTLS` in this branch, until #2058 is merged.
 
 ## Interoperability
 
-Builds of this branch at 3e026b1d (tls 2.1.6, http2 5.4.13), with the sources of the head, and of master 880d089e (tls 1.9.0, http2 4.2.2) were run against each other on AWS. Each pair of server and client builds was tested:
+Builds of this branch at 3e026b1d (tls 2.1.6, http2 5.4.13), whose library sources equal those of 6aab7fab, and of master 880d089e (tls 1.9.0, http2 4.2.2) were run against each other on AWS. Each pair of server and client builds was tested:
 
 - master server, branch client;
 - branch server, master client;
