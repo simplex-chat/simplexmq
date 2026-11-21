@@ -1953,3 +1953,11 @@ class SetupTests(LogTestCase):
                         snrc.setup_logging(self.out)
                 finally:
                     setattr(snrc, setting, saved)
+
+
+class DefaultsTests(unittest.TestCase):
+    def test_both_tlds_resolve_on_mainnet_by_default(self):
+        fresh = importlib.util.module_from_spec(_SPEC)
+        _SPEC.loader.exec_module(fresh)
+        for table in (fresh.REGISTRIES, fresh.REGISTRARS, fresh.CONTROLLERS):
+            self.assertEqual(sorted(tld for tld, address in table.items() if address), ["simplex", "testing"])

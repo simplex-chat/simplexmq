@@ -46,8 +46,8 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`. `.simplex`, whose controller has a name policy, then still answers
-`502` until `docker compose restart resolver` (see Configuring addresses).
+returns `502`. `.simplex`, whose controller has a name policy, can then still
+answer `502` until `docker compose restart resolver` (see Configuring addresses).
 
 ## Verify
 
@@ -80,7 +80,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 **4. the route your router will call** (check 3 passes on an older resolver too):
 ```sh
 curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
-# → {"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}
+# → {"lastBlockTs":…,"registration":{"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}}
 ```
 
 **5. a reservation read from `.simplex`'s name policy:**
@@ -108,6 +108,8 @@ A `502` here while check 4 passes requires `docker compose restart resolver`.
 
 - **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
   `docker compose pull`; re-run the verify checks after pulling.
+- The resolver image contains the script: after updating this directory, run
+  `docker compose up -d --build resolver`, then checks 2 and 5.
 - All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
 
 ## Teardown
@@ -400,20 +402,19 @@ has not yet reached the controller or its `setNamePolicy`. A node that
 does not answer stops the resolver, and the container restarts. After the
 controller's owner calls `setNamePolicy`, restart the resolver.
 
-Each default is the address `deployments.mainnet.<tld>.json` records, which is
-the **proxy** of an upgradeable contract: the controller for `.testing`, all
-three for `.simplex`. Storage lives in the proxy, so an implementation address
-holds no names: a registrar implementation reports every name as never
-registered. The two deployment files use different names for a proxy:
-`deployments.mainnet.<tld>.json` records the controller under the ENS role name
-`ETHRegistrarController`, and `verification.mainnet.<tld>.json` calls it
-`SimplexControllerProxy`; for `.simplex` the registry and the registrar are
-`ENSRegistryProxy` and `BaseRegistrarImplementationProxy` there. Each pair is
-one address, and it is the one used here.
+Each default is the address that `deployments.mainnet.<tld>.json` records. For
+an upgradeable contract that address is the **proxy**: the controller of
+`.testing` and all three of `.simplex`. Storage lives in the proxy, so an
+implementation address holds no names: a registrar implementation reports every
+name as never registered. `verification.mainnet.<tld>.json` names the proxies
+differently: `ETHRegistrarController` is `SimplexControllerProxy` there, and for
+`.simplex`, `ENSRegistry` and `BaseRegistrarImplementation` are `ENSRegistryProxy`
+and `BaseRegistrarImplementationProxy`. Its entries `ENSRegistry@…` and
+`BaseRegistrarImplementation@…` are the implementations.
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
-as env vars when you run the script directly.
+as env vars when you run the script directly. An empty value means the default.
 
 ### Load and scaling
 
