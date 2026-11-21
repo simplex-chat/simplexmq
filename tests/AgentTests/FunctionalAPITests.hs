@@ -643,6 +643,8 @@ functionalAPITests ps = do
       testSwitchNewQueueRecordedWhileDeleting ps
     it "should delete the new queue when the switch is aborted and started again while the queue is created" $
       testSwitchRestartedWhileNewQueue ps
+    it "should end the asynchronous switch without an event when it is aborted while the queue is created" $
+      testSwitchAsyncAbortedWhileNewQueue ps
     it "should refuse the switch when ratchet synchronization starts before the new queue is created" $
       testSwitchRatchetSyncBeforeNewQueue ps
     it "should secure the new queue and complete the switch after ratchet synchronization" $
@@ -4546,6 +4548,28 @@ testSwitchRestartedWhileNewQueue ps@(t, _) =
             get b =##> \case ("", c, SWITCH QDRcv SPStarted _) -> c == aId; _ -> False
             waitRcvQueueRecords b 2
       storeLogQueues testStoreLogFile2 `shouldReturn` (2, 1)
+
+testSwitchAsyncAbortedWhileNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchAsyncAbortedWhileNewQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withPausedProxyOn testPort2 testPort3 $ \accepted resume -> do
+          void . runRight $ switchConnectionAsync b "" aId
+          timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+          void . runRight $ abortConnectionSwitch b aId
+          atomically $ putTMVar resume ()
+          timeout 5_000000 (waitNoCommands b) `shouldReturn` Just ()
+          runRight (getConnectionServers b aId) >>= (`shouldMatchList` [Nothing]) . rcvSwchStatuses'
+          waitRcvQueueRecords b 1
+          noMessages b "nothing else should be delivered"
+      storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+  where
+    waitNoCommands c = do
+      cmds :: [(ConnId, Int64)] <- withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, command_id FROM commands")
+      unless (null cmds) $ threadDelay 100000 >> waitNoCommands c
 
 testJoinConnectionDeletedWhileReplyQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testJoinConnectionDeletedWhileReplyQueue ps@(t, _) =
