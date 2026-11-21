@@ -14,6 +14,7 @@
 module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (bracket)
 import Control.Monad (forM, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -42,6 +43,7 @@ import ServerTests
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
+import Simplex.Messaging.Agent.Store.Postgres.Common (withTransaction)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -49,7 +51,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
+import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfPostgresStore (dbStore), closeNtfDbStore, newNtfDbStore, withClientDB, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
@@ -81,6 +83,20 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscription address" $ testSNEWServerAddress ps
   describe "Notification service" $ do
     it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
+
+ntfStoreTests :: Spec
+ntfStoreTests = do
+  it "should retry a transaction aborted by a deadlock" $
+    withDeadlockedTokens $ \st -> withDB' "test" st updateTokens `shouldReturn` Right 0
+  it "should retry a client transaction aborted by a deadlock" $
+    withDeadlockedTokens $ \st -> withClientDB "test" st updateTokens `shouldReturn` Right 0
+  where
+    updateTokens db = PSQL.execute_ db "UPDATE tokens SET cron_interval = 0"
+
+withDeadlockedTokens :: HasTestEnv => (NtfPostgresStore -> IO ()) -> IO ()
+withDeadlockedTokens test = bracket (newNtfDbStore ntfTestDBCfg) closeNtfDbStore $ \st -> do
+  void $ withTransaction (dbStore st) $ \db -> PSQL.execute_ db $ deadlockOnce "UPDATE ON tokens"
+  test st
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do

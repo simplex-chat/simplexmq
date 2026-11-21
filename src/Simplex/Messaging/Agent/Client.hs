@@ -173,6 +173,8 @@ module Simplex.Messaging.Agent.Client
     withStoreIsolation',
     withStoreBatch,
     withStoreBatch',
+    catchItemError,
+    catchRolledBack,
     unsafeWithStore,
     storeError,
     notifySub,
@@ -255,7 +257,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), withTransactionIsolation)
+import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), abortsTransaction, isTransactionConflict, withTransactionIsolation)
 import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -2595,7 +2597,7 @@ withStore' c action = withStore c $ fmap Right . action
 {-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStore c action = withStore_ c (`withTransaction` action)
+withStore c = withStoreIsolation c ReadCommitted
 
 withStoreIsolation' :: AgentClient -> IsolationLevel -> (DB.Connection -> IO a) -> AM a
 withStoreIsolation' c isolation action = withStoreIsolation c isolation $ fmap Right . action
@@ -2625,17 +2627,25 @@ withStore_ c transaction = do
 unsafeWithStore :: AgentClient -> (DB.Connection -> IO a) -> AM' a
 unsafeWithStore c action = do
   st <- asks store
-  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransaction st action
+  liftIO $ agentOperationBracket c AODatabase (\_ -> pure ()) $ withTransactionIsolation st ReadCommitted action
 
 withStoreBatch :: Traversable t => AgentClient -> (DB.Connection -> t (IO (Either AgentErrorType a))) -> AM' (t (Either AgentErrorType a))
 withStoreBatch c actions = do
   st <- asks store
   liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st $
-      mapM (`E.catch` handleInternal) . actions
+    withTransactionIsolation st ReadCommitted $ \db -> do
+      let items = actions db
+      mapM (`catchItemError` handleInternal) items `catchRolledBack` \e -> pure (Left e <$ items)
   where
     handleInternal :: E.SomeException -> IO (Either AgentErrorType a)
     handleInternal = pure . Left . INTERNAL . show
+
+catchItemError :: IO a -> (E.SomeException -> IO a) -> IO a
+catchItemError = E.catchJust $ \e -> if isTransactionConflict e || abortsTransaction e then Nothing else Just e
+
+catchRolledBack :: IO a -> (AgentErrorType -> IO a) -> IO a
+catchRolledBack = E.catchJust $ \e ->
+  if abortsTransaction e && not (isTransactionConflict e) then Just (INTERNAL $ "transaction rolled back after " <> show e) else Nothing
 
 withStoreBatch' :: Traversable t => AgentClient -> (DB.Connection -> t (IO a)) -> AM' (t (Either AgentErrorType a))
 withStoreBatch' c actions = withStoreBatch c (fmap (fmap Right) . actions)

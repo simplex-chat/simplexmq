@@ -16,6 +16,7 @@ module Simplex.Messaging.Agent.Store.SQLite.Common
     withTransactionPriority,
     withTransactionIsolation,
     isTransactionConflict,
+    abortsTransaction,
     withSavepoint,
     dbBusyLoop,
     storeKey,
@@ -109,13 +110,16 @@ withTransactionPriority st@DBStore {dbClosed} priority action = withConnectionPr
     transaction db@DB.Connection {conn} = SQL.withImmediateTransaction conn $ action db
 
 -- isolation for agent transactions; postgresql-simple is not a dependency of SQLite builds
-data IsolationLevel = RepeatableRead
+data IsolationLevel = ReadCommitted | RepeatableRead
 
 withTransactionIsolation :: DBStore -> IsolationLevel -> (DB.Connection -> IO a) -> IO a
 withTransactionIsolation st _ = withTransaction st
 
 isTransactionConflict :: E.SomeException -> Bool
 isTransactionConflict _ = False
+
+abortsTransaction :: E.SomeException -> Bool
+abortsTransaction _ = False
 
 -- No-op for SQLite, just tries the action.
 -- This provides a consistent interface with the PostgreSQL version.

@@ -53,7 +53,7 @@ import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
-import SMPClient (testStoreDBOpts)
+import SMPClient (deadlockOnce, testStoreDBOpts)
 #endif
 
 msgStoreTests :: Spec
@@ -70,6 +70,7 @@ msgStoreTests = do
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
     it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
+    it "should retry a message write aborted by a deadlock" $ withMsgStore testPostgresStoreConfig testWriteMsgDeadlock
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -507,4 +508,15 @@ testClosedStore ms = do
 testDBOperationTimeout :: PostgresMsgStore -> IO ()
 testDBOperationTimeout ms =
   timeout 100000 (runExceptT $ withDB' "test" (queueStore ms) $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+
+testWriteMsgDeadlock :: PostgresMsgStore -> IO ()
+testWriteMsgDeadlock ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  void $ withTransaction (dbStore $ queueStore ms) $ \db -> DB.execute_ db $ deadlockOnce "INSERT ON messages"
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    Just (_, True) <- writeMsg ms q True =<< mkMessage "message 1"
+    Msg "message 1" <- tryPeekMsg ms q
+    checkQueueSize ms q (1, True)
 #endif
