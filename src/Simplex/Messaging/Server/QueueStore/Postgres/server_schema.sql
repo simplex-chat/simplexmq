@@ -1,6 +1,7 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -424,7 +425,7 @@ CREATE TABLE smp_server.migrations (
 
 CREATE TABLE smp_server.msg_queues (
     recipient_id bytea NOT NULL,
-    recipient_keys bytea NOT NULL,
+    recipient_keys bytea CONSTRAINT msg_queues_recipient_key_not_null NOT NULL,
     rcv_dh_secret bytea NOT NULL,
     sender_id bytea NOT NULL,
     sender_key bytea,
@@ -535,6 +536,15 @@ CREATE TABLE smp_server.server_stats (
     rslv_not_found bigint NOT NULL,
     rslv_resolver_errs bigint NOT NULL,
     rslv_disabled bigint NOT NULL,
+    rslv_rejected bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_below23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_from23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_recv_below23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_recv_from23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_relay_limit bigint DEFAULT 0 NOT NULL,
+    fwd_worker_cmds bigint DEFAULT 0 NOT NULL,
+    fwd_worker_cmd_ms bigint DEFAULT 0 NOT NULL,
+    fwd_worker_cmd_max_ms bigint DEFAULT 0 NOT NULL,
     CONSTRAINT server_stats_server_stats_id_check CHECK ((server_stats_id = 1))
 );
 
