@@ -514,7 +514,7 @@ testReconnectCancel :: PostgresMsgStore -> IO ()
 testReconnectCancel ms = do
   let st = dbStore $ queueStore ms
   reconnecting <- newEmptyTMVarIO
-  let st' = st {dbConnect = atomically (putTMVar reconnecting ()) >> threadDelay 1000000 >> dbConnect st}
+  let st' = st {dbConnect = atomically (putTMVar reconnecting ()) >> threadDelay maxBound >> dbConnect st}
   a <- async $ E.try @DB.SqlError $ withTransaction st' $ \db -> DB.query_ db "SELECT 1/0" :: IO [Only Int]
   atomically $ takeTMVar reconnecting
   cancel a

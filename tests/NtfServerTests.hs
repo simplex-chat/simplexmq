@@ -185,7 +185,7 @@ testPeriodicNtfServerStop t = do
   Right () <- updateTokenCronSentAt st tknId 0
   closeNtfDbStore st
   withStallingServerOn' apnsTestPort $ \accepted _ ->
-    withNtfServer t $ atomically $ takeTMVar accepted
+    withNtfServerCfg ntfServerCfg {transports = [(ntfTestPort, t, False)], pushQSize = 64} $ \_ -> atomically $ takeTMVar accepted
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
