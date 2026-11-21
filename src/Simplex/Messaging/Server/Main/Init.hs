@@ -165,6 +165,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> "\n\n\
         \# Limit number of connections to destination servers being established at once.\n"
     <> ("# connect_concurrency = " <> tshow defaultProxyConnectConcurrency)
+    <> "\n\n\
         \# Limit number of messages forwarded to one destination server and awaiting its response.\n"
     <> ("# relay_concurrency = " <> tshow defaultProxyRelayConcurrency)
     <> "\n\n\
