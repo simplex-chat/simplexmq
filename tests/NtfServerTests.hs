@@ -13,7 +13,8 @@
 
 module NtfServerTests where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (killThread, threadDelay)
+import Control.Exception (AsyncException (..), fromException)
 import Control.Monad (forM, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -23,7 +24,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, isNothing)
 import Data.Text.Encoding (encodeUtf8)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
@@ -47,7 +48,7 @@ import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
+import Simplex.Messaging.Notifications.Server.Env (NtfPushServer (pushClients), NtfServerConfig (..), getPushClient, newNtfPushServer)
 import Simplex.Messaging.Notifications.Server.Push.APNS
 import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
@@ -55,10 +56,12 @@ import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (async, asyncThreadId, waitCatch)
 import UnliftIO.STM
 import Util
 
@@ -72,6 +75,7 @@ ntfServerTests ps@(t, _) = do
   describe "APNS push delivery" $ do
     it "resumes sending notifications after the push provider is unreachable" $ testPushWorkerResumesAfterOutage t
     it "does not connect to the push provider when the key file is not configured" testNoConnectWithoutKeyFile
+    it "stops connecting to the push provider when the push worker is killed" testPushClientKilled
   describe "Database pool" $ do
     it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
@@ -151,6 +155,18 @@ testNoConnectWithoutKeyFile =
     NtfServerConfig {apnsConfig} = ntfServerCfg
     apnsCfgMissingKey = apnsConfig {authKeyFileEnv = "APNS_KEY_FILE_MISSING"}
     keyFileError (e :: IOError) = "APNS_KEY_FILE_MISSING" `isInfixOf` show e
+
+testPushClientKilled :: HasTestEnv => Expectation
+testPushClientKilled =
+  withStallingServerOn' apnsTestPort $ \accepted _ -> do
+    s <- newNtfPushServer 1 apnsConfig
+    a <- async $ getPushClient s PPApnsTest
+    atomically $ takeTMVar accepted
+    killThread $ asyncThreadId a
+    timeout 1000000 (either fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just (Just ThreadKilled)
+    isNothing <$> TM.lookupIO PPApnsTest (pushClients s) `shouldReturn` True
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
