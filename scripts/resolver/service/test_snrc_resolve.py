@@ -1210,7 +1210,7 @@ class FakeChain:
     RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
     SUBNAMES = RegistrationV2Tests.SUBNAMES
     GRACE = 90 * 86400
-    TEXTS ={"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
+    TEXTS = {"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
 
     def __init__(self):
         self.now = int(time.time())
@@ -1466,7 +1466,7 @@ class BatchedReadsTests(FakeNodeTestCase):
         status, body = self.assert_same_answer(snrc.resolve, "acme.testing", 2)
         self.assertEqual(body["owner"], FakeChain.OWNER)
 
-    def subname_of_the_subname_registrar(self, name, holder):
+    def add_subname_of_the_subname_registrar(self, name, holder):
         node = snrc.node_of(name)
         self.node.chain.answers.update({
             snrc.subname_hook_call(FakeChain.REGISTRAR): "0x" + snrc.encode_uint(int(FakeChain.SUBNAMES, 16)),
@@ -1476,14 +1476,14 @@ class BatchedReadsTests(FakeNodeTestCase):
         })
 
     def test_a_subname_the_subname_registrar_holds_takes_three_round_trips(self):
-        self.subname_of_the_subname_registrar("held.acme.testing", FakeChain.OWNER)
+        self.add_subname_of_the_subname_registrar("held.acme.testing", FakeChain.OWNER)
         status, body = self.assert_same_answer(snrc.registration, "held.acme.testing", 3)
         self.assertEqual(body["registration"]["nameRecord"]["owner"], FakeChain.OWNER)
         status, body = self.assert_same_answer(snrc.resolve, "held.acme.testing", 3)
         self.assertEqual(body["owner"], FakeChain.OWNER)
 
     def test_a_subname_the_subname_registrar_no_longer_holds_is_answered_in_four_round_trips(self):
-        self.subname_of_the_subname_registrar("gone.acme.testing", snrc.ZERO_ADDR)
+        self.add_subname_of_the_subname_registrar("gone.acme.testing", snrc.ZERO_ADDR)
         status, body = self.assert_same_answer(snrc.registration, "gone.acme.testing", 4)
         self.assertEqual(body["registration"]["type"], "available")
 
