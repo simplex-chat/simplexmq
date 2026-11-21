@@ -11,6 +11,7 @@ module Simplex.FileTransfer.Server.Store.Postgres
   ( PostgresFileStore (..),
     importFileStore,
     exportFileStore,
+    withDB',
   )
 where
 

@@ -23,11 +23,14 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
+import Simplex.Messaging.Encoding.String (strEncode)
 import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
@@ -36,16 +39,18 @@ import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), withLog')
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import SMPClient (testStoreLogFile)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Util
 
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as E
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -62,6 +67,8 @@ msgStoreTests = do
     someMsgStoreTests testSMTStoreConfig
     it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
     it "should time out store log write" testStoreLogTimeout
+    it "should end the thread cancelled during store log write" testCancelStoreLogWrite
+    it "should log the queue change of the thread cancelled before store log write" $ withMsgStore testSMTStoreConfig testCancelBeforeStoreLogWrite
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
@@ -71,6 +78,8 @@ msgStoreTests = do
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
     it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
     it "should retry a message write aborted by a deadlock" $ withMsgStore testPostgresStoreConfig testWriteMsgDeadlock
+    it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
+    it "should end the thread cancelled during database query" $ withMsgStore testPostgresStoreConfig testCancelDBQuery
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -334,6 +343,23 @@ testStoreLogTimeout = do
   sl_ <- newTVarIO $ Just sl
   timeout 100000 (withLog' "test" sl_ $ \_ -> threadDelay 500000) `shouldReturn` Nothing
   closeStoreLog sl
+testCancelStoreLogWrite :: HasTestEnv => IO ()
+testCancelStoreLogWrite =
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl -> do
+    sl' <- newTVarIO $ Just sl
+    testCancelledInside $ \waitCancel -> withLog' "test" sl' $ \_ -> waitCancel
+
+testCancelBeforeStoreLogWrite :: HasTestEnv => STMMsgStore -> IO ()
+testCancelBeforeStoreLogWrite ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  Right q <- addQueue ms rId qr
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl ->
+    testCancelledInside $ \waitCancel -> do
+      slAfterCancel <- unsafeInterleaveIO $ waitCancel $> Just sl
+      sl' <- newTVarIO slAfterCancel
+      deleteStoreQueue (queueStore ms) {storeLog = sl'} q
+  B.readFile testStoreLogFile `shouldReturn` strEncode (DeleteQueue rId) <> "\n"
 
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
@@ -519,4 +545,12 @@ testWriteMsgDeadlock ms = do
     Just (_, True) <- writeMsg ms q True =<< mkMessage "message 1"
     Msg "message 1" <- tryPeekMsg ms q
     checkQueueSize ms q (1, True)
+testCancelDBTransaction :: PostgresMsgStore -> IO ()
+testCancelDBTransaction ms =
+  testCancelledInside $ \waitCancel -> runExceptT $ withDB' "test" (queueStore ms) $ \_ -> waitCancel
+
+testCancelDBQuery :: PostgresMsgStore -> IO ()
+testCancelDBQuery ms =
+  testCancelledWhenBlocked $ \started -> runExceptT $ withDB' "test" (queueStore ms) $ \db ->
+    started >> (DB.query_ db "SELECT pg_sleep(10)" :: IO [Only ()])
 #endif
