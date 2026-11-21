@@ -24,6 +24,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (mapConcurrently)
+import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -490,21 +491,22 @@ subscribeSrvSubs ca st batchSize (srv, srvId, service_) = do
 -- this function is concurrency-safe - only onle subscriber per server can be created at a time,
 -- other threads would wait for the first thread to create it.
 subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> Int64 -> ServerNtfSub -> IO ()
-subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer srvId ntfSub = do
-  ts <- getCurrentTime
-  withGetSessVar' subscriberSeq smpServer smpSubscribers ts createSMPSubscriber waitForSMPSubscriber
+subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer srvId ntfSub =
+  getSubscriberVar
+    >>= either createSMPSubscriber waitForSMPSubscriber
     >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
   where
+    getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
+    getSubscriberVar = getSessVarIO subscriberSeq smpServer smpSubscribers =<< getCurrentTime
+
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     createSMPSubscriber v =
-      ( do
-          q <- newTQueueIO
-          tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
-          let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
-          atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
-          pure $ Just sub
-      )
-        `catchOwn'` \e -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v
+      E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
+        q <- newTQueueIO
+        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
+        let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
+        atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
+        pure $ Just sub
 
     waitForSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     waitForSMPSubscriber v =
