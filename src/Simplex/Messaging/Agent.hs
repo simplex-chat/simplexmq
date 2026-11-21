@@ -933,8 +933,8 @@ deleteUser' c@AgentClient {smpServersStats, xftpServersStats} userId delSMPQueue
   lift $ saveServersStats c
   where
     delUser =
-      whenM (withStore' c (`deleteUserWithoutConns` userId)) . liftIO $
-        nonBlockingWriteTBQueue (subQ c) ("", "", AEvt SAENone $ DEL_USER userId)
+      whenM (withStore' c (`deleteUserWithoutConns` userId)) $
+        notifySub c $ DEL_USER userId
 
 setUserService' :: AgentClient -> UserId -> Bool -> AM ()
 setUserService' c userId enable = do
@@ -3139,7 +3139,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
   -- ! between completed deletions of connections, and deletions delayed due to wait for delivery (see deleteConn)
   deliveryTimeout <- if waitDelivery then asks (Just . connDeleteDeliveryTimeout . config) else pure Nothing
   cIds_ <- lift $ L.nonEmpty . catMaybes . rights <$> withStoreBatch' c (\db -> map (deleteConn db deliveryTimeout) (M.keys delRs))
-  forM_ cIds_ $ \cIds -> notify ("", "", AEvt SAEConn $ DEL_CONNS cIds)
+  forM_ cIds_ $ notifySub' c "" . DEL_CONNS
   pure res
   where
     partitionResultsConns ::
@@ -3155,7 +3155,6 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
     unsubNtfConnIds connIds' = do
       ns <- asks ntfSupervisor
       liftIO $ nonBlockingWriteTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
-    notify = liftIO . nonBlockingWriteTBQueue (subQ c)
 
 deleteConnQueues :: AgentClient -> NetworkRequestMode -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))
 deleteConnQueues c nm waitDelivery ntf rqs = do
