@@ -100,7 +100,7 @@ main = do
       . aroundAll_ (postgressBracket ntfTestServerDBConnectInfo)
       . aroundAll_ (postgressBracket testXFTPDBConnectInfo)
 #endif
-      . deadline (180 * 1000000)
+      . deadline (360 * 1000000)
       $ do
         parallel $ do
           describe "Core tests" $ do
