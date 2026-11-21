@@ -52,10 +52,12 @@ import Util
 import AgentTests.FunctionalAPITests (runRight)
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as E
+import Data.List (sortOn)
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Protocol (messageId)
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
 import SMPClient (deadlockOnce, testStoreDBOpts)
@@ -74,6 +76,7 @@ msgStoreTests = do
     someMsgStoreTests testPostgresStoreConfig
     it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
+    it "should fold service messages in pages without holding a database connection" $ withMsgStore testPostgresStoreConfig testFoldServiceMessagesInPages
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
     it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
@@ -91,6 +94,7 @@ msgStoreTests = do
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
       it "should peek the first message of each queue in a batch" $ withMsgStore cfg testPeekMsgs
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
+      it "should not update recipient keys changed after the command was verified" $ withMsgStore cfg testUpdateChangedKeys
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -290,6 +294,21 @@ testLinkDataSecuredQueue ms = do
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
 
+testUpdateChangedKeys :: MsgStoreClass s => s -> IO ()
+testUpdateChangedKeys ms = do
+  g <- C.newRandom
+  (k1, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (k2, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+  (rId, qr@QueueRec {recipientKeys = ks}) <- testNewQueueRec g QMContact
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    ExceptT $ updateKeys st q (Just ks) [k1]
+    liftIO $ updateKeys st q (Just ks) [k2] `shouldReturn` Left AUTH
+    (_, QueueRec {recipientKeys}) <- ExceptT $ getQueueRec ms SRecipient rId
+    liftIO $ recipientKeys `shouldBe` [k1]
+    void $ ExceptT $ deleteQueue ms q
+
 -- sizes of queues, senders, links and notifiers maps
 type QueueMapSizes = (Int, Int, Int, Int)
 
@@ -481,6 +500,29 @@ testResetMessageCounts ms = do
     setIncorrectSize q (size, canWrt) =
       void $ withTransaction (dbStore $ queueStore ms) $ \db ->
         DB.execute db "UPDATE msg_queues SET msg_queue_size = ?, msg_can_write = ? WHERE recipient_id = ?" (size, canWrt, recipientId q)
+
+testFoldServiceMessagesInPages :: PostgresMsgStore -> IO ()
+testFoldServiceMessagesInPages ms = do
+  g <- C.newRandom
+  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
+  void $ withTransaction st $ \db ->
+    DB.execute db "INSERT INTO services (service_id, service_role, service_cert, service_cert_hash, created_at) VALUES (?, 'M', '', '', 0)" (Only serviceId)
+  void $ newQueue g Nothing
+  qs <- replicateM 150 $ newQueue g (Just serviceId)
+  runRight_ $ forM_ (take 75 qs) $ \q -> writeMsg ms q True =<< mkMessage "message"
+  expected <- runRight $ forM qs $ \q -> do
+    msg_ <- tryPeekMsg ms q
+    pure (recipientId q, (Right (messageId <$> msg_), dbPoolSize st))
+  Right folded <- foldRcvServiceMessages ms serviceId collect []
+  sortOn fst folded `shouldBe` sortOn fst expected
+  where
+    st = dbStore $ queueStore ms
+    newQueue g rcvServiceId = do
+      (rId, qr) <- testNewQueueRec g QMMessaging
+      runRight $ ExceptT $ addQueue ms rId qr {rcvServiceId}
+    collect acc rId r = do
+      freeConns <- fromIntegral <$> atomically (lengthTBQueue $ dbPoolConns $ dbPool st)
+      pure $ (rId, (fmap (messageId . snd) <$> r, freeConns)) : acc
 
 testExpireMessagesInBatches :: PostgresMsgStore -> IO ()
 testExpireMessagesInBatches ms = do

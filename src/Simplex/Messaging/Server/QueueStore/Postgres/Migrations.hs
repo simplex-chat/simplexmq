@@ -23,7 +23,8 @@ serverSchemaMigrations =
     ("20250915_queue_ids_hash", m20250915_queue_ids_hash, Just down_m20250915_queue_ids_hash),
     ("20260916_prometheus_indexes", m20260916_prometheus_indexes, Just down_m20260916_prometheus_indexes),
     ("20260917_msg_queues_hot", m20260917_msg_queues_hot, Just down_m20260917_msg_queues_hot),
-    ("20260918_expire_messages", m20260918_expire_messages, Just down_m20260918_expire_messages)
+    ("20260918_expire_messages", m20260918_expire_messages, Just down_m20260918_expire_messages),
+    ("20261108_rcv_service_queues", m20261108_rcv_service_queues, Just down_m20261108_rcv_service_queues)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -1235,4 +1236,16 @@ BEGIN
   r_stored_queues := (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL);
 END;
 $$;
+    |]
+
+m20261108_rcv_service_queues :: Text
+m20261108_rcv_service_queues =
+  [r|
+CREATE INDEX idx_msg_queues_rcv_service_active ON msg_queues (rcv_service_id, recipient_id) WHERE deleted_at IS NULL AND rcv_service_id IS NOT NULL;
+    |]
+
+down_m20261108_rcv_service_queues :: Text
+down_m20261108_rcv_service_queues =
+  [r|
+DROP INDEX idx_msg_queues_rcv_service_active;
     |]

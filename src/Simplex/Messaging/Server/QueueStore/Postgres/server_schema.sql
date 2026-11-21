@@ -513,6 +513,10 @@ CREATE INDEX idx_msg_queues_ntf_service_id ON smp_server.msg_queues USING btree 
 
 
 
+CREATE INDEX idx_msg_queues_rcv_service_active ON smp_server.msg_queues USING btree (rcv_service_id, recipient_id) WHERE ((deleted_at IS NULL) AND (rcv_service_id IS NOT NULL));
+
+
+
 CREATE INDEX idx_msg_queues_rcv_service_id ON smp_server.msg_queues USING btree (rcv_service_id, deleted_at);
 
 
