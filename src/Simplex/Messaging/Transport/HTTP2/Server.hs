@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Simplex.Messaging.Transport.HTTP2.Server where
@@ -18,7 +19,7 @@ import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Transport (ALPN, SessionId, TLS, tlsALPN, tlsUniq)
 import Simplex.Messaging.Transport.HTTP2
 import Simplex.Messaging.Transport.Server (ReloadableCredential, SNICredentialUsed, ServerCredentials, SocketState, TLSServerCredential (..), TransportServerConfig (..), loadServerCredential, newSocketState, runTransportServerState_)
-import Simplex.Messaging.Util (threadDelay', unlessM)
+import Simplex.Messaging.Util (threadDelay')
 import UnliftIO (bracket_, finally)
 import UnliftIO.Concurrent (forkIO, killThread, myThreadId, threadDelay)
 
@@ -96,32 +97,43 @@ runHTTP2ServerWith_ expCfg_ firstRequestTimeout_ clientFinished bufferSize setup
   where
     run sniUsed tls sessionThread activity cfg = H.run cfg $ \req _aux sendResp ->
       trackRequest activity $ http2Server sniUsed (killThread sessionThread) (tlsUniq tls) (tlsALPN tls) req (`sendResp` [])
-    expireInactiveClient sessionThread ClientActivity {requestsInFlight, idleSince} expCfg = loop
+    expireInactiveClient sessionThread activity expCfg = loop
       where
         loop = do
           threadDelay' $ checkInterval expCfg * 1000000
           old <- expireBeforeEpoch expCfg
-          (n, ts) <- atomically $ (,) <$> readTVar requestsInFlight <*> readTVar idleSince
-          if n == 0 && systemSeconds ts < old
+          idle <- idleSince <$> readTVarIO activity
+          if maybe False ((< old) . systemSeconds) idle
             then killThread sessionThread
             else loop
-    closeWithoutRequest sessionThread ClientActivity {requestStarted} t = do
+    closeWithoutRequest sessionThread activity t = do
       threadDelay t
-      unlessM (readTVarIO requestStarted) $ killThread sessionThread
+      readTVarIO activity >>= \case
+        NoRequestSince _ -> killThread sessionThread
+        _ -> pure ()
 
-data ClientActivity = ClientActivity
-  { requestStarted :: TVar Bool,
-    requestsInFlight :: TVar Int,
-    idleSince :: TVar SystemTime
-  }
+data ClientActivity
+  = NoRequestSince SystemTime
+  | RequestsInFlight Int
+  | IdleSince SystemTime
 
-newClientActivity :: IO ClientActivity
-newClientActivity = ClientActivity <$> newTVarIO False <*> newTVarIO 0 <*> (newTVarIO =<< getSystemTime)
+idleSince :: ClientActivity -> Maybe SystemTime
+idleSince = \case
+  NoRequestSince ts -> Just ts
+  RequestsInFlight _ -> Nothing
+  IdleSince ts -> Just ts
 
-trackRequest :: ClientActivity -> IO a -> IO a
-trackRequest ClientActivity {requestStarted, requestsInFlight, idleSince} = bracket_ started ended
+newClientActivity :: IO (TVar ClientActivity)
+newClientActivity = newTVarIO . NoRequestSince =<< getSystemTime
+
+trackRequest :: TVar ClientActivity -> IO a -> IO a
+trackRequest activity = bracket_ started ended
   where
-    started = atomically $ writeTVar requestStarted True >> modifyTVar' requestsInFlight (+ 1)
+    started = atomically $ modifyTVar' activity $ \case
+      RequestsInFlight n -> RequestsInFlight (n + 1)
+      _ -> RequestsInFlight 1
     ended = do
       ts <- getSystemTime
-      atomically $ modifyTVar' requestsInFlight (subtract 1) >> writeTVar idleSince ts
+      atomically $ modifyTVar' activity $ \case
+        RequestsInFlight n | n > 1 -> RequestsInFlight (n - 1)
+        _ -> IdleSince ts
