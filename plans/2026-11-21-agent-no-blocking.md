@@ -12,7 +12,7 @@
 1. A server request is never made under a connection lock; in builds with `conn_lock_checks`, used by the tests with the PostgreSQL agent store, such a request fails.
 2. The second locked step reads the connection again; when its state changed, the step is dropped, postponed during ratchet synchronization, or undone.
 3. A queue created on a server is recorded under the connection lock or deleted from the server; connection deletion takes the same locks.
-4. API threads and lock holders never wait for space in subQ or msgQ.
+4. API threads and lock holders never wait for space in subQ or msgQ; lock holders never wait for space in ntfSubQ.
 
 ## Helpers
 
