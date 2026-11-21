@@ -2480,10 +2480,11 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               Left SEConnNotFound -> pure (pure Nothing)
               Left e -> throwE $ storeError e
           secure :: RcvQueue -> SMP.SndPublicAuthKey -> AM ()
-          secure rq@RcvQueue {server} senderKey = do
+          secure rq@RcvQueue {server, rcvId} senderKey = do
             secureQueue c NRMBackground rq senderKey
             incSMPServerStat c userId server connSecured
-            withStore' c $ \db -> setRcvQueueStatus db rq Secured
+            withConnLock c connId "secure" . withStore' c $ \db ->
+              getRcvQueue db connId server rcvId >>= mapM_ (\rq'@RcvQueue {status} -> when (status == Confirmed) $ setRcvQueueStatus db rq' Secured)
       where
         withServer a = case server_ of
           Just srv -> a srv
