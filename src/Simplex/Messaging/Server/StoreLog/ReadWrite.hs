@@ -44,7 +44,7 @@ readQueueStore tty mkQ f st = readLogLines tty f $ \_ -> processLine
         procLogRecord = \case
           CreateQueue rId qr -> addQueue_ st mkQ rId qr >>= qError rId "CreateQueue"
           CreateLink rId lnkId d -> withQueue rId "CreateLink" $ \q -> restoreQueueLinkData st q lnkId d
-          CreateLinkKeys rId lnkId d rKeys -> withQueue rId "CreateLinkKeys" $ \q -> restoreQueueLinkData st q lnkId d $>> updateKeys st q rKeys
+          CreateLinkKeys rId lnkId d rKeys -> withQueue rId "CreateLinkKeys" $ \q -> restoreQueueLinkData st q lnkId d $>> updateKeys st q Nothing rKeys
           DeleteLink rId -> withQueue rId "DeleteLink" $ \q -> deleteQueueLinkData st q
           SecureQueue qId sKey -> withQueue qId "SecureQueue" $ \q -> secureQueue st q sKey
           UpdateKeys rId rKeys -> withQueue rId "UpdateKeys" $ \q -> updateKeys st q Nothing rKeys
