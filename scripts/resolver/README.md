@@ -89,7 +89,9 @@ curl -s http://127.0.0.1:8000/v2/resolve/simplex.simplex | jq
 # → {"lastBlockTs":…,"registration":{"type":"reserved","reservedReason":"internal"}}
 ```
 
-A `502` here while check 4 passes requires `docker compose restart resolver`.
+A `502` here while check 4 passes, with `simplex=-` in `name_policies` of the
+`listening` log line, calls for `docker compose restart resolver` once the node
+is synced.
 
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
@@ -409,8 +411,8 @@ implementation address holds no names: a registrar implementation reports every
 name as never registered. `verification.mainnet.<tld>.json` names the proxies
 differently: `ETHRegistrarController` is `SimplexControllerProxy` there, and for
 `.simplex`, `ENSRegistry` and `BaseRegistrarImplementation` are `ENSRegistryProxy`
-and `BaseRegistrarImplementationProxy`. Its entries `ENSRegistry@…` and
-`BaseRegistrarImplementation@…` are the implementations.
+and `BaseRegistrarImplementationProxy`. Its entries named `<contract>@<address>`
+are the implementations.
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or

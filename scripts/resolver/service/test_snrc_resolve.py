@@ -1956,7 +1956,7 @@ class SetupTests(LogTestCase):
 
 
 class DefaultsTests(unittest.TestCase):
-    def test_both_tlds_resolve_on_mainnet_by_default(self):
+    def test_every_tld_has_all_three_contracts_by_default(self):
         fresh = importlib.util.module_from_spec(_SPEC)
         _SPEC.loader.exec_module(fresh)
         for table in (fresh.REGISTRIES, fresh.REGISTRARS, fresh.CONTROLLERS):

@@ -116,8 +116,7 @@ TRUSTED_PROXIES = tuple(
 )
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
-# happens on the rightmost label of the queried name. A TLD without an entry
-# answers 400 tldNotConfigured.
+# happens on the rightmost label of the queried name.
 # `... or "..."` makes the script's defaults the single source of truth:
 # unset AND empty-string both fall through to the literal. docker-compose
 # can therefore pass `SNRC_REGISTRY_TESTING=${SNRC_REGISTRY_TESTING:-}`
@@ -126,14 +125,14 @@ REGISTRIES = {
     "testing": os.environ.get("SNRC_REGISTRY_TESTING", "")
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", "")
-    or "0x3ce23ef6a00d89105299b52aadd72b92681414be",  # mainnet .simplex
+    or "0x3ce23ef6a00d89105299b52aadd72b92681414be",
 }
 
 REGISTRARS = {
     "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
     or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
     "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", "")
-    or "0x4c0589dbc22862babb25eb72d11bba49d84aabe8",  # mainnet .simplex
+    or "0x4c0589dbc22862babb25eb72d11bba49d84aabe8",
 }
 
 CONTROLLERS = {
@@ -142,7 +141,7 @@ CONTROLLERS = {
     # Recorded in deployments.json as ETHRegistrarController.
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
     "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", "")
-    or "0x68fab655a0204865a2f3ab3a607037e09648c92b",  # mainnet .simplex
+    or "0x68fab655a0204865a2f3ab3a607037e09648c92b",
 }
 
 # The name policy each TLD's controller names, which holds its reservations in
