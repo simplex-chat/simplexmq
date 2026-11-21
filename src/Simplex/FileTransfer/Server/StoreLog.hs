@@ -122,12 +122,15 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
         | size file > 0 -> addFile st sId file createdAt expiresAt status
         | otherwise -> pure $ Left SIZE
       PutFile qId path
-        | takeFileName path == serverFileName qId -> (>>= \case FilePathSet -> Right (); FilePathAlreadySet -> Left AUTH) <$> setFilePath st qId path
+        | takeFileName path == serverFileName qId -> (>>= putFileResult) <$> setFilePath st qId path
         | otherwise -> pure $ Left AUTH
       AddRecipients sId rcps -> addRecipients st sId rcps
       DeleteFile sId -> void <$> deleteFile st sId
       BlockFile sId info -> void <$> blockFile st sId info
       AckFile rId -> ackFile st rId
+    putFileResult = \case
+      FilePathSet -> Right ()
+      FilePathAlreadySet -> Left AUTH
 
 writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()
 writeFileStore s STMFileStore {files, recipients} = do
