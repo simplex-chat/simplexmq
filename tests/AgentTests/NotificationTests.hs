@@ -928,9 +928,7 @@ testSwitchFullNtfQueue cfg completeSwitch apns =
     atomically $ writeTBQueue q (NSCDeleteSub, ["x"])
     atomically $ isEmptyTBQueue q >>= checkSTM
     atomically fill
-    runRight_ $ do
-      _ <- switchConnectionAsync a "" bId
-      completeSwitch a bId b aId
+    timeout 20000000 (runExceptT $ switchConnectionAsync a "" bId >> completeSwitch a bId b aId) `shouldReturn` Just (Right ())
     setNtfSuspended False
 
 testNotificationsOldToken :: HasTestEnv => APNSMockServer -> IO ()
