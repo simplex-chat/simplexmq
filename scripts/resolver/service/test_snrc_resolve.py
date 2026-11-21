@@ -1429,6 +1429,8 @@ class BatchedReadsTests(FakeNodeTestCase):
     reads one multicall, because a node runs the calls of a JSON-RPC batch one
     after another. Answers must be exactly those of reading one call at a time."""
 
+    SUBNAMES = RegistrationV2Tests.SUBNAMES
+
     def batched(self, answer, name):
         def action():
             with snrc.request_reads():
