@@ -1037,6 +1037,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["expires"], expires)
         self.assertEqual(body["nameRecord"]["name"], "sub.acme.testing")
+        self.assertEqual(body["nameRecord"]["owner"], self.OWNER)
 
     def test_a_subname_nobody_created_is_not_registered(self):
         """The registrar only tracks 2LDs, so the parent's registration says
@@ -1046,7 +1047,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "available")
 
-    def test_a_subname_the_subname_registrar_holds_for_the_holder_is_registered(self):
+    def test_a_subname_the_subname_registrar_holds_for_the_holder_is_registered_with_the_holder_as_owner(self):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
         _, body = registration("sub.acme.testing")
         self.assertEqual(body["type"], "registered")
@@ -1057,6 +1058,25 @@ class RegistrationV2Tests(unittest.TestCase):
         status, body = snrc.resolve("sub.acme.testing")
         self.assertEqual(status, 200)
         self.assertEqual(body["owner"], self.OWNER)
+
+    def test_a_subname_whose_holder_cannot_be_read_is_not_registered(self):
+        chain = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("ownerOf(uint256)")):
+                raise RuntimeError("execution reverted")
+            return chain(to, data)
+
+        snrc.eth_call = eth_call
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_v1_without_a_registrar_does_not_resolve_a_subname_the_subname_registrar_owns(self):
+        snrc.REGISTRARS = {"testing": ""}
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "unregistered")
 
     def test_a_subname_the_subname_registrar_no_longer_holds_is_not_registered(self):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER)

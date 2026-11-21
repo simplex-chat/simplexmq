@@ -238,7 +238,7 @@ released*.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
-`unregistered`; a held one reports the 2LD's holder as `owner`, as in v2.
+`unregistered`; for a held one, `owner` is the 2LD's holder, as in v2.
 
 #### v1 errors
 

@@ -1117,7 +1117,7 @@ def name_record(name: str):
         "owner": owner,
         "resolver": resolver_addr,
     }
-    if resolver_addr == ZERO_ADDR:
+    if owner is None or resolver_addr == ZERO_ADDR:
         return rec
     prefetch(record_reads(resolver_addr, node))
     texts = {}
@@ -1153,9 +1153,11 @@ def record_owner(name: str) -> str | None:
     if len(labels) == 2:
         return owner
     holder = decode_address(eth_call(*owner_call(registry, namehash(".".join(labels[-2:])))))
-    if owner == holder != ZERO_ADDR:
+    if owner == ZERO_ADDR:
+        return None
+    if owner == holder:
         return owner
-    if owner == ZERO_ADDR or not registrar:
+    if not registrar:
         return None
     try:
         if owner != decode_address(eth_call(*subname_hook_call(registrar))):
