@@ -22,11 +22,14 @@ module Simplex.FileTransfer.Server.Env
     fileStore,
     fromFileStore,
     defaultInactiveClientExpiration,
+    defaultXFTPKeepAlive,
+    defaultXFTPUserTimeout,
     defFileExpirationHours,
     defaultFileExpiration,
     newXFTPServerEnv,
     readFileStoreType,
     runWithStoreConfig,
+    migrateFileStore,
     checkFileStoreMode,
     importToDatabase,
     exportFromDatabase,
@@ -73,7 +76,8 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (EntitlementConfig (..))
-import Simplex.Messaging.Transport.Server (ReloadableCredential, ServerCredentials (..), TransportServerConfig (..), acceptCredential, loadFingerprint, loadServerCredential, newReloadableCredential)
+import Simplex.Messaging.Transport.KeepAlive (KeepAliveOpts (..))
+import Simplex.Messaging.Transport.Server (ReloadableCredential, ServerCredentials (..), SocketState, TransportServerConfig (..), acceptCredential, loadFingerprint, loadServerCredential, newReloadableCredential, newSocketState)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -130,6 +134,17 @@ defaultInactiveClientExpiration =
       checkInterval = 3600 -- seconds, 1 hours
     }
 
+defaultXFTPKeepAlive :: KeepAliveOpts
+defaultXFTPKeepAlive =
+  KeepAliveOpts
+    { keepIdle = 60,
+      keepIntvl = 10,
+      keepCnt = 6
+    }
+
+defaultXFTPUserTimeout :: Int
+defaultXFTPUserTimeout = 180000
+
 data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,
     store :: FileStore s,
@@ -140,7 +155,8 @@ data XFTPEnv s = XFTPEnv
     serverIdentity :: C.KeyHash,
     tlsServerCreds :: T.Credential,
     httpServerCreds :: Maybe ReloadableCredential,
-    serverStats :: FileServerStats
+    serverStats :: FileServerStats,
+    sockets :: SocketState
   }
 
 fileStore :: XFTPEnv s -> s
@@ -205,7 +221,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
       st <- newFileStore dbCfg
       pure (StoreDatabase st, Nothing)
 #endif
-  used <- getUsedStorage (fromFileStore store)
+  (storedCount, used) <- getUsedStorage (fromFileStore store)
   usedStorage <- newTVarIO used
   uploadingFiles <- TM.emptyIO
   forM_ fileSizeQuota $ \quota -> do
@@ -214,8 +230,9 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   tlsServerCreds <- loadServerCredential xftpCredentials
   httpServerCreds <- forM httpCredentials $ \creds -> newReloadableCredential acceptCredential creds =<< loadServerCredential creds
   Fingerprint fp <- loadFingerprint xftpCredentials
-  serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, usedStorage, uploadingFiles, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  serverStats <- newFileServerStats storedCount used =<< getCurrentTime
+  sockets <- newSocketState
+  pure XFTPEnv {config, store, usedStorage, uploadingFiles, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats, sockets}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)
@@ -250,6 +267,13 @@ runWithStoreConfig (AFSType SFSPostgres) ini storeLogFilePath confirmMigrations 
     dbCfg = PostgresFileStoreCfg {dbOpts = iniDBOptions ini defaultXFTPDBOpts, dbStoreLogPath, confirmMigrations}
 #else
   error "server binary is compiled without support for PostgreSQL database"
+#endif
+
+migrateFileStore :: XFTPStoreConfig s -> IO ()
+migrateFileStore = \case
+  XSCMemory _ -> pure ()
+#if defined(dbServerPostgres)
+  XSCDatabase dbCfg -> (newFileStore dbCfg :: IO PostgresFileStore) >>= closeFileStore
 #endif
 
 -- | Validate startup config when store_files=database.

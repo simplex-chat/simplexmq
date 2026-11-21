@@ -1222,7 +1222,6 @@ testAcceptContactStallingServer ps@(t, ASType qsType _) =
           timeout 1_000000 (runExceptT $ acceptContact a 1 bId True invId "alice's connInfo" PQSupportOn SMSubscribe) `shouldReturn` Nothing
   where
     bServers = initAgentServers {smp = userServers [testSMPServer2]}
-
 testDeleteAcceptedContactRequest :: (HasCallStack, HasTestEnv) => Bool -> Bool -> IO ()
 testDeleteAcceptedContactRequest useDR asyncAccept =
   withAgentClients2 $ \alice bob -> runRight_ $ do
@@ -3262,7 +3261,6 @@ unreferencedMsgBodies c = withTransaction (store $ agentEnv c) (`DB.query_` "SEL
 
 skippedMsgKeys :: AgentClient -> IO [(ConnId, Int64)]
 skippedMsgKeys c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, msg_n FROM skipped_messages")
-
 getMsg :: AgentClient -> ConnId -> ExceptT AgentErrorType IO a -> ExceptT AgentErrorType IO a
 getMsg c cId action = do
   liftIO $ noMessages c "nothing should be delivered before GET"
