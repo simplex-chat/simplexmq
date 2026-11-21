@@ -1,7 +1,7 @@
 # Self-hosted SNRC stack
 
 One `docker compose up` runs the self-hosted SimpleX Namespace (SNRC) backend
-against **Ethereum mainnet** (where the `.testing` contracts live):
+against **Ethereum mainnet** (where the `.testing` and `.simplex` contracts are deployed):
 
 | # | Component | What it does |
 |---|---|---|
@@ -63,7 +63,7 @@ curl -s -X POST http://127.0.0.1:8545 \
 **2. resolver is healthy:**
 ```sh
 curl -s http://127.0.0.1:8000/health | jq
-# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": ""},
+# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": "0x…"},
 #    "blockNumber": 23400000, "chainLagSeconds": 12}
 ```
 
@@ -377,10 +377,9 @@ the client will reject. Its `subnameHook()` names the subname registrar, whose
 `reservedNames`, which is where `reasonCode` comes from. With no controller a
 held-back name reads as not reserved, and no name can be priced.
 
-All three default to the mainnet `.testing` deployment. `.simplex` has no
-default; `.env.example` lists its mainnet addresses.
+All three default to the mainnet deployments of `.testing` and `.simplex`.
 
-Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
+Newer contracts, which `.simplex` runs, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
 answers no `reservedNames` call. The resolver reads each controller's
 `namePolicy()` once at startup, before its workers start, and reads reservations

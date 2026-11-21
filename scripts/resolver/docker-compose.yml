@@ -154,7 +154,7 @@ services:
       SNRC_RPC: http://reth:8545
       SNRC_BIND: 0.0.0.0
       # Registry addresses cascade through the script's own defaults
-      # (mainnet `.testing`; `.simplex` unconfigured). Set explicitly here
+      # (mainnet `.testing` and `.simplex`). Set explicitly here
       # only if you're deploying against a different network or contract.
       # SNRC_REGISTRY_TESTING: 0x...
       # Registrar and controller, same cascade. Without the registrar `status`
