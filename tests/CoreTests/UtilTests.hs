@@ -108,6 +108,13 @@ utilTests = do
       runExceptT (throwAsync ThreadKilled `catchAllOwnErrors` handleCatch) `shouldThrow` (\e -> e == ThreadKilled)
     it "should not throw if there are no errors" $
       runExceptT (noErrors `catchAllOwnErrors` throwError) `shouldReturn` Right "no errors"
+  describe "secondsUntilDayTime" $ do
+    it "should count the seconds until a later time of the day" $
+      secondsUntilDayTime 3600 600 `shouldBe` 3000
+    it "should count the seconds until the time of the next day" $
+      secondsUntilDayTime 600 3600 `shouldBe` 83400
+    it "should return 0 at the time of the day" $
+      secondsUntilDayTime 600 600.5 `shouldBe` 0
   where
     throwTestError :: ExceptT TestError IO String
     throwTestError = throwError $ TestError "error"

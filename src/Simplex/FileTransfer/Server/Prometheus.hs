@@ -16,14 +16,17 @@ import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime)
 import Data.Time.Clock.System (systemEpochDay)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Network.Socket (ServiceName)
 import Simplex.FileTransfer.Server.Stats
 import Simplex.Messaging.Server.Stats (PeriodStatCounts (..))
 import Simplex.Messaging.Transport (simplexMQVersion)
+import Simplex.Messaging.Transport.Server (SocketStats (..))
 import Simplex.Messaging.Util (tshow)
 
 data FileServerMetrics = FileServerMetrics
   { statsData :: FileServerStatsData,
     filesDownloadedPeriods :: PeriodStatCounts,
+    socketStats :: (ServiceName, SocketStats),
     rtsOptions :: Text
   }
 
@@ -35,7 +38,7 @@ xftpPrometheusMetrics :: FileServerMetrics -> UTCTime -> Text
 xftpPrometheusMetrics sm ts =
   time <> files <> info
   where
-    FileServerMetrics {statsData, filesDownloadedPeriods, rtsOptions} = sm
+    FileServerMetrics {statsData, filesDownloadedPeriods, socketStats = (port, sockets), rtsOptions} = sm
     FileServerStatsData
       { _fromTime,
         _filesCreated,
@@ -87,7 +90,7 @@ xftpPrometheusMetrics sm ts =
       \simplex_xftp_files_blocked " <> mshow _filesBlocked <> "\n\
       \# filesBlocked\n\
       \\n\
-      \# HELP simplex_xftp_file_downloads File downloads\n\
+      \# HELP simplex_xftp_file_downloads Started file downloads\n\
       \# TYPE simplex_xftp_file_downloads counter\n\
       \simplex_xftp_file_downloads " <> mshow _fileDownloads <> "\n\
       \# fileDownloads\n\
@@ -97,27 +100,27 @@ xftpPrometheusMetrics sm ts =
       \simplex_xftp_file_download_acks " <> mshow _fileDownloadAcks <> "\n\
       \# fileDownloadAcks\n\
       \\n\
-      \# HELP simplex_xftp_files_count_total Total files count \n\
+      \# HELP simplex_xftp_files_count_total Stored files\n\
       \# TYPE simplex_xftp_files_count_total gauge\n\
       \simplex_xftp_files_count_total " <> mshow _filesCount <> "\n\
       \# filesCount\n\
       \\n\
-      \# HELP simplex_xftp_files_size Size of files \n\
+      \# HELP simplex_xftp_files_size Size of stored files, bytes\n\
       \# TYPE simplex_xftp_files_size gauge\n\
       \simplex_xftp_files_size " <> mshow _filesSize <> "\n\
       \# filesSize \n\
       \\n\
-      \# HELP simplex_xftp_files_count_daily Daily files count\n\
+      \# HELP simplex_xftp_files_count_daily Distinct files downloaded in the current day\n\
       \# TYPE simplex_xftp_files_count_daily gauge\n\
       \simplex_xftp_files_count_daily " <> mstr (dayCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.dayCount\n\
       \\n\
-      \# HELP simplex_xftp_files_count_weekly Weekly files count\n\
+      \# HELP simplex_xftp_files_count_weekly Distinct files downloaded in the current week\n\
       \# TYPE simplex_xftp_files_count_weekly gauge\n\
       \simplex_xftp_files_count_weekly " <> mstr (weekCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.weekCount\n\
       \\n\
-      \# HELP simplex_xftp_files_count_monthly Monthly files count\n\
+      \# HELP simplex_xftp_files_count_monthly Distinct files downloaded in the current month\n\
       \# TYPE simplex_xftp_files_count_monthly gauge\n\
       \simplex_xftp_files_count_monthly " <> mstr (monthCount filesDownloadedPeriods) <> "\n\
       \# filesDownloaded.monthCount\n\
@@ -130,6 +133,16 @@ xftpPrometheusMetrics sm ts =
       \# TYPE simplex_xftp_info gauge\n\
       \simplex_xftp_info{version=\"" <> T.pack simplexMQVersion <> "\",rts_options=\"" <> rtsOptions <> "\"} 1\n\
       \\n"
+      <> socketsMetric socketsAccepted "simplex_xftp_sockets_accepted" "Accepted sockets"
+      <> socketsMetric socketsClosed "simplex_xftp_sockets_closed" "Closed sockets"
+      <> socketsMetric socketsActive "simplex_xftp_sockets_active" "Active sockets"
+      <> socketsMetric socketsLeaked "simplex_xftp_sockets_leaked" "Leaked sockets"
+    socketsMetric :: (SocketStats -> Int) -> Text -> Text -> Text
+    socketsMetric sel metric descr =
+      "# HELP " <> metric <> " " <> descr <> "\n"
+        <> "# TYPE " <> metric <> " gauge\n"
+        <> metric <> "{port=\"" <> T.pack port <> "\"} " <> mshow (sel sockets) <> "\n"
+        <> "\n"
     mstr a = a <> " " <> tsEpoch
     mshow :: Show a => a -> Text
     mshow = mstr . tshow

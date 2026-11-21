@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -7,16 +8,17 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module XFTPServerTests (xftpServerTests) where
+module XFTPServerTests (xftpMemoryServerTests, xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, bracket)
+import Control.Exception (IOException, SomeException, bracket, catch)
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
 import Data.Bifunctor (first)
+import qualified Data.ByteArray as BA
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
@@ -26,7 +28,10 @@ import qualified Data.CaseInsensitive as CI
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Time.Clock (getCurrentTime)
+import Data.Maybe (mapMaybe)
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Data.Time.Clock (UTCTime (..), getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
@@ -36,31 +41,46 @@ import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredent
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
-import Simplex.FileTransfer.Description (kb)
-import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
-import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Description (kb, mb)
+import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), FileResponse (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpDecodeTClient, xftpEncodeAuthTransmission)
+import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..), XFTPStoreConfig (..), defaultInactiveClientExpiration)
+import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, logAddFile, logPutFile, serverFileName)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), alpnSupportedXFTPhandshakes, receiveEncFile, receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
+import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
+import Simplex.Messaging.SystemTime (RoundedSystemTime (..), getSystemSeconds)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
+import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
-import System.Directory (listDirectory, removeFile)
-import System.FilePath ((</>))
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getSymbolicLinkTarget, listDirectory, removeFile)
+import System.FilePath (takeExtension, (</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, wait, withAsync)
+import UnliftIO.Exception (tryAny)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
+
+xftpMemoryServerTests :: Spec
+xftpMemoryServerTests = do
+  it "should export socket counts in Prometheus metrics" testSocketMetrics
+  it "should describe file metrics" testFileMetricsHelp
+  it "should expire chunks that were never uploaded without delays" testExpireNotUploadedFiles
+  it "should count stored files after restart without stats backup" $ testFileStatsRestart False
+  it "should count stored files after restart with stats backup" $ testFileStatsRestart True
+  it "should remove unfinished uploads at start" testRemoveTmpUploads
 
 xftpServerTests :: SpecWith AFStoreType
 xftpServerTests = do
@@ -73,10 +93,13 @@ xftpServerTests = do
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
+      it "should not disconnect clients during downloads longer than inactivity ttl" testLongDownloadExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
+      it "should reset daily download stats without stats log" testPeriodStatsReset
+      it "should count stored files after deletion" testFileStatsDelete
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -85,9 +108,20 @@ xftpServerTests = do
         it "allowed with correct basic auth" $ testFileBasicAuth True (Just "pwd") (Just "pwd") True
         it "allowed with auth on server without auth" $ testFileBasicAuth True Nothing (Just "any") True
       it "should not change content for uploaded and committed files" testFileSkipCommitted
+      it "should close connection and file when download stalls" testStalledDownload
+      it "should close connection when the end of a download stalls" testStalledDownloadEnd
+      it "should close connection when request body stalls" testStalledRequestBody
+      it "should time out a stalled upload of a committed chunk" $ testStalledUpload True
+      it "should time out a stalled upload of a new chunk" $ testStalledUpload False
+      it "should accept a repeated upload of a chunk while its first upload is stalled" testRepeatedUploadDuringStalledUpload
+      it "should return OK to an upload completed after another upload of the chunk" testUploadAfterCommittedUpload
+      it "should close connections without requests" testNoRequestTimeout
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
+    describe "XFTP chunk receiving" $ beforeWith (const (pure ())) $ do
+      it "should verify digest of received chunk without reading the file back" testReceiveChunkDigest
+      it "should verify digest of received encrypted chunk without reading the file back" testReceiveEncChunkDigest
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -231,11 +265,29 @@ testFileChunkExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fs
   where
     fileExpiration = ExpirationConfig {ttl = 1, checkInterval = 1}
 
+testExpireNotUploadedFiles :: HasTestEnv => Expectation
+testExpireNotUploadedFiles = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  now <- getSystemSeconds
+  let sIds = map (\i -> EntityId $ "never_uploaded" <> B.pack (show i)) [10 .. 59 :: Int]
+      fileInfo = FileInfo {sndKey, size = chSize, digest = "digest"}
+      createdAt = RoundedSystemTime $ roundedSeconds now
+      expiresAt = RoundedSystemTime $ roundedSeconds now + 2
+  sl <- openWriteStoreLog False testXFTPLogFile
+  forM_ sIds $ \sId -> logAddFile sl sId fileInfo createdAt (Just expiresAt) EntityActive
+  closeStoreLog sl
+  withXFTPServerCfg testXFTPServerConfig {serverStoreCfg = XSCMemory (Just testXFTPLogFile), storeLogFile = Just testXFTPLogFile, fileExpiration} $ \_ -> do
+    threadDelay 6000000
+    testXFTPClient $ \c -> forM_ sIds $ \sId ->
+      runExceptT (addXFTPRecipients c spKey sId [rcvKey]) `shouldReturn` Left (PCEProtocolError AUTH)
+  where
+    fileExpiration = ExpirationConfig {ttl = 86400, checkInterval = 1}
+
 testInactiveClientExpiration :: HasTestEnv => AFStoreType -> Expectation
 testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> runRight_ $ do
-  disconnected <- newEmptyTMVarIO
-  ts <- liftIO getCurrentTime
-  c <- ExceptT $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
+  (c, disconnected) <- liftIO connectXFTPClient
   pingXFTP c
   liftIO $ do
     threadDelay 100000
@@ -246,6 +298,30 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
     atomically (tryTakeTMVar disconnected) `shouldReturn` Just ()
   where
     inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testLongDownloadExpiration :: HasTestEnv => AFStoreType -> Expectation
+testLongDownloadExpiration fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {inactiveClientExpiration}) $ \_ -> do
+    (c, disconnected, rId, rpKey) <- uploadLargeChunk
+    HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c rpKey rId
+    getPart <- maybe (error "no response body") pure bodyPart
+    slowBytes <- readBody getPart (mb 2) 25000
+    restBytes <- timeout 15000000 (readBody getPart maxBound 0) >>= maybe (error "body not read within 15 seconds") pure
+    slowBytes + restBytes `shouldBe` mb 4 + C.authTagSize
+    runRight_ $ pingXFTP c
+    expectDisconnected disconnected
+  where
+    inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+readBody :: (Int -> IO ByteString) -> Int -> Int -> IO Int
+readBody getPart limit delay = go 0
+  where
+    go n
+      | n >= limit = pure n
+      | otherwise = do
+          threadDelay delay
+          len <- B.length <$> getPart fileBlockSize
+          if len == 0 then pure n else go (n + len)
 
 testCancelledClientConnect :: HasTestEnv => Expectation
 testCancelledClientConnect =
@@ -381,6 +457,126 @@ testFileLog _ = do
       downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk1") chSize digest
       liftIO $ B.readFile (testPath "received_chunk1") `shouldReturn` bytes
 
+testPeriodStatsReset :: HasTestEnv => AFStoreType -> Expectation
+testPeriodStatsReset fsType = do
+  ts <- getCurrentTime
+  let resetTime = floor (utctDayTime ts) + 10
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {logStatsInterval = Nothing, logStatsStartTime = resetTime, prometheusInterval = Just 1}) $ \_ -> do
+    testXFTPClient $ \c -> runRight_ $ runTestFileChunkDelivery c c
+    threadDelay 1500000
+    dailyDownloads `shouldReturn` Just "1"
+    threadDelay 10000000
+    dailyDownloads `shouldReturn` Just "0"
+  where
+    dailyDownloads = lookup "simplex_xftp_files_count_daily" <$> readMetrics
+
+testSocketMetrics :: HasTestEnv => Expectation
+testSocketMetrics =
+  withXFTPServerCfg testXFTPServerConfig {prometheusInterval = Just 1} $ \_ -> do
+    testXFTPClient $ \c -> do
+      runRight_ $ pingXFTP c
+      threadDelay 1500000
+      socketMetrics `shouldReturn` [("accepted", "1"), ("closed", "0"), ("active", "1"), ("leaked", "0")]
+      closeXFTPClient c
+    threadDelay 2500000
+    socketMetrics `shouldReturn` [("accepted", "1"), ("closed", "1"), ("active", "0"), ("leaked", "0")]
+  where
+    socketMetrics = do
+      metrics <- readMetrics
+      pure [(name, n) | (metric, n) <- metrics, Just name <- [T.stripPrefix "simplex_xftp_sockets_" =<< T.stripSuffix portLabel metric]]
+    portLabel = "{port=\"" <> T.pack xftpTestPort <> "\"}"
+
+testFileStatsRestart :: HasTestEnv => Bool -> Expectation
+testFileStatsRestart statsBackup = do
+  when statsBackup $ do
+    withXFTPServerCfg cfg $ \_ -> pure ()
+    doesFileExist testXFTPStatsBackupFile `shouldReturn` True
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  createDirectoryIfMissing True xftpServerFiles
+  sl <- openWriteStoreLog False testXFTPLogFile
+  let fileInfo = FileInfo {sndKey, size = chSize, digest = "digest"}
+      addTestFile sId expiresAt = logAddFile sl sId fileInfo (RoundedSystemTime 0) (Just $ RoundedSystemTime expiresAt) EntityActive
+      putTestFile sId = do
+        let path = xftpServerFiles </> serverFileName sId
+        void $ createTestChunk path
+        logPutFile sl sId path
+      expiredId = EntityId "expired_file____"
+      storedId = EntityId "stored_file_____"
+  addTestFile expiredId 3600
+  putTestFile expiredId
+  addTestFile storedId 4102444800
+  putTestFile storedId
+  addTestFile (EntityId "new_file________") 4102444800
+  closeStoreLog sl
+  withXFTPServerCfg cfg $ \_ -> threadDelay 2500000
+  fileMetrics `shouldReturn` [("expired", "1"), ("deleted", "0"), ("count_total", "1"), ("size", "131072")]
+  where
+    cfg =
+      testXFTPServerConfig
+        { serverStoreCfg = XSCMemory (Just testXFTPLogFile),
+          storeLogFile = Just testXFTPLogFile,
+          serverStatsBackupFile = if statsBackup then Just testXFTPStatsBackupFile else Nothing,
+          prometheusInterval = Just 1
+        }
+
+testFileStatsDelete :: HasTestEnv => AFStoreType -> Expectation
+testFileStatsDelete fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {prometheusInterval = Just 1}) $ \_ ->
+    testXFTPClient $ \c -> runRight_ $ do
+      g <- liftIO C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      void $ liftIO $ createTestChunk testChunkPath
+      digest <- liftIO $ LC.sha256Hash <$> LB.readFile testChunkPath
+      let file = FileInfo {sndKey, size = chSize, digest}
+          chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      (sId1, _) <- createXFTPChunk c spKey file [rcvKey] Nothing
+      uploadXFTPChunk c spKey sId1 chunkSpec
+      (sId2, _) <- createXFTPChunk c spKey file [rcvKey] Nothing
+      uploadXFTPChunk c spKey sId2 chunkSpec
+      liftIO $ do
+        threadDelay 1500000
+        fileMetrics `shouldReturn` [("expired", "0"), ("deleted", "0"), ("count_total", "2"), ("size", "262144")]
+        removeFile $ xftpServerFiles </> serverFileName sId2
+      deleteXFTPChunk c spKey sId1
+      deleteXFTPChunk c spKey sId2
+      liftIO $ do
+        threadDelay 1500000
+        fileMetrics `shouldReturn` [("expired", "0"), ("deleted", "2"), ("count_total", "0"), ("size", "0")]
+
+fileMetrics :: HasTestEnv => IO [(T.Text, T.Text)]
+fileMetrics = do
+  metrics <- readMetrics
+  pure
+    [ (name, n)
+      | (metric, n) <- metrics,
+        Just name <- [T.stripPrefix "simplex_xftp_files_" metric],
+        name `elem` (["expired", "deleted", "count_total", "size"] :: [T.Text])
+    ]
+
+readMetrics :: HasTestEnv => IO [(T.Text, T.Text)]
+readMetrics = do
+  metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+  pure [(metric, n) | l <- metrics, [metric, n, _] <- [T.words l]]
+
+testFileMetricsHelp :: HasTestEnv => Expectation
+testFileMetricsHelp =
+  withXFTPServerCfg testXFTPServerConfig {prometheusInterval = Just 1} $ \_ -> do
+    threadDelay 1500000
+    help <- mapMaybe (T.stripPrefix "# HELP ") . T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+    filter (`elem` expected) help `shouldBe` expected
+  where
+    expected :: [T.Text]
+    expected =
+      [ "simplex_xftp_file_downloads Started file downloads",
+        "simplex_xftp_files_count_total Stored files",
+        "simplex_xftp_files_size Size of stored files, bytes",
+        "simplex_xftp_files_count_daily Distinct files downloaded in the current day",
+        "simplex_xftp_files_count_weekly Distinct files downloaded in the current week",
+        "simplex_xftp_files_count_monthly Distinct files downloaded in the current month"
+      ]
+
 testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =
   withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {allowNewFiles, newFileBasicAuth}) $
@@ -422,6 +618,182 @@ testFileSkipCommitted fsType =
         downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
         liftIO $ B.readFile (testPath "received_chunk") `shouldReturn` bytes -- new chunk content got ignored
 
+testStalledDownload :: HasTestEnv => AFStoreType -> Expectation
+testStalledDownload fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+    (c, disconnected, rId, rpKey) <- uploadLargeChunk
+    void $ sendFGET c rpKey rId
+    expectDisconnected disconnected
+    openFiles (20 :: Int) `shouldReturn` []
+  where
+    openFiles n = do
+      files <- listDirectory xftpServerFiles
+      open <- filterM (fmap (maybe False (/= 0)) . openDescriptors . (xftpServerFiles </>)) files
+      if null open || n <= 0 then pure open else threadDelay 100000 >> openFiles (n - 1)
+
+testStalledDownloadEnd :: HasTestEnv => AFStoreType -> Expectation
+testStalledDownloadEnd fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration}) $ \_ ->
+    forM_ [mb 1 + kb k | k <- [0, 64 .. 320]] $ \unread -> do
+      (c, disconnected, rId, rpKey) <- uploadLargeChunk
+      HC.HTTP2Response {HC.respBody = HTTP2Body {bodyPart}} <- sendFGET c rpKey rId
+      getPart <- maybe (error "no response body") pure bodyPart
+      void $ readBody getPart (mb 4 + C.authTagSize - unread) 0
+      expectDisconnected disconnected
+  where
+    inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}
+
+testStalledRequestBody :: HasTestEnv => AFStoreType -> Expectation
+testStalledRequestBody fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000, inactiveClientExpiration = Nothing}) $ \_ -> do
+    (XFTPClient {http2Client}, disconnected) <- connectXFTPClient
+    let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send "x" >> flush >> threadDelay maxBound
+    withAsync (HC.sendRequest http2Client req Nothing) $ \_ -> expectDisconnected disconnected
+
+testStalledUpload :: HasTestEnv => Bool -> AFStoreType -> Expectation
+testStalledUpload committed fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000}) $ \_ ->
+    testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      void $ createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      sId <- runRight $ do
+        (sId, _) <- createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
+        when committed $ uploadXFTPChunk c spKey sId chunkSpec
+        pure sId
+      t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+      let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send (byteString t) >> flush >> threadDelay maxBound
+      timeout 5000000 (HC.sendRequest http2Client req Nothing) >>= \case
+        Just (Right HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead}}) -> case xftpDecodeTClient thParams bodyHead of
+          Right (_, _, Right (FRErr e)) -> e `shouldBe` TIMEOUT
+          r -> expectationFailure $ "unexpected response: " <> show r
+        Just (Left e) -> expectationFailure $ "request error: " <> show e
+        Nothing -> expectationFailure "no response within 5 seconds"
+
+testRepeatedUploadDuringStalledUpload :: HasTestEnv => AFStoreType -> Expectation
+testRepeatedUploadDuringStalledUpload fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileTimeout = 2000000}) $ \_ ->
+    testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      bytes <- createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      (sId, [rId]) <- runRight $ createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
+      t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+      let req = H2.requestStreaming "POST" "/" [] $ \send flush -> send (byteString t) >> flush >> threadDelay maxBound
+          download c' = do
+            runRight_ $ downloadXFTPChunk g c' rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
+            B.readFile (testPath "received_chunk") `shouldReturn` bytes
+      withAsync (HC.sendRequest http2Client req Nothing) $ \_ -> do
+        threadDelay 500000
+        testXFTPClient $ \c' -> do
+          runRight_ $ uploadXFTPChunk c' spKey sId chunkSpec
+          download c'
+          threadDelay 2500000
+          download c'
+        filter ((".tmp" ==) . takeExtension) <$> listDirectory xftpServerFiles `shouldReturn` []
+
+testUploadAfterCommittedUpload :: HasTestEnv => AFStoreType -> Expectation
+testUploadAfterCommittedUpload fsType =
+  withXFTPServerConfigOn (cfgFS fsType) $ \_ ->
+    testXFTPClient $ \c@XFTPClient {http2Client, thParams} -> do
+      g <- C.newRandom
+      (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      bytes <- createTestChunk testChunkPath
+      digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+      let chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = chSize}
+      (sId, [rId]) <- runRight $ createXFTPChunk c spKey FileInfo {sndKey, size = chSize, digest} [rcvKey] Nothing
+      t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams spKey ("", sId, FileCmd SFSender FPUT)
+      bodyAllowed <- newEmptyTMVarIO
+      let req = H2.requestStreaming "POST" "/" [] $ \send flush -> do
+            send (byteString t) >> flush
+            atomically $ takeTMVar bodyAllowed
+            send (byteString bytes) >> flush
+      withAsync (HC.sendRequest http2Client req Nothing) $ \firstUpload -> do
+        threadDelay 500000
+        testXFTPClient $ \c' -> runRight_ $ uploadXFTPChunk c' spKey sId chunkSpec
+        atomically $ putTMVar bodyAllowed ()
+        wait firstUpload >>= \case
+          Right HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead}} -> case xftpDecodeTClient thParams bodyHead of
+            Right (_, _, Right FROk) -> pure ()
+            r -> expectationFailure $ "unexpected response: " <> show r
+          Left e -> expectationFailure $ "request error: " <> show e
+      runRight_ $ downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
+      B.readFile (testPath "received_chunk") `shouldReturn` bytes
+
+testRemoveTmpUploads :: HasTestEnv => Expectation
+testRemoveTmpUploads = do
+  createDirectoryIfMissing True xftpServerFiles
+  writeFile (xftpServerFiles </> "chunk") "chunk"
+  writeFile (xftpServerFiles </> "chunk.upload.tmp") "partial upload"
+  withXFTPServerThreadOn $ \_ -> listDirectory xftpServerFiles `shouldReturn` ["chunk"]
+
+testNoRequestTimeout :: HasTestEnv => AFStoreType -> Expectation
+testNoRequestTimeout fsType =
+  forM_ ([Nothing, Just defaultInactiveClientExpiration] :: [Maybe ExpirationConfig]) $ \inactiveClientExpiration ->
+    withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c@XFTPServerConfig {transportConfig = tc} -> c {inactiveClientExpiration, transportConfig = tc {firstRequestTimeout = 1000000}}) $ \_ -> do
+      Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
+      let cfg = defaultTransportClientConfig {clientALPN = Just alpnSupportedXFTPhandshakes} :: TransportClientConfig
+      runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
+        timeout 5000000 (tryAny $ cGet tls 1) >>= \case
+          Just (Left _) -> pure ()
+          Just (Right "") -> pure ()
+          r -> expectationFailure $ "connection without a request is open after 5 s: " <> show r
+      (c, disconnected) <- connectXFTPClient
+      threadDelay 2000000
+      atomically (tryReadTMVar disconnected) `shouldReturn` Nothing
+      runRight_ $ pingXFTP c
+
+connectXFTPClient :: HasTestEnv => IO (XFTPClient, TMVar ())
+connectXFTPClient = do
+  disconnected <- newEmptyTMVarIO
+  ts <- getCurrentTime
+  c <- either (error . show) pure =<< getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> atomically $ putTMVar disconnected ())
+  pure (c, disconnected)
+
+uploadLargeChunk :: HasTestEnv => IO (XFTPClient, TMVar (), RecipientId, C.APrivateAuthKey)
+uploadLargeChunk = do
+  g <- C.newRandom
+  (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let size = mb 4
+      chunkSpec = XFTPChunkSpec {filePath = testChunkPath, chunkOffset = 0, chunkSize = size}
+  B.writeFile testChunkPath =<< atomically (C.randomBytes (fromIntegral size) g)
+  digest <- LC.sha256Hash <$> LB.readFile testChunkPath
+  (c, disconnected) <- connectXFTPClient
+  rId <- runRight $ do
+    (sId, [rId]) <- createXFTPChunk c spKey FileInfo {sndKey, size, digest} [rcvKey] Nothing
+    uploadXFTPChunk c spKey sId chunkSpec
+    pure rId
+  pure (c, disconnected, rId, rpKey)
+
+expectDisconnected :: TMVar () -> Expectation
+expectDisconnected disconnected = timeout 5000000 (atomically $ takeTMVar disconnected) `shouldReturn` Just ()
+
+sendFGET :: XFTPClient -> C.APrivateAuthKey -> RecipientId -> IO HC.HTTP2Response
+sendFGET XFTPClient {http2Client, thParams} rpKey rId = do
+  (rDhKey, _) <- atomically . C.generateKeyPair =<< C.newRandom
+  t <- either (error . show) pure $ xftpEncodeAuthTransmission thParams rpKey ("", rId, FileCmd SFRecipient $ FGET rDhKey)
+  either (error . show) pure =<< HC.sendRequest http2Client (H2.requestBuilder "POST" "/" [] $ byteString t) Nothing
+
+openDescriptors :: FilePath -> IO (Maybe Int)
+openDescriptors path =
+  doesDirectoryExist fdDir >>= \case
+    False -> pure Nothing
+    True -> do
+      target <- canonicalizePath path
+      fds <- listDirectory fdDir
+      Just . length . filter (== target) <$> mapM linkTarget fds
+  where
+    fdDir = "/proc/self/fd"
+    linkTarget fd = getSymbolicLinkTarget (fdDir </> fd) `catch` \(_ :: IOException) -> pure ""
+
 testHandshakeTimeout :: HasTestEnv => AFStoreType -> Expectation
 testHandshakeTimeout _ =
   withStallingXFTPServer $ \_ closed -> do
@@ -454,6 +826,33 @@ testOldServerHandshake _ = do
   isLeft (decode $ smpEncode ("invalid" :: ByteString)) `shouldBe` True
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
+
+testReceiveChunkDigest :: Expectation
+testReceiveChunkDigest = do
+  bytes <- atomically . C.randomBytes chSize =<< C.newRandom
+  let digest = LC.sha256Hash $ LB.fromStrict bytes
+      receive d = bodyReader bytes >>= \getBody -> runExceptT $ receiveFile getBody $ XFTPRcvChunkSpec "/dev/null" chSize d
+  receive digest `shouldReturn` Right ()
+  receive (digest <> "_wrong") `shouldReturn` Left DIGEST
+
+testReceiveEncChunkDigest :: Expectation
+testReceiveEncChunkDigest = do
+  g <- C.newRandom
+  bytes <- atomically $ C.randomBytes chSize g
+  key <- atomically $ C.randomSbKey g
+  nonce <- atomically $ C.randomCbNonce g
+  sbState <- either (error . show) pure $ LC.sbInit key nonce
+  let (encrypted, sbState') = LC.sbEncryptChunk sbState bytes
+      body = encrypted <> BA.convert (LC.sbAuth sbState')
+      digest = LC.sha256Hash $ LB.fromStrict bytes
+      receive d = bodyReader body >>= \getBody -> runExceptT $ receiveEncFile getBody sbState $ XFTPRcvChunkSpec "/dev/null" chSize d
+  receive digest `shouldReturn` Right ()
+  receive (digest <> "_wrong") `shouldReturn` Left DIGEST
+
+bodyReader :: ByteString -> IO (Int -> IO ByteString)
+bodyReader bytes = do
+  rest <- newTVarIO bytes
+  pure $ \n -> atomically $ stateTVar rest $ B.splitAt n
 
 -- SNI and CORS tests
 

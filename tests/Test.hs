@@ -17,6 +17,7 @@ import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
 import CoreTests.StoreLogTests
 import CoreTests.TSessionSubs
+import CoreTests.TransportTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
 import FileDescriptionTests (fileDescriptionTests)
@@ -39,7 +40,7 @@ import XFTPAgent
 import XFTPCLI (xftpCLIFileTests)
 import Simplex.FileTransfer.Server.Env (AFStoreType (..))
 import Simplex.FileTransfer.Server.Store (SFSType (..))
-import XFTPServerTests (xftpServerTests)
+import XFTPServerTests (xftpMemoryServerTests, xftpServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
 
@@ -100,6 +101,7 @@ main = do
             describe "XFTP store log tests" fileStoreLogTests
             fileExpirationTests
             describe "TSessionSubs tests" tSessionSubsTests
+            describe "Transport tests" transportTests
             describe "Util tests" utilTests
             describe "Names resolver tests" smpNamesTests
             describe "RSLV functional API tests" rslvTests
@@ -131,6 +133,7 @@ main = do
           describe "XFTP" $ do
             describe "XFTP server" $
               before (pure $ AFSType SFSMemory) xftpServerTests
+            describe "XFTP server with the memory store only" xftpMemoryServerTests
             describe "XFTP file description" fileDescriptionTests
             describe "XFTP agent" $
               before (pure $ AFSType SFSMemory) xftpAgentTests
