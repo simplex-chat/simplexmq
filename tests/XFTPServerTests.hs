@@ -46,7 +46,7 @@ import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), closeTLS, defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
@@ -75,6 +75,7 @@ xftpServerTests = do
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should time out TLS handshake when TLS errors are logged" $ \_ -> testTLSHandshakeTimeout
+      it "should time out closing TLS connection" $ \_ -> testCloseTLSTimeout
       it "should time out receiving file chunk" $ \_ -> testReceiveFileTimeout
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
@@ -266,6 +267,21 @@ testTLSHandshakeTimeout =
   where
     cfg :: TransportClientConfig
     cfg = defaultTransportClientConfig {logTLSErrors = True}
+
+testCloseTLSTimeout :: Expectation
+testCloseTLSTimeout = do
+  closed <- newEmptyTMVarIO
+  ctx <- T.contextNew (backend closed) (T.defaultParamsClient "localhost" "")
+  timeout 100000 (closeTLS ctx) `shouldReturn` Nothing
+  atomically (tryReadTMVar closed) `shouldReturn` Just ()
+  where
+    backend closed =
+      T.Backend
+        { T.backendFlush = pure (),
+          T.backendClose = atomically $ putTMVar closed (),
+          T.backendSend = \_ -> threadDelay maxBound,
+          T.backendRecv = \_ -> pure ""
+        }
 
 testReceiveFileTimeout :: HasTestEnv => Expectation
 testReceiveFileTimeout =
