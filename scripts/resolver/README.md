@@ -67,7 +67,7 @@ curl -s -X POST http://127.0.0.1:8545 \
 curl -s http://127.0.0.1:8000/health | jq
 # → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x58fc46996d975c57883564648bda5206d1a0102b",
 #    "simplex": "0x3ce23ef6a00d89105299b52aadd72b92681414be"},
-#    "blockNumber": 23400000, "chainLagSeconds": 12}
+#    "blockNumber": 26462784, "chainLagSeconds": 12}
 ```
 
 `chainLagSeconds` is how far the node is behind the wall clock. A resolver that
@@ -241,7 +241,7 @@ name already knows when it expires. Both timestamps are Unix seconds, and
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace; anyone may register it |
 | `unregistered` | never registered, and free to take |
-| `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+| `unknown` | the resolver has no registrar for the TLD, so status could not be read |
 
 A reservation is orthogonal to the status: a name held back by the registry
 carries `reasonCode` and `reason` whether or not it is registered.
@@ -286,7 +286,7 @@ look free.
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when no registrar is configured) |
+| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when the resolver has no registrar for the TLD) |
 | 400 | TLD not configured, or not a fully-qualified name |
 | 404 | `unregistered` |
 | 410 | `expired`: lapsed and past grace, so anyone may take it |
@@ -412,8 +412,8 @@ records, the **proxy** where the contract is upgradeable: the controller of
 `.testing` and all three of `.simplex`. The implementations, the entries named
 `<contract>@<address>` or `SimplexControllerImpl` in its
 `verification.mainnet.<tld>.json`, hold no names: a registrar implementation
-reports every name as never registered. Each setting takes one entry of the
-deployments file:
+returns 0 from `nameExpires` for every name, so every unreserved name is
+answered as available. Each setting is the address of one entry of the deployments file:
 
 | Setting | Entry of `deployments.mainnet.<tld>.json` |
 |---|---|
@@ -423,9 +423,9 @@ deployments file:
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
-as env vars when you run the script directly. An empty value means the default.
-Override the three settings of a TLD together: an unset one keeps its mainnet
-default, which belongs to a different deployment.
+as env vars when you run the script directly. An empty value is replaced by the
+default. Override the three settings of a TLD together: an unset setting is left
+at its mainnet default, which belongs to a different deployment.
 
 ### Load and scaling
 

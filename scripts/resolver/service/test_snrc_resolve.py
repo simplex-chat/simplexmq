@@ -1309,7 +1309,7 @@ class FakeNodeTestCase(unittest.TestCase):
         self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
-        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "nosuchtld": ""}
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
         snrc._multicall_failed_logged = False
