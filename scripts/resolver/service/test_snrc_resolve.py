@@ -1208,8 +1208,9 @@ class FakeChain:
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
     RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
+    SUBNAMES = RegistrationV2Tests.SUBNAMES
     GRACE = 90 * 86400
-    TEXTS = {"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
+    TEXTS ={"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
 
     def __init__(self):
         self.now = int(time.time())
@@ -1429,8 +1430,6 @@ class BatchedReadsTests(FakeNodeTestCase):
     reads one multicall, because a node runs the calls of a JSON-RPC batch one
     after another. Answers must be exactly those of reading one call at a time."""
 
-    SUBNAMES = RegistrationV2Tests.SUBNAMES
-
     def batched(self, answer, name):
         def action():
             with snrc.request_reads():
@@ -1470,10 +1469,10 @@ class BatchedReadsTests(FakeNodeTestCase):
     def subname_of_the_subname_registrar(self, name, holder):
         node = snrc.node_of(name)
         self.node.chain.answers.update({
-            snrc.subname_hook_call(FakeChain.REGISTRAR): "0x" + snrc.encode_uint(int(self.SUBNAMES, 16)),
+            snrc.subname_hook_call(FakeChain.REGISTRAR): "0x" + snrc.encode_uint(int(FakeChain.SUBNAMES, 16)),
             snrc.resolver_call(FakeChain.REGISTRY, node): "0x" + snrc.encode_uint(int(FakeChain.RESOLVER, 16)),
-            snrc.owner_call(FakeChain.REGISTRY, node): "0x" + snrc.encode_uint(int(self.SUBNAMES, 16)),
-            snrc.subname_owner_call(self.SUBNAMES, node): "0x" + snrc.encode_uint(int(holder, 16)),
+            snrc.owner_call(FakeChain.REGISTRY, node): "0x" + snrc.encode_uint(int(FakeChain.SUBNAMES, 16)),
+            snrc.subname_owner_call(FakeChain.SUBNAMES, node): "0x" + snrc.encode_uint(int(holder, 16)),
         })
 
     def test_a_subname_the_subname_registrar_holds_takes_three_round_trips(self):
@@ -1483,7 +1482,7 @@ class BatchedReadsTests(FakeNodeTestCase):
         status, body = self.assert_same_answer(snrc.resolve, "held.acme.testing", 3)
         self.assertEqual(body["owner"], FakeChain.OWNER)
 
-    def test_a_subname_the_subname_registrar_no_longer_holds_reads_no_record(self):
+    def test_a_subname_the_subname_registrar_no_longer_holds_is_answered_in_four_round_trips(self):
         self.subname_of_the_subname_registrar("gone.acme.testing", snrc.ZERO_ADDR)
         status, body = self.assert_same_answer(snrc.registration, "gone.acme.testing", 4)
         self.assertEqual(body["registration"]["type"], "available")
