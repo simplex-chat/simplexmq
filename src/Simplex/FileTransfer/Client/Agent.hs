@@ -34,7 +34,7 @@ import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (ProtocolServer (..), XFTPServer)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (catchOwn_)
+import Simplex.Messaging.Util (catchAll_)
 import UnliftIO
 
 type XFTPClientVar = TMVar (Either XFTPClientAgentError XFTPClient)
@@ -132,5 +132,5 @@ closeXFTPServerClient XFTPClientAgent {xftpClients, config} srv =
     closeClient cVar = do
       let NetworkConfig {tcpConnectTimeout} = xftpNetworkConfig $ xftpConfig config
       netTimeoutInt tcpConnectTimeout NRMBackground `timeout` atomically (readTMVar cVar) >>= \case
-        Just (Right client) -> closeXFTPClient client `catchOwn_` pure ()
+        Just (Right client) -> closeXFTPClient client `catchAll_` pure ()
         _ -> pure ()
