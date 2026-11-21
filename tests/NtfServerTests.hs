@@ -15,7 +15,7 @@ module NtfServerTests where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (bracket)
-import Control.Monad (forM, replicateM, unless, void)
+import Control.Monad (forM, replicateM, replicateM_, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
