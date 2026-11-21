@@ -11,6 +11,7 @@ import Data.Word (Word32)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..))
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -38,6 +39,7 @@ xftpStoreTests = do
     it "should set file path with IS NULL guard" testSetFilePath
     it "should reject duplicate recipient" testDuplicateRecipient
     it "should add all recipients or none" $ withPgStore testAddRecipientsAtomically
+    it "should log the recipients of one call in one record" testAddRecipientsLog
     it "should delete file and cascade recipients" testDeleteFileCascade
     it "should block file and update status" testBlockFile
     it "should ack file reception" testAckFile
@@ -150,6 +152,25 @@ testDuplicateRecipient = withPgStore $ \st -> do
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Right ()
   addRecipients st testSenderId (FileRecipient testRecipientId rcpKey :| []) `shouldReturn` Left DUPLICATE_
+
+testAddRecipientsLog :: HasTestEnv => Expectation
+testAddRecipientsLog = do
+  let logPath = testPath "xftp-db-store.log"
+  st <- newFileStore testXFTPPostgresCfg {dbStoreLogPath = Just logPath} :: IO PostgresFileStore
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  [keyA, keyB] <- replicateM 2 $ fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+  let rIdA = EntityId "recipient_a_____"
+      rIdB = EntityId "recipient_b_____"
+  addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addRecipients st testSenderId (FileRecipient rIdA keyA :| [FileRecipient rIdB keyB]) `shouldReturn` Right ()
+  closeFileStore st
+  records <- B.lines <$> B.readFile logPath
+  map (B.takeWhile (/= ' ')) records `shouldBe` ["FNEW", "FADD"]
+  stmStore <- newFileStore () :: IO STMFileStore
+  readWriteFileStore logPath stmStore >>= closeStoreLog
+  forM_ [(rIdA, keyA), (rIdB, keyB)] $ \(rId, key) ->
+    fmap snd <$> getFile stmStore SFRecipient rId `shouldReturn` Right key
 
 testAddRecipientsAtomically :: FileStoreClass s => s -> Expectation
 testAddRecipientsAtomically st = do

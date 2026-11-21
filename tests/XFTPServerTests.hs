@@ -8,7 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module XFTPServerTests (xftpServerTests) where
+module XFTPServerTests (xftpServerTests, xftpStoreLogServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
@@ -28,7 +28,7 @@ import qualified Data.CaseInsensitive as CI
 import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time.Clock (UTCTime (..), getCurrentTime)
@@ -73,6 +73,13 @@ import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
 
+xftpStoreLogServerTests :: Spec
+xftpStoreLogServerTests = do
+  it "should expire chunks that were never uploaded without delays" testExpireNotUploadedFiles
+  it "should count stored files after restart without stats backup" $ testFileStatsRestart False
+  it "should count stored files after restart with stats backup" $ testFileStatsRestart True
+  it "should remove unfinished uploads at start" testRemoveTmpUploads
+
 xftpServerTests :: SpecWith AFStoreType
 xftpServerTests = do
     describe "XFTP file chunk delivery" $ do
@@ -83,7 +90,6 @@ xftpServerTests = do
       it "should delete file chunk (2 clients)" testFileChunkDelete2
       it "should not allow chunks of wrong size" testWrongChunkSize
       it "should expire chunks after set interval" testFileChunkExpiration
-      it "should expire chunks that were never uploaded without delays" testExpireNotUploadedFiles
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should not disconnect clients during downloads longer than inactivity ttl" testLongDownloadExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
@@ -92,9 +98,8 @@ xftpServerTests = do
       it "should store file records to log and restore them after server restart" testFileLog
       it "should reset daily download stats without stats log" testPeriodStatsReset
       it "should export socket counts in Prometheus metrics" testSocketMetrics
-      it "should count stored files after restart without stats backup" $ testFileStatsRestart False
-      it "should count stored files after restart with stats backup" $ testFileStatsRestart True
       it "should count stored files after deletion" testFileStatsDelete
+      it "should describe file metrics" testFileMetricsHelp
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -110,7 +115,6 @@ xftpServerTests = do
       it "should time out a stalled upload of a new chunk" $ testStalledUpload False
       it "should accept a repeated upload of a chunk while its first upload is stalled" testRepeatedUploadDuringStalledUpload
       it "should return OK to an upload completed after another upload of the chunk" testUploadAfterCommittedUpload
-      it "should remove unfinished uploads at start" testRemoveTmpUploads
       it "should close connections without requests" testNoRequestTimeout
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
@@ -261,8 +265,8 @@ testFileChunkExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fs
   where
     fileExpiration = ExpirationConfig {ttl = 1, checkInterval = 1}
 
-testExpireNotUploadedFiles :: HasTestEnv => AFStoreType -> Expectation
-testExpireNotUploadedFiles _ = do
+testExpireNotUploadedFiles :: HasTestEnv => Expectation
+testExpireNotUploadedFiles = do
   g <- C.newRandom
   (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   (rcvKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
@@ -464,9 +468,7 @@ testPeriodStatsReset fsType = do
     threadDelay 10000000
     dailyDownloads `shouldReturn` Just "0"
   where
-    dailyDownloads = do
-      metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
-      pure $ listToMaybe [n | l <- metrics, ["simplex_xftp_files_count_daily", n, _] <- [T.words l]]
+    dailyDownloads = lookup "simplex_xftp_files_count_daily" <$> readMetrics
 
 testSocketMetrics :: HasTestEnv => AFStoreType -> Expectation
 testSocketMetrics fsType =
@@ -480,17 +482,12 @@ testSocketMetrics fsType =
     socketMetrics `shouldReturn` [("accepted", "1"), ("closed", "1"), ("active", "0"), ("leaked", "0")]
   where
     socketMetrics = do
-      metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
-      pure
-        [ (name, n)
-          | l <- metrics,
-            [metric, n, _] <- [T.words l],
-            Just name <- [T.stripPrefix "simplex_xftp_sockets_" =<< T.stripSuffix portLabel metric]
-        ]
+      metrics <- readMetrics
+      pure [(name, n) | (metric, n) <- metrics, Just name <- [T.stripPrefix "simplex_xftp_sockets_" =<< T.stripSuffix portLabel metric]]
     portLabel = "{port=\"" <> T.pack xftpTestPort <> "\"}"
 
-testFileStatsRestart :: HasTestEnv => Bool -> AFStoreType -> Expectation
-testFileStatsRestart statsBackup _ = do
+testFileStatsRestart :: HasTestEnv => Bool -> Expectation
+testFileStatsRestart statsBackup = do
   when statsBackup $ do
     withXFTPServerCfg cfg $ \_ -> pure ()
     doesFileExist testXFTPStatsBackupFile `shouldReturn` True
@@ -550,14 +547,35 @@ testFileStatsDelete fsType =
 
 fileMetrics :: HasTestEnv => IO [(T.Text, T.Text)]
 fileMetrics = do
-  metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+  metrics <- readMetrics
   pure
     [ (name, n)
-      | l <- metrics,
-        [metric, n, _] <- [T.words l],
+      | (metric, n) <- metrics,
         Just name <- [T.stripPrefix "simplex_xftp_files_" metric],
         name `elem` (["expired", "deleted", "count_total", "size"] :: [T.Text])
     ]
+
+readMetrics :: HasTestEnv => IO [(T.Text, T.Text)]
+readMetrics = do
+  metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+  pure [(metric, n) | l <- metrics, [metric, n, _] <- [T.words l]]
+
+testFileMetricsHelp :: HasTestEnv => AFStoreType -> Expectation
+testFileMetricsHelp fsType =
+  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {prometheusInterval = Just 1}) $ \_ -> do
+    threadDelay 1500000
+    help <- mapMaybe (T.stripPrefix "# HELP ") . T.lines <$> T.readFile xftpTestPrometheusMetricsFile
+    filter (`elem` expected) help `shouldBe` expected
+  where
+    expected :: [T.Text]
+    expected =
+      [ "simplex_xftp_file_downloads Started file downloads",
+        "simplex_xftp_files_count_total Stored files",
+        "simplex_xftp_files_size Size of stored files, bytes",
+        "simplex_xftp_files_count_daily Distinct files downloaded in the current day",
+        "simplex_xftp_files_count_weekly Distinct files downloaded in the current week",
+        "simplex_xftp_files_count_monthly Distinct files downloaded in the current month"
+      ]
 
 testFileBasicAuth :: HasTestEnv => Bool -> Maybe BasicAuth -> Maybe BasicAuth -> Bool -> AFStoreType -> IO ()
 testFileBasicAuth allowNewFiles newFileBasicAuth clntAuth success fsType =
@@ -606,11 +624,12 @@ testStalledDownload fsType =
     (c, disconnected, rId, rpKey) <- uploadLargeChunk
     void $ sendFGET c rpKey rId
     expectDisconnected disconnected
-    filesClosed (20 :: Int) `shouldReturn` True
+    openFiles (20 :: Int) `shouldReturn` []
   where
-    filesClosed n = do
-      closed <- all (maybe True (== 0)) <$> (mapM (openDescriptors . (xftpServerFiles </>)) =<< listDirectory xftpServerFiles)
-      if closed || n <= 0 then pure closed else threadDelay 100000 >> filesClosed (n - 1)
+    openFiles n = do
+      files <- listDirectory xftpServerFiles
+      open <- filterM (fmap (maybe False (/= 0)) . openDescriptors . (xftpServerFiles </>)) files
+      if null open || n <= 0 then pure open else threadDelay 100000 >> openFiles (n - 1)
 
 testStalledDownloadEnd :: HasTestEnv => AFStoreType -> Expectation
 testStalledDownloadEnd fsType =
@@ -708,8 +727,8 @@ testUploadAfterCommittedUpload fsType =
       runRight_ $ downloadXFTPChunk g c rpKey rId $ XFTPRcvChunkSpec (testPath "received_chunk") chSize digest
       B.readFile (testPath "received_chunk") `shouldReturn` bytes
 
-testRemoveTmpUploads :: HasTestEnv => AFStoreType -> Expectation
-testRemoveTmpUploads _ = do
+testRemoveTmpUploads :: HasTestEnv => Expectation
+testRemoveTmpUploads = do
   createDirectoryIfMissing True xftpServerFiles
   writeFile (xftpServerFiles </> "chunk") "chunk"
   writeFile (xftpServerFiles </> "chunk.upload.tmp") "partial upload"
@@ -722,7 +741,10 @@ testNoRequestTimeout fsType =
       Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
       let cfg = defaultTransportClientConfig {clientALPN = Just alpnSupportedXFTPhandshakes} :: TransportClientConfig
       runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) ->
-        timeout 5000000 (tryAny $ cGet tls 1) >>= (`shouldSatisfy` maybe False (either (const True) B.null))
+        timeout 5000000 (tryAny $ cGet tls 1) >>= \case
+          Just (Left _) -> pure ()
+          Just (Right "") -> pure ()
+          r -> expectationFailure $ "connection without a request is open after 5 s: " <> show r
       (c, disconnected) <- connectXFTPClient
       threadDelay 2000000
       atomically (tryReadTMVar disconnected) `shouldReturn` Nothing

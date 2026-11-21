@@ -40,7 +40,7 @@ import XFTPAgent
 import XFTPCLI (xftpCLIFileTests)
 import Simplex.FileTransfer.Server.Env (AFStoreType (..))
 import Simplex.FileTransfer.Server.Store (SFSType (..))
-import XFTPServerTests (xftpServerTests)
+import XFTPServerTests (xftpServerTests, xftpStoreLogServerTests)
 import WebTests (webTests)
 import XFTPWebTests (xftpWebTests)
 
@@ -133,6 +133,7 @@ main = do
           describe "XFTP" $ do
             describe "XFTP server" $
               before (pure $ AFSType SFSMemory) xftpServerTests
+            describe "XFTP server with a store log" xftpStoreLogServerTests
             describe "XFTP file description" fileDescriptionTests
             describe "XFTP agent" $
               before (pure $ AFSType SFSMemory) xftpAgentTests
