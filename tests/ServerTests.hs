@@ -2385,6 +2385,43 @@ testServiceNotificationsReturnToConnection =
           Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh2
           pure ()
 
+testServiceNotificationsRepeatedNSUB :: SpecWith (ASrvTransport, AStoreType)
+testServiceNotificationsRepeatedNSUB =
+  it "should end the service subscription to a notifier once when NSUB is repeated in one block" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest3 t msType $ \rh sh nh@THandle {params} -> do
+      let createNtfQueue = do
+            (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+            (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+            (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+            (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+            Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+            pure (sId, sKey, rId, rKey, nId, nKey)
+      (sId1, sKey1, rId1, rKey1, nId1, nKey1) <- createNtfQueue
+      (_, _, _, _, nId2, nKey2) <- createNtfQueue
+      serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+      testNtfServiceClient t serviceKeys $ \snh -> do
+        Resp "2" _ (SOK (Just serviceId)) <- serviceSignSendRecv snh nKey1 servicePK ("2", nId1, NSUB)
+        Resp "3" _ (SOK (Just _)) <- serviceSignSendRecv snh nKey2 servicePK ("3", nId2, NSUB)
+        let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId "4", nId2, NSUB)
+        Right auth <- pure $ authTransmission (thAuth params) False (Just nKey2) Nothing tForAuth
+        let nsub = Right (auth, tToSend)
+        [Right (), Right (), Right ()] <- tPut nh [nsub, nsub, nsub]
+        [Resp "4" _ (SOK Nothing), Resp "4" _ (SOK Nothing), Resp "4" _ (SOK Nothing)] <- tGetClient nh
+        Resp "" nId2' END <- tGet1 snh
+        nId2' `shouldBe` nId2
+        Resp "5" _ OK <- signSendRecv sh sKey1 ("5", sId1, _SEND' "hello")
+        Resp "" _ (Msg mId _) <- tGet1 rh
+        Resp "6" _ OK <- signSendRecv rh rKey1 ("6", rId1, ACK mId)
+        Resp "" nId1' (NMSG _ _) <- tGet1 snh
+        nId1' `shouldBe` nId1
+        testNtfServiceClient t serviceKeys $ \snh' -> do
+          let idsHash = queueIdsHash [nId1]
+          Resp "7" _ (SOKS 1 idsHash') <- signSendRecv snh' (C.APrivateAuthKey C.SEd25519 servicePK) ("7", serviceId, NSUBS 1 idsHash)
+          idsHash' `shouldBe` idsHash
+          Resp "" _ (ENDS n idsHash'') <- tGet1 snh
+          (n, idsHash'') `shouldBe` (1, idsHash)
+
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do

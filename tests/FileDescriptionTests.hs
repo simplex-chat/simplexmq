@@ -307,7 +307,7 @@ testFileWebLinkIPv6 = do
         replaceChunk c = c
     withPrimaryServer _ fd = fd
 
-withRemoveTmpFile :: IO () -> IO ()
+withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 withRemoveTmpFile =
   bracket_
     (pure ())
