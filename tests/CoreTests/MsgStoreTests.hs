@@ -46,6 +46,7 @@ import Util
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
 import Control.Concurrent (forkIO)
+import Control.Concurrent.Async (AsyncCancelled (..), async, cancel, waitCatch)
 import qualified Control.Exception as E
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -70,6 +71,7 @@ msgStoreTests = do
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
     it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
+    it "should stop when cancelled during reconnect after database error" $ withMsgStore testPostgresStoreConfig testReconnectCancel
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -507,4 +509,15 @@ testClosedStore ms = do
 testDBOperationTimeout :: PostgresMsgStore -> IO ()
 testDBOperationTimeout ms =
   timeout 100000 (runExceptT $ withDB' "test" (queueStore ms) $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+
+testReconnectCancel :: PostgresMsgStore -> IO ()
+testReconnectCancel ms = do
+  let st = dbStore $ queueStore ms
+  reconnecting <- newEmptyTMVarIO
+  let st' = st {dbConnect = atomically (putTMVar reconnecting ()) >> threadDelay 1000000 >> dbConnect st}
+  a <- async $ E.try @DB.SqlError $ withTransaction st' $ \db -> DB.query_ db "SELECT 1/0" :: IO [Only Int]
+  atomically $ takeTMVar reconnecting
+  cancel a
+  (either E.fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just AsyncCancelled
+  atomically (lengthTBQueue $ dbPoolConns $ dbPool st) `shouldReturn` fromIntegral (dbPoolSize st)
 #endif
