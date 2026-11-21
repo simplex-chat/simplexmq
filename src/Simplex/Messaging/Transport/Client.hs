@@ -183,7 +183,7 @@ runTLSTransportClient tlsParams caStore_ cfg@TransportClientConfig {socksProxy, 
     sent <- readIORef clientCredsSent
     client =<< set CHTransport (getTransportConnection tCfg sent chain tls)
   where
-    closeConn = readIORef >=> mapM_ (\c -> E.uninterruptibleMask_ $ closeConn_ c `catchAll_` pure ())
+    closeConn = readIORef >=> mapM_ (\c -> closeConn_ c `catchAll_` pure ())
     closeConn_ = \case
       CHSocket sock -> close sock
       CHContext tls -> closeTLS tls
