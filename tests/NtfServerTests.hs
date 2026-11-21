@@ -50,12 +50,13 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfPushServer (pushClients), NtfServerConfig (..), getPushClient, newNtfPushServer)
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
+import Simplex.Messaging.Notifications.Server.Store.Postgres (addNtfToken, closeNtfDbStore, mkNtfTknRec, newNtfDbStore, setTokenActive, updateTknCronInterval, updateTokenCronSentAt, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
+import Simplex.Messaging.SystemTime (getSystemDate)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
@@ -76,6 +77,7 @@ ntfServerTests ps@(t, _) = do
     it "resumes sending notifications after the push provider is unreachable" $ testPushWorkerResumesAfterOutage t
     it "does not connect to the push provider when the key file is not configured" testNoConnectWithoutKeyFile
     it "stops connecting to the push provider when the push worker is killed" testPushClientKilled
+    it "stops the server after a periodic notification starts a push worker" $ testPeriodicNtfServerStop t
   describe "Database pool" $ do
     it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
@@ -167,6 +169,23 @@ testPushClientKilled =
     isNothing <$> TM.lookupIO PPApnsTest (pushClients s) `shouldReturn` True
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
+
+testPeriodicNtfServerStop :: HasTestEnv => ASrvTransport -> Expectation
+testPeriodicNtfServerStop t = do
+  g <- C.newRandom
+  (tknPub, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  ts <- getSystemDate
+  let tknId = EntityId "periodic"
+      tkn = mkNtfTknRec tknId (NewNtfTkn (DeviceToken PPApnsTest "abcd") tknPub dhPub) dhPriv (C.dh' dhPub dhPriv) (NtfRegCode "code") ts
+  st <- newNtfDbStore ntfTestDBCfg
+  Right () <- addNtfToken st tkn
+  Right () <- setTokenActive st tkn
+  Right () <- updateTknCronInterval st tknId 20
+  Right () <- updateTokenCronSentAt st tknId 0
+  closeNtfDbStore st
+  withStallingServerOn' apnsTestPort $ \accepted _ ->
+    withNtfServer t $ atomically $ takeTMVar accepted
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
