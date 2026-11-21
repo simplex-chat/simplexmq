@@ -96,9 +96,13 @@ instance FileStoreClass PostgresFileStore where
       withLog "addFile" st $ \s -> logAddFile s sId fileInfo createdAt expiresAt status
 
   setFilePath st sId fPath = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "setFilePath" st $ \db ->
-      DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
-    withLog "setFilePath" st $ \s -> logPutFile s sId fPath
+    r <- withDB "setFilePath" st $ \db -> do
+      n <- DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
+      if n > 0
+        then pure $ Right FilePathSet
+        else firstRow (const FilePathAlreadySet) AUTH (DB.query db "SELECT 1 FROM files WHERE sender_id = ? AND file_path IS NOT NULL AND status = 'active'" (Only sId) :: IO [Only Int])
+    when (r == FilePathSet) $ withLog "setFilePath" st $ \s -> logPutFile s sId fPath
+    pure r
 
   addRecipients st senderId rcps = E.uninterruptibleMask_ $ runExceptT $ do
     void $ withDB "addRecipients" st $ \db ->

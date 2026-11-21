@@ -617,29 +617,26 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
             let fPath = path </> serverFileName senderId
                 tmpPath = fPath <> "." <> B.unpack (strEncode tmpId) <> tmpUploadExtension
             (restore (receiveChunk $ XFTPRcvChunkSpec tmpPath size digest) `onException` release tmpPath) >>= \case
-              Right () -> do
-                renameFile tmpPath fPath
-                stats <- asks serverStats
-                st <- asks fileStore
-                liftIO (setFilePath st senderId fPath) >>= \case
-                  Right () -> do
-                    withFileLog $ \sl -> logPutFile sl senderId fPath
-                    incFileStat filesUploaded
-                    incFileStat filesCount
-                    liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
-                    pure FROk
-                  Left _e -> releaseQuota >> uploadedResponse fPath
+              Right () ->
+                E.tryAny (renameFile tmpPath fPath) >>= \case
+                  Right () -> commit fPath
+                  Left e -> do
+                    logError $ "failed to rename uploaded file " <> tshow tmpPath <> ": " <> tshow e
+                    FRErr FILE_IO <$ release tmpPath
               Left e -> FRErr e <$ release tmpPath
-          uploadedResponse fPath = do
+          commit fPath = do
+            stats <- asks serverStats
             st <- asks fileStore
-            liftIO (getFile st SFSender senderId) >>= \case
-              Right (FileRec {filePath = uploadedPath, fileStatus}, _) ->
-                (,) <$> readTVarIO uploadedPath <*> readTVarIO fileStatus >>= \case
-                  (Just _, _) -> pure FROk
-                  (Nothing, EntityActive) -> pure $ FRErr AUTH
-                  _ -> FRErr AUTH <$ removeUpload fPath
-              Left AUTH -> FRErr AUTH <$ removeUpload fPath
-              Left e -> pure $ FRErr e
+            liftIO (setFilePath st senderId fPath) >>= \case
+              Right FilePathSet -> do
+                withFileLog $ \sl -> logPutFile sl senderId fPath
+                incFileStat filesUploaded
+                incFileStat filesCount
+                liftIO $ atomicModifyIORef'_ (filesSize stats) (+ fromIntegral size)
+                pure FROk
+              Right FilePathAlreadySet -> FROk <$ releaseQuota
+              Left AUTH -> FRErr AUTH <$ release fPath
+              Left e -> FRErr e <$ releaseQuota
           release fPath = releaseQuota >> removeUpload fPath
           releaseQuota = do
             us <- asks usedStorage
@@ -761,7 +758,9 @@ removeTmpUploads :: M s ()
 removeTmpUploads = do
   path <- asks $ filesPath . config
   whenM (doesDirectoryExist path) $
-    listDirectory path >>= mapM_ (removeFile . (path </>)) . filter ((tmpUploadExtension ==) . takeExtension)
+    listDirectory path >>= mapM_ (removeTmp . (path </>)) . filter ((tmpUploadExtension ==) . takeExtension)
+  where
+    removeTmp f = removeFile f `catch` \(e :: SomeException) -> logError $ "failed to remove unfinished upload " <> tshow f <> ": " <> tshow e
 
 subtractStoredFile :: Word32 -> M s ()
 subtractStoredFile storedSize = do

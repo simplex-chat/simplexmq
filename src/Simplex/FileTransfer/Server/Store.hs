@@ -14,6 +14,7 @@ module Simplex.FileTransfer.Server.Store
     FileStoreClass (..),
     FileRec (..),
     FileRecipient (..),
+    SetFilePathResult (..),
     STMFileStore (..),
     RoundedFileTime,
     fileTimePrecision,
@@ -70,6 +71,9 @@ fileTimePrecision = 3600
 data FileRecipient = FileRecipient RecipientId C.APublicAuthKey
   deriving (Show)
 
+data SetFilePathResult = FilePathSet | FilePathAlreadySet
+  deriving (Eq, Show)
+
 instance StrEncoding FileRecipient where
   strEncode (FileRecipient rId rKey) = strEncode rId <> ":" <> strEncode rKey
   strP = FileRecipient <$> strP <* A.char ':' <*> strP
@@ -79,7 +83,7 @@ class FileStoreClass s where
   newFileStore :: FileStoreConfig s -> IO s
   closeFileStore :: s -> IO ()
   addFile :: s -> SenderId -> FileInfo -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO (Either XFTPErrorType ())
-  setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType ())
+  setFilePath :: s -> SenderId -> FilePath -> IO (Either XFTPErrorType SetFilePathResult)
   addRecipients :: s -> SenderId -> NonEmpty FileRecipient -> IO (Either XFTPErrorType ())
   deleteFile :: s -> SenderId -> IO (Either XFTPErrorType (Maybe FilePath))
   deleteFiles :: s -> [SenderId] -> IO [(SenderId, Maybe FilePath, Word32)]
@@ -118,14 +122,14 @@ instance FileStoreClass STMFileStore where
 
   setFilePath st sId fPath = atomically $
     withFile st sId $ \FileRec {filePath, fileStatus} -> do
-      readTVar filePath >>= \case
-        Just _ -> pure $ Left AUTH
-        Nothing ->
-          readTVar fileStatus >>= \case
-            EntityActive -> do
+      readTVar fileStatus >>= \case
+        EntityActive ->
+          readTVar filePath >>= \case
+            Just _ -> pure $ Right FilePathAlreadySet
+            Nothing -> do
               writeTVar filePath (Just fPath)
-              pure $ Right ()
-            _ -> pure $ Left AUTH
+              pure $ Right FilePathSet
+        _ -> pure $ Left AUTH
 
   addRecipients st@STMFileStore {recipients} senderId rcps = atomically $
     withFile st senderId $ \FileRec {recipientIds} -> do

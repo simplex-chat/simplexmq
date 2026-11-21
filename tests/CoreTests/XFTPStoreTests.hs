@@ -130,14 +130,16 @@ testSetFilePath = withPgStore $ \st -> do
   (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  setFilePath st testSenderId "/tmp/test_file" `shouldReturn` Right ()
-  -- Second setFilePath should fail (file_path IS NULL guard)
-  setFilePath st testSenderId "/tmp/other_file" `shouldReturn` Left AUTH
+  setFilePath st testSenderId "/tmp/test_file" `shouldReturn` Right FilePathSet
+  setFilePath st testSenderId "/tmp/other_file" `shouldReturn` Right FilePathAlreadySet
   -- Verify path was set
   result <- getFile st SFSender testSenderId
   case result of
     Right (FileRec {filePath}, _) -> readTVarIO filePath `shouldReturn` Just "/tmp/test_file"
     Left e -> expectationFailure $ "getFile failed: " <> show e
+  blockFile st testSenderId BlockingInfo {reason = BRContent, notice = Nothing} `shouldReturn` Right (Just "/tmp/test_file")
+  setFilePath st testSenderId "/tmp/test_file" `shouldReturn` Left AUTH
+  setFilePath st (EntityId "missing_file____") "/tmp/test_file" `shouldReturn` Left AUTH
 
 testDuplicateRecipient :: HasTestEnv => Expectation
 testDuplicateRecipient = withPgStore $ \st -> do
@@ -280,9 +282,10 @@ testStorageAndCountForStore st = do
   addFile st fileB fileInfoB testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   getFileCount st `shouldReturn` 2
   getUsedStorage st `shouldReturn` (0, 0)
-  setFilePath st fileA "/tmp/file_a" `shouldReturn` Right ()
+  setFilePath st fileA "/tmp/file_a" `shouldReturn` Right FilePathSet
+  setFilePath st fileA "/tmp/file_a" `shouldReturn` Right FilePathAlreadySet
   getUsedStorage st `shouldReturn` (1, 128000)
-  setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
+  setFilePath st fileB "/tmp/file_b" `shouldReturn` Right FilePathSet
   getUsedStorage st `shouldReturn` (2, 192000)
   let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
   blockFile st fileB blockInfo `shouldReturn` Right (Just "/tmp/file_b")
@@ -290,7 +293,7 @@ testStorageAndCountForStore st = do
   getUsedStorage st `shouldReturn` (1, 128000)
   getFileCount st `shouldReturn` 2
   addFile st fileC fileInfoA testCreatedAt Nothing EntityActive `shouldReturn` Right ()
-  setFilePath st fileC "/tmp/file_c" `shouldReturn` Right ()
+  setFilePath st fileC "/tmp/file_c" `shouldReturn` Right FilePathSet
   deleteFile st fileC `shouldReturn` Right (Just "/tmp/file_c")
   deleteFile st fileC `shouldReturn` Left AUTH
   deleteFiles st [fileA, fileB, fileC] >>= (`shouldMatchList` [(fileA, Just "/tmp/file_a", 128000), (fileB, Nothing, 64000)])
