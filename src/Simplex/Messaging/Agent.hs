@@ -3154,7 +3154,7 @@ prepareDeleteConnections_ getConnections c waitDelivery connIds = do
     unsubNtfConnIds :: NonEmpty ConnId -> AM' ()
     unsubNtfConnIds connIds' = do
       ns <- asks ntfSupervisor
-      atomically $ writeTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
+      liftIO $ nonBlockingWriteTBQueue (ntfSubQ ns) (NSCDeleteSub, connIds')
     notify = liftIO . nonBlockingWriteTBQueue (subQ c)
 
 deleteConnQueues :: AgentClient -> NetworkRequestMode -> Bool -> Bool -> [RcvQueue] -> AM' (Map ConnId (Either AgentErrorType ()))

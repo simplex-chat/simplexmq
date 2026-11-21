@@ -97,7 +97,7 @@ import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), NtfSupervisor (..), NtfSupervisorCommand (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
@@ -583,6 +583,8 @@ functionalAPITests ps = do
       testDeleteConnectionAsync ps
     it "should delete connection without receive queue when event queue is full" $
       testDeleteConnectionAsyncFullQueue
+    it "should delete connection when notification command queue is full" $
+      testDeleteConnectionFullNtfQueue ps
     it "join connection when reply queue creation fails" $
       testJoinConnectionAsyncReplyError ps
     describe "delete connection waiting for delivery" $ do
@@ -3947,6 +3949,23 @@ testDeleteConnectionAsyncFullQueue =
     timeout 5000000 (runExceptT $ deleteConnectionsAsync a False [connId]) `shouldReturn` Just (Right ())
     void . atomically . flushTBQueue $ subQ a
     get a =##> \case ("", "", DEL_CONNS [c]) -> c == connId; _ -> False
+
+testDeleteConnectionFullNtfQueue :: HasTestEnv => (ASrvTransport, AStoreType) -> IO ()
+testDeleteConnectionFullNtfQueue ps =
+  withSmpServer ps $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      (connId, _) <- runRight $ createConnection a 1 True SCMInvitation Nothing SMSubscribe
+      let q = ntfSubQ $ ntfSupervisor $ agentEnv a
+          setNtfSuspended suspended = atomically $ modifyTVar' (ntfNetworkOp a) $ \s -> s {opSuspended = suspended}
+          fill = unlessM (isFullTBQueue q) $ writeTBQueue q (NSCDeleteSub, ["x"]) >> fill
+      setNtfSuspended True
+      atomically $ writeTBQueue q (NSCDeleteSub, ["x"])
+      atomically $ isEmptyTBQueue q >>= checkSTM
+      atomically fill
+      timeout 5_000000 (runExceptT $ deleteConnectionsAsync a False [connId]) `shouldReturn` Just (Right ())
+      setNtfSuspended False
+      get a =##> \case ("", "", DEL_RCVQS [(c, _, _, Nothing)]) -> c == connId; _ -> False
+      get a =##> \case ("", "", DEL_CONNS [c]) -> c == connId; _ -> False
 
 fillSubQ :: AgentClient -> IO ()
 fillSubQ c = atomically fill
