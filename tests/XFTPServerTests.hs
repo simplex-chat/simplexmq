@@ -8,7 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module XFTPServerTests (xftpServerTests, xftpStoreLogServerTests) where
+module XFTPServerTests (xftpMemoryServerTests, xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
@@ -73,8 +73,10 @@ import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
 
-xftpStoreLogServerTests :: Spec
-xftpStoreLogServerTests = do
+xftpMemoryServerTests :: Spec
+xftpMemoryServerTests = do
+  it "should export socket counts in Prometheus metrics" testSocketMetrics
+  it "should describe file metrics" testFileMetricsHelp
   it "should expire chunks that were never uploaded without delays" testExpireNotUploadedFiles
   it "should count stored files after restart without stats backup" $ testFileStatsRestart False
   it "should count stored files after restart with stats backup" $ testFileStatsRestart True
@@ -97,9 +99,7 @@ xftpServerTests = do
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
       it "should reset daily download stats without stats log" testPeriodStatsReset
-      it "should export socket counts in Prometheus metrics" testSocketMetrics
       it "should count stored files after deletion" testFileStatsDelete
-      it "should describe file metrics" testFileMetricsHelp
       describe "XFTP basic auth" $ do
         --                                               allow FNEW | server auth | clnt auth | success
         it "prohibited without basic auth" $ testFileBasicAuth True (Just "pwd") Nothing False
@@ -470,9 +470,9 @@ testPeriodStatsReset fsType = do
   where
     dailyDownloads = lookup "simplex_xftp_files_count_daily" <$> readMetrics
 
-testSocketMetrics :: HasTestEnv => AFStoreType -> Expectation
-testSocketMetrics fsType =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {prometheusInterval = Just 1}) $ \_ -> do
+testSocketMetrics :: HasTestEnv => Expectation
+testSocketMetrics =
+  withXFTPServerCfg testXFTPServerConfig {prometheusInterval = Just 1} $ \_ -> do
     testXFTPClient $ \c -> do
       runRight_ $ pingXFTP c
       threadDelay 1500000
@@ -560,9 +560,9 @@ readMetrics = do
   metrics <- T.lines <$> T.readFile xftpTestPrometheusMetricsFile
   pure [(metric, n) | l <- metrics, [metric, n, _] <- [T.words l]]
 
-testFileMetricsHelp :: HasTestEnv => AFStoreType -> Expectation
-testFileMetricsHelp fsType =
-  withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {prometheusInterval = Just 1}) $ \_ -> do
+testFileMetricsHelp :: HasTestEnv => Expectation
+testFileMetricsHelp =
+  withXFTPServerCfg testXFTPServerConfig {prometheusInterval = Just 1} $ \_ -> do
     threadDelay 1500000
     help <- mapMaybe (T.stripPrefix "# HELP ") . T.lines <$> T.readFile xftpTestPrometheusMetricsFile
     filter (`elem` expected) help `shouldBe` expected
