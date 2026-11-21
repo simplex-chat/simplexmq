@@ -80,6 +80,7 @@ On xftp-server:
   - `FilePathSet`: the path is stored;
   - `FilePathAlreadySet`: a path of another upload is stored for an active record;
   - `AUTH`: the record is blocked or absent.
+- On a store error of `setFilePath` (`INTERNAL`), the renamed chunk file is kept, as it can be the file of another upload committed meanwhile; only the reservation is released.
 - In the catch-all handler of `receiveFile`, cancellations are thrown again (`isAsyncCancellation`, as in other handlers of simplexmq): `TIMEOUT` is returned to an upload that exceeds `fileTimeout`, and the request of an upload ended by http2 (`KilledByHttp2ThreadManager`) is ended without a response. `FILE_IO` is returned for `StackOverflow`, `HeapOverflow` and `AllocationLimitExceeded`, as before.
 - Help texts:
   - `simplex_xftp_file_downloads`: `Started file downloads`;
@@ -260,13 +261,13 @@ sequenceDiagram
     participant W as withAsync timer
     participant S as connection thread
     C->>H: FGET request
-    H->>X: handler started, requestsInFlight + 1
+    H->>X: handler started, activity := RequestsInFlight
     X->>X: first body block read within fileTimeout
     X->>W: timer started, fileTimeout
     X->>H: blocks of the encrypted chunk file queued
     alt last block queued within fileTimeout
         X->>W: timer cancelled
-        X->>H: handler ended, requestsInFlight - 1, idleSince written
+        X->>H: handler ended, activity := IdleSince, when it was the last request
         H->>C: queued end of the response sent
     else fileTimeout reached
         W->>S: closeSession, connection closed
@@ -335,6 +336,8 @@ flowchart LR
     linkStyle 3,4 stroke:#008800
 ```
 
+Green: added.
+
 Green: added. Red: removed.
 
 ```mermaid
@@ -377,7 +380,30 @@ xftpServer start:
   files with the extension .tmp in filesPath removed; errors logged
 ```
 
-Each upload is written to its own file: a repeated upload of a chunk is received while an earlier upload of it is open, and only its own file is removed at a failure. The chunk file is renamed into place before its path is stored, so a stored path always names a complete file. The file of the first committed upload is kept; the chunk file is replaced with equal content by an upload completed later, and OK is returned to it.
+Each upload is written to its own file: a repeated upload of a chunk is received while an earlier upload of it is open, and only its own file is removed at a failure. The chunk file is renamed into place before its path is stored, so a stored path always names a complete file. The record of the first committed upload is kept; the chunk file is replaced with equal content by an upload completed later, and OK is returned to it.
+
+Green: added. Blue: changed.
+
+```mermaid
+flowchart TD
+    R[chunk received into tmpPath, digest checked]
+    N{rename tmpPath to fPath}
+    S{setFilePath}
+    OK1[FPUT logged, stats, OK]
+    OK2[reservation released, OK]
+    A[reservation released, fPath removed, AUTH]
+    E[reservation released, fPath kept, error]
+    F[reservation released, tmpPath removed, FILE_IO]
+    R --> N
+    N -- "added - done" --> S
+    N -- "added - error, logged" --> F
+    S -- "FilePathSet" --> OK1
+    S -- "added - FilePathAlreadySet" --> OK2
+    S -- "changed - AUTH: blocked or absent" --> A
+    S -- "added - store error" --> E
+    linkStyle 1,2,4,6 stroke:#008800
+    linkStyle 5 stroke:#1155cc
+```
 
 Green: added. Red: removed.
 
@@ -772,14 +798,15 @@ flowchart LR
 
 ## Tests
 
-- XFTP server with a store log (`xftpStoreLogServerTests`), run once with the memory store:
+- XFTP server with the memory store only (`xftpMemoryServerTests`), run once:
+  - `testSocketMetrics`: the socket gauges are `accepted=1 closed=0 active=1 leaked=0` with one client connected, and `accepted=1 closed=1 active=0 leaked=0` after its disconnection;
+  - `testFileMetricsHelp`: the help texts of the six file metrics above are exported;
   - `testExpireNotUploadedFiles`: 50 files without chunks, added through store log records with an expiry 2 s ahead, are expired within 6 s with `checkInterval = 1`, and `AUTH` is returned to an FADD of each;
   - `testFileStatsRestart`, with and without the stats backup: of a store log with an expired stored file, a stored file and a file without a chunk, `files_expired = 1`, `files_count_total = 1` and `files_size = 131072` are exported after start;
   - `testRemoveTmpUploads`: of a chunk file and a `.tmp` file in `filesPath` before start, only the chunk file is left after start.
 - XFTP server (`XFTPServerTests.hs`), with the memory store and, in the PostgreSQL build, with the PostgreSQL store:
   - `testLongDownloadExpiration`: with `ttl = 1` and `checkInterval = 1`, the first 2 MB of a 4 MB download are read in 16 kB blocks 25 ms apart, the download is completed, PONG is returned to a PING after it, and the connection is closed by expiry after the PING;
   - `testPeriodStatsReset`: with `logStatsInterval = Nothing` and `logStatsStartTime` 10 s ahead, `simplex_xftp_files_count_daily` is 1 after a download and 0 after the reset time;
-  - `testSocketMetrics`: the socket gauges are `accepted=1 closed=0 active=1 leaked=0` with one client connected, and `accepted=1 closed=1 active=0 leaked=0` after its disconnection;
   - `testStalledDownload`: with `fileTimeout` of 2 s and expiry off, a connection with an unread FGET response is closed, and the list of chunk files open in the server is empty;
   - `testStalledDownloadEnd`: with `fileTimeout` of 2 s, `ttl = 1` and `checkInterval = 1`, a connection is closed when the last 1 MB + k kB of a 4 MB response are unread, for k from 0 to 320 in steps of 64;
   - `testStalledRequestBody`: with `fileTimeout` of 2 s and expiry off, a connection whose request body is stalled after 1 byte is closed;
@@ -789,7 +816,6 @@ flowchart LR
   - `testNoRequestTimeout`: with `firstRequestTimeout` of 1 s, with expiry off and on, a TLS connection without a request is closed within 5 s, and a client after its handshake stays connected for 2 s and receives PONG;
   - `testInactiveClientExpiration`: as before, with the client helper `connectXFTPClient`;
   - `testFileStatsDelete`: after two uploads, `files_count_total = 2` and `files_size = 262144`; after the deletion of both, one with its chunk file removed from disk, `files_deleted = 2`, `files_count_total = 0` and `files_size = 0`;
-  - `testFileMetricsHelp`: the help texts of the six file metrics above are exported;
   - the metrics are read by one helper, `readMetrics`.
 - Chunk receiving (`XFTPServerTests.hs`): with the chunk written to `/dev/null`, `Right ()` is returned by `receiveFile` and by `receiveEncFile` for the correct digest, and `DIGEST` for another one.
 - Transport (`CoreTests/TransportTests.hs`, with its own credentials and fingerprint loading):
@@ -818,4 +844,7 @@ flowchart LR
   - the RTS defaults;
   - a deletion or a block during an expiry batch or an upload commit;
   - a failed expiry at start;
-  - a failed rename of an upload, and a failed removal of a `.tmp` file at start.
+  - a failed rename of an upload, and a failed removal of a `.tmp` file at start;
+  - a store error of `setFilePath`;
+  - the release of the reservation on `FilePathAlreadySet`; with a slow runner, the drain path of a committed chunk is taken by `testUploadAfterCommittedUpload` in place of this branch;
+  - `FILE_IO` for `StackOverflow`, `HeapOverflow` and `AllocationLimitExceeded` in `receiveFile`.
