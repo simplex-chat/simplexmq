@@ -21,27 +21,33 @@ import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import qualified Network.HTTP.Client as H1
+import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H2
+import Network.Socket (ServiceName)
+import Network.Wai (Application, responseLBS)
+import SMPClient (copyWebCredential, fixtureFile, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, webServerCfg, withServerCfg)
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.CLI (simplexmqVersionCommit)
+import Simplex.Messaging.Server.Env.STM (ServerConfig (serverStoreCfg), ServerStoreCfg (SSCMemory), checkHTTPSCredentials, newEnv)
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
 import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (catchAll_)
 import qualified SMPWeb
-import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
+import Simplex.Messaging.Server.Web (WebHttpsParams (..), serveStaticFiles, attachStaticFiles, runHTTPSServer)
 import System.Directory (doesFileExist)
 import System.Environment (withArgs)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
-import Test.Main (withStdin)
+import Test.Main (ProcessResult (..), captureProcessResult, withStdin)
 import UnliftIO (catchAny)
-import UnliftIO.Async (async, cancel)
+import UnliftIO.Async (async, cancel, race_)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
 import Util
@@ -95,6 +101,12 @@ cliTests = do
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
+  describe "Static site on HTTPS port" $ do
+    it "should serve the replaced web certificate with a 4096-bit RSA key without restart" testStaticSiteCertReload
+    it "should throw the error of an invalid credential at start" testStaticSiteInvalidCredential
+  describe "Server start" $ do
+    it "should exit with the reason of a rejected web certificate" testStartRejectedWebCertificate
+    it "should exit with the reason of an invalid credential" testStartInvalidCredential
 
 smpServerTest :: HasTestEnv => Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -215,6 +227,56 @@ smpServerTestStatic = do
           getLn tls >>= \case
             "" -> pure []
             h -> (h :) <$> getHeaders
+
+testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
+testStaticSiteCertReload = do
+  copyWebCredential "web"
+  race_ (runHTTPSServer staticSiteParams emptyApp) $ do
+    threadDelay httpsServerStartWait
+    testWebCredentialReload staticSitePort
+    testWebCredentialReplaced staticSitePort "web_rsa2048" "web"
+    testWebCredentialReplaced staticSitePort "web2" "web2"
+  where
+    httpsServerStartWait = 1000000
+
+testStaticSiteInvalidCredential :: (HasCallStack, HasTestEnv) => IO ()
+testStaticSiteInvalidCredential = do
+  copyWebCredential "web"
+  writeFile (privateKeyFile testWebCredentials) ""
+  runHTTPSServer staticSiteParams emptyApp `shouldThrow` (== CENoPrivateKey)
+
+staticSitePort :: HasTestEnv => ServiceName
+staticSitePort = testServerPort 9
+
+staticSiteParams :: HasTestEnv => WebHttpsParams
+staticSiteParams =
+  WebHttpsParams
+    { port = read staticSitePort,
+      cert = certificateFile testWebCredentials,
+      key = privateKeyFile testWebCredentials,
+      checkCredential = checkHTTPSCredentials,
+      credentialCheckInterval = testCredentialCheckInterval
+    }
+
+emptyApp :: Application
+emptyApp _ respond = respond $ responseLBS N.ok200 [] ""
+
+testStartRejectedWebCertificate :: (HasCallStack, HasTestEnv) => IO ()
+testStartRejectedWebCertificate = do
+  copyWebCredential "web_rsa2048"
+  ProcessResult {prStdout, prExitCode, prException} <-
+    captureProcessResult . void . newEnv $ withServerCfg webServerCfg $ \cfg_ -> cfg_ {serverStoreCfg = SSCMemory Nothing}
+  (prExitCode, show <$> prException) `shouldBe` (ExitFailure 1, Nothing)
+  prStdout `shouldSatisfy` B.isInfixOf "Error: unsupported HTTPS credentials, required 4096-bit RSA\n"
+
+testStartInvalidCredential :: (HasCallStack, HasTestEnv) => IO ()
+testStartInvalidCredential = do
+  writeFile (testPath "empty.key") ""
+  ProcessResult {prStdout, prExitCode, prException} <-
+    captureProcessResult . void . loadServerCredential $
+      ServerCredentials {caCertificateFile = Nothing, certificateFile = fixtureFile "web" ".crt", privateKeyFile = testPath "empty.key"}
+  (prExitCode, show <$> prException) `shouldBe` (ExitFailure 1, Nothing)
+  prStdout `shouldBe` "invalid credential: no private key\n"
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do

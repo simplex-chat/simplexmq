@@ -396,9 +396,8 @@ agentViaProxyRetryOffline = do
           3 <- msgId <$> A.sendMessage alice bobId pqEnc noMsgFlags msg1
           bob `down` aliceId
         withServer2 $ \_ -> runRight_ $ do
-          bob `up` aliceId
+          withUP bob aliceId $ \case ("", _, Msg' _ pq msg1') -> pq == pqEnc && msg1 == msg1'; _ -> False
           get alice ##> ("", bobId, A.SENT (baseId + 3) aProxySrv)
-          get bob =##> \case ("", c, Msg' _ pq msg1') -> c == aliceId && pq == pqEnc && msg1 == msg1'; _ -> False
           ackMessage bob aliceId (baseId + 3) Nothing
         runRight_ $ do
           -- proxy relay down
@@ -421,7 +420,6 @@ agentViaProxyRetryOffline = do
     withServer_ storeLog storeMsgs storeNtfs =
       let cfg' = updateCfg (memoryCfg proxyCfg storeLog storeMsgs) $ \cfg_ -> cfg_ {storeNtfsFile = Just storeNtfs}
        in withSmpServerConfigOn (transport @TLS) cfg'
-    a `up` cId = nGet a =##> \case ("", "", UP _ [c]) -> c == cId; _ -> False
     a `down` cId = nGet a =##> \case ("", "", DOWN _ [c]) -> c == cId; _ -> False
     aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     baseId = 1

@@ -45,6 +45,7 @@ module AgentTests.FunctionalAPITests
     nGet,
     pGet,
     getInAnyOrder,
+    withUP,
     (##>),
     (=##>),
     pattern CON,
@@ -209,6 +210,13 @@ pGet' c skipWarn = do
     RFWARN {} | skipWarn -> pGet c
     SFWARN {} | skipWarn -> pGet c
     _ -> pure t
+
+waitDisconnected :: HasCallStack => AgentClient -> IO ()
+waitDisconnected c =
+  timeout 5000000 (atomically $ readTBQueue $ subQ c) >>= \case
+    Just (_, _, AEvt SAENone (CONNECT _ _)) -> waitDisconnected c
+    Just (_, _, AEvt SAENone (DISCONNECT _ _)) -> pure ()
+    r -> error $ "expected DISCONNECT, received " <> show r
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> AEvent e
 pattern CONF conId srvs connInfo <- A.CONF conId PQSupportOn srvs connInfo
@@ -1695,18 +1703,24 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
   reqAsync <- async $ runExceptT $ sendServiceRequestAsync client 1 connReq Nothing Nothing "resilient request"
   threadDelay 500000 -- let the enqueued send retry against the down server before bringing it up
   -- server up: the request is delivered and the service receives it
-  invId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-    ("", "", UP _ _) <- nGet service
-    ("", _, SREQ invId _ "resilient request") <- get service
-    pure invId :: ExceptT AgentErrorType IO InvitationId
+  invId <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+    let upOrReq =
+          pGet service >>= \case
+            ("", "", AEvt SAENone (UP _ _)) -> pure $ Left ()
+            ("", _, AEvt SAEConn (SREQ i _ "resilient request")) -> pure $ Right i
+            r -> error $ "unexpected event: " <> show r
+    ([()], [i]) <- partitionEithers <$> replicateM 2 upOrReq
+    pure i
   ("", "", DOWN _ _) <- nGet service
   -- server down: the service replies; the async reply is enqueued and retried until the server is back
   replyConnId <- runRight $ sendServiceReplyAsync service "1" 1 invId "resilient response"
   -- server up: the reply is delivered, the requester's blocking call returns the response, the service gets SENT
   resp <- withSmpServerStoreLogOn ps testPort $ \_ -> do
-    ("", "", UP _ _) <- nGet service
-    ("", sentConnId, A.SSENT _ _) <- get service
-    sentConnId `shouldBe` replyConnId
+    getInAnyOrder
+      service
+      [ \case ("", "", AEvt SAENone (UP _ _)) -> True; _ -> False,
+        \case ("", c, AEvt SAEConn (A.SSENT _ _)) -> c == replyConnId; _ -> False
+      ]
     wait reqAsync
   resp `shouldBe` Right "resilient response"
 
@@ -1897,10 +1911,8 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
     threadDelay 500000
     withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
       runRight $ do
-        ("", "", UP _ _) <- nGet bob
+        liftIO $ getUpInfoCon bob [aliceId] aliceId "alice's connInfo"
         get alice2 ##> ("", bobId, CON)
-        get bob ##> ("", aliceId, INFO "alice's connInfo")
-        get bob ##> ("", aliceId, CON)
         exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
@@ -1949,9 +1961,7 @@ testInvitationErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   withServer2 ps $ do
     get a ##> ("", bId, CON) -- note that server 1 is down, CON event is sent when HELLO is sent to server 2
-    ("", "", UP _ [_]) <- nGet b'
-    get b' ##> ("", aId, INFO "alice's connInfo")
-    get b' ##> ("", aId, CON)
+    getUpInfoCon b' [aId] aId "alice's connInfo"
     withServer1 ps $ do
       ("", "", UP _ [_]) <- nGet a
       runRight_ $ exchangeGreetingsViaProxyMsgId_ False PQEncOn 2 (2 + n) a bId b' aId
@@ -1974,6 +1984,20 @@ restartAgent_ getAgent restart c cIds
       all isRight rs `shouldBe` True
       pure c'
   | otherwise = pure c
+
+getUpInfoCon :: HasCallStack => AgentClient -> [ConnId] -> ConnId -> ConnInfo -> Expectation
+getUpInfoCon c upConnIds connId info =
+  getInAnyOrder
+    c
+    [ \case ("", "", AEvt SAENone (UP _ cs)) -> S.fromList cs == S.fromList upConnIds; _ -> False,
+      \case ("", cId, AEvt SAEConn (INFO info')) -> cId == connId && info' == info; _ -> False,
+      \case ("", cId, AEvt SAEConn CON) -> cId == connId; _ -> False
+    ]
+
+waitAck :: AgentClient -> ConnId -> IO ()
+waitAck c connId = do
+  ServerQueueInfo {info = QueueInfo {qiSize}} <- runRight $ getConnectionQueueInfo c NRMInteractive connId
+  when (qiSize > 0) $ threadDelay 20000 >> waitAck c connId
 
 testContactErrors :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> IO ()
 testContactErrors ps restart = do
@@ -2004,6 +2028,7 @@ testContactErrors ps restart = do
             Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
     loopSend
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo" _ _) <- get a
+    waitAck a contactId
     pure invId
   ("", "", DOWN _ [_]) <- nGet a
   (bId, _) <- runRight $ A.prepareConnectionToAccept a 1 True invId PQSupportOn
@@ -2033,17 +2058,12 @@ testContactErrors ps restart = do
             Left _ -> putStrLn "retrying accept confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
     n <- loopConfirm 1
     ("", _, A.CONF confId PQSupportOn _ "alice's connInfo") <- get b''
-    let waitAck = do
-          ServerQueueInfo {info = QueueInfo {qiSize}} <- runRight $ getConnectionQueueInfo b'' NRMInteractive aId
-          when (qiSize > 0) $ threadDelay 20000 >> waitAck
-    waitAck
+    waitAck b'' aId
     pure (n, confId)
   ("", "", DOWN _ [_]) <- nGet b''
   runRight_ $ allowConnection b'' aId confId "bob's connInfo"
   withServer1 ps $ do
-    ("", "", UP _ [_, _]) <- nGet a'
-    get a' ##> ("", bId, A.INFO PQSupportOn "bob's connInfo")
-    get a' ##> ("", bId, A.CON PQEncOn)
+    getUpInfoCon a' [contactId, bId] bId "bob's connInfo"
     get b'' ##> ("", aId, A.CON PQEncOn) -- note that server 2 is down, this event is delivered when HELLO is sent to server 1
     a'' <- restartAgentA restart a' [contactId, bId]
     withServer2 ps $ do
@@ -2231,6 +2251,7 @@ testInvitationShortLinkRestart ps = withAgentClients2 $ \a b -> do
       newLinkData = UserInvLinkData userData
   (bId, CCLink connReq (Just shortLink)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ False SMOnlyCreate
+  waitDisconnected a
   withSmpServer ps $ do
     runRight_ $ subscribeConnection a bId
     (_, connData', connReq') <- runRight $ getConnShortLink b 1 shortLink
@@ -2245,6 +2266,7 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
       newLinkData = UserContactLinkData userCtData
   (contactId, CCLink connReq0 (Just shortLink)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn False SMOnlyCreate
+  waitDisconnected a
   Right connReq <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
   let updatedData = UserLinkData "updated user data"
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData, ratchetKeys = Nothing}
@@ -2257,6 +2279,7 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     -- update user data
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
+  waitDisconnected b
   withSmpServer ps $ do
     (fd4, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     linkConnReq fd4 `shouldBe` connReq
@@ -2270,6 +2293,7 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
   ((contactId, CCLink connReq0 Nothing), shortLink) <- withSmpServer ps $ runRight $ do
     r@(contactId, _) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMOnlyCreate
     (r,) <$> setConnShortLink a contactId SCMContact newLinkData Nothing
+  waitDisconnected a
   Right connReq <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
   let updatedData = UserLinkData "updated user data"
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData, ratchetKeys = Nothing}
@@ -2282,6 +2306,7 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     -- update user data
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
+  waitDisconnected b
   withSmpServer ps $ do
     (fd4, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     linkConnReq fd4 `shouldBe` connReq
@@ -2291,6 +2316,7 @@ testOldContactQueueShortLink :: (HasCallStack, HasTestEnv) => (ASrvTransport, AS
 testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
   (contactId, CCLink connReq Nothing) <- withSmpServer ps $ runRight $
     A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMOnlyCreate
+  waitDisconnected a
   -- make it an "old" queue
   let updateStoreLog f = replaceSubstringInFile f " queue_mode=C" ""
 #if defined(dbServerPostgres)
@@ -4176,7 +4202,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
         confId <- withSmpServerStoreLogOn ps testPort $ \_ -> do
           -- both servers need to be online for connection to progress because of SKEY
           get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && sqSecured; _ -> False
-          pGet a >>= \case
+          confId <- pGet a >>= \case
             ("", "", AEvt _ (UP _ [_])) -> do
               ("", _, CONF confId _ "bob's connInfo") <- get a
               pure confId
@@ -4184,6 +4210,8 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
               ("", "", UP _ [_]) <- nGet a
               pure confId
             r -> error $ "unexpected response " <> show r
+          waitAck a bId
+          pure confId
         nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
         runRight_ $ do
           allowConnectionAsync a "3" bId confId "alice's connInfo"

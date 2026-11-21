@@ -79,6 +79,7 @@ Status values used below:
 | ECDSA with SHA-256 (ES256) | Restricted | APNS provider JWT ([Push/APNS.hs](../src/Simplex/Messaging/Notifications/Server/Push/APNS.hs)) | crypton `Crypto.PubKey.ECC.ECDSA.sign`; key read by cryptostore `Crypto.Store.PKCS8`; curve taken from the key file | signature DER `SEQUENCE {r, s}`, base64url |
 | TLS 1.3 / 1.2 | Restricted | SMP, XFTP, NTF, XRCP transport: `TLS_CHACHA20_POLY1305_SHA256` (1.3), `ECDHE_ECDSA_CHACHA20POLY1305_SHA256` (1.2), groups X448 and X25519, Ed448 and Ed25519 signatures (`defaultSupportedParams`) | `tls` 1.9 | n/a |
 | TLS for browsers | Restricted | XFTP server with HTTPS credentials (`defaultSupportedParamsHTTPS`: `ciphersuite_strong`, FFDHE, P-521, ECDSA and RSA signatures); SMP server HTTPS requires RSA-4096 (`checkHTTPSCredentials`) | `tls`, `warp-tls` | n/a |
+| Key-pair check of reloaded web credentials (`checkKeyPair`) | Restricted | SMP and XFTP server web certificates reloaded from their files ([Transport/Server.hs](../src/Simplex/Messaging/Transport/Server.hs)): the public key of the leaf certificate is compared with a public key obtained from the private key file. RSA: the public fields stored with the private key; Ed25519 and Ed448: derived from the private key; ECDSA P-256: the base point multiplied by the private scalar (variable time), after the certificate point is decoded and validated and the curve names are found equal; other curves are rejected, as only P-256 keys are used for signatures in tls 1.9 | crypton `Crypto.PubKey.RSA.private_pub`, `Crypto.PubKey.Ed25519.toPublic`, `Crypto.PubKey.Ed448.toPublic`, `Crypto.PubKey.ECC.Prim.pointBaseMul`; crypton-x509 `Data.X509.EC.unserializePoint` | n/a |
 | X.509 | Restricted | Certificate chains, fingerprints, signed session keys (`C.signX509`, `C.verifyX509`) | `crypton-x509`, `crypton-x509-validation`, `cryptostore` | n/a |
 | SQLCipher | Restricted | Agent SQLite database at rest (`PRAGMA key`); cipher parameters are SQLCipher defaults, not set in this repository | `direct-sqlcipher` (git dependency, [cabal.project](../cabal.project)) | n/a |
 
@@ -152,7 +153,7 @@ Other derivations:
 
 | Source | Version or pin | Provides |
 |---|---|---|
-| crypton | 0.34 | Ed25519, Ed448, X25519, X448, XSalsa20, Poly1305, AES-GCM, HKDF, SHA-2, SHA-3, Keccak, MD5, ChaChaDRG, ECDSA |
+| crypton | 0.34 | Ed25519, Ed448, X25519, X448, XSalsa20, Poly1305, AES-GCM, HKDF, SHA-2, SHA-3, Keccak, MD5, ChaChaDRG, ECDSA, EC point arithmetic |
 | tls, crypton-x509, crypton-x509-validation, cryptostore | 1.9.0, 1.7.6, 1.6.12, 0.3.0.1 | TLS, X.509, PKCS#8 |
 | [cbits/sntrup761.c](../cbits/sntrup761.c) | Copy of draft-josefsson-ntruprime-streamlined-00 ([cbits/README.md](../cbits/README.md)) | sntrup761 |
 | [cbits/sha512.c](../cbits/sha512.c) and system OpenSSL `libcrypto` | system | SHA-512 for sntrup761 |
@@ -187,4 +188,5 @@ None of the tests below compares against published reference vectors (NIST, RFC 
 | File encryption | [tests/CoreTests/CryptoFileTests.hs](../tests/CoreTests/CryptoFileTests.hs) | Round-trip |
 | XRCP session (SHA3-256 hybrid, sb chain) | [tests/RemoteControl.hs](../tests/RemoteControl.hs) | End-to-end |
 | SMP authenticators, block encryption, `IdsHash` (MD5) | [tests/ServerTests.hs](../tests/ServerTests.hs) | End-to-end; with the PostgreSQL queue store this checks Haskell MD5 against pgcrypto |
+| Key-pair check of reloaded web credentials (RSA, ECDSA, Ed25519, Ed448) | [tests/ServerTests.hs](../tests/ServerTests.hs) (`Web credentials`) | Matching and mismatched fixture pairs, an EC point off its curve, a P-384 pair, a key on another curve, a DSA pair, an empty certificate file; end-to-end: a certificate with the previous key not served on the four listeners, a P-384 pair not served on xftp-server ([tests/XFTPServerTests.hs](../tests/XFTPServerTests.hs), [tests/CLITests.hs](../tests/CLITests.hs)) |
 | Haskell and xftp-web: SHA-256/512, Ed25519, Ed448 identity proof, X25519, DER keys, crypto_box, secretbox, tail-tag, authenticator, file encryption | [tests/XFTPWebTests.hs](../tests/XFTPWebTests.hs) (`XFTP Web Client`) | Byte-identical cross-language output |

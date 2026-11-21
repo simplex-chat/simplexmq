@@ -46,6 +46,15 @@ Some files that use CPP language extension cannot be formatted as a whole, so in
 - Use record syntax for types with multiple fields
 - Prefer explicit pattern matching over partial functions
 
+**Encodings** (MUST and MUST NOT as in RFC 2119):
+- You MUST use the `Encoding` instance of a type for its binary form and its `StrEncoding` instance for its human-readable form. You MUST NOT add ad hoc encoding, parsing or decoding functions for these forms.
+- You MUST call `smpDecode` and `strDecode`, not `parseAll smpP` or `A.parseOnly (strP <* A.endOfInput)`.
+- You MUST build a form on another form through that form's instance: in `strP` of a hex signature, decode the hex, then call `smpDecode`.
+- Mind the different defaults of decoders and parsers:
+  - `smpDecode = parseAll smpP` and `strDecode = parseAll strP`: defining only the parser gives a decoder of the same form.
+  - `smpP = smpDecode <$?> smpP` and `strP = strDecode <$?> base64urlP`: defining only the decoder gives a parser that first reads a string with a one-byte length prefix or a base64url string, as the keys in Crypto.hs use.
+  - You MUST define both methods when neither default fits.
+
 **Comments policy:**
 - Avoid redundant comments that restate what the code already says
 - Only comment on non-obvious design decisions or tricky implementation details
