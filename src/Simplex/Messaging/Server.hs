@@ -1130,7 +1130,7 @@ runClientTransport processSubs h@THandle {params = thParams@THandleParams {sessi
       ms <- asks msgStore
       whenM (liftIO $ insertServerClient c s) $ do
         labelMyThread . B.unpack $ "client $" <> encode sessionId
-        raceAny_ [liftIO $ send h c, client processSubs s ms c, receive h ms c]
+        raceAny_ [liftIO $ send h c, liftIO $ sendDelayed c, client processSubs s ms c, receive h ms c]
 
 controlPortAuth :: Handle -> Maybe BasicAuth -> Maybe BasicAuth -> TVar CPClientRole -> BasicAuth -> IO ()
 controlPortAuth h user admin role auth = do
