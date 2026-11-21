@@ -3523,15 +3523,14 @@ suspendAgent c 0 = do
   where
     suspend opSel = atomically $ modifyTVar' (opSel c) $ \s -> s {opSuspended = True}
 suspendAgent c@AgentClient {agentState = as} maxDelay = do
-  (prevState, state) <-
+  state <-
     atomically $ do
-      prevState <- swapTVar as ASSuspending
+      writeTVar as ASSuspending
       suspendOperation c AONtfNetwork $ pure ()
       suspendOperation c AORcvNetwork $
         suspendOperation c AOSndFiles $
           suspendMsgDelivery c
-      (prevState,) <$> readTVar as
-  unless (prevState == ASSuspending) . void . forkIO $ notifySuspended c
+      readTVar as
   when (state == ASSuspending) $ do
     void . forkIO $ removeDeletedOrFailedSndFilesInProgress c
     void . forkIO $ do

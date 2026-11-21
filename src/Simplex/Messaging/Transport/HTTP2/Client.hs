@@ -44,7 +44,7 @@ import Simplex.Messaging.Protocol (NetworkError (..), toNetworkError)
 import Simplex.Messaging.Transport (ALPN, STransportPeer (..), SessionId, TLS (tlsALPN, tlsPeerCert, tlsUniq), TransportPeer (..), TransportPeerI (..), getServerVerifyKey)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTcpConnectTimeout, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2
-import Simplex.Messaging.Util (eitherToMaybe, whenM)
+import Simplex.Messaging.Util (eitherToMaybe)
 import UnliftIO.STM
 import UnliftIO.Timeout
 
@@ -65,7 +65,7 @@ data HClient = HClient
     host :: TransportHost,
     port :: ServiceName,
     config :: HTTP2ClientConfig,
-    reqQ :: TBQueue (Request, TVar Bool, TMVar HTTP2Response)
+    reqQ :: TBQueue (Request, TMVar HTTP2Response)
   }
 
 data HTTP2Response = HTTP2Response
@@ -175,8 +175,8 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
 
     process :: HTTP2Client -> H.Client HTTP2Response
     process HTTP2Client {client_ = HClient {reqQ}} sendReq = forever $ do
-      (req, pending, respVar) <- atomically $ readTBQueue reqQ
-      whenM (readTVarIO pending) . void . sendReq req $ \r -> do
+      (req, respVar) <- atomically $ readTBQueue reqQ
+      sendReq req $ \r -> do
         respBody <- getHTTP2Body r (bodyHeadSize config)
         let resp = HTTP2Response {response = r, respBody}
         atomically $ putTMVar respVar resp
@@ -189,10 +189,9 @@ closeHTTP2Client = mapM_ uninterruptibleCancel . action
 sendRequest :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
   resp <- newEmptyTMVarIO
-  pending <- newTVarIO True
+  atomically $ writeTBQueue reqQ (req, resp)
   let reqTimeout = http2RequestTimeout config reqTimeout_
-  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` (atomically (writeTBQueue reqQ (req, pending, resp)) >> atomically (takeTMVar resp)))
-    `E.finally` atomically (writeTVar pending False)
+  maybe (Left HCResponseTimeout) Right <$> (reqTimeout `timeout` atomically (takeTMVar resp))
 
 -- | this function should not be used until HTTP2 is thread safe, use sendRequest
 sendRequestDirect :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)

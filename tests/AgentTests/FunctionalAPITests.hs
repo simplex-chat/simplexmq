@@ -553,8 +553,6 @@ functionalAPITests ps = do
       testSuspendingAgentTimeout ps
     it "should send messages queued after file is sent before agent is suspended" $
       testSuspendingAgentCompleteSendingFile ps
-    it "should suspend agent when event queue is full" $
-      testSuspendingAgentFullQueue
   describe "Batching SMP commands" $ do
     it "should subscribe to multiple (200) subscriptions with batching" $
       testBatchedSubscriptions 200 20 ps
@@ -3558,15 +3556,6 @@ testSuspendingAgentCompleteSendingFile ps =
     waitSuspendedOp c op = atomically $ readTVar (op c) >>= checkSTM . opSuspended
     suspendedOps :: AgentClient -> IO [Bool]
     suspendedOps c = mapM (\op -> opSuspended <$> readTVarIO (op c)) [rcvNetworkOp, sndFilesOp, msgDeliveryOp]
-
-testSuspendingAgentFullQueue :: HasTestEnv => IO ()
-testSuspendingAgentFullQueue =
-  withAgent 1 agentCfg initAgentServers testDB $ \a -> do
-    threadDelay 100000
-    fillSubQ a
-    timeout 5_000000 (suspendAgent a 1_000000) `shouldReturn` Just ()
-    void . atomically . flushTBQueue $ subQ a
-    nGet a ##> ("", "", SUSPENDED)
 
 testBatchedSubscriptions :: HasTestEnv => Int -> Int -> (ASrvTransport, AStoreType) -> IO ()
 testBatchedSubscriptions nCreate nDel ps@(t, ASType qsType _) = do

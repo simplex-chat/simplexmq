@@ -30,11 +30,9 @@ import Data.Time.Clock (getCurrentTime)
 import qualified Data.X509 as X
 import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
-import Network.HTTP.Types (ok200)
 import qualified Network.HTTP2.Client as H2
-import Network.HTTP2.Server (responseNoBody)
 import qualified Network.TLS as T
-import SMPClient (copyWebCredential, serverBracket, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -50,16 +48,15 @@ import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, Sender
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), defaultHTTP2BufferSize)
+import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.HTTP2.Server (runHTTP2Server)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
-import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_, wait, withAsync)
+import UnliftIO.Async (async, cancel, pooledReplicateConcurrentlyN, race_)
 import UnliftIO.STM
 import UnliftIO.Timeout (timeout)
 import Util
@@ -90,8 +87,6 @@ xftpServerTests = do
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
-      it "should not send request after it times out" testRequestNotSentAfterTimeout
-      it "should time out request while request queue is full" testRequestTimeoutInFullQueue
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
@@ -444,46 +439,6 @@ testCancelledHandshake _ =
     timeout 5000000 (atomically $ takeTMVar requested) `shouldReturn` Just ()
     cancel a
     timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
-
-testRequestNotSentAfterTimeout :: HasTestEnv => AFStoreType -> Expectation
-testRequestNotSentAfterTimeout _ =
-  withHeldHTTP2Requests $ \send received release ->
-    withAsync (send $ Just 5000000) $ \held -> do
-      atomically $ readTVar received >>= checkSTM . (1 ==)
-      Left HC.HCResponseTimeout <- send Nothing
-      atomically $ putTMVar release ()
-      Right _ <- wait held
-      threadDelay 500000
-      readTVarIO received `shouldReturn` 1
-
-testRequestTimeoutInFullQueue :: HasTestEnv => AFStoreType -> Expectation
-testRequestTimeoutInFullQueue _ =
-  withHeldHTTP2Requests $ \send received _ ->
-    withAsync (send $ Just 5000000) $ \_ -> do
-      atomically $ readTVar received >>= checkSTM . (1 ==)
-      Left HC.HCResponseTimeout <- send Nothing
-      Just (Left HC.HCResponseTimeout) <- timeout 5000000 $ send Nothing
-      pure ()
-
-withHeldHTTP2Requests :: HasTestEnv => ((Maybe Int -> IO (Either HC.HTTP2ClientError HC.HTTP2Response)) -> TVar Int -> TMVar () -> IO a) -> IO a
-withHeldHTTP2Requests action = do
-  received <- newTVarIO 0
-  release <- newEmptyTMVarIO
-  creds <- loadServerCredential xftpCredentials
-  Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-  let hold _ _ _ _ respond = do
-        atomically $ modifyTVar' received (+ 1)
-        atomically $ readTMVar release
-        respond $ responseNoBody ok200 []
-      cfg = HC.defaultHTTP2ClientConfig {HC.qSize = 1, HC.connTimeout = 1000000, HC.suportedTLSParams = defaultSupportedParams}
-      connect = either (error . show) pure =<< HC.getVerifiedHTTP2Client Nothing (THDomainName "localhost") xftpTestPort (Just $ C.KeyHash fp) Nothing cfg (pure ())
-  serverBracket
-    (\started -> runHTTP2Server started xftpTestPort defaultHTTP2BufferSize defaultSupportedParams creds Nothing transportConfig Nothing (\_ -> pure ()) hold)
-    (pure ())
-    $ \_ -> bracket connect HC.closeHTTP2Client $ \c ->
-      action (HC.sendRequest c $ H2.requestNoBody "POST" "/" []) received release
-  where
-    XFTPServerConfig {xftpCredentials, transportConfig} = testXFTPServerConfig
 
 testOldServerHandshake :: HasTestEnv => AFStoreType -> Expectation
 testOldServerHandshake _ = do
