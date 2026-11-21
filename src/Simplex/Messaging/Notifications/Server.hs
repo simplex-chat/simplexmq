@@ -54,7 +54,7 @@ import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..), nonBlockingWriteTBQueue)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -536,18 +536,21 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}
       ps <- asks pushServer
       stats <- asks serverStats
       forever $ do
-        ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) <- atomically $ readTBQueue msgQ
+        ((_, srv, _), THandleParams {sessionId}, ts) <- atomically $ readTBQueue msgQ
         forM_ ts $ \(ntfId, t) -> case t of
           STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+          STResponse _ r@(Right (SMP.NMSG _ _)) -> processNtf st ps stats srv sessionId ntfId r
           STResponse {} -> pure () -- it was already reported as timeout error
-          STEvent msgOrErr -> do
+          STEvent r -> processNtf st ps stats srv sessionId ntfId r
+      where
+        processNtf st ps stats srv sessionId ntfId msgOrErr = do
             let smpQueue = SMPQueueNtf srv ntfId
             case msgOrErr of
               Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
                 ntfTs <- liftIO getSystemTime
                 liftIO $ updatePeriodStats (activeSubs stats) ntfId
                 let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                    srvHost = safeDecodeUtf8 $ strEncode h
+                    srvHost = safeDecodeUtf8 $ strEncode $ L.head $ host srv
                     isOwn = isOwnServer ca srv
                 liftIO (addTokenLastNtf st newNtf) >>= \case
                   Right (tkn, lastNtfs) -> do
@@ -645,7 +648,7 @@ pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> P
 pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
   ifM
     (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp, pushTokenShardId 8 tkn) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (getOrCreatePushWorker s (srvHost_, pp, pushTokenShardId 8 tkn) isOwn >>= liftIO . (`nonBlockingWriteTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
 
 pushTokenShardId :: Int -> NtfTknRec -> Int
