@@ -145,7 +145,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchOwn', catchOwn_, liftEitherWith, stateTVar', (<$$>))
+import Simplex.Messaging.Util (bshow, catchAll_, catchOwn', catchOwn_, liftEitherWith, stateTVar', (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
