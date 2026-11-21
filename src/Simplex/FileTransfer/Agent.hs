@@ -81,7 +81,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
 import Simplex.Messaging.Protocol (ProtocolServer, ProtocolType (..), XFTPServer)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, catchOwn_, handleAllErrors, ifM, liftError, tshow, unlessM, whenM)
+import Simplex.Messaging.Util (allFinally, catchAll_, catchAllErrors, handleAllErrors, ifM, liftError, tshow, unlessM, whenM)
 import System.FilePath (takeFileName, (</>))
 import UnliftIO
 import UnliftIO.Directory
@@ -669,7 +669,7 @@ deleteSndFilesInternal c sndFileEntityIds = flip E.finally (atomically $ mapM_ (
   let (toDelete, toMarkDeleted) = partition fileComplete sndFiles
   workPath <- getXFTPWorkPath
   liftIO . forM_ toDelete $ \SndFile {prefixPath} ->
-    mapM_ (removePath . (workPath </>)) prefixPath `catchOwn_` pure ()
+    mapM_ (removePath . (workPath </>)) prefixPath `catchAll_` pure ()
   batchFiles_ deleteSndFile' toDelete
   batchFiles_ updateSndFileDeleted toMarkDeleted
   where
