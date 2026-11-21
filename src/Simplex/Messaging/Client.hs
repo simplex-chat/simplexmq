@@ -1392,15 +1392,14 @@ sendProtocolCommand_ c@ProtocolClient {thParams = THandleParams {blockSize, serv
           s = tEncodeBatch1 serviceAuth t
 
 sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
-sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses = do
-  ts <- getCurrentTime
+sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses =
   -- two separate "atomically" needed to avoid blocking
   E.bracketOnError
-    (atomically $ ifM (readTVar connected) (mapM_ (addRequest ts) rs >> tryWriteTBQueue sndQ t) (True <$ mapM_ failRequest rs))
+    (atomically $ ifM (readTVar connected) (mapM_ addRequest rs >> tryWriteTBQueue sndQ t) (True <$ mapM_ failRequest rs))
     (\_ -> when (isNothing msgQ) $ atomically $ mapM_ removeRequest rs)
     (\sent -> if sent then getResponses else withAsync (atomically $ writeTBQueue sndQ t) (const getResponses))
   where
-    addRequest ts r@Request {corrId} = TM.insert corrId r {createdAt = ts} sentCommands
+    addRequest r@Request {corrId} = TM.insert corrId r sentCommands
     removeRequest Request {corrId} = TM.delete corrId sentCommands
 
 failRequest :: Request err msg -> STM ()
