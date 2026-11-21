@@ -1188,13 +1188,15 @@ createRcvQueue c nm userId connId srvWithAuth@(ProtoServerWithAuth srv _) enable
     newRcvQueue_ c nm userId connId srvWithAuth vr qd (isJust ntfServer_) subMode nonce_ e2eKeys
       `catchAllErrors` \e -> liftIO (print e) >> throwE e
   incSMPServerStat c userId srv connCreated
-  recorded <- withConnLock c connId "createRcvQueue" $ do
-    r <- tryAllErrors $ withStore c $ \db -> updateNewConnRcv db connId rq subMode
-    forM_ r $ \rq' -> lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
-    pure r
-  rq' <- either (\e -> tryAllErrors (deleteNewQueue c nm tSess rq) >> throwE e) pure recorded
+  rq' <- recordNewQueue c nm connId "createRcvQueue" tSess rq (withStore c $ \db -> updateNewConnRcv db connId rq subMode) $ \rq' ->
+    rq' <$ lift (when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_)
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure (rq', qUri)
+
+recordNewQueue :: AgentClient -> NetworkRequestMode -> ConnId -> Text -> SMPTransportSession -> NewRcvQueue -> AM r -> (r -> AM a) -> AM a
+recordNewQueue c nm connId name tSess q record continue = do
+  recorded <- withConnLock c connId name $ tryAllErrors record >>= mapM continue
+  either (\e -> tryAllErrors (deleteNewQueue c nm tSess q) >> throwE e) pure recorded
 
 checkClientNotices :: AgentClient -> SMPServerWithAuth -> AM ()
 checkClientNotices AgentClient {clientNotices, presetServers} (ProtoServerWithAuth srv@(ProtocolServer {host}) _) = do
@@ -1735,11 +1737,8 @@ createReplyQueue c nm ConnData {userId, connId, enableNtfs} SndQueue {smpClientV
   (rq, qUri, tSess, sessId, serviceId_) <- newRcvQueue c nm userId connId srv (versionToRange smpClientVersion) SCMInvitation (isJust ntfServer_) subMode
   incSMPServerStat c userId (qServer rq) connCreated
   let qInfo = toVersionT qUri smpClientVersion
-  recorded <- withConnLock c connId "createReplyQueue" $ do
-    r <- tryAllErrors $ withStore c $ \db -> upgradeSndConnToDuplex db connId rq subMode
-    forM_ r $ \rq' -> lift . when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_
-    pure r
-  rq' <- either (\e -> tryAllErrors (deleteNewQueue c nm tSess rq) >> throwE e) pure recorded
+  rq' <- recordNewQueue c nm connId "createReplyQueue" tSess rq (withStore c $ \db -> upgradeSndConnToDuplex db connId rq subMode) $ \rq' ->
+    rq' <$ lift (when (subMode == SMSubscribe) $ addNewQueueSubscription c rq' tSess sessId serviceId_)
   mapM_ (newQueueNtfSubscription c rq') ntfServer_
   pure qInfo
 
@@ -2978,23 +2977,21 @@ switchDuplexConnection c nm cmdId_ (DuplexConnection ConnData {connId, userId} r
   -- The problem is that currently subscription already exists, and we do not support queues with credentials but without subscriptions.
   (q, qUri, tSess, sessId, serviceId_) <- newRcvQueue c nm userId connId srv' clientVRange SCMInvitation False SMSubscribe
   let rq' = (q :: NewRcvQueue) {primary = True, dbReplaceQueueId = Just dbQueueId}
-  switched <- withConnLock c connId "switchConnection" $ do
-    recorded <- tryAllErrors $
-      withStore c (`getConn` connId) >>= \case
-        SomeConn _ (DuplexConnection cData rqs' sqs') | Just rq1 <- findQ (qAddress rq) rqs' ->
-          (cData,rqs',sqs',rq1,) <$> withStore c (\db -> addConnRcvQueue db connId rq' SMSubscribe)
-        _ -> throwE $ INTERNAL "switchConnection: replaced queue not found in connection"
-    forM recorded $ \(cData, rqs', sqs', rq1, rq'') -> do
-      when (rcvSwchStatus rq1 /= Just RSSwitchStarted) $ deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: aborted")
-      when (ratchetSyncSendProhibited cData) $ do
-        void $ withStore' c $ \db -> setRcvSwitchStatus db rq1 Nothing
-        deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: send prohibited")
-      lift $ addNewQueueSubscription c rq'' tSess sessId serviceId_
-      void . enqueueMessages c cData sqs' SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
-      rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 (Just RSSendingQADD) <* mapM_ (deleteCommand db) cmdId_
-      let rqs'' = updatedQs rq1' rqs' <> [rq'']
-      connectionStats c $ DuplexConnection cData rqs'' sqs'
-  either (\e -> tryAllErrors (deleteNewQueue c nm tSess q) >> throwE e) pure switched
+      addRcvQueue =
+        withStore c (`getConn` connId) >>= \case
+          SomeConn _ (DuplexConnection cData rqs' sqs') | Just rq1 <- findQ (qAddress rq) rqs' ->
+            (cData,rqs',sqs',rq1,) <$> withStore c (\db -> addConnRcvQueue db connId rq' SMSubscribe)
+          _ -> throwE $ INTERNAL "switchConnection: replaced queue not found in connection"
+  recordNewQueue c nm connId "switchConnection" tSess q addRcvQueue $ \(cData, rqs', sqs', rq1, rq'') -> do
+    when (rcvSwchStatus rq1 /= Just RSSwitchStarted) $ deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: aborted")
+    when (ratchetSyncSendProhibited cData) $ do
+      void $ withStore' c $ \db -> setRcvSwitchStatus db rq1 Nothing
+      deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: send prohibited")
+    lift $ addNewQueueSubscription c rq'' tSess sessId serviceId_
+    void . enqueueMessages c cData sqs' SMP.noMsgFlags $ QADD [(qUri, Just (server, sndId))]
+    rq1' <- withStore' c $ \db -> setRcvSwitchStatus db rq1 (Just RSSendingQADD) <* mapM_ (deleteCommand db) cmdId_
+    let rqs'' = updatedQs rq1' rqs' <> [rq'']
+    connectionStats c $ DuplexConnection cData rqs'' sqs'
 
 abortConnectionSwitch' :: AgentClient -> ConnId -> AM ConnectionStats
 abortConnectionSwitch' c connId =
