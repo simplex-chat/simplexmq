@@ -377,10 +377,7 @@ withTlsUnique cxt f =
       STClient -> T.getFinished
 
 closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `E.finally` T.contextClose ctx
-    `catchAll_` pure ()
+closeTLS ctx = T.contextClose ctx `catchAll_` pure ()
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
