@@ -1102,7 +1102,7 @@ def name_record(name: str):
     registry = REGISTRIES[name.rsplit(".", 1)[-1]]
     node = node_of(name)
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
-    owner = decode_address(eth_call(*owner_call(registry, node)))
+    owner = record_owner(name)
     rec = {
         "name": canonical_name(name),
         "nickname": "",
@@ -1163,6 +1163,12 @@ def subname_holder(name: str) -> str:
         return ZERO_ADDR
 
 
+def record_owner(name: str) -> str:
+    if len(name.split(".")) > 2:
+        return subname_holder(name)
+    return decode_address(eth_call(*owner_call(REGISTRIES[name.rsplit(".", 1)[-1]], node_of(name))))
+
+
 def name_response(reg, registration_body):
     """The SMP protocol's NameResponse: the registration and the block read at."""
     return 200, {"lastBlockTs": reg["lastBlockTs"], "registration": registration_body}
@@ -1185,7 +1191,7 @@ def registration(name: str):
             return 502, {"name": name, "error": "labelNotRecorded"}
         # a subname inherits the 2LD's status, so only its holder says whether
         # it exists
-        if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
+        if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
             # name_status reads pricing only when the name was already
             # unregistered, so read it here
             status = "unregistered"
@@ -1248,7 +1254,8 @@ def resolve(name: str):
         return (404 if reg["status"] == "unregistered" else 410), body
 
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
-    if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
+    owner = record_owner(name)
+    if len(name.split(".")) > 2 and owner == ZERO_ADDR:
         return 404, {
             "name": name,
             **reg,
@@ -1260,7 +1267,6 @@ def resolve(name: str):
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
         # answerable.
-        owner = decode_address(eth_call(*owner_call(registry, node)))
         return 200, {
             "name": canonical_name(name) or name,
             "nickname": "",
@@ -1276,8 +1282,6 @@ def resolve(name: str):
             "resolver": ZERO_ADDR,
             **reg,
         }
-
-    owner = decode_address(eth_call(*owner_call(registry, node)))
 
     prefetch(record_reads(resolver_addr, node))
     texts = {}

@@ -1050,6 +1050,13 @@ class RegistrationV2Tests(unittest.TestCase):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
         _, body = registration("sub.acme.testing")
         self.assertEqual(body["type"], "registered")
+        self.assertEqual(body["nameRecord"]["owner"], self.OWNER)
+
+    def test_v1_reports_the_holder_of_a_subname_the_subname_registrar_holds(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["owner"], self.OWNER)
 
     def test_a_subname_the_subname_registrar_no_longer_holds_is_not_registered(self):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER)
