@@ -31,7 +31,7 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
 import qualified Network.TLS as T
-import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn')
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
@@ -39,7 +39,7 @@ import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), FileResponse (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpDecodeTClient, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
 import Simplex.FileTransfer.Server.StoreLog (serverFileName)
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
@@ -47,7 +47,7 @@ import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..), getSystemSeconds)
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), closeTLS, defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
@@ -76,6 +76,9 @@ xftpServerTests = do
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
+      it "should time out TLS handshake when TLS errors are logged" $ \_ -> testTLSHandshakeTimeout
+      it "should time out closing TLS connection" $ \_ -> testCloseTLSTimeout
+      it "should time out receiving file chunk" $ \_ -> testReceiveFileTimeout
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should complete a new upload of a chunk without waiting for the paused upload it replaces" testConcurrentChunkUpload
@@ -261,6 +264,34 @@ testCancelledClientConnect =
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
     timeout 5000000 (cancel a) `shouldReturn` Just ()
     timeout 5000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
+testTLSHandshakeTimeout :: HasTestEnv => Expectation
+testTLSHandshakeTimeout =
+  withStallingServerOn xftpTestPort $
+    timeout 1000000 (runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort Nothing $ \(_ :: TLS 'TClient) -> pure ())
+      `shouldReturn` Nothing
+  where
+    cfg :: TransportClientConfig
+    cfg = defaultTransportClientConfig {logTLSErrors = True}
+
+testCloseTLSTimeout :: Expectation
+testCloseTLSTimeout = do
+  closed <- newEmptyTMVarIO
+  ctx <- T.contextNew (backend closed) (T.defaultParamsClient "localhost" "")
+  timeout 100000 (closeTLS ctx) `shouldReturn` Nothing
+  atomically (tryReadTMVar closed) `shouldReturn` Just ()
+  where
+    backend closed =
+      T.Backend
+        { T.backendFlush = pure (),
+          T.backendClose = atomically $ putTMVar closed (),
+          T.backendSend = \_ -> threadDelay maxBound,
+          T.backendRecv = \_ -> pure ""
+        }
+
+testReceiveFileTimeout :: HasTestEnv => Expectation
+testReceiveFileTimeout =
+  timeout 100000 (runExceptT $ receiveFile (\_ -> "" <$ threadDelay maxBound) $ XFTPRcvChunkSpec testChunkPath chSize "") `shouldReturn` Nothing
 
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $

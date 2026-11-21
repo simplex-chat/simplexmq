@@ -15,6 +15,7 @@
 module CoreTests.MsgStoreTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad
@@ -33,16 +34,19 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), withLog')
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Util
 
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.Async (AsyncCancelled (..), async, cancel, waitCatch)
 import qualified Control.Exception as E
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
@@ -51,7 +55,6 @@ import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
 import SMPClient (testStoreDBOpts)
-import System.Timeout (timeout)
 #endif
 
 msgStoreTests :: Spec
@@ -59,6 +62,7 @@ msgStoreTests = do
   describe "STM message store" $ do
     someMsgStoreTests testSMTStoreConfig
     it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
+    it "should time out store log write" testStoreLogTimeout
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
@@ -66,6 +70,8 @@ msgStoreTests = do
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
+    it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
+    it "should stop when cancelled during reconnect after database error" $ withMsgStore testPostgresStoreConfig testReconnectCancel
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -323,6 +329,13 @@ testDeleteQueueMaps ms = do
   where
     expectAuth = either (`shouldBe` AUTH) (\_ -> expectationFailure "deleted queue is still found")
 
+testStoreLogTimeout :: HasTestEnv => IO ()
+testStoreLogTimeout = do
+  sl <- openWriteStoreLog False $ testPath "store.log"
+  sl_ <- newTVarIO $ Just sl
+  timeout 100000 (withLog' "test" sl_ $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+  closeStoreLog sl
+
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
   ntfMsgId <- atomically $ randomMsgId 24 g
@@ -492,4 +505,19 @@ testClosedStore ms = do
     Just (Left (_ :: E.SomeException)) -> pure ()
     Just (Right (_ :: [Only Int])) -> expectationFailure "query succeeded on a closed store"
     Nothing -> expectationFailure "query waited on a closed store"
+
+testDBOperationTimeout :: PostgresMsgStore -> IO ()
+testDBOperationTimeout ms =
+  timeout 100000 (runExceptT $ withDB' "test" (queueStore ms) $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+
+testReconnectCancel :: PostgresMsgStore -> IO ()
+testReconnectCancel ms = do
+  let st = dbStore $ queueStore ms
+  reconnecting <- newEmptyTMVarIO
+  let st' = st {dbConnect = atomically (putTMVar reconnecting ()) >> threadDelay maxBound >> dbConnect st}
+  a <- async $ E.try @DB.SqlError $ withTransaction st' $ \db -> DB.query_ db "SELECT 1/0" :: IO [Only Int]
+  atomically $ takeTMVar reconnecting
+  cancel a
+  (either E.fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just AsyncCancelled
+  atomically (lengthTBQueue $ dbPoolConns $ dbPool st) `shouldReturn` fromIntegral (dbPoolSize st)
 #endif

@@ -34,7 +34,7 @@ import qualified Database.PostgreSQL.Simple as PSQL
 import qualified Database.PostgreSQL.Simple.Transaction as PSQL
 import Numeric.Natural (Natural)
 import Simplex.Messaging.Agent.Store.Postgres.Options
-import Simplex.Messaging.Util (ifM, tshow)
+import Simplex.Messaging.Util (ifM, isAsyncCancellation, tshow)
 
 -- TODO [postgres] use log_min_duration_statement instead of custom slow queries (SQLite's Connection type)
 data DBStore = DBStore
@@ -70,15 +70,16 @@ withConnectionPool :: DBStorePool -> TVar Bool -> IO PSQL.Connection -> (PSQL.Co
 withConnectionPool DBStorePool {dbPoolConns, dbSem} dbClosed dbConnect action =
   E.mask $ \restore -> do
     conn <- withMVar dbSem $ \_ -> atomically $ ifM (readTVar dbClosed) (throwSTM $ userError "withConnection: database closed") (readTBQueue dbPoolConns)
-    r <- restore (action conn) `E.onException` reset conn
+    r <- restore (action conn) `E.catch` reset conn
     atomically $ writeTBQueue dbPoolConns conn
     pure r
   where
-    reset conn = do
-      conn' <- E.try dbConnect >>= \case
-        Right conn' -> PSQL.close conn >> pure conn'
-        Left (_ :: E.SomeException) -> pure conn
+    reset conn e = do
+      (conn', e') <- E.try dbConnect >>= \case
+        Right conn' -> PSQL.close conn >> pure (conn', e)
+        Left e' -> pure (conn, if isAsyncCancellation e' && not (isAsyncCancellation e) then e' else e)
       atomically $ writeTBQueue dbPoolConns conn'
+      E.throwIO e'
 
 withConnection :: DBStore -> (PSQL.Connection -> IO a) -> IO a
 withConnection st = withConnectionPriority st False

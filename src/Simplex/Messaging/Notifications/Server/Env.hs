@@ -64,7 +64,7 @@ import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (ASrvTransport, SMPServiceRole (..), ServiceCredentials (..), THandleParams, TransportPeer (..))
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
-import Simplex.Messaging.Util (liftEitherWith, tshow)
+import Simplex.Messaging.Util (isAsyncCancellation, liftEitherWith, tshow)
 import Simplex.Messaging.Util ()
 import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
@@ -210,6 +210,7 @@ getPushClient s@NtfPushServer {apnsConfig = APNSPushClientConfig {reconnectInter
     E.try (getSessVarIO (pushClientSeq s) pp (pushClients s) ts >>= either (newPushClient s pp) waitForPushClient) >>= \case
       Right result -> pure result
       Left e
+        | isAsyncCancellation e -> E.throwIO e
         | n < 2 -> do
             logError $ "getPushClient error (" <> tshow pp <> "): " <> tshow (e :: E.SomeException)
             loop

@@ -6,12 +6,14 @@ module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 
 import Control.Monad
 import Data.Word (Word32)
+import qualified Database.PostgreSQL.Simple as DB
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
-import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore, importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore (..), importFileStore, exportFileStore)
 import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..))
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore (..), DBStorePool (..), withTransaction)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Protocol (BlockingInfo (..), BlockingReason (..), EntityId (..))
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
@@ -19,7 +21,9 @@ import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..))
 import System.Directory (doesFileExist, removeFile)
 import System.FilePath ((</>))
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (async, wait)
 import UnliftIO.STM
 import Util
 import XFTPClient (testXFTPPostgresCfg)
@@ -33,6 +37,7 @@ xftpStoreTests = do
     it "should add and get file by recipient" testAddGetFileRecipient
     it "should reject duplicate file" testDuplicateFile
     it "should return AUTH for nonexistent file" testGetNonexistent
+    it "should time out getting file while the table is locked" testGetFileTimeout
     it "should set file path with IS NULL guard" testSetFilePath
     it "should reject duplicate recipient" testDuplicateRecipient
     it "should delete file and cascade recipients" testDeleteFileCascade
@@ -120,6 +125,20 @@ testGetNonexistent :: HasTestEnv => Expectation
 testGetNonexistent = withPgStore $ \st -> do
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
+
+testGetFileTimeout :: HasTestEnv => Expectation
+testGetFileTimeout = withPgStore $ \st -> do
+  locked <- newEmptyTMVarIO
+  unlock <- newEmptyTMVarIO
+  locker <- async $ withTransaction (dbStore st) $ \db -> do
+    void $ DB.execute_ db "LOCK TABLE files"
+    atomically $ putTMVar locked ()
+    atomically $ readTMVar unlock
+  atomically $ readTMVar locked
+  timeout 100000 (void <$> getFile st SFSender testSenderId) `shouldReturn` Nothing
+  atomically $ putTMVar unlock ()
+  wait locker
+  atomically (lengthTBQueue $ dbPoolConns $ dbPool $ dbStore st) `shouldReturn` fromIntegral (dbPoolSize $ dbStore st)
 
 testSetFilePath :: HasTestEnv => Expectation
 testSetFilePath = withPgStore $ \st -> do
