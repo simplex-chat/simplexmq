@@ -46,9 +46,10 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`. If the resolver started before the node reached the `.simplex`
-deployment, every lookup under `.simplex` then still returns `502` until
-`docker compose restart resolver` (see Configuring addresses).
+returns `502`. If the resolver started before the node reached block 26459168,
+where the `.simplex` controller's name policy was set, every lookup under
+`.simplex` then still returns `502` until `docker compose restart resolver` (see
+Configuring addresses).
 
 ## Verify
 
@@ -82,7 +83,7 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 **4. the route your router will call** (check 3 passes on an older resolver too):
 ```sh
 curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
-# → {"lastBlockTs":…,"registration":{"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}}
+# → {"lastBlockTs":…,"registration":{"type":"registered","expires":1780000000,"graceUntil":…,"reservedReason_":…,"nameRecord":{…}}}
 ```
 
 **5. a reservation read from `.simplex`'s name policy:**
@@ -113,10 +114,12 @@ the node is synced.
 - **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
   `docker compose pull`; re-run the verify checks after pulling.
 - The resolver image contains the script: after updating this directory, run
-  `docker compose up -d --build resolver`, then checks 2 and 5. A
-  `SNRC_*_SIMPLEX` value set for the earlier `.simplex` deployment (registry
-  `0xa7f6497be2f1aa41aa2db55aba8a6e0145dff0d2`) overrides the defaults; remove
-  it, and check 2 then shows the registry above.
+  `docker compose up -d --build resolver`, then checks 2 and 5.
+- A `SNRC_*_SIMPLEX` setting added to `docker-compose.yml`, or to the
+  environment of a direct run, for the earlier `.simplex` deployment (registry
+  `0xa7f6497be2f1aa41aa2db55aba8a6e0145dff0d2`) overrides the defaults. Remove
+  all three; `docker compose exec resolver env | grep _SIMPLEX` then prints
+  nothing.
 - All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
 
 ## Teardown
@@ -350,6 +353,7 @@ An ENS-shaped oracle exposes only `price1Letter()`..`price6Letter()`, in attoUSD
 per second, and charges a premium on a lapsed name that it does not expose. A
 quote from one is therefore only safe for a name that was never registered: an
 `expired` name gets no price rather than one below what the registrar charges.
+
 **Upgrade this service before the routers that query it.** Routers from SMP v22
 call `/v2/resolve`, which an older resolver does not serve. Every name then
 answers `ERR NAME RESOLVER "HTTP 404"` until this service is upgraded, while
@@ -408,7 +412,14 @@ records, the **proxy** where the contract is upgradeable: the controller of
 `.testing` and all three of `.simplex`. The implementations, the entries named
 `<contract>@<address>` or `SimplexControllerImpl` in its
 `verification.mainnet.<tld>.json`, hold no names: a registrar implementation
-reports every name as never registered.
+reports every name as never registered. Each setting takes one entry of the
+deployments file:
+
+| Setting | Entry of `deployments.mainnet.<tld>.json` |
+|---|---|
+| `SNRC_REGISTRY_<TLD>` | `ENSRegistry` |
+| `SNRC_REGISTRAR_<TLD>` | `BaseRegistrarImplementation` |
+| `SNRC_CONTROLLER_<TLD>` | `ETHRegistrarController` |
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
