@@ -744,7 +744,7 @@ class ErrorCodeTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
         )
-        snrc.REGISTRIES = {"testing": self.REGISTRY, "simplex": ""}
+        snrc.REGISTRIES = {"testing": self.REGISTRY, "nosuchtld": ""}
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
@@ -1309,7 +1309,7 @@ class FakeNodeTestCase(unittest.TestCase):
         self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
-        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "nosuchtld": ""}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
         snrc._multicall_failed_logged = False
@@ -1485,7 +1485,7 @@ class NamePoliciesTests(FakeNodeTestCase):
         self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
 
     def test_an_unconfigured_controller_is_not_read(self):
-        snrc.CONTROLLERS = {"simplex": ""}
+        snrc.CONTROLLERS = {"nosuchtld": ""}
         self.assertEqual(self.requests_made(snrc.name_policies), ({}, 0))
 
     def test_an_address_without_a_contract_is_read_as_no_policy(self):

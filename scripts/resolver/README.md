@@ -46,8 +46,9 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`. `.simplex`, whose controller has a name policy, can then still
-answer `502` until `docker compose restart resolver` (see Configuring addresses).
+returns `502`. A lookup under `.simplex`, whose controller has a name policy, can
+then still return `502` until `docker compose restart resolver` (see Configuring
+addresses).
 
 ## Verify
 
@@ -89,9 +90,9 @@ curl -s http://127.0.0.1:8000/v2/resolve/simplex.simplex | jq
 # → {"lastBlockTs":…,"registration":{"type":"reserved","reservedReason":"internal"}}
 ```
 
-A `502` here while check 4 passes, with `simplex=-` in `name_policies` of the
-`listening` log line, calls for `docker compose restart resolver` once the node
-is synced.
+If check 5 returns `502` while check 4 passes, and the `listening` log line
+shows `simplex=-` in `name_policies`, run `docker compose restart resolver` once
+the node is synced.
 
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
@@ -346,8 +347,8 @@ per second, and charges a premium on a lapsed name that it does not expose. A
 quote from one is therefore only safe for a name that was never registered: an
 `expired` name gets no price rather than one below what the registrar charges.
 
-**Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
-controller there is no oracle, so no name can be priced.
+**Override the three settings of a TLD together.** A setting left unset keeps
+its mainnet default, which belongs to another deployment than an overridden one.
 
 **Upgrade this service before the routers that query it.** Routers from SMP v22
 call `/v2/resolve`, which an older resolver does not serve. Every name then
@@ -383,11 +384,8 @@ is where every expiry field comes from, and `labelOf`, which is how a hashed
 query is answered with a name. A name registered without recording its label
 cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
 the client will reject. Its `subnameHook()` names the subname registrar, whose
-`ownerOf` says who holds a subname it owns. With no registrar for a TLD,
-`/resolve` still works and reports `"status": "unknown"`, and only subnames the
-2LD's holder owns in the registry are answered. The **controller** holds
-`reservedNames`, which is where `reasonCode` comes from. With no controller a
-held-back name reads as not reserved, and no name can be priced.
+`ownerOf` says who holds a subname it owns. The **controller** holds
+`reservedNames`, which is where `reasonCode` comes from.
 
 All three default to the mainnet deployments of `.testing` and `.simplex`.
 
@@ -411,8 +409,10 @@ implementation address holds no names: a registrar implementation reports every
 name as never registered. `verification.mainnet.<tld>.json` names the proxies
 differently: `ETHRegistrarController` is `SimplexControllerProxy` there, and for
 `.simplex`, `ENSRegistry` and `BaseRegistrarImplementation` are `ENSRegistryProxy`
-and `BaseRegistrarImplementationProxy`. Its entries named `<contract>@<address>`
-are the implementations.
+and `BaseRegistrarImplementationProxy`. The implementations are the entries
+named `<contract>@<address>` in `verification.mainnet.simplex.json` and
+`SimplexControllerImpl` in `verification.mainnet.testing.json`. These files are
+in [brenzi/simplex-namespace-contract](https://github.com/brenzi/simplex-namespace-contract).
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
