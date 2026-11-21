@@ -1096,13 +1096,12 @@ def upstream_error(subject: dict, e: Exception) -> dict:
     }
 
 
-def name_record(name: str):
+def name_record(name: str, owner: str):
     """The NameRecord for a registered name. A name with no resolver set still
     has one, with every field unset."""
     registry = REGISTRIES[name.rsplit(".", 1)[-1]]
     node = node_of(name)
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
-    owner = record_owner(name)
     rec = {
         "name": canonical_name(name),
         "nickname": "",
@@ -1117,7 +1116,7 @@ def name_record(name: str):
         "owner": owner,
         "resolver": resolver_addr,
     }
-    if owner is None or resolver_addr == ZERO_ADDR:
+    if resolver_addr == ZERO_ADDR:
         return rec
     prefetch(record_reads(resolver_addr, node))
     texts = {}
@@ -1183,14 +1182,10 @@ def registration(name: str):
     reg = name_status(name)
     status = reg["status"]
     if status in ("registered", "grace"):
-        rec = name_record(name)
-        # the client checks that the record names what it asked about, so a
-        # hashed query the registrar cannot name is refused rather than answered
-        if rec["name"] is None:
-            return 502, {"name": name, "error": "labelNotRecorded"}
+        owner = record_owner(name)
         # a subname inherits the 2LD's status, so only its holder says whether
         # it exists
-        if rec["owner"] is None:
+        if owner is None:
             # name_status reads pricing only when the name was already
             # unregistered, so read it here
             status = "unregistered"
@@ -1198,6 +1193,11 @@ def registration(name: str):
             if pricing:
                 reg.update({k: v for k, v in pricing.items() if not k.startswith("_")})
         else:
+            rec = name_record(name, owner)
+            # the client checks that the record names what it asked about, so a
+            # hashed query the registrar cannot name is refused rather than answered
+            if rec["name"] is None:
+                return 502, {"name": name, "error": "labelNotRecorded"}
             return name_response(reg, {
                 "type": "registered",
                 "expires": reg["expires"],
