@@ -4,3 +4,6 @@
 [submodule "cbits/blst"]
 	path = cbits/blst
 	url = https://github.com/supranational/blst.git
+[submodule "cbits/libsecp256k1"]
+	path = cbits/libsecp256k1
+	url = https://github.com/bitcoin-core/secp256k1.git

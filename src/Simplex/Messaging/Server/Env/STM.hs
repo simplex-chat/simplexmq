@@ -43,6 +43,7 @@ module Simplex.Messaging.Server.Env.STM
     VerifiedTransmission,
     ResponseAndMessage,
     newEnv,
+    checkHTTPSCredentials,
     msgStore,
     fromMsgStore,
     newClient,
@@ -273,7 +274,7 @@ data Env s = Env
     ntfStore :: NtfStore,
     random :: TVar ChaChaDRG,
     tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe T.Credential,
+    httpServerCreds :: Maybe ReloadableCredential,
     serverStats :: ServerStats,
     sockets :: TVar [(ServiceName, SocketState)],
     clientSeq :: TVar ClientId,
@@ -578,8 +579,10 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
   ntfStore <- NtfStore <$> TM.emptyIO
   random <- C.newRandom
   tlsServerCreds <- getCredentials "SMP" smpCredentials
-  httpServerCreds <- mapM (getCredentials "HTTPS") httpCredentials
-  mapM_ checkHTTPSCredentials httpServerCreds
+  httpServerCreds <- forM httpCredentials $ \creds -> do
+    cred <- getCredentials "HTTPS" creds
+    either exitHTTPSCredentialError pure $ checkHTTPSCredentials cred
+    newReloadableCredential checkHTTPSCredentials creds cred
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
   serverStats <- newServerStats =<< getCurrentTime
@@ -646,14 +649,8 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
         missingCreds = do
           let files = maybe id (:) (caCertificateFile creds) [certificateFile creds, privateKeyFile creds]
            in concat <$> mapM missingfile files
-    checkHTTPSCredentials (X.CertificateChain cc, _k) =
-      -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
-      case map (X.signedObject . X.getSigned) cc of
-        X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa >= 512 -> pure ()
-        _ -> do
-          putStrLn $ "Error: unsupported HTTPS credentials, required 4096-bit RSA\n" <> letsEncrypt
-          exitFailure
-    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size 4096\n----------"
+    exitHTTPSCredentialError e = putStrLn ("Error: " <> T.unpack (credentialErrorText e) <> "\n" <> letsEncrypt) >> exitFailure
+    letsEncrypt = "Use Let's Encrypt to generate: certbot certonly --standalone -d yourdomainname --key-type rsa --rsa-key-size " <> show minHTTPSRSAKeyBits <> "\n----------"
     serverInfo =
       ServerInformation
         { information,
@@ -675,6 +672,14 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
 #if defined(dbServerPostgres)
           _ -> SPMMessages
 #endif
+
+checkHTTPSCredentials :: CredentialCheck
+checkHTTPSCredentials (X.CertificateChain cc, _k) =
+  -- LetsEncrypt provides ECDSA with insecure curve p256 (https://safecurves.cr.yp.to)
+  case map (X.signedObject . X.getSigned) cc of
+    [] -> Left CENoCertificate
+    X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca | RSA.public_size rsa * 8 >= minHTTPSRSAKeyBits -> Right ()
+    _ -> Left CEUnsupportedHTTPSKey
 
 noPostgresExit :: IO a
 noPostgresExit = putStrLn noPostgresExitStr >> exitFailure

@@ -29,6 +29,7 @@ import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Simplex.Messaging.Agent.Store.DB (FromField (..), ToField (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, taggedObjectJSON)
 import Simplex.Messaging.SystemTime (SystemSeconds)
@@ -68,7 +69,7 @@ $( JQ.deriveJSON
 -- | US cents.
 newtype USDCents = USDCents Int64
   deriving (Eq, Ord, Show)
-  deriving newtype (ToJSON, FromJSON)
+  deriving newtype (ToJSON, FromJSON, Num, Enum, Real, Integral, FromField, ToField)
 
 -- | What the registry holds for a name, and the block it was read at.
 data NameResponse = NameResponse
