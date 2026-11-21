@@ -184,7 +184,7 @@ getVerifiedHTTP2ClientWith config host port disconnected setup =
 
 -- | Disconnects client from the server and terminates client threads.
 closeHTTP2Client :: HTTP2Client -> IO ()
-closeHTTP2Client = mapM_ uninterruptibleCancel . action
+closeHTTP2Client = mapM_ (void . async . cancel) . action
 
 sendRequest :: HTTP2Client -> Request -> Maybe Int -> IO (Either HTTP2ClientError HTTP2Response)
 sendRequest HTTP2Client {client_ = HClient {config, reqQ}} req reqTimeout_ = do
