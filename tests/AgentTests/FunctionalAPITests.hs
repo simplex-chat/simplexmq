@@ -535,6 +535,8 @@ functionalAPITests ps = do
       testInactiveWithSubs ps
     it "should NOT disconnect active clients" $
       testActiveClientNotDisconnected ps
+  describe "Starting agent" $
+    it "should not start agent after the start timed out" testAgentStartTimeout
   describe "Suspending agent" $ do
     it "should update client when agent is suspended" $
       withSmpServer ps testSuspendingAgent
@@ -3354,6 +3356,23 @@ testActiveClientNotDisconnected (t, msType) = do
           liftIO $ timeout 1200000 (get alice) `shouldReturn` Nothing
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
 
+testAgentStartTimeout :: HasTestEnv => IO ()
+testAgentStartTimeout = do
+  Right st <- createStore testDB
+  locked <- newEmptyTMVarIO
+  unlock <- newEmptyTMVarIO
+  locker <- async $ withTransaction st $ \db -> do
+    lockClientNotices db
+    atomically $ putTMVar locked ()
+    atomically $ readTMVar unlock
+  atomically $ readTMVar locked
+  r <- timeout 100000 $ runExceptT $ getSMPAgentClient_ 1 agentCfg initAgentServers st False
+  atomically $ putTMVar unlock ()
+  wait locker
+  case r of
+    Nothing -> closeDBStore st
+    Just c -> mapM_ disposeAgentClient c >> expectationFailure "agent started after timeout"
+
 testSuspendingAgent :: HasTestEnv => IO ()
 testSuspendingAgent =
   withAgentClients2 $ \a b -> runRight_ $ do
@@ -5709,12 +5728,18 @@ createStore schema = createAgentStore dbOpts $ MigrationConfig MCError Nothing
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")
+
+lockClientNotices :: DB.Connection -> IO ()
+lockClientNotices db = DB.execute_ db "LOCK TABLE client_notices"
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
 createStore dbPath = createAgentStore (DBOpts dbPath [] "" False True DB.TQOff) (MigrationConfig MCError Nothing)
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")
+
+lockClientNotices :: DB.Connection -> IO ()
+lockClientNotices _ = pure ()
 #endif
 
 testServerMultipleIdentities :: (HasCallStack, HasTestEnv) => IO ()
