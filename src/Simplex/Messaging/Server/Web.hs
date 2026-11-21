@@ -55,7 +55,7 @@ import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExi
 import System.FilePath
 import UnliftIO.Concurrent (forkFinally)
 import UnliftIO.Exception (Exception (displayException), bracket, finally, throwIO)
-import UnliftIO.STM (readTVarIO)
+import UnliftIO.STM (newTVarIO, readTVarIO)
 import qualified WaiAppStatic.Types as WAT
 
 data EmbeddedWebParams = EmbeddedWebParams
@@ -116,7 +116,7 @@ attachStaticFiles path action = do
           WI.serveConnection conn ii th addr transport warpSettings app
   where
     -- from warp-tls
-    withConnection socket cxt = bracket (WT.attachConn socket cxt) (terminate . fst)
+    withConnection socket cxt = bracket (WT.attachConn socket cxt =<< newTVarIO 0) (terminate . fst)
     -- from warp
     withTimeout ii =
       bracket

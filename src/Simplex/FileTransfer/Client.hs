@@ -172,7 +172,7 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
     getServerHandshake = do
       let helloReq = H.requestNoBody "POST" "/" []
       HTTP2Response {respBody = HTTP2Body {bodyHead = shsBody}} <-
-        liftError' xftpClientError $ sendRequest c helloReq Nothing
+        liftError' xftpClientError $ sendRequest c helloReq Nothing pure
       liftTransportErr (TEHandshake PARSE) . smpDecode =<< liftTransportErr TEBadBlock (C.unPad shsBody)
     processServerHandshake :: XFTPServerHandshake -> ExceptT XFTPClientError IO (VersionRangeXFTP, C.PublicKeyX25519)
     processServerHandshake XFTPServerHandshake {xftpVersionRange, sessionId = serverSessId, authPubKey = serverAuth} = do
@@ -191,7 +191,7 @@ xftpClientHandshakeV1 serverVRange keyHash@(C.KeyHash kh) c@HTTP2Client {session
     sendClientHandshake chs = do
       chs' <- liftTransportErr TELargeMsg $ C.pad (smpEncode chs) xftpBlockSize
       let chsReq = H.requestBuilder "POST" "/" [] $ byteString chs'
-      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' xftpClientError $ sendRequest c chsReq Nothing
+      HTTP2Response {respBody = HTTP2Body {bodyHead}} <- liftError' xftpClientError $ sendRequest c chsReq Nothing pure
       unless (B.null bodyHead) $ throwE $ PCETransportError TEBadBlock
     liftTransportErr e = liftEitherWith (const $ PCETransportError e)
 
@@ -221,29 +221,30 @@ xftpClientError = \case
   HCNetworkError e -> PCENetworkError e
   HCIOError e -> PCEIOError e
 
-sendXFTPCommand :: forall p. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ = do
+sendXFTPCommand :: forall p a. FilePartyI p => XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> FileCommand p -> Maybe XFTPChunkSpec -> ((FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO a) -> ExceptT XFTPClientError IO a
+sendXFTPCommand c@XFTPClient {thParams} pKey fId cmd chunkSpec_ handleResponse = do
   -- TODO random corrId
   let corrIdUsedAsNonce = ""
   t <-
     liftEither . first PCETransportError $
       xftpEncodeAuthTransmission thParams pKey (corrIdUsedAsNonce, fId, FileCmd (sFileParty @p) cmd)
-  sendXFTPTransmission c t chunkSpec_
+  sendXFTPTransmission c t chunkSpec_ handleResponse
 
-sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ExceptT XFTPClientError IO (FileResponse, HTTP2Body)
-sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ = do
+sendXFTPTransmission :: XFTPClient -> ByteString -> Maybe XFTPChunkSpec -> ((FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO a) -> ExceptT XFTPClientError IO a
+sendXFTPTransmission XFTPClient {config, thParams, http2Client} t chunkSpec_ handleResponse = do
   let req = H.requestStreaming N.methodPost "/" [] streamBody
       reqTimeout = xftpReqTimeout config $ (\XFTPChunkSpec {chunkSize} -> chunkSize) <$> chunkSpec_
-  HTTP2Response {respBody = body@HTTP2Body {bodyHead}} <- withExceptT xftpClientError . ExceptT $ sendRequest http2Client req (Just reqTimeout)
-  when (B.length bodyHead /= xftpBlockSize) $ throwE $ PCEResponseError BLOCK
-  -- TODO validate that the file ID is the same as in the request?
-  (_, _fId, respOrErr) <- liftEither $ first PCEResponseError $ xftpDecodeTClient thParams bodyHead
-  case respOrErr of
-    Right r -> case protocolError r of
-      Just e -> throwE $ PCEProtocolError e
-      _ -> pure (r, body)
-    Left e -> throwE $ PCEResponseError e
+  liftEither =<< withExceptT xftpClientError (ExceptT $ sendRequest http2Client req (Just reqTimeout) (runExceptT . processResponse))
   where
+    processResponse HTTP2Response {respBody = body@HTTP2Body {bodyHead}} = do
+      when (B.length bodyHead /= xftpBlockSize) $ throwE $ PCEResponseError BLOCK
+      -- TODO validate that the file ID is the same as in the request?
+      (_, _fId, respOrErr) <- liftEither $ first PCEResponseError $ xftpDecodeTClient thParams bodyHead
+      case respOrErr of
+        Right r -> case protocolError r of
+          Just e -> throwE $ PCEProtocolError e
+          _ -> handleResponse (r, body)
+        Left e -> throwE $ PCEResponseError e
     streamBody :: (Builder -> IO ()) -> IO () -> IO ()
     streamBody send done = do
       send $ byteString t
@@ -262,24 +263,24 @@ createXFTPChunk ::
   Maybe Word32 ->
   ExceptT XFTPClientError IO (SenderId, NonEmpty RecipientId, Maybe GrantedStorageTime)
 createXFTPChunk c spKey file rcps auth_ storageHours =
-  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageHours) Nothing >>= \case
+  sendXFTPCommand c spKey NoEntity (FNEW file rcps auth_ storageHours) Nothing $ \case
     (FRSndIds sId rIds gs, body) -> noFile body (sId, rIds, gs)
     (r, _) -> throwE $ unexpectedResponse r
 
 addXFTPRecipients :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> NonEmpty C.APublicAuthKey -> ExceptT XFTPClientError IO (NonEmpty RecipientId)
 addXFTPRecipients c spKey fId rcps =
-  sendXFTPCommand c spKey fId (FADD rcps) Nothing >>= \case
+  sendXFTPCommand c spKey fId (FADD rcps) Nothing $ \case
     (FRRcvIds rIds, body) -> noFile body rIds
     (r, _) -> throwE $ unexpectedResponse r
 
 uploadXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPChunkSpec -> ExceptT XFTPClientError IO ()
 uploadXFTPChunk c spKey fId chunkSpec =
-  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) >>= okResponse
+  sendXFTPCommand c spKey fId FPUT (Just chunkSpec) okResponse
 
 downloadXFTPChunk :: TVar ChaChaDRG -> XFTPClient -> C.APrivateAuthKey -> XFTPFileId -> XFTPRcvChunkSpec -> ExceptT XFTPClientError IO ()
 downloadXFTPChunk g c@XFTPClient {config} rpKey fId chunkSpec@XFTPRcvChunkSpec {filePath, chunkSize} = do
   (rDhKey, rpDhKey) <- atomically $ C.generateKeyPair g
-  sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing >>= \case
+  sendXFTPCommand c rpKey fId (FGET rDhKey) Nothing $ \case
     (FRFile sDhKey cbNonce, HTTP2Body {bodyHead = _bg, bodySize = _bs, bodyPart}) -> case bodyPart of
       -- TODO atm bodySize is set to 0, so chunkSize will be incorrect - validate once set
       Just chunkPart -> do
@@ -307,20 +308,19 @@ chunkTimeout XFTPClientConfig {xftpNetworkConfig = NetworkConfig {tcpTimeout, tc
   netTimeoutInt tcpTimeout NRMBackground + fromIntegral (min ((fromIntegral sz `div` 1024) * tcpTimeoutPerKb) (fromIntegral (maxBound :: Int)))
 
 deleteXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> SenderId -> ExceptT XFTPClientError IO ()
-deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing >>= okResponse
+deleteXFTPChunk c spKey sId = sendXFTPCommand c spKey sId FDEL Nothing okResponse
 
 ackXFTPChunk :: XFTPClient -> C.APrivateAuthKey -> RecipientId -> ExceptT XFTPClientError IO ()
-ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing >>= okResponse
+ackXFTPChunk c rpKey rId = sendXFTPCommand c rpKey rId FACK Nothing okResponse
 
 pingXFTP :: XFTPClient -> ExceptT XFTPClientError IO ()
 pingXFTP c@XFTPClient {thParams} = do
   t <-
     liftEither . first PCETransportError $
       xftpEncodeTransmission thParams ("", NoEntity, FileCmd SFRecipient PING)
-  (r, _) <- sendXFTPTransmission c t Nothing
-  case r of
-    FRPong -> pure ()
-    _ -> throwE $ unexpectedResponse r
+  sendXFTPTransmission c t Nothing $ \case
+    (FRPong, _) -> pure ()
+    (r, _) -> throwE $ unexpectedResponse r
 
 okResponse :: (FileResponse, HTTP2Body) -> ExceptT XFTPClientError IO ()
 okResponse = \case

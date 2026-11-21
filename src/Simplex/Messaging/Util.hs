@@ -397,9 +397,9 @@ toChunks n xs =
    in maybe id (:) (L.nonEmpty ys) (toChunks n xs')
 
 safeDecodeUtf8 :: ByteString -> Text
-safeDecodeUtf8 = decodeUtf8With onError
+safeDecodeUtf8 = decodeUtf8With replaceInvalid
   where
-    onError _ _ = Just '?'
+    replaceInvalid _ _ = Just '?'
 {-# INLINE safeDecodeUtf8 #-}
 
 timeoutThrow :: MonadUnliftIO m => e -> Int -> ExceptT e m a -> ExceptT e m a

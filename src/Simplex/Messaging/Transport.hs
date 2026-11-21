@@ -18,6 +18,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- |
 -- Module      : Simplex.Messaging.Transport
@@ -107,6 +108,7 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent (forkIOWithUnmask)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -134,6 +136,7 @@ import GHC.IO.Handle.Internals (ioe_EOF)
 import Network.Socket
 import qualified Network.TLS as T
 import qualified Network.TLS.Extra as TE
+import qualified Network.TLS.Internal as TI
 import qualified Paths_simplexmq as SMQ
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
@@ -147,6 +150,7 @@ import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, state
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
+import System.Timeout (timeout)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 
@@ -370,25 +374,31 @@ getTLS cfg tlsCertSent tlsPeerCert cxt = withTlsUnique @TLS @p cxt newTLS
 withTlsUnique :: forall c p. TransportPeerI p => T.Context -> (ByteString -> IO (c p)) -> IO (c p)
 withTlsUnique cxt f =
   cxtFinished cxt
-    >>= maybe (closeTLS cxt >> ioe_EOF) f
+    >>= maybe (closeTLS cxt >> ioe_EOF) (\(TI.VerifyData d) -> f d)
   where
     cxtFinished = case sTransportPeer @p of
       STServer -> T.getPeerFinished
       STClient -> T.getFinished
 
+closeTLSTimeout :: Int
+closeTLSTimeout = 1000000
+
 closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `E.finally` T.contextClose ctx
-    `catchAll_` pure ()
+closeTLS ctx = do
+  byeDone <- newEmptyTMVarIO
+  _ <- forkIOWithUnmask $ \unmask ->
+    -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
+    (unmask (void $ timeout closeTLSTimeout $ T.bye ctx) `catchAll_` pure ())
+      `E.finally` atomically (putTMVar byeDone ())
+  atomically (takeTMVar byeDone) `E.finally` (T.contextClose ctx `catchAll_` pure ())
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
   def
     { T.supportedVersions = [T.TLS13, T.TLS12],
       T.supportedCiphers =
-        [ TE.cipher_TLS13_CHACHA20POLY1305_SHA256, -- for TLS13
-          TE.cipher_ECDHE_ECDSA_CHACHA20POLY1305_SHA256 -- for TLS12
+        [ TE.cipher13_CHACHA20_POLY1305_SHA256, -- for TLS13
+          TE.cipher_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 -- for TLS12
         ],
       T.supportedHashSignatures = [(T.HashIntrinsic, T.SignatureEd448), (T.HashIntrinsic, T.SignatureEd25519)],
       T.supportedGroups = [T.X448, T.X25519],
