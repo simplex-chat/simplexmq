@@ -143,7 +143,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchOwn', catchOwn_, liftEitherWith, stateTVar', (<$$>))
+import Simplex.Messaging.Util (bshow, catchOwn', liftEitherWith, stateTVar', (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -380,7 +380,7 @@ closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
     `E.finally` T.contextClose ctx
-    `catchOwn_` pure ()
+    `catchOwn'` \_ -> pure ()
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =

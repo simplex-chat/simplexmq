@@ -41,7 +41,6 @@ module Simplex.Messaging.Util
     isAsyncCancellation,
     catchOwn',
     catchOwn,
-    catchOwn_,
     tryAllOwnErrors,
     tryAllOwnErrors',
     catchAllOwnErrors,
@@ -335,10 +334,6 @@ catchOwn action handleInternal =
   withRunInIO $ \run ->
     run action `E.catch` \e -> if isAsyncCancellation e then E.throwIO e else run (handleInternal e)
 {-# INLINE catchOwn #-}
-
-catchOwn_ :: IO a -> IO a -> IO a
-catchOwn_ a = catchOwn' a . const
-{-# INLINE catchOwn_ #-}
 
 tryAllOwnErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m (Either e a)
 tryAllOwnErrors action = ExceptT $ Right <$> runExceptT action `catchOwn` (pure . Left . fromSomeException)
