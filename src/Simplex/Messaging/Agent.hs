@@ -292,7 +292,7 @@ getSMPAgentClient_ clientId cfg initServers@InitialAgentServers {smp, xftp, netC
     runAgent = do
       liftIO $ checkServers "SMP" smp >> checkServers "XFTP" xftp
       currentTs <- liftIO getCurrentTime
-      notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchAll_` pure []
+      notices <- liftIO $ withTransaction store (`getClientNotices` presetServers) `catchOwn'` \_ -> pure []
       c@AgentClient {acThread} <- liftIO . newAgentClient clientId initServers currentTs notices =<< ask
       t <- runAgentThreads c `forkFinally` const (liftIO $ disconnectAgentClient c)
       atomically . writeTVar acThread . Just =<< mkWeakThreadId t

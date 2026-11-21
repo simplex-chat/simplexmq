@@ -143,7 +143,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchAll, catchAll_, liftEitherWith, stateTVar', (<$$>))
+import Simplex.Messaging.Util (bshow, catchOwn', liftEitherWith, stateTVar', (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -355,7 +355,7 @@ connectTLS host_ TransportConfig {logTLSErrors} params sock =
   E.bracketOnError (T.contextNew sock params) closeTLS $ \ctx ->
     logHandshakeErrors (T.handshake ctx) $> ctx
   where
-    logHandshakeErrors = if logTLSErrors then (`catchAll` logThrow) else id
+    logHandshakeErrors = if logTLSErrors then (`catchOwn'` logThrow) else id
     logThrow e = putStrLn ("TLS error" <> host <> ": " <> show e) >> E.throwIO e
     host = maybe "" (\h -> " (" <> h <> ")") host_
 
@@ -380,7 +380,7 @@ closeTLS :: T.Context -> IO ()
 closeTLS ctx =
   T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
     `E.finally` T.contextClose ctx
-    `catchAll_` pure ()
+    `catchOwn'` \_ -> pure ()
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =

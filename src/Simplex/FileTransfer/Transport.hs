@@ -65,7 +65,7 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey, ServiceCredentials, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, tshow, (<$?>), (<$$>))
+import Simplex.Messaging.Util (bshow, isAsyncCancellation, tshow, (<$?>), (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 #if __GLASGOW_HASKELL__ == 810
@@ -204,7 +204,7 @@ receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E
     receive h sz = hReceiveFile getBody h sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
     handlers =
       [ E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
-        E.Handler $ \(e :: E.SomeException) -> logError (err e) $> Left FILE_IO
+        E.Handler $ \(e :: E.SomeException) -> if isAsyncCancellation e then E.throwIO e else logError (err e) $> Left FILE_IO
       ]
     err e = "receiveFile error: " <> tshow e
 
