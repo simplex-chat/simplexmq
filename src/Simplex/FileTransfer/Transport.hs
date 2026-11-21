@@ -205,6 +205,7 @@ receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E
     handlers =
       [ E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
         E.Handler $ \(e :: E.SomeException) -> if isAsyncCancellation e then E.throwIO e else logError (err e) $> Left FILE_IO
+
       ]
     err e = "receiveFile error: " <> tshow e
 

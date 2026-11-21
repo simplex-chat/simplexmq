@@ -148,8 +148,13 @@ testXFTPServerTest :: (HasCallStack, HasTestEnv) => Maybe BasicAuth -> XFTPServe
 testXFTPServerTest newFileBasicAuth srv =
   withXFTPServerCfg testXFTPServerConfig {newFileBasicAuth, xftpPort = xftpTestPort2, information = Just testServerInformation} $ \_ ->
     -- initially passed server is not running
-    withAgent 1 agentCfg initAgentServers testDB $ \a ->
-      testProtocolServer a NRMInteractive 1 srv
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let workPath = testPath "xftp-work-files"
+      createDirectory workPath
+      runRight_ $ xftpStartWorkers a (Just workPath)
+      r <- testProtocolServer a NRMInteractive 1 srv
+      listDirectory workPath `shouldReturn` []
+      pure r
 
 rfProgress :: forall m. (HasCallStack, MonadIO m, MonadFail m) => AgentClient -> Int64 -> m ()
 rfProgress c expected = loop 0
