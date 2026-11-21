@@ -744,7 +744,7 @@ class ErrorCodeTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
         )
-        snrc.REGISTRIES = {"testing": self.REGISTRY, "nosuchtld": ""}
+        snrc.REGISTRIES = {"testing": self.REGISTRY}
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
@@ -1309,7 +1309,7 @@ class FakeNodeTestCase(unittest.TestCase):
         self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
-        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "nosuchtld": ""}
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
         snrc._multicall_failed_logged = False

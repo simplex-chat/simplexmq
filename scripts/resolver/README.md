@@ -46,9 +46,9 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`. A lookup under `.simplex`, whose controller has a name policy, can
-then still return `502` until `docker compose restart resolver` (see Configuring
-addresses).
+returns `502`. If the resolver started before the node reached the `.simplex`
+deployment, every lookup under `.simplex` then still returns `502` until
+`docker compose restart resolver` (see Configuring addresses).
 
 ## Verify
 
@@ -64,7 +64,8 @@ curl -s -X POST http://127.0.0.1:8545 \
 **2. resolver is healthy:**
 ```sh
 curl -s http://127.0.0.1:8000/health | jq
-# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": "0x…"},
+# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x58fc46996d975c57883564648bda5206d1a0102b",
+#    "simplex": "0x3ce23ef6a00d89105299b52aadd72b92681414be"},
 #    "blockNumber": 23400000, "chainLagSeconds": 12}
 ```
 
@@ -112,7 +113,10 @@ the node is synced.
 - **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
   `docker compose pull`; re-run the verify checks after pulling.
 - The resolver image contains the script: after updating this directory, run
-  `docker compose up -d --build resolver`, then checks 2 and 5.
+  `docker compose up -d --build resolver`, then checks 2 and 5. A
+  `SNRC_*_SIMPLEX` value set for the earlier `.simplex` deployment (registry
+  `0xa7f6497be2f1aa41aa2db55aba8a6e0145dff0d2`) overrides the defaults; remove
+  it, and check 2 then shows the registry above.
 - All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
 
 ## Teardown
@@ -346,10 +350,6 @@ An ENS-shaped oracle exposes only `price1Letter()`..`price6Letter()`, in attoUSD
 per second, and charges a premium on a lapsed name that it does not expose. A
 quote from one is therefore only safe for a name that was never registered: an
 `expired` name gets no price rather than one below what the registrar charges.
-
-**Override the three settings of a TLD together.** A setting left unset keeps
-its mainnet default, which belongs to another deployment than an overridden one.
-
 **Upgrade this service before the routers that query it.** Routers from SMP v22
 call `/v2/resolve`, which an older resolver does not serve. Every name then
 answers `ERR NAME RESOLVER "HTTP 404"` until this service is upgraded, while
@@ -389,7 +389,7 @@ the client will reject. Its `subnameHook()` names the subname registrar, whose
 
 All three default to the mainnet deployments of `.testing` and `.simplex`.
 
-Newer contracts, which `.simplex` runs, keep `reservedNames` in a **name
+Newer contracts, which the `.simplex` deployment uses, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
 answers no `reservedNames` call. The resolver reads each controller's
 `namePolicy()` once at startup, before its workers start, and reads reservations
@@ -402,21 +402,19 @@ has not yet reached the controller or its `setNamePolicy`. A node that
 does not answer stops the resolver, and the container restarts. After the
 controller's owner calls `setNamePolicy`, restart the resolver.
 
-Each default is the address that `deployments.mainnet.<tld>.json` records. For
-an upgradeable contract that address is the **proxy**: the controller of
-`.testing` and all three of `.simplex`. Storage lives in the proxy, so an
-implementation address holds no names: a registrar implementation reports every
-name as never registered. `verification.mainnet.<tld>.json` names the proxies
-differently: `ETHRegistrarController` is `SimplexControllerProxy` there, and for
-`.simplex`, `ENSRegistry` and `BaseRegistrarImplementation` are `ENSRegistryProxy`
-and `BaseRegistrarImplementationProxy`. The implementations are the entries
-named `<contract>@<address>` in `verification.mainnet.simplex.json` and
-`SimplexControllerImpl` in `verification.mainnet.testing.json`. These files are
-in [brenzi/simplex-namespace-contract](https://github.com/brenzi/simplex-namespace-contract).
+Each default is the address that `deployments.mainnet.<tld>.json` of
+[brenzi/simplex-namespace-contract](https://github.com/brenzi/simplex-namespace-contract/tree/2ecae1a77bd605dcc236ba3c3cd93e690345af2c)
+records, the **proxy** where the contract is upgradeable: the controller of
+`.testing` and all three of `.simplex`. The implementations, the entries named
+`<contract>@<address>` or `SimplexControllerImpl` in its
+`verification.mainnet.<tld>.json`, hold no names: a registrar implementation
+reports every name as never registered.
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
 as env vars when you run the script directly. An empty value means the default.
+Override the three settings of a TLD together: an unset one keeps its mainnet
+default, which belongs to a different deployment.
 
 ### Load and scaling
 
