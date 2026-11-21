@@ -1083,7 +1083,7 @@ closeClient_ c v = do
   NetworkConfig {tcpConnectTimeout} <- getNetworkConfig c
   E.handle (\BlockedIndefinitelyOnSTM -> pure ()) $
     netTimeoutInt tcpConnectTimeout NRMBackground `timeout` atomically (readTMVar $ sessionVar v) >>= \case
-      Just (Right client) -> closeProtocolServerClient (protocolClient client) `catchOwn_` pure ()
+      Just (Right client) -> closeProtocolServerClient (protocolClient client) `catchAll_` pure ()
       _ -> pure ()
 
 closeXFTPServerClient :: AgentClient -> UserId -> XFTPServer -> FileDigest -> IO ()
