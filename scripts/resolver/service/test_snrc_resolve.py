@@ -744,7 +744,7 @@ class ErrorCodeTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
         )
-        snrc.REGISTRIES = {"testing": self.REGISTRY, "simplex": ""}
+        snrc.REGISTRIES = {"testing": self.REGISTRY, "nosuchtld": ""}
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
@@ -1309,7 +1309,7 @@ class FakeNodeTestCase(unittest.TestCase):
         self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
-        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
         snrc._multicall_failed_logged = False
@@ -1485,7 +1485,7 @@ class NamePoliciesTests(FakeNodeTestCase):
         self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
 
     def test_an_unconfigured_controller_is_not_read(self):
-        snrc.CONTROLLERS = {"simplex": ""}
+        snrc.CONTROLLERS = {"nosuchtld": ""}
         self.assertEqual(self.requests_made(snrc.name_policies), ({}, 0))
 
     def test_an_address_without_a_contract_is_read_as_no_policy(self):
@@ -1551,36 +1551,36 @@ class RequestLogTests(unittest.TestCase):
         return record
 
     def test_a_request_is_logged_with_its_outcome(self):
-        record = self.request("/v2/resolve/x.simplex")
+        record = self.request("/v2/resolve/x.nosuchtld")
         fields = record.fields
         self.assertEqual(record.levelname, "INFO")
         self.assertEqual(
             (fields["client"], fields["method"], fields["path"], fields["status"], fields["worker"]),
-            ("127.0.0.1", "GET", "/v2/resolve/x.simplex", 400, os.getpid()),
+            ("127.0.0.1", "GET", "/v2/resolve/x.nosuchtld", 400, os.getpid()),
         )
         self.assertGreater(fields["bytes"], 0)
         self.assertGreaterEqual(fields["ms"], 0)
 
     def test_a_trusted_proxy_names_the_client(self):
         snrc.TRUSTED_PROXIES = (ipaddress.ip_network("127.0.0.1/32"),)
-        record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
+        record = self.request("/v2/resolve/x.nosuchtld", {"X-Forwarded-For": "203.0.113.7"})
         self.assertEqual(record.fields["client"], "203.0.113.7")
 
     def test_any_other_peer_cannot_name_itself(self):
-        record = self.request("/v2/resolve/x.simplex", {"X-Forwarded-For": "203.0.113.7"})
+        record = self.request("/v2/resolve/x.nosuchtld", {"X-Forwarded-For": "203.0.113.7"})
         self.assertEqual(record.fields["client"], "127.0.0.1")
 
     def test_a_bad_request_is_not_logged_with_the_previous_ones_fields(self):
         """On a kept-alive connection the handler still held the last request's path and size."""
         with self.assertLogs("snrc_resolve", "INFO") as logs:
             with socket.create_connection(self.server.server_address, timeout=5) as sock:
-                sock.sendall(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\n\r\n")
+                sock.sendall(b"GET /v2/resolve/x.nosuchtld HTTP/1.1\r\nHost: x\r\n\r\n")
                 sock.recv(65536)
                 sock.sendall(b"BOGUS\r\n\r\n")
                 while sock.recv(65536):
                     pass
         first, second = [r for r in logs.records if r.getMessage() == "request"]
-        self.assertEqual(first.fields["path"], "/v2/resolve/x.simplex")
+        self.assertEqual(first.fields["path"], "/v2/resolve/x.nosuchtld")
         self.assertEqual((second.fields["status"], second.fields["path"], second.fields["bytes"], second.fields["ms"]), (400, None, None, None))
 
     def test_health_checks_are_logged_only_at_debug(self):
@@ -1614,33 +1614,33 @@ class RequestBodyTests(unittest.TestCase):
                     break
             return data
 
-    SMUGGLED = b"GET /v2/resolve/y.simplex HTTP/1.1\r\nHost: x\r\n\r\n"
+    SMUGGLED = b"GET /v2/resolve/y.nosuchtld HTTP/1.1\r\nHost: x\r\n\r\n"
 
     def test_a_body_is_refused_and_the_connection_closed(self):
-        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
+        data = self.exchange(b"GET /v2/resolve/x.nosuchtld HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
         self.assertEqual(data.count(b"HTTP/1.1 "), 1)
         self.assertIn(b"HTTP/1.1 400 ", data)
         self.assertIn(b"Connection: close", data)
-        self.assertNotIn(b"y.simplex", data)
+        self.assertNotIn(b"y.nosuchtld", data)
 
     def test_a_length_after_a_malformed_header_line_is_still_seen(self):
         """Python stops parsing headers at a malformed line and keeps the rest as payload."""
-        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nX-Junk : 1\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
+        data = self.exchange(b"GET /v2/resolve/x.nosuchtld HTTP/1.1\r\nX-Junk : 1\r\nContent-Length: %d\r\n\r\n" % len(self.SMUGGLED), self.SMUGGLED)
         self.assertEqual(data.count(b"HTTP/1.1 "), 1)
         self.assertIn(b"unexpectedBody", data)
-        self.assertNotIn(b"y.simplex", data)
+        self.assertNotIn(b"y.nosuchtld", data)
 
     def test_a_chunked_body_is_refused_and_the_connection_closed(self):
         chunked = b"%x\r\n" % len(self.SMUGGLED) + self.SMUGGLED + b"\r\n0\r\n\r\n"
-        data = self.exchange(b"GET /v2/resolve/x.simplex HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", chunked)
+        data = self.exchange(b"GET /v2/resolve/x.nosuchtld HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", chunked)
         self.assertEqual(data.count(b"HTTP/1.1 "), 1)
-        self.assertNotIn(b"y.simplex", data)
+        self.assertNotIn(b"y.nosuchtld", data)
 
     def test_an_empty_body_keeps_the_connection(self):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         answers = []
         for _ in range(2):
-            conn.request("GET", "/v2/resolve/x.simplex", headers={"Content-Length": "0"})
+            conn.request("GET", "/v2/resolve/x.nosuchtld", headers={"Content-Length": "0"})
             res = conn.getresponse()
             answers.append((res.status, json.loads(res.read())["error"], conn.sock))
         conn.close()
@@ -1748,7 +1748,7 @@ class KeepAliveTests(unittest.TestCase):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         start = time.monotonic()
         for i in range(20):
-            conn.request("GET", "/v2/resolve/x.simplex")
+            conn.request("GET", "/v2/resolve/x.nosuchtld")
             res = conn.getresponse()
             res.read()
             self.assertEqual((res.version, res.status), (11, 400))
@@ -1953,3 +1953,11 @@ class SetupTests(LogTestCase):
                         snrc.setup_logging(self.out)
                 finally:
                     setattr(snrc, setting, saved)
+
+
+class DefaultsTests(unittest.TestCase):
+    def test_every_tld_has_all_three_contracts_by_default(self):
+        fresh = importlib.util.module_from_spec(_SPEC)
+        _SPEC.loader.exec_module(fresh)
+        for table in (fresh.REGISTRIES, fresh.REGISTRARS, fresh.CONTROLLERS):
+            self.assertEqual(sorted(tld for tld, address in table.items() if address), ["simplex", "testing"])

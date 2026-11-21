@@ -38,13 +38,14 @@ Environment:
                          (default: mainnet,
                           0x58fc46996d975c57883564648bda5206d1a0102b)
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
-                         (default: empty — TLD not yet deployed)
+                         (default: mainnet,
+                          0x3ce23ef6a00d89105299b52aadd72b92681414be)
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
-                         (default: mainnet for .testing, empty for .simplex)
+                         (default: mainnet)
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
                          read from the policy its `namePolicy()` names, if any,
                          and through its `prices()` oracle what registering costs
-                         (default: mainnet for .testing, empty for .simplex)
+                         (default: mainnet)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
   SNRC_WORKERS           Worker processes sharing the port (default: CPU count, at most 4)
@@ -115,8 +116,7 @@ TRUSTED_PROXIES = tuple(
 )
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
-# happens on the rightmost label of the queried name. Empty / unset means
-# "not deployed" — requests for that TLD return 400 with a clear error.
+# happens on the rightmost label of the queried name.
 # `... or "..."` makes the script's defaults the single source of truth:
 # unset AND empty-string both fall through to the literal. docker-compose
 # can therefore pass `SNRC_REGISTRY_TESTING=${SNRC_REGISTRY_TESTING:-}`
@@ -124,13 +124,15 @@ TRUSTED_PROXIES = tuple(
 REGISTRIES = {
     "testing": os.environ.get("SNRC_REGISTRY_TESTING", "")
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
-    "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
+    "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", "")
+    or "0x3ce23ef6a00d89105299b52aadd72b92681414be",
 }
 
 REGISTRARS = {
     "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
     or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
-    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", ""),  # not deployed yet
+    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", "")
+    or "0x4c0589dbc22862babb25eb72d11bba49d84aabe8",
 }
 
 CONTROLLERS = {
@@ -138,7 +140,8 @@ CONTROLLERS = {
     # Proxy address, not SimplexControllerImpl: storage is held by the proxy.
     # Recorded in deployments.json as ETHRegistrarController.
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
-    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
+    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", "")
+    or "0x68fab655a0204865a2f3ab3a607037e09648c92b",
 }
 
 # The name policy each TLD's controller names, which holds its reservations in
