@@ -199,24 +199,27 @@ testSocksProxyConnection = do
 socksConnectionTest :: HasTestEnv => HostName -> ByteString -> IO ()
 socksConnectionTest proxyHost proxy =
   withSmpServerConfigOn (transport @TLS) SMPClient.cfg testPort $ \_ ->
-    withSocksProxy proxyHost "5050" $ \destinations -> do
+    withSocksProxy proxyHost "0" $ \destinations proxyPort -> do
       g <- C.newRandom
       ts <- getCurrentTime
-      let networkConfig = defaultNetworkConfig {socksProxy = either error Just $ strDecode proxy, socksMode = SMAlways}
+      let (proxyPrefix, proxySuffix) = B.breakSubstring "5050" proxy
+          proxy' = proxyPrefix <> B.pack proxyPort <> B.drop 4 proxySuffix
+          networkConfig = defaultNetworkConfig {socksProxy = either error Just $ strDecode proxy', socksMode = SMAlways}
           srv = SMPServer ["localhost"] testPort testKeyHash
       (c :: SMPClient) <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {networkConfig} [] Nothing ts (\_ -> pure ())
       closeProtocolClient c
-      readTVarIO destinations `shouldReturn` ["localhost:5001"]
+      readTVarIO destinations `shouldReturn` [B.pack $ "localhost:" <> testPort]
 
 -- | Minimal SOCKS5 proxy (RFC 1928) for CONNECT command to domain names,
 -- with optional username/password authentication (RFC 1929), that records requested destinations.
-withSocksProxy :: HostName -> ServiceName -> (TVar [ByteString] -> IO a) -> IO a
+withSocksProxy :: HostName -> ServiceName -> (TVar [ByteString] -> ServiceName -> IO a) -> IO a
 withSocksProxy host port action = do
   destinations <- newTVarIO []
   started <- newEmptyTMVarIO
   E.bracket (startTCPServer started (Just host) port) close $ \sock ->
-    withAsync (forever $ accept sock >>= \(conn, _) -> forkIO $ socksConnection destinations conn `E.finally` close conn) $ \_ ->
-      action destinations
+    withAsync (forever $ accept sock >>= \(conn, _) -> forkIO $ socksConnection destinations conn `E.finally` close conn) $ \_ -> do
+      proxyPort <- show <$> socketPort sock
+      action destinations proxyPort
 
 socksConnection :: TVar [ByteString] -> Socket -> IO ()
 socksConnection destinations conn = do

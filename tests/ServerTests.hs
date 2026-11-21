@@ -1718,7 +1718,7 @@ checkStats s qs sent received = do
 readSavedStats :: HasTestEnv => AStoreType -> IO ServerStatsData
 readSavedStats = \case
   ASType _ SMSMemory -> do
-    logSize testServerStatsBackupFile `shouldReturn` 101
+    logSize testServerStatsBackupFile `shouldReturn` 106
     either error id . strDecode <$> B.readFile testServerStatsBackupFile
 #if defined(dbServerPostgres)
   ASType _ SMSPostgres -> withStatsDB $ fmap (fromMaybe $ error "no saved stats") . getDBStats

@@ -947,7 +947,7 @@ withHeldHTTP2Requests action = do
   release <- newEmptyTMVarIO
   creds <- loadServerCredential xftpCredentials
   Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
-  let hold _ _ _ _ respond = do
+  let hold _ _ _ _ _ respond = do
         atomically $ modifyTVar' received (+ 1)
         atomically $ readTMVar release
         respond $ responseNoBody ok200 []

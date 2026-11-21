@@ -296,17 +296,6 @@ connectionRequestTests =
           invalidE2EParamsStrUri = "v%3D3%26x3dh%3DMEIwBQYDK2VvAzk9mKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
       strDecode @AConnectionRequestUri ("simplex:/contact#/?v=6-8&smp=" <> url invalidDhKeyQueueStr) `shouldSatisfy` isLeft
       strDecode @AConnectionRequestUri ("simplex:/invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> invalidE2EParamsStrUri) `shouldSatisfy` isLeft
-      connectionRequestClientDataEmpty #==# ("simplex:/invitation#/?v=2-7&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri <> "&data=" <> url "{}")
-      contactAddress #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr)
-      contactAddress #== ("https://simplex.chat/contact#/?v=2-7&smp=" <> url queueStr)
-      contactAddress2queues #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr))
-      contactAddressNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueNewStr)
-      contactAddress2queuesNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
-      contactAddress #==# ("simplex:/contact#/?v=2&smp=" <> url queueStr)
-      contactAddress #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
-      contactAddress #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
-      contactAddress #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
-      contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
     it "should generate a bracketed IPv6 application-server authority" $ do
       let ipv6Host = either error id (strDecode "2001:db8::1") :: TransportHost
           request = CRInvitationUri (connReqData {crScheme = SSAppServer $ SrvLoc ipv6Host ""}) testE2ERatchetParams

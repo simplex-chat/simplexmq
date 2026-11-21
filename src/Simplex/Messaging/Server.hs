@@ -254,14 +254,18 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       asks namesEnv >>= liftIO . mapM_ closeNamesEnv
 
     processClientSub ::
-      forall sub.
+      forall sub p.
+      (PartyI p, ServiceParty p) =>
+      s ->
+      SParty p ->
       Server s ->
       (Server s -> ServerSubscribers s) ->
       (Client s -> TMap QueueId sub) ->
+      (Client s -> TVar Bool) ->
       (Client s -> TVar (Int64, IdsHash)) ->
       Maybe (sub -> IO ()) ->
       Client s -> ClientSub -> IO ()
-    processClientSub srv srvSubscribers clientSubs clientServiceSubs unsub_ clnt sub =
+    processClientSub ms party srv srvSubscribers clientSubs clientServiceSubscribed clientServiceSubs unsub_ clnt sub =
       uninterruptibleMask_ $
         atomically (updateSubscribers clnt sub)
           >>= endPreviousSubscriptions
@@ -303,6 +307,7 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
             cancelServiceSubs serviceId =
               checkAnotherClient $ \c -> do
                 changedSubs@(n, idsHash) <- swapTVar (clientServiceSubs c) (0, mempty)
+                writeTVar (clientServiceSubscribed c) False
                 pure [(c, CSADecreaseSubs changedSubs, (serviceId, ENDS n idsHash))]
             checkAnotherClient :: (Client s -> STM [PrevClientSub s]) -> Maybe (Client s) -> STM [PrevClientSub s]
             checkAnotherClient mkSub = \case
@@ -312,7 +317,12 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
 
         endPreviousSubscriptions :: [PrevClientSub s] -> IO ()
         endPreviousSubscriptions = mapM_ $ \(c, subAction, evt) -> do
-          atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt] (evt <|)) (clientId c)
+          evt' <- case subAction of
+            CSADecreaseSubs _ -> do
+              current <- liftIO $ getServiceQueueCountHash @(StoreQueue s) (queueStore ms) party (fst evt)
+              pure $ either (const evt) ((fst evt,) . uncurry ENDS) current
+            _ -> pure evt
+          atomically $ modifyTVar' pendingEvents $ IM.alter (Just . maybe [evt'] (evt' <|)) (clientId c)
           case subAction of
             CSAEndSub qId -> atomically (endSub c qId) >>= unsubPrev
             -- like endSub, also removes the delivery subscription from the service client's subscriptions map,
@@ -785,10 +795,10 @@ smpServer started cfg@ServerConfig {transports, transportConfig = tCfg, startOpt
       let serverInfo = LB.toStrict . J.encode <$> information
       labelMyThread $ "smp handshake for " <> transportName tp
       liftIO (timeout smpHandshakeTimeout . runExceptT $ smpServerHandshake srvCert srvSignKey h ks kh smpServerVRange serverInfo $ getClientService ms g idSize) >>= \case
-        Just (Right th) -> runClientTransport (processSubs srv) th
+        Just (Right th) -> runClientTransport (processSubs srv ms) th
         _ -> pure ()
       where
-        processSubs srv = (processClientSub srv subscribers subscriptions serviceSubsCount (Just cancelSub), processClientSub srv ntfSubscribers ntfSubscriptions ntfServiceSubsCount Nothing)
+        processSubs srv ms = (processClientSub ms SRecipientService srv subscribers subscriptions serviceSubscribed serviceSubsCount (Just cancelSub), processClientSub ms SNotifierService srv ntfSubscribers ntfSubscriptions ntfServiceSubscribed ntfServiceSubsCount Nothing)
 
     getClientService :: s -> TVar ChaChaDRG -> Int -> SMPServiceRole -> X.CertificateChain -> XV.Fingerprint -> ExceptT TransportError IO ServiceId
     getClientService ms g idSize role cert fp = do
@@ -1569,8 +1579,9 @@ client
             incSrvStat srvAssocRemoved
             -- getSubscription may find a subscription for receiving service, where clientSubs also hold active deliveries for service subscriptions.
             -- For notification service it can only find one if storage and session states diverge.
-            r <- getSubscription
-            writeSub
+            r@(hasSub, _) <- getSubscription
+            atomically $ modifyTVar' (clientServiceSubs clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+            unless hasSub writeSub
             pure r
           Nothing -> do
             r@(hasSub, _) <- getSubscription
@@ -2368,7 +2379,9 @@ client
               -- we delete subscription here, so the client with no subscriptions can be disconnected.
               sub <- atomically $ TM.lookupDelete entId $ subscriptions clnt
               liftIO $ mapM_ cancelSub sub
-              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+              when (isJust rcvServiceId && rcvServiceId == clntServiceId) $ atomically $ do
+                modifyTVar' (serviceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash (recipientId q))
+                modifyTVar' (totalServiceSubs subscribers) $ subtractServiceSubs (1, queueIdHash (recipientId q))
               liftIO $ processSub clnt $ CSDeleted entId rcvServiceId
               forM_ (notifier qr) $ \NtfCreds {notifierId = nId, ntfServiceId} -> do
                 -- queue is deleted by a different client from the one subscribed to notifications,
@@ -2376,6 +2389,11 @@ client
                 stats <- asks serverStats
                 deleted <- asks ntfStore >>= liftIO . (`deleteNtfs` nId)
                 when (deleted > 0) $ liftIO $ atomicModifyIORef'_ (ntfCount stats) (subtract deleted)
+                when (isJust ntfServiceId && ntfServiceId == clntServiceId) $ do
+                  ntfSubscribers <- asks (ntfSubscribers . server)
+                  atomically $ do
+                    modifyTVar' (ntfServiceSubsCount clnt) $ subtractServiceSubs (1, queueIdHash nId)
+                    modifyTVar' (totalServiceSubs ntfSubscribers) $ subtractServiceSubs (1, queueIdHash nId)
                 liftIO $ processNtfSub clnt $ CSDeleted nId ntfServiceId
               updateDeletedStats qr
               pure ok
