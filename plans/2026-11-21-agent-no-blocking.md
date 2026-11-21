@@ -55,7 +55,7 @@ sequenceDiagram
   - deletion under the locks of its connections;
   - the record step of an acknowledgement reads the queue again;
   - a concurrent acknowledgement of a deleted message is dropped;
-  - each switch start has an identifier; an abort removes it, and the switch whose identifier was removed is aborted after its queue is created;
+  - each switch start has an identifier; an abort removes it, a new start replaces it, and a switch whose identifier is no longer current is aborted after its queue is created;
   - the receive queue status is set to Secured under the lock, only from Confirmed;
   - ICQSecure and ICQSndSecure are postponed while the ratchet is not synchronized, resumed after synchronization;
   - SWCH is refused while the ratchet is not synchronized.
