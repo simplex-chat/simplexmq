@@ -634,6 +634,8 @@ functionalAPITests ps = do
       testSwitchChangedWhileNewQueue (\c connId -> synchronizeRatchet c connId PQSupportOn True) "switchConnection: send prohibited" ps
     it "should delete the new queue when the connection is deleted while the queue is created" $
       testSwitchConnectionDeletedWhileNewQueue ps
+    it "should delete the new queue when the switch is aborted and started again while the queue is created" $
+      testSwitchRestartedWhileNewQueue ps
     it "should refuse the switch when ratchet synchronization starts before the new queue is created" $
       testSwitchRatchetSyncBeforeNewQueue ps
     it "should secure the new queue and complete the switch after ratchet synchronization" $
@@ -4457,6 +4459,26 @@ testSwitchConnectionDeletedWhileNewQueue ps@(t, _) =
             atomically $ putTMVar resume ()
             timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+
+testSwitchRestartedWhileNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchRestartedWhileNewQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
+          withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
+            timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+            void . runRight $ abortConnectionSwitch b aId
+            setUserNetworkInfo b $ UserNetworkInfo UNNone False
+            void . runRight $ switchConnectionAsync b "" aId
+            atomically $ putTMVar resume ()
+            timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ A.CMD PROHIBITED "switchConnection: aborted")
+            setUserNetworkInfo b $ UserNetworkInfo UNWifi True
+            get b =##> \case ("", c, SWITCH QDRcv SPStarted _) -> c == aId; _ -> False
+            waitRcvQueueRecords b 2
+      storeLogQueues testStoreLogFile2 `shouldReturn` (2, 1)
 
 testJoinConnectionDeletedWhileReplyQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testJoinConnectionDeletedWhileReplyQueue ps@(t, _) =

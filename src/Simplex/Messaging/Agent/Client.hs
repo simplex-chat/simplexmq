@@ -234,6 +234,7 @@ import Data.Text (Text)
 import Data.Text.Encoding
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
 import Data.Time.Clock.System (getSystemTime)
+import Data.Unique (Unique)
 import Data.Word (Word16, Word32)
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName)
@@ -406,6 +407,7 @@ data AgentClient = AgentClient
     agentEnv :: Env,
     proxySessTs :: TVar UTCTime,
     serviceRequests :: TMap ConnId (TMVar (Either AgentErrorType SMP.MsgBody)),
+    rcvSwitches :: TMap ConnId Unique,
     smpServersStats :: TMap (UserId, SMPServer) AgentSMPServerStats,
     xftpServersStats :: TMap (UserId, XFTPServer) AgentXFTPServerStats,
     ntfServersStats :: TMap (UserId, NtfServer) AgentNtfServerStats,
@@ -574,6 +576,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   deleteLock <- createLockIO
   smpSubWorkers <- TM.emptyIO
   serviceRequests <- TM.emptyIO
+  rcvSwitches <- TM.emptyIO
   smpServersStats <- TM.emptyIO
   xftpServersStats <- TM.emptyIO
   ntfServersStats <- TM.emptyIO
@@ -627,6 +630,7 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         agentEnv,
         proxySessTs,
         serviceRequests,
+        rcvSwitches,
         smpServersStats,
         xftpServersStats,
         ntfServersStats,

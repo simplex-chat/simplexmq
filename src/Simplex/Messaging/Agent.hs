@@ -199,6 +199,7 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Data.Time.Clock.System (systemToUTCTime)
 import Data.Traversable (mapAccumL)
+import Data.Unique (Unique, newUnique)
 import Data.Word (Word16, Word32)
 import Simplex.FileTransfer.Agent (closeXFTPAgent, deleteSndFileInternal, deleteSndFileRemote, deleteSndFilesInternal, deleteSndFilesRemote, startXFTPSndWorkers, startXFTPWorkers, toFSFilePath, xftpDeleteRcvFile', xftpDeleteRcvFiles', xftpPrepareReceiveFile', xftpPrepareSendDescription', xftpPrepareSendFile', xftpReceiveFile', xftpSendDescription', xftpSendFile', xftpStartReceiveFile', xftpStartSendFile')
 import Simplex.FileTransfer.Description (ValidFileDescription)
@@ -2320,19 +2321,20 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
         LET confId ownCInfo -> withServer' . tryAtomicCommand $ allowConnection' c (Just cmdId) connId confId ownCInfo >> notify OK
         ACK msgId rcptInfo_ -> withServer' . tryAtomicCommand $ ackMessage' c (Just cmdId) connId msgId rcptInfo_ >>= mapM_ (atomically . writeTBQueue subQ) >> notify OK
         SWCH ->
-          noServer . tryAtomicCommand $
-            withConnLock c connId "switchConnection" getConnToSwitch >>= \case
-              SomeConn _ conn@(DuplexConnection _ (replaced :| _rqs) _) ->
-                switchDuplexConnection c NRMBackground (Just cmdId) conn replaced >>= notify . SWITCH QDRcv SPStarted
-              _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
+          noServer . tryAtomicCommand $ do
+            (conn, replaced, switchId) <- withConnLock c connId "switchConnection" startSwitch
+            switchDuplexConnection c NRMBackground (Just cmdId) switchId conn replaced `allFinally` endRcvSwitch c connId switchId
+              >>= notify . SWITCH QDRcv SPStarted
           where
-            getConnToSwitch =
+            startSwitch :: AM (Connection 'CDuplex, RcvQueue, Unique)
+            startSwitch =
               withStore c (`getConn` connId) >>= \case
-                SomeConn _ (DuplexConnection cData (rq :| _) _)
+                SomeConn _ conn@(DuplexConnection cData (rq :| _) _)
                   | ratchetSyncSendProhibited cData -> do
                       when (rcvSwchStatus rq == Just RSSwitchStarted) . void . withStore' c $ \db -> setRcvSwitchStatus db rq Nothing
                       throwE $ CMD PROHIBITED "switchConnection: send prohibited"
-                conn -> pure conn
+                  | otherwise -> (conn,rq,) <$> newRcvSwitch c connId
+                _ -> throwE $ CMD PROHIBITED "SWCH: not duplex"
         DEL -> withServer' . tryAtomicCommand $ deleteConnection' c NRMBackground connId >> notify OK
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
@@ -2955,19 +2957,27 @@ getConnectionQueueInfo' c nm connId = do
 
 switchConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ConnectionStats
 switchConnection' c nm connId = do
-  (cData, rqs, sqs, rq') <- withConnLock c connId "switchConnection" $
+  (cData, rqs, sqs, rq', switchId) <- withConnLock c connId "switchConnection" $
     withStore c (`getConn` connId) >>= \case
       SomeConn _ (DuplexConnection cData rqs@(rq :| _rqs) sqs)
         | isJust (switchingRQ rqs) -> throwE $ CMD PROHIBITED "switchConnection: already switching"
         | otherwise -> do
             when (ratchetSyncSendProhibited cData) $ throwE $ CMD PROHIBITED "switchConnection: send prohibited"
             rq' <- withStore' c $ \db -> setRcvSwitchStatus db rq $ Just RSSwitchStarted
-            pure (cData, rqs, sqs, rq')
+            (cData, rqs, sqs, rq',) <$> newRcvSwitch c connId
       _ -> throwE $ CMD PROHIBITED "switchConnection: not duplex"
-  switchDuplexConnection c nm Nothing (DuplexConnection cData rqs sqs) rq'
+  switchDuplexConnection c nm Nothing switchId (DuplexConnection cData rqs sqs) rq' `allFinally` endRcvSwitch c connId switchId
 
-switchDuplexConnection :: AgentClient -> NetworkRequestMode -> Maybe AsyncCmdId -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
-switchDuplexConnection c nm cmdId_ (DuplexConnection ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
+newRcvSwitch :: AgentClient -> ConnId -> AM Unique
+newRcvSwitch c connId = do
+  switchId <- liftIO newUnique
+  switchId <$ atomically (TM.insert connId switchId $ rcvSwitches c)
+
+endRcvSwitch :: AgentClient -> ConnId -> Unique -> AM ()
+endRcvSwitch c connId switchId = atomically $ TM.alter (mfilter (/= switchId)) connId $ rcvSwitches c
+
+switchDuplexConnection :: AgentClient -> NetworkRequestMode -> Maybe AsyncCmdId -> Unique -> Connection 'CDuplex -> RcvQueue -> AM ConnectionStats
+switchDuplexConnection c nm cmdId_ switchId (DuplexConnection ConnData {connId, userId} rqs sqs) rq@RcvQueue {server, dbQueueId = DBEntityId dbQueueId, sndId} = do
   checkRQSwchStatus rq RSSwitchStarted
   clientVRange <- asks $ smpClientVRange . config
   -- try to get the server that is different from all queues, or at least from the primary rcv queue
@@ -2983,7 +2993,8 @@ switchDuplexConnection c nm cmdId_ (DuplexConnection ConnData {connId, userId} r
             (cData,rqs',sqs',rq1,) <$> withStore c (\db -> addConnRcvQueue db connId rq' SMSubscribe)
           _ -> throwE $ INTERNAL "switchConnection: replaced queue not found in connection"
   recordNewQueue c nm connId "switchConnection" tSess q addRcvQueue $ \(cData, rqs', sqs', rq1, rq'') -> do
-    when (rcvSwchStatus rq1 /= Just RSSwitchStarted) $ deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: aborted")
+    started <- (Just switchId ==) <$> liftIO (TM.lookupIO connId $ rcvSwitches c)
+    when (rcvSwchStatus rq1 /= Just RSSwitchStarted || not started) $ deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: aborted")
     when (ratchetSyncSendProhibited cData) $ do
       void $ withStore' c $ \db -> setRcvSwitchStatus db rq1 Nothing
       deleteRcvQueueAsync c rq'' >> throwE (CMD PROHIBITED "switchConnection: send prohibited")
@@ -3008,6 +3019,7 @@ abortConnectionSwitch' c connId =
                   rq' <- withStore' c $ \db -> do
                     mapM_ (setRcvQueueDeleted db) delRqs
                     setRcvSwitchStatus db rq Nothing
+                  atomically $ TM.delete connId $ rcvSwitches c
                   forM_ delRqs $ \RcvQueue {server, rcvId} -> enqueueCommand c "" connId (Just server) $ AInternalCommand $ ICDeleteRcvQueue rcvId
                   let rqs'' = updatedQs rq' rqs'
                       conn' = DuplexConnection cData rqs'' sqs
