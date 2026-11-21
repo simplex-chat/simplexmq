@@ -7,7 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -fno-warn-ambiguous-fields #-}
 
-module XFTPServerTests (xftpServerTests) where
+module XFTPServerTests (xftpHTTP2Tests, xftpServerTests) where
 
 import AgentTests.FunctionalAPITests (runRight, runRight_)
 import Control.Concurrent (threadDelay)
@@ -64,6 +64,12 @@ import UnliftIO.Timeout (timeout)
 import Util
 import XFTPClient
 
+xftpHTTP2Tests :: Spec
+xftpHTTP2Tests = do
+  it "should close connection when DATA exceeds the HTTP/2 flow-control window" testHTTP2FlowControl
+  it "should disconnect HTTP/2 client after GOAWAY of the server with the connection kept open" $ testHTTP2ClientGoAway True
+  it "should disconnect HTTP/2 client after GOAWAY of the server with the connection closed" $ testHTTP2ClientGoAway False
+
 xftpServerTests :: SpecWith AFStoreType
 xftpServerTests = do
     describe "XFTP file chunk delivery" $ do
@@ -90,9 +96,6 @@ xftpServerTests = do
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
       it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
-      it "should close connection when DATA exceeds the HTTP/2 flow-control window" testHTTP2FlowControl
-      it "should disconnect HTTP/2 client after GOAWAY of the server with the connection kept open" $ testHTTP2ClientGoAway True
-      it "should disconnect HTTP/2 client after GOAWAY of the server with the connection closed" $ testHTTP2ClientGoAway False
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
@@ -460,8 +463,8 @@ testOldServerHandshake _ = do
   where
     XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
 
-testHTTP2FlowControl :: HasTestEnv => AFStoreType -> Expectation
-testHTTP2FlowControl _ =
+testHTTP2FlowControl :: HasTestEnv => Expectation
+testHTTP2FlowControl =
   withStallingXFTPServer $ \requested _ -> do
     Fingerprint fp <- loadFileFingerprint "tests/fixtures/ca.crt"
     runTLSTransportClient defaultSupportedParams Nothing defaultTransportClientConfig Nothing "localhost" xftpTestPort (Just $ C.KeyHash fp) $ \(tls :: TLS 'TClient) -> do
@@ -483,8 +486,8 @@ testHTTP2FlowControl _ =
       cPut tls $ h2Frame 1 id $ DataFrame "x"
       awaitH2Frame tls "GOAWAY" (\typ _ -> typ == FrameGoAway) `shouldReturn` GoAwayFrame 1 EnhanceYourCalm "exceeds connection flow-control limit"
 
-testHTTP2ClientGoAway :: HasTestEnv => Bool -> AFStoreType -> Expectation
-testHTTP2ClientGoAway keepOpen _ = do
+testHTTP2ClientGoAway :: HasTestEnv => Bool -> Expectation
+testHTTP2ClientGoAway keepOpen = do
   credential <- loadServerCredential xftpCredentials
   disconnected <- newEmptyTMVarIO
   requested <- newEmptyTMVarIO
