@@ -1648,7 +1648,7 @@ joinConnSrv' c nm userId connId enableNtfs inv@CRInvitationUri {} cInfo pqSup su
     doJoin rq_ sq_ = do
       ((cData, sq), (e2eSndParams, lnkId_)) <- startJoinInvitation c userId connId sq_ enableNtfs inv pqSup
       (secureConfirmQueue c nm cData rq_ sq srv cInfo e2eSndParams subMode `catchError` \e -> do
-        unless (isJust sq_) $ void $ withStore' c $ \db -> deleteConn db Nothing connId
+        unless (isJust sq_) $ void $ withStore' c $ \db -> deleteNewConnSnd db connId
         throwError e)
         >>= (mapM_ (delInvSL c connId srv) lnkId_ $>)
 joinConnSrv' c nm userId connId enableNtfs cReqUri@CRContactUri {} cInfo pqSupport subMode srv mkInner =

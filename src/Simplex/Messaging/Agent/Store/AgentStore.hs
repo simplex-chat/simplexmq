@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
+    deleteNewConnSnd,
     createSndConn,
     getClientNotices,
     updateClientNotices,
@@ -569,6 +570,9 @@ updateNewConnSnd db connId sq =
   where
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = addConnSndQueue_ db connId sq
+
+deleteNewConnSnd :: DB.Connection -> ConnId -> IO ()
+deleteNewConnSnd db connId = DB.execute db "DELETE FROM snd_queues WHERE conn_id = ? AND status = 'new'" (Only connId)
 
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
