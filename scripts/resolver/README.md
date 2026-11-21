@@ -46,8 +46,8 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`. A TLD whose controller has a name policy then still answers `502`
-until `docker compose restart resolver` (see Configuring addresses).
+returns `502`. `.simplex`, whose controller has a name policy, then still answers
+`502` until `docker compose restart resolver` (see Configuring addresses).
 
 ## Verify
 
@@ -82,6 +82,14 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
 # → {"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}
 ```
+
+**5. a reservation read from `.simplex`'s name policy:**
+```sh
+curl -s http://127.0.0.1:8000/v2/resolve/simplex.simplex | jq
+# → {"lastBlockTs":…,"registration":{"type":"reserved","reservedReason":"internal"}}
+```
+
+A `502` here while check 4 passes requires `docker compose restart resolver`.
 
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
@@ -119,7 +127,7 @@ The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
 standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 
 ```sh
-uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
+uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing and .simplex
 ```
 
 Tests and lint run from `scripts/resolver/service`:
@@ -393,13 +401,16 @@ does not answer, the resolver does not listen and reads again, waiting 1 s,
 then twice as long each time, up to 30 s. After the controller's owner calls
 `setNamePolicy`, restart the resolver.
 
-The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
-lives in the proxy, so the implementation address answers nothing. The two
-deployment files use different names for that proxy:
-`deployments.mainnet.testing.json` records it under the ENS role name
-`ETHRegistrarController`, and `verification.mainnet.testing.json` calls it
-`SimplexControllerProxy`. Both are the same address, and it is the one used
-here.
+Each default is the address `deployments.mainnet.<tld>.json` records, which is
+the **proxy** of an upgradeable contract: the controller for `.testing`, all
+three for `.simplex`. Storage lives in the proxy, so an implementation address
+holds no names: a registrar implementation reports every name as never
+registered. The two deployment files use different names for a proxy:
+`deployments.mainnet.<tld>.json` records the controller under the ENS role name
+`ETHRegistrarController`, and `verification.mainnet.<tld>.json` calls it
+`SimplexControllerProxy`; for `.simplex` the registry and the registrar are
+`ENSRegistryProxy` and `BaseRegistrarImplementationProxy` there. Each pair is
+one address, and it is the one used here.
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
