@@ -176,6 +176,7 @@ data AgentConfig = AgentConfig
     sndFilesTTL :: NominalDiffTime,
     xftpConsecutiveRetries :: Int,
     xftpMaxRecipientsPerRequest :: Int,
+    xftpMaxDownloadSessions :: Int,
     deleteErrorCount :: Int,
     keepAddressKeys :: Int,
     ntfCron :: Word16,
@@ -254,6 +255,7 @@ defaultAgentConfig =
       sndFilesTTL = nominalDay,
       xftpConsecutiveRetries = 3,
       xftpMaxRecipientsPerRequest = 200,
+      xftpMaxDownloadSessions = 16,
       deleteErrorCount = 10,
       keepAddressKeys = 3,
       ntfCron = 20, -- minutes
