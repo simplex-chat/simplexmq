@@ -10,6 +10,7 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
+import CoreTests.EthCryptoTests
 import CoreTests.LockTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
@@ -91,6 +92,7 @@ main = do
             describe "Encoding tests" encodingTests
             describe "Version range" versionRangeTests
             describe "Encryption tests" cryptoTests
+            describe "Ethereum crypto tests" ethCryptoTests
             describe "Encrypted files tests" cryptoFileTests
             describe "Message store tests" msgStoreTests
             describe "SOCKS settings tests" socksSettingsTests
@@ -108,6 +110,7 @@ main = do
 #endif
           describe "SMP server via TLS, memory message store" $ do
             describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+            describe "Web credentials" webCredentialTests
             before (pure (transport @TLS, ASType SQSMemory SMSMemory)) serverTests
           -- xdescribe "SMP server via WebSockets" $ do
           --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)

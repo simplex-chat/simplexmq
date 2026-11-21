@@ -73,7 +73,7 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (EntitlementConfig (..))
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), loadFingerprint, loadServerCredential)
+import Simplex.Messaging.Transport.Server (ReloadableCredential, ServerCredentials (..), TransportServerConfig (..), acceptCredential, loadFingerprint, loadServerCredential, newReloadableCredential)
 import Simplex.Messaging.Util (tshow)
 import System.IO (IOMode (..))
 import UnliftIO.STM
@@ -139,7 +139,7 @@ data XFTPEnv s = XFTPEnv
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
     tlsServerCreds :: T.Credential,
-    httpServerCreds :: Maybe T.Credential,
+    httpServerCreds :: Maybe ReloadableCredential,
     serverStats :: FileServerStats
   }
 
@@ -212,7 +212,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
   tlsServerCreds <- loadServerCredential xftpCredentials
-  httpServerCreds <- mapM loadServerCredential httpCredentials
+  httpServerCreds <- forM httpCredentials $ \creds -> newReloadableCredential acceptCredential creds =<< loadServerCredential creds
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
   pure XFTPEnv {config, store, usedStorage, uploadingFiles, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}

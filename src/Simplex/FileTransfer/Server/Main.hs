@@ -47,7 +47,7 @@ import Simplex.Messaging.Server.Web (EmbeddedWebParams (..), WebHttpsParams (..)
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import Simplex.Messaging.Transport.HTTP2 (httpALPN)
-import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), mkTransportServerConfig)
+import Simplex.Messaging.Transport.Server (ServerCredentials (..), TransportServerConfig (..), acceptCredential, defaultCredentialCheckInterval, mkTransportServerConfig)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, tshow)
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.FilePath (combine)
@@ -278,7 +278,7 @@ xftpServerCLI_ generateSite serveStaticFiles cfgPath logPath = do
           httpsPort <- eitherToMaybe (lookupValue "WEB" "https" ini) >>= readMaybe . T.unpack
           cert <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "cert" ini
           key <- eitherToMaybe $ T.unpack <$> lookupValue "WEB" "key" ini
-          pure WebHttpsParams {port = httpsPort, cert, key}
+          pure WebHttpsParams {port = httpsPort, cert, key, checkCredential = acceptCredential, credentialCheckInterval = defaultCredentialCheckInterval}
 
         webStaticPath' = eitherToMaybe $ T.unpack <$> lookupValue "WEB" "static_path" ini
 
