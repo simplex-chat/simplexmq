@@ -58,7 +58,7 @@ sequenceDiagram
   - a concurrent acknowledgement of a deleted message is dropped;
   - each switch start has an identifier; an abort removes it, a new start replaces it, and a switch whose identifier is no longer current is aborted after its queue is created;
   - the receive queue status is set to Secured under the lock, only from Confirmed;
-  - ICQSecure and ICQSndSecure are postponed while the ratchet is not synchronized, resumed after synchronization;
+  - ICQSecure and ICQSndSecure are postponed while the ratchet is not synchronized, after the other commands of their server, and resumed after synchronization;
   - SWCH is refused while the ratchet is not synchronized.
 - agent, events written without waiting:
   - MSGNTF of `ackMessage`, DEL_CONNS, DEL_USER;
