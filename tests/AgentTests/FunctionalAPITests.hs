@@ -639,6 +639,8 @@ functionalAPITests ps = do
       testSwitchConnectionDeletedWhileNewQueue ps
     it "should delete the new queue when the connection is deleted waiting for delivery while the queue is created" $
       testSwitchConnectionDeletedWaitingDeliveryWhileNewQueue ps
+    it "should delete the new queue when it is recorded while the connection deletion waits for the server" $
+      testSwitchNewQueueRecordedWhileDeleting ps
     it "should delete the new queue when the switch is aborted and started again while the queue is created" $
       testSwitchRestartedWhileNewQueue ps
     it "should refuse the switch when ratchet synchronization starts before the new queue is created" $
@@ -4501,6 +4503,29 @@ testSwitchConnectionDeletedWaitingDeliveryWhileNewQueue ps@(t, _) =
             get b =##> \case ("", "", DEL_RCVQS [(c, _, _, Nothing)]) -> c == aId; _ -> False
             get b =##> \case ("", "", DEL_CONNS [c]) -> c == aId; _ -> False
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+
+testSwitchNewQueueRecordedWhileDeleting :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchNewQueueRecordedWhileDeleting (t, _) = do
+  withSmpServerConfigOn t cfgS2 testPort3 $ \_ -> do
+    aId <- withPausedProxyOn testPort testPort3 $ \_ resume -> do
+      atomically $ putTMVar resume ()
+      withAgent 1 agentCfg oldServers testDB $ \a ->
+        withAgent 2 agentCfg oldServers testDB2 $ \b -> runRight $ fst <$> makeConnection a b
+    withPausedProxyOn testPort testPort3 $ \deleting resumeDelete ->
+      withPausedProxyOn testPort2 testPort3 $ \creating resumeCreate ->
+        withAgent 2 agentCfg newServers testDB2 $ \b ->
+          withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
+            timeout 5_000000 (atomically $ takeTMVar creating) `shouldReturn` Just ()
+            withAsync (runExceptT $ deleteConnection b aId) $ \deleted -> do
+              timeout 5_000000 (atomically $ takeTMVar deleting) `shouldReturn` Just ()
+              atomically $ putTMVar resumeCreate ()
+              timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
+              atomically $ putTMVar resumeDelete ()
+              timeout 5_000000 (wait deleted) `shouldReturn` Just (Right ())
+  storeLogQueues testStoreLogFile2 `shouldReturn` (3, 2)
+  where
+    oldServers = initAgentServersLongConnect {smp = userServers [SMPServer testHost2 testPort testKeyHash]}
+    newServers = initAgentServersLongConnect {smp = userServers [testSMPServer2]}
 
 testSwitchRestartedWhileNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testSwitchRestartedWhileNewQueue ps@(t, _) =

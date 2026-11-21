@@ -3093,7 +3093,6 @@ suspendConnection' c nm connId = do
   mapM_ (suspendQueue c nm) (rqs :: [RcvQueue])
 
 -- | Delete SMP agent connection (DEL command) in Reader monad
--- unlike deleteConnectionAsync, this function does not mark connection as deleted in case of deletion failure
 -- currently it is used only in tests
 deleteConnection' :: AgentClient -> NetworkRequestMode -> ConnId -> AM ()
 deleteConnection' c nm connId = toConnResult connId =<< deleteConnections' c nm [connId]
@@ -3107,7 +3106,6 @@ connRcvQueues = \case
   SndConnection _ _ -> []
   NewConnection _ -> []
 
--- Unlike deleteConnectionsAsync, this function does not mark connections as deleted in case of deletion failure.
 deleteConnections' :: AgentClient -> NetworkRequestMode -> [ConnId] -> AM (Map ConnId (Either AgentErrorType ()))
 deleteConnections' = deleteConnections_ getConns False False
 {-# INLINE deleteConnections' #-}
@@ -3212,7 +3210,10 @@ deleteConnections_ ::
   AM (Map ConnId (Either AgentErrorType ()))
 deleteConnections_ _ _ _ _ _ [] = pure M.empty
 deleteConnections_ getConnections ntf waitDelivery c nm connIds = do
-  (rs, rqs, _) <- ExceptT . withConnLocks c (S.fromList connIds) "deleteConnections" . runExceptT $ prepareDeleteConnections_ getConnections c waitDelivery connIds
+  (rs, rqs, _) <- ExceptT . withConnLocks c (S.fromList connIds) "deleteConnections" . runExceptT $ do
+    r@(_, _, connIds') <- prepareDeleteConnections_ getConnections c waitDelivery connIds
+    unless waitDelivery . withStore' c $ \db -> forM_ connIds' $ setConnDeleted db False
+    pure r
   rcvRs <- lift $ deleteConnQueues c nm waitDelivery ntf rqs
   let rs' = M.union rs rcvRs
   notifyResultError rs'

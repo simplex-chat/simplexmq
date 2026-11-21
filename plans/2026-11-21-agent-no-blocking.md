@@ -52,7 +52,7 @@ sequenceDiagram
   - `recordNewQueue` in `createRcvQueue`, `createReplyQueue` and `switchDuplexConnection`;
   - request outside the lock in ICAck, ICAckDel, ICAllowSecure, ICDeleteRcvQueue, JOIN of a service request, `setConnShortLink`, `deleteConnShortLink`, `suspendConnection`, `connectReplyQueues`;
   - `acceptContact` under the invitation lock; `serviceRequest_` without the connection lock;
-  - deletion under the locks of its connections;
+  - deletion under the locks of its connections, where the connections are marked deleted in synchronous deletion too;
   - a connection whose deletion waits for delivery is not given new queues;
   - the record step of an acknowledgement reads the queue again;
   - a concurrent acknowledgement of a deleted message is dropped;
