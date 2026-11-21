@@ -2338,13 +2338,13 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
       AInternalCommand cmd -> case cmd of
         ICAckDel rId srvMsgId msgId -> withServer $ \srv ->
           tryAtomicCommand $ do
-            recordAck <- ack srv rId srvMsgId
+            acked <- ack srv rId srvMsgId
             withConnLockNotify c connId "ICAckDel" $ do
-              t_ <- recordAck
+              t_ <- recordAck srvMsgId acked
               withStore' c (\db -> deleteMsg db connId msgId >> deleteCommand db cmdId)
               pure t_
         ICAck rId srvMsgId -> withServer $ \srv ->
-          tryCommand $ ack srv rId srvMsgId >>= withConnLockNotify c connId "ICAck"
+          tryCommand $ ack srv rId srvMsgId >>= withConnLockNotify c connId "ICAck" . recordAck srvMsgId
         ICAllowSecure _rId senderKey -> withServer' . tryMoveableCommand $ do
           (SomeConn _ conn, AcceptedConfirmation {senderConf, ownConnInfo}) <-
             withConnLock c connId "ICAllowSecure" . withStore c $ \db -> runExceptT $ (,) <$> ExceptT (getConn db connId) <*> ExceptT (getAcceptedConfirmation db connId)
@@ -2474,11 +2474,14 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                       pure $ Just (cData, rq', rq'' :| rqs', sqs)
                 _ -> Nothing <$ internalErr "ICQDelete: cannot delete the only queue in connection"
         where
+          ack :: SMPServer -> SMP.RecipientId -> SMP.MsgId -> AM (Maybe (RcvQueue, Bool))
           ack srv rId srvMsgId =
             withStore' c (\db -> getRcvQueue db connId srv rId) >>= \case
-              Right rq -> ackQueueMessage c rq srvMsgId
-              Left SEConnNotFound -> pure (pure Nothing)
+              Right rq -> Just . (rq,) <$> ackQueueMessage c rq srvMsgId
+              Left SEConnNotFound -> pure Nothing
               Left e -> throwE $ storeError e
+          recordAck :: SMP.MsgId -> Maybe (RcvQueue, Bool) -> AM (Maybe ATransmission)
+          recordAck srvMsgId = maybe (pure Nothing) $ \(rq, drained) -> recordQueueAck c rq srvMsgId drained
           secure :: RcvQueue -> SMP.SndPublicAuthKey -> AM ()
           secure rq@RcvQueue {server, rcvId} senderKey = do
             secureQueue c NRMBackground rq senderKey
@@ -2899,15 +2902,15 @@ requestAndCommit c connId name validate request commit =
 
 ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM (Maybe ATransmission)
 ackMessage' c cmdId_ connId msgId rcptInfo_ =
-  withConnLock c connId "ackMessage" markConnUserAck $>>= \(rq, srvMsgId) -> do
-    recordAck <- ackQueueMessage c rq srvMsgId
-    withConnLock c connId "ackMessage" $ do
-      t_ <- recordAck
+  join <$> requestAndCommit c connId "ackMessage" markConnUserAck (uncurry $ ackQueueMessage c) recordAck
+  where
+    recordAck :: Bool -> (RcvQueue, SMP.MsgId) -> AM (Maybe ATransmission)
+    recordAck drained (rq, srvMsgId) = do
+      t_ <- recordQueueAck c rq srvMsgId drained
       withStore c (`getConn` connId) >>= \case
         SomeConn _ conn@DuplexConnection {} -> sendRcpt conn
         _ -> pure ()
       t_ <$ del
-  where
     markConnUserAck :: AM (Maybe (RcvQueue, SMP.MsgId))
     markConnUserAck = do
       SomeConn _ conn <- withStore c (`getConn` connId)
@@ -3041,23 +3044,28 @@ synchronizeRatchet' c connId pqSupport' force = withConnLock c connId "synchroni
       | otherwise -> throwE $ CMD PROHIBITED "synchronizeRatchet: not allowed"
     _ -> throwE $ CMD PROHIBITED "synchronizeRatchet: not duplex"
 
-ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM (AM (Maybe ATransmission))
-ackQueueMessage c rq@RcvQueue {userId, connId, server, rcvSwchStatus} srvMsgId = do
+ackQueueMessage :: AgentClient -> RcvQueue -> SMP.MsgId -> AM Bool
+ackQueueMessage c rq@RcvQueue {userId, server} srvMsgId = do
   incSMPServerStat c userId server ackAttempts
   tryAllErrors (sendAck c rq srvMsgId) >>= \case
-    Right drained -> pure $ sendMsgNtf ackMsgs $ drained && rcvSwchStatus == Just RSReceivedQEND
-    Left (SMP _ SMP.NO_MSG) -> pure $ sendMsgNtf ackNoMsgErrs False
+    Right drained -> drained <$ incSMPServerStat c userId server ackMsgs
+    Left (SMP _ SMP.NO_MSG) -> False <$ incSMPServerStat c userId server ackNoMsgErrs
     Left e -> do
       unless (temporaryOrHostError e) $ incSMPServerStat c userId server ackOtherErrs
       throwE e
+
+recordQueueAck :: AgentClient -> RcvQueue -> SMP.MsgId -> Bool -> AM (Maybe ATransmission)
+recordQueueAck c rq@RcvQueue {connId, server, rcvId} srvMsgId drained =
+  ifM (liftIO $ hasGetLock c rq)
+    (do atomically $ releaseGetLock c rq
+        brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
+        pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
+    (Nothing <$ when drained deleteEndedQueue)
   where
-    sendMsgNtf stat ended = do
-      incSMPServerStat c userId server stat
-      ifM (liftIO $ hasGetLock c rq)
-        (do atomically $ releaseGetLock c rq
-            brokerTs_ <- eitherToMaybe <$> tryAllErrors (withStore c $ \db -> getRcvMsgBrokerTs db connId srvMsgId)
-            pure $ Just ("", connId, AEvt SAEConn $ MSGNTF srvMsgId brokerTs_))
-        (Nothing <$ when ended (deleteRcvQueueAsync c rq))
+    deleteEndedQueue =
+      withStore' c (\db -> getRcvQueue db connId server rcvId) >>= \case
+        Right rq'@RcvQueue {rcvSwchStatus = Just RSReceivedQEND} -> deleteRcvQueueAsync c rq'
+        _ -> pure ()
 
 deleteRcvQueueAsync :: AgentClient -> RcvQueue -> AM ()
 deleteRcvQueueAsync c rq@RcvQueue {connId, server, rcvId} = do

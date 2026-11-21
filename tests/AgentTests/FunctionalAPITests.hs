@@ -698,6 +698,8 @@ functionalAPITests ps = do
 #endif
     it "should delete connections after connection lock is released" $
       testDeleteConnectionsAfterConnLock
+    it "should acknowledge message twice while the server does not respond" $
+      testAckMessageTwiceStallingServer ps
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
     it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False False
@@ -5036,6 +5038,35 @@ testDeleteConnectionsAfterConnLock =
           timeout 500000 (wait deleted) `shouldReturn` Nothing
           atomically $ putTMVar unlocked ()
           timeout 5_000000 (wait deleted) `shouldReturn` Just (Right ())
+
+testAckMessageTwiceStallingServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testAckMessageTwiceStallingServer ps@(t, _) =
+  withSmpServer ps $
+    withSmpServerConfigOn t cfgS2 testPort3 $ \_ -> do
+      (aId, msgId) <- withPausedProxyOn testPort2 testPort3 $ \_ resume -> do
+        atomically $ putTMVar resume ()
+        withAgent 1 agentCfg initAgentServers testDB $ \a ->
+          withAgent 2 agentCfg bServers testDB2 $ \b -> runRight $ do
+            (aId, bId) <- makeConnection a b
+            sentId <- sendMessage a bId SMP.noMsgFlags "hello"
+            get a ##> ("", bId, SENT sentId)
+            ("", _, Msg' msgId _ "hello") <- get b
+            pure (aId, msgId)
+      withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
+        withAgent 2 agentCfg bServers testDB2 $ \b -> do
+          let ack = runExceptT $ ackMessage b aId msgId Nothing
+              userAcked = withTransaction (store $ agentEnv b) (`DB.query_` "SELECT conn_id, internal_id FROM rcv_messages WHERE user_ack = 1")
+              waitUserAck = userAcked >>= \(msgs :: [(ConnId, Int64)]) -> when (null msgs) $ threadDelay 10000 >> waitUserAck
+          withAsync ack $ \ack1 -> do
+            timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+            withTransaction (store $ agentEnv b) (`DB.execute_` "UPDATE rcv_messages SET user_ack = 0")
+            withAsync ack $ \ack2 -> do
+              timeout 5_000000 waitUserAck `shouldReturn` Just ()
+              atomically $ putTMVar resume ()
+              timeout 5_000000 (wait ack1) `shouldReturn` Just (Right ())
+              timeout 5_000000 (wait ack2) `shouldReturn` Just (Right ())
+  where
+    bServers = initAgentServersLongConnect {smp = userServers [testSMPServer2]}
 
 testDeliveryReceipts :: (HasCallStack, HasTestEnv) => IO ()
 testDeliveryReceipts =
