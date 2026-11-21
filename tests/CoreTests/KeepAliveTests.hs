@@ -21,7 +21,7 @@ import Util
 keepAliveTests :: Spec
 keepAliveTests = linuxOnly $ it "should fail connection with data not accepted by peer only with unackedDataTimeout" testUnackedDataTimeout
   where
-    linuxOnly t = if os == "linux" then t else skip "Linux only" t
+    linuxOnly t = if os == "linux" then t else before_ (pendingWith "Linux only") t
 
 testUnackedDataTimeout :: IO ()
 testUnackedDataTimeout = do

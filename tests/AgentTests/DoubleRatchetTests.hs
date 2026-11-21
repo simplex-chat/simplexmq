@@ -439,7 +439,7 @@ testRatchetStepLowOrderKey _ = do
         let hdr = MsgHeader {msgMaxVersion = currentE2EEncryptVersion, msgDHRs = k, msgKEM = Nothing, msgPN = 0, msgNs = 0}
             ehIV = C.IV $ B.replicate (C.ivSize @AES256) '\0'
         Right (ehAuthTag, ehBody) <- runExceptT $ C.encryptAEAD rcHKs ehIV (paddedHeaderLen PQSupportOff) ad (smpEncode hdr)
-        let emHeader = smpEncode EncMessageHeader {ehVersion = currentE2EEncryptVersion, ehIV, ehAuthTag, ehBody}
+        let emHeader = smpEncode EncMessageHeader {ehVersion = currentE2EEncryptVersion, ehIV, ehAuthTag, ehBody, ehLegacy = False}
         runExceptT $ rcDecrypt g alice M.empty $ smpEncode EncRatchetMessage {emHeader, emAuthTag = ehAuthTag, emBody = "message"}
   (validKey, _) <- atomically $ C.generateKeyPair @a g
   decryptWithKey validKey >>= \case

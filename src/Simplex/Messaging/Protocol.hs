@@ -61,6 +61,8 @@ module Simplex.Messaging.Protocol
     QueueReqData (..),
     QueueMode (..),
     QueueLinkData,
+    LinkDataHash,
+    linkDataHash,
     EncFixedDataBytes,
     EncUserDataBytes,
     EncDataBytes (..),

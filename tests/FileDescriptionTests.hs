@@ -283,7 +283,6 @@ testDecryptChunks =
     encPath = testPath "encrypted"
     dstPath = testPath "decrypted"
 
-withRemoveTmpFile :: HasTestEnv => IO () -> IO ()
 testFileWebLinkIPv6 :: IO ()
 testFileWebLinkIPv6 = do
   let ipv6Server = either error id (strDecode "xftp://abc=@[2001:db8::1]:5223") :: XFTPServer

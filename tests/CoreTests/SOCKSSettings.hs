@@ -196,7 +196,7 @@ testSocksProxyConnection = do
   it "should connect via SOCKS proxy with domain name" $ socksConnectionTest "127.0.0.1" "localhost:5050"
   it "should connect via SOCKS proxy with domain name without credentials" $ socksConnectionTest "127.0.0.1" "@localhost:5050"
 
-socksConnectionTest :: HostName -> ByteString -> IO ()
+socksConnectionTest :: HasTestEnv => HostName -> ByteString -> IO ()
 socksConnectionTest proxyHost proxy =
   withSmpServerConfigOn (transport @TLS) SMPClient.cfg testPort $ \_ ->
     withSocksProxy proxyHost "5050" $ \destinations -> do

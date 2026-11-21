@@ -302,10 +302,10 @@ connectionRequestTests =
       contactAddress2queues #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueStr <> ";" <> queueStr))
       contactAddressNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueNewStr)
       contactAddress2queuesNew #==# ("simplex:/contact#/?v=2-7&smp=" <> url (queueNewStr <> ";" <> queueNewStr))
-      contactAddressV2 #==# ("simplex:/contact#/?v=2&smp=" <> url queueStr)
-      contactAddressV2 #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
-      contactAddressV2 #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
-      contactAddressV2 #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
+      contactAddress #==# ("simplex:/contact#/?v=2&smp=" <> url queueStr)
+      contactAddress #== ("https://simplex.chat/contact#/?v=1&smp=" <> url queueStr) -- adjusted to v2
+      contactAddress #== ("https://simplex.chat/contact#/?v=1-2&smp=" <> url queueStr) -- adjusted to v2
+      contactAddress #== ("https://simplex.chat/contact#/?v=2-2&smp=" <> url queueStr)
       contactAddressClientData #==# ("simplex:/contact#/?v=2-7&smp=" <> url queueStr <> "&data=" <> url "{\"type\":\"group_link\", \"group_link_id\":\"abc\"}")
     it "should generate a bracketed IPv6 application-server authority" $ do
       let ipv6Host = either error id (strDecode "2001:db8::1") :: TransportHost
