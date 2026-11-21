@@ -2903,29 +2903,27 @@ requestAndCommit c connId name validate request commit =
 
 ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM (Maybe ATransmission)
 ackMessage' c cmdId_ connId msgId rcptInfo_ =
-  join <$> requestAndCommit c connId "ackMessage" markConnUserAck (uncurry $ ackQueueMessage c) recordAck
+  join <$> requestAndCommit c connId "ackMessage" markConnUserAck (\(_, rq, srvMsgId) -> ackQueueMessage c rq srvMsgId) recordAck
   where
-    recordAck :: Bool -> (RcvQueue, SMP.MsgId) -> AM (Maybe ATransmission)
-    recordAck drained (rq, srvMsgId) = do
+    recordAck :: Bool -> (Maybe (Connection 'CDuplex), RcvQueue, SMP.MsgId) -> AM (Maybe ATransmission)
+    recordAck drained (duplexConn_, rq, srvMsgId) = do
       t_ <- recordQueueAck c rq srvMsgId drained
-      withStore c (`getConn` connId) >>= \case
-        SomeConn _ conn@DuplexConnection {} -> sendRcpt conn
-        _ -> pure ()
+      mapM_ sendRcpt duplexConn_
       t_ <$ del
-    markConnUserAck :: AM (Maybe (RcvQueue, SMP.MsgId))
+    markConnUserAck :: AM (Maybe (Maybe (Connection 'CDuplex), RcvQueue, SMP.MsgId))
     markConnUserAck = do
       SomeConn _ conn <- withStore c (`getConn` connId)
       case conn of
-        DuplexConnection {} -> markUserAck
-        RcvConnection {} -> markUserAck
+        DuplexConnection {} -> markUserAck $ Just conn
+        RcvConnection {} -> markUserAck Nothing
         SndConnection {} -> throwE $ CONN SIMPLEX "ackMessage"
         ContactConnection {} -> throwE $ CMD PROHIBITED "ackMessage: ContactConnection"
         NewConnection _ -> throwE $ CMD PROHIBITED "ackMessage: NewConnection"
     -- the stored message was delivered via a specific queue, the rest failed to decrypt and were already acknowledged
-    markUserAck :: AM (Maybe (RcvQueue, SMP.MsgId))
-    markUserAck =
+    markUserAck :: Maybe (Connection 'CDuplex) -> AM (Maybe (Maybe (Connection 'CDuplex), RcvQueue, SMP.MsgId))
+    markUserAck duplexConn_ =
       withStore' c (\db -> setMsgUserAck db connId $ InternalId msgId) >>= \case
-        Right r -> pure $ Just r
+        Right (rq, srvMsgId) -> pure $ Just (duplexConn_, rq, srvMsgId)
         Left (SEMsgNotFound _) -> Nothing <$ del
         Left e -> throwE $ storeError e
     del :: AM ()
