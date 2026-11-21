@@ -63,7 +63,7 @@ sequenceDiagram
 - agent, events written without waiting:
   - MSGNTF of `ackMessage`, DEL_CONNS, DEL_USER;
   - errors of `subscribeConnections`, `deleteConnections`, `subscribeAllConnections`, `deleteUser`, `xftpDeleteSndFilesRemote`;
-  - the notification command of connection deletion.
+  - the notification commands of connection deletion, ICQDelete and QEND.
 - clients:
   - a message in the response to ACK, SUB or GET is written to msgQ without waiting;
   - a command waits for send-queue space only until its response timeout, and is not queued after it ends;

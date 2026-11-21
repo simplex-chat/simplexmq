@@ -2453,7 +2453,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               withStore' c $ \db -> deleteConnRcvQueue db rq' >> deleteCommand db cmdId
               when enableNtfs $ do
                 ns <- asks ntfSupervisor
-                liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
+                liftIO . whenM (hasInstantNotifications ns) $ nonBlockingWriteTBQueue (ntfSubQ ns) (NSCCreate, [connId])
               let conn' = DuplexConnection cData rqs sqs
               cStats <- connectionStats c conn'
               notify $ SWITCH QDRcv SPCompleted cStats
@@ -4306,7 +4306,7 @@ processSMPTransmissions c@AgentClient {subQ, smpServersStats} (tSess@(userId, sr
                 unless completed $ do
                   when enableNtfs $ do
                     ns <- asks ntfSupervisor
-                    liftIO $ sendNtfSubCommand ns (NSCCreate, [connId])
+                    liftIO . whenM (hasInstantNotifications ns) $ nonBlockingWriteTBQueue (ntfSubQ ns) (NSCCreate, [connId])
                   let conn' = DuplexConnection cData' (keptRq :| keptRqs) sqs
                   cStats <- connectionStats c conn'
                   notify $ SWITCH QDRcv SPCompleted cStats

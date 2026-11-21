@@ -66,8 +66,8 @@ import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, te
 import SMPClient
 import Simplex.Messaging.Agent hiding (checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), withStore')
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
+import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), withStore')
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers, NtfSupervisor (..), NtfSupervisorCommand (..))
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
@@ -89,6 +89,7 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo (QueueInfo (..))
 import Simplex.Messaging.Transport (ASrvTransport)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
+import Simplex.Messaging.Util (unlessM)
 import System.Process (callCommand)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
@@ -177,6 +178,15 @@ notificationTests ps@(t, _) = do
     testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testSwitchNotifications agentCfg fastSwitchComplete servers apns
+  describe "should complete switch when notification command queue is full" $ do
+    it "slow rotation" $
+      withSmpServer ps $
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testSwitchFullNtfQueue agentCfgV7 switchComplete apns
+    it "fast rotation" $
+      withSmpServer ps $
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testSwitchFullNtfQueue agentCfg fastSwitchComplete apns
   it "should keep sending notifications for old token" $
     withSmpServer ps $
       withAPNSMockServer $ \apns ->
@@ -902,6 +912,26 @@ testSwitchNotifications cfg completeSwitch servers apns =
     completeSwitch a bId b aId
     liftIO $ threadDelay 500000
     testMessage "hello again"
+
+testSwitchFullNtfQueue :: HasTestEnv => AgentConfig -> (AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()) -> APNSMockServer -> IO ()
+testSwitchFullNtfQueue cfg completeSwitch apns =
+  withAgentClientsCfg2 cfg cfg $ \a b -> do
+    (aId, bId) <- runRight $ do
+      (aId, bId) <- makeConnection a b
+      exchangeGreetings a bId b aId
+      _ <- registerTestToken a "abcd" NMInstant apns
+      pure (aId, bId)
+    let q = ntfSubQ $ ntfSupervisor $ agentEnv a
+        setNtfSuspended suspended = atomically $ modifyTVar' (ntfNetworkOp a) $ \s -> s {opSuspended = suspended}
+        fill = unlessM (isFullTBQueue q) $ writeTBQueue q (NSCDeleteSub, ["x"]) >> fill
+    setNtfSuspended True
+    atomically $ writeTBQueue q (NSCDeleteSub, ["x"])
+    atomically $ isEmptyTBQueue q >>= checkSTM
+    atomically fill
+    runRight_ $ do
+      _ <- switchConnectionAsync a "" bId
+      completeSwitch a bId b aId
+    setNtfSuspended False
 
 testNotificationsOldToken :: HasTestEnv => APNSMockServer -> IO ()
 testNotificationsOldToken apns =
