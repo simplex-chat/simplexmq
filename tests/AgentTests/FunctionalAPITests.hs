@@ -645,6 +645,8 @@ functionalAPITests ps = do
       testSwitchRatchetSyncBeforeNewQueue ps
     it "should secure the new queue and complete the switch after ratchet synchronization" $
       testFastSwitchRatchetSyncWhileSecuring ps
+    it "should wait for ratchet synchronization with the switch commands of both directions on one server" $
+      testSwitchBothDirectionsRatchetSync ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -4593,6 +4595,44 @@ testFastSwitchRatchetSyncWhileSecuring ps@(t, ASType qsType _) = withSmpServer p
         concurrently_
           (timeout 20_000000 (runRight_ $ drainSwitchCompleted a' bId QDRcv) `shouldReturn` Just ())
           (timeout 20_000000 (runRight_ $ drainSwitchCompleted b aId QDSnd) `shouldReturn` Just ())
+
+testSwitchBothDirectionsRatchetSync :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchBothDirectionsRatchetSync ps@(t, ASType qsType _) = withSmpServer ps $ do
+  a <- getSMPAgentClient' 1 agentCfgV7 initAgentServers testDB
+  (aId, bId) <- withAgent 2 agentCfg initAgentServers testDB2 $ \b -> runRight $ makeConnection a b
+  setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
+  withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> runRight_ $ do
+    _ <- switchConnectionAsync a "" bId
+    phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+  nGet a =##> \case ("", "", DOWN _ cs) -> bId `elem` cs; _ -> False
+  b <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+  runRight_ $ do
+    subscribeConnection b aId
+    phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+  disposeAgentClient a
+  setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+  withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> runRight_ $ do
+    _ <- switchConnectionAsync b "" aId
+    phaseRcv b aId SPStarted [Just RSSendingQADD, Nothing]
+  withAgent 4 agentCfg initAgentServers testDB $ \a' -> do
+    runRight_ $ do
+      subscribeConnection a' bId
+      phaseSnd a' bId SPStarted [Just SSSecuringQueue, Nothing]
+    disposeAgentClient b
+    cmdIds <- srv2CommandIds a'
+    length cmdIds `shouldBe` 2
+    void . runRight $ synchronizeRatchet a' bId PQSupportOn True
+    cmdIds' <- waitCommandIdsChange a' cmdIds (100 :: Int)
+    cmdIds' `shouldNotBe` cmdIds
+    threadDelay 1000000
+    srv2CommandIds a' `shouldReturn` cmdIds'
+  where
+    srv2CommandIds :: AgentClient -> IO [Int64]
+    srv2CommandIds c = map snd . filter ((Just testPort2 ==) . fst) <$> withTransaction (store $ agentEnv c) (`DB.query_` "SELECT port, command_id FROM commands ORDER BY command_id")
+    waitCommandIdsChange c cmdIds n = do
+      cmdIds' <- srv2CommandIds c
+      if cmdIds' /= cmdIds || n == 0 then pure cmdIds' else threadDelay 100000 >> waitCommandIdsChange c cmdIds (n - 1)
 
 endSwitchOnNewQueue :: (HasCallStack, HasTestEnv) => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
 endSwitchOnNewQueue a b = do

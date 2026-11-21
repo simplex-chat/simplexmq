@@ -2410,7 +2410,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
                   case find ((replaceQId ==) . dbQId) rqs of
                     Just rq1
                       | status /= Confirmed -> Nothing <$ withStore' c (`deleteCommand` cmdId)
-                      | ratchetSyncSendProhibited cData -> Nothing <$ postponeCommand
+                      | ratchetSyncSendProhibited cData -> Nothing <$ postponeCommand srv
                       | otherwise -> pure $ Just (cData, rqs, sqs, rq', rq1)
                     _ -> Nothing <$ internalErr "ICQSecure: no switching queue found"
                 _ -> Nothing <$ internalErr "ICQSecure: queue address not found in connection"
@@ -2440,7 +2440,7 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
               case findQ (srv, sId) sqs of
                 Nothing -> Nothing <$ internalErr "ICQSndSecure: queue address not found in connection"
                 Just sq'@SndQueue {dbReplaceQueueId}
-                  | ratchetSyncSendProhibited cData -> Nothing <$ postponeCommand
+                  | ratchetSyncSendProhibited cData -> Nothing <$ postponeCommand srv
                   | otherwise -> case dbReplaceQueueId >>= \replaceQId -> find ((replaceQId ==) . dbQId) sqs of
                       Just oldSq -> pure $ Just (cData, rqs, sqs, sq', oldSq)
                       Nothing -> do
@@ -2522,11 +2522,11 @@ runCommandProcessing c@AgentClient {subQ} connId server_ Worker {doWork} = do
             Right CCDeleted -> pure ()
         internalErr s = cmdError $ INTERNAL $ s <> ": " <> show (agentCommandTag command)
         cmdError e = notify (ERR e) >> withStore' c (`deleteCommand` cmdId)
-        postponeCommand = do
+        postponeCommand srv = do
           liftIO $ noWorkToDo doWork
           otherCmds <- withStore c $ \db -> runExceptT $ do
             liftIO $ deleteCommand db cmdId
-            pending <- liftIO $ either (const True) isJust <$> getPendingServerCommand db connId server_
+            pending <- liftIO $ hasNonQSecureCommand db connId srv
             pending <$ ExceptT (createCommand db corrId connId server_ command)
           when otherCmds . atomically $ hasWorkToDo' doWork
         notify :: forall e. AEntityI e => AEvent e -> AM ()

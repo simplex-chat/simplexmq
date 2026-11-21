@@ -177,6 +177,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getPendingCommandServers,
     getAllPendingCommandConns,
     getPendingServerCommand,
+    hasNonQSecureCommand,
     updateCommandServer,
     deleteCommand,
     -- Notification device token persistence
@@ -1745,6 +1746,18 @@ getPendingServerCommand db connId srv_ = getWorkItem "command" getCmdId getComma
         err = SEInternal $ "command  " <> bshow cmdId <> " returned []"
         pendingCommand (corrId, userId, command, createdAt) = PendingCommand {cmdId, corrId, userId, connId, command, createdAt}
     markCommandFailed cmdId = DB.execute db "UPDATE commands SET failed = 1 WHERE command_id = ?" (Only cmdId)
+
+hasNonQSecureCommand :: DB.Connection -> ConnId -> SMPServer -> IO Bool
+hasNonQSecureCommand db connId (SMPServer host port _) =
+  maybeFirstRow' False fromOnlyBI $
+    DB.query
+      db
+      [sql|
+        SELECT 1 FROM commands
+        WHERE conn_id = ? AND host = ? AND port = ? AND failed = 0 AND command_tag NOT IN (?,?)
+        LIMIT 1
+      |]
+      (connId, host, port, AInternalCommandTag ICQSecure_, AInternalCommandTag ICQSndSecure_)
 
 updateCommandServer :: DB.Connection -> AsyncCmdId -> SMPServer -> IO (Either StoreError ())
 updateCommandServer db cmdId srv@(SMPServer host port _) = runExceptT $ do
