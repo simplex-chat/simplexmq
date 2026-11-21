@@ -53,6 +53,7 @@ sequenceDiagram
   - request outside the lock in ICAck, ICAckDel, ICAllowSecure, ICDeleteRcvQueue, JOIN of a service request, `setConnShortLink`, `deleteConnShortLink`, `suspendConnection`, `connectReplyQueues`;
   - `acceptContact` under the invitation lock; `serviceRequest_` without the connection lock;
   - deletion under the locks of its connections;
+  - a connection whose deletion waits for delivery is not given new queues;
   - the record step of an acknowledgement reads the queue again;
   - a concurrent acknowledgement of a deleted message is dropped;
   - each switch start has an identifier; an abort removes it, a new start replaces it, and a switch whose identifier is no longer current is aborted after its queue is created;
@@ -65,6 +66,6 @@ sequenceDiagram
   - the notification command of connection deletion.
 - clients:
   - a message in the response to ACK, SUB or GET is written to msgQ without waiting;
-  - a command waits for send-queue space only until its response timeout, and is not sent after it ends;
+  - a command waits for send-queue space only until its response timeout, and is not queued after it ends;
   - a command that ends without a response is removed, except in clients with msgQ, where it is kept for 15 minutes for a late response.
 - moved to separate pull requests: the HTTP/2 request timeout, the SUSPENDED event written without waiting.
