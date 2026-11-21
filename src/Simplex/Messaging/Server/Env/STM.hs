@@ -535,6 +535,7 @@ newClient clientId qSize clientTHParams createdAt closeTransport = do
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
+  delayedQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
   fwdWorkers <- newTVarIO IM.empty
   endThreads <- newTVarIO IM.empty
@@ -555,6 +556,7 @@ newClient clientId qSize clientTHParams createdAt closeTransport = do
         rcvQ,
         sndQ,
         msgQ,
+        delayedQ,
         procThreads,
         fwdWorkers,
         endThreads,

@@ -613,7 +613,7 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
                 ifM (isJust <$> readTVarIO filePath) (pure Nothing) $
                   Just <$> mask (\restore -> ifM reserve (receive restore) (pure $ FRErr QUOTA))
               Left e -> pure $ Just $ FRErr e
-          skipCommitted = ifM (isJust <$> readTVarIO filePath) drainCommitted
+          skipCommitted = drainCommitted
             where
               drainCommitted = do
                 t <- asks $ fileTimeout . config

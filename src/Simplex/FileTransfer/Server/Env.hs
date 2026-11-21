@@ -139,7 +139,8 @@ defaultXFTPKeepAlive =
   KeepAliveOpts
     { keepIdle = 60,
       keepIntvl = 10,
-      keepCnt = 6
+      keepCnt = 6,
+      unackedDataTimeout = Nothing
     }
 
 defaultXFTPUserTimeout :: Int

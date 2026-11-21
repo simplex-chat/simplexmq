@@ -1413,22 +1413,6 @@ failRequest :: Request err msg -> STM ()
 failRequest Request {pending, responseVar} =
   whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
-sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
-sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses = do
-  ts <- getCurrentTime
-  -- two separate "atomically" needed to avoid blocking
-  E.bracketOnError
-    (atomically $ ifM (readTVar connected) (mapM_ (addRequest ts) rs >> tryWriteTBQueue sndQ t) (True <$ mapM_ failRequest rs))
-    (\_ -> when (isNothing msgQ) $ atomically $ mapM_ removeRequest rs)
-    (\sent -> if sent then getResponses else withAsync (atomically $ writeTBQueue sndQ t) (const getResponses))
-  where
-    addRequest ts r@Request {corrId} = TM.insert corrId r {createdAt = ts} sentCommands
-    removeRequest Request {corrId} = TM.delete corrId sentCommands
-
-failRequest :: Request err msg -> STM ()
-failRequest Request {pending, responseVar} =
-  whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
-
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
   sent <- atomically $ tryWriteTBQueue q x

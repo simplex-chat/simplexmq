@@ -162,6 +162,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Number of workers processing messages that one proxy server forwards to this server.\n\
         \# Messages to one queue are processed by one worker, in the order they are received.\n"
     <> ("# forward_workers = " <> tshow defaultForwardWorkers)
+    <> "\n\n\
         \# Limit number of connections to destination servers being established at once.\n"
     <> ("# connect_concurrency = " <> tshow defaultProxyConnectConcurrency)
     <> "\n\n\

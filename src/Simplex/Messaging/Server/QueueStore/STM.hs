@@ -357,6 +357,10 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         ssNtfs' = (Nothing, ntfs') : ssNtfs
     pure $ Right (ssNtfs', deleteNtfs)
     where
+      addService (ssNtfs, deleteNtfs) (serviceId, s) = do
+        (sNIds, _) <- readTVarIO $ serviceNtfQueues s
+        let (sNtfs, otherNtfs) = partition (\(nId, _) -> S.member nId sNIds) deleteNtfs
+        pure ((Just serviceId, sNtfs) : ssNtfs, otherNtfs)
       addNtf ns qs ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
         Just q -> do
           qr <- readTVarIO (queueRec q)
