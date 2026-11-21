@@ -1059,7 +1059,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["owner"], self.OWNER)
 
-    def test_a_subname_whose_holder_cannot_be_read_is_not_registered(self):
+    def test_a_subname_whose_owner_of_reverts_is_not_registered(self):
         chain = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
 
         def eth_call(to, data):
@@ -1202,6 +1202,7 @@ class FakeChain:
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
     RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
+    SUBNAMES = "0x3d749792ea31a74fca465f361659dc112a31fb70"
     GRACE = 90 * 86400
     TEXTS = {"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
 
@@ -1209,6 +1210,7 @@ class FakeChain:
         self.now = int(time.time())
         acme, free = snrc.label_token("acme"), snrc.label_token("free")
         node = snrc.node_of("acme.testing")
+        held, gone = snrc.node_of("held.acme.testing"), snrc.node_of("gone.acme.testing")
         abi_bytes = RegistrationV2Tests._abi_bytes
         prices = RegistrationV2Tests._prices_return(RegistrationV2Tests())
         self.answers = {
@@ -1224,6 +1226,13 @@ class FakeChain:
             snrc.prices_call(self.CONTROLLER): "0x" + snrc.encode_uint(int(self.ORACLE, 16)),
             snrc.prices_call(self.ORACLE): prices,
             snrc.min_length_call(self.CONTROLLER): "0x" + snrc.encode_uint(3),
+            snrc.subname_hook_call(self.REGISTRAR): "0x" + snrc.encode_uint(int(self.SUBNAMES, 16)),
+            snrc.resolver_call(self.REGISTRY, held): "0x" + snrc.encode_uint(int(self.RESOLVER, 16)),
+            snrc.owner_call(self.REGISTRY, held): "0x" + snrc.encode_uint(int(self.SUBNAMES, 16)),
+            snrc.subname_owner_call(self.SUBNAMES, held): "0x" + snrc.encode_uint(int(self.OWNER, 16)),
+            snrc.resolver_call(self.REGISTRY, gone): "0x" + snrc.encode_uint(int(self.RESOLVER, 16)),
+            snrc.owner_call(self.REGISTRY, gone): "0x" + snrc.encode_uint(int(self.SUBNAMES, 16)),
+            snrc.subname_owner_call(self.SUBNAMES, gone): "0x" + snrc.encode_uint(0),
         }
         for key, value in self.TEXTS.items():
             self.answers[snrc.text_call(self.RESOLVER, node, key)] = abi_bytes(value.encode())
@@ -1458,6 +1467,16 @@ class BatchedReadsTests(FakeNodeTestCase):
     def test_v1_answers_the_same(self):
         status, body = self.assert_same_answer(snrc.resolve, "acme.testing", 2)
         self.assertEqual(body["owner"], FakeChain.OWNER)
+
+    def test_a_subname_the_subname_registrar_holds_takes_three_round_trips(self):
+        status, body = self.assert_same_answer(snrc.registration, "held.acme.testing", 3)
+        self.assertEqual(body["registration"]["nameRecord"]["owner"], FakeChain.OWNER)
+        status, body = self.assert_same_answer(snrc.resolve, "held.acme.testing", 3)
+        self.assertEqual(body["owner"], FakeChain.OWNER)
+
+    def test_a_subname_the_subname_registrar_no_longer_holds_reads_no_record(self):
+        status, body = self.assert_same_answer(snrc.registration, "gone.acme.testing", 4)
+        self.assertEqual(body["registration"]["type"], "available")
 
     def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
         snrc.NAME_POLICIES = {"testing": FakeChain.NAME_POLICY}
