@@ -16,6 +16,7 @@ import Control.Logger.Simple
 import Control.Monad (replicateM, unless, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
+import Data.Maybe (fromMaybe)
 import Data.String (IsString (..))
 import GHC.Conc (BlockReason (..), ThreadStatus (..), getNumCapabilities, getNumProcessors, setNumCapabilities, threadStatus)
 import GHC.IO.Exception (IOException (..))
@@ -29,7 +30,7 @@ import System.Process (callCommand)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it, xit)
 import qualified Test.Hspec as Hspec
-import Test.Hspec.Core.Spec (Example (..), Result (..), ResultStatus (..))
+import Test.Hspec.Core.Spec (Example (..), FailureReason (..), Item (..), Result (..), ResultStatus (..), mapSpecItem_)
 
 withNumCapabilities :: Int -> IO a -> IO a
 withNumCapabilities new a = getNumCapabilities >>= \old -> bracket_ (setNumCapabilities new) (setNumCapabilities old) a
@@ -139,6 +140,14 @@ eventuallyRemove path retries = case retries of
     action = removeDirectoryRecursive path
 
 data TestWrapper a = TestWrapper String (HasTestEnv => a)
+
+-- | Abort a test after the specified number of microseconds.
+deadline :: Int -> SpecWith b -> SpecWith b
+deadline limit = mapSpecItem_ $ \item@Item {itemLocation, itemExample} ->
+  item
+    { itemExample = \params aw pc ->
+        fromMaybe (Result "timed out" . Failure itemLocation $ Reason "time limit") <$> timeout limit (itemExample params aw pc)
+    }
 
 -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
 testLogLevel :: LogLevel

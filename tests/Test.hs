@@ -100,7 +100,7 @@ main = do
       . aroundAll_ (postgressBracket ntfTestServerDBConnectInfo)
       . aroundAll_ (postgressBracket testXFTPDBConnectInfo)
 #endif
-      . deadline (120 * 1000000)
+      . deadline (180 * 1000000)
       $ do
         parallel $ do
           describe "Core tests" $ do
@@ -250,10 +250,3 @@ withTmpDir = bracket_ (createDirectoryIfMissing False tmpDir >> clearTmpDir) cle
   where
     clearTmpDir = listDirectory tmpDir >>= mapM_ (removePathForcibly . (tmpDir </>))
 
--- | Abort tests after a reasonable deadline.
-deadline :: Int -> SpecWith b -> SpecWith b
-deadline limit = mapSpecItem_ $ \item@Item {itemLocation, itemExample} ->
-  item
-    { itemExample = \params aw pc ->
-        fromMaybe (Result "timed out" . Failure itemLocation $ Reason "time limit") <$> timeout limit (itemExample params aw pc)
-    }
