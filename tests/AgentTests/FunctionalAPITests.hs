@@ -98,6 +98,7 @@ import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteCo
 import qualified Simplex.Messaging.Agent as A
 import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), NtfSupervisor (..), NtfSupervisorCommand (..), createAgentStore)
+import Simplex.Messaging.Agent.Lock (withLock')
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
@@ -636,6 +637,8 @@ functionalAPITests ps = do
       testSwitchChangedWhileNewQueue (\c connId -> synchronizeRatchet c connId PQSupportOn True) "switchConnection: send prohibited" ps
     it "should delete the new queue when the connection is deleted while the queue is created" $
       testSwitchConnectionDeletedWhileNewQueue ps
+    it "should delete the new queue when the connection is deleted waiting for delivery while the queue is created" $
+      testSwitchConnectionDeletedWaitingDeliveryWhileNewQueue ps
     it "should delete the new queue when the switch is aborted and started again while the queue is created" $
       testSwitchRestartedWhileNewQueue ps
     it "should refuse the switch when ratchet synchronization starts before the new queue is created" $
@@ -4477,6 +4480,24 @@ testSwitchConnectionDeletedWhileNewQueue ps@(t, _) =
             runRight_ $ deleteConnection b aId
             atomically $ putTMVar resume ()
             timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
+      storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
+
+testSwitchConnectionDeletedWaitingDeliveryWhileNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSwitchConnectionDeletedWaitingDeliveryWhileNewQueue ps@(t, _) =
+  withSmpServer ps $
+    withAgent 2 agentCfg initAgentServersLongConnect testDB2 $ \b -> do
+      (aId, _) <- withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight $ makeConnection a b
+      setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
+      withSmpServerConfigOn t cfgS2 testPort3 $ \_ ->
+        withPausedProxyOn testPort2 testPort3 $ \accepted resume ->
+          withAsync (runExceptT $ switchConnection b NRMInteractive aId) $ \switched -> do
+            timeout 5_000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
+            withLock' (deleteLock b) "test" $ do
+              runRight_ $ deleteConnectionAsync b True aId
+              atomically $ putTMVar resume ()
+              timeout 5_000000 (wait switched) `shouldReturn` Just (Left $ CONN NOT_FOUND "")
+            get b =##> \case ("", "", DEL_RCVQS [(c, _, _, Nothing)]) -> c == aId; _ -> False
+            get b =##> \case ("", "", DEL_CONNS [c]) -> c == aId; _ -> False
       storeLogQueues testStoreLogFile2 `shouldReturn` (1, 1)
 
 testSwitchRestartedWhileNewQueue :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
