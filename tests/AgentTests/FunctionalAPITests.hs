@@ -4609,6 +4609,7 @@ testSwitchBothDirectionsRatchetSync ps@(t, ASType qsType _) = withSmpServer ps $
   runRight_ $ do
     subscribeConnection b aId
     phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+    phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
     phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
   disposeAgentClient a
   setProtocolServers b 1 [noAuthSrvCfg testSMPServer2]
