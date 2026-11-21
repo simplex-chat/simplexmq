@@ -22,7 +22,8 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.error import HTTPError
+from unittest import mock
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -1503,6 +1504,22 @@ class NamePoliciesTests(FakeNodeTestCase):
         with self.assertRaises(HTTPError):
             snrc.name_policies()
 
+    def test_a_node_that_does_not_answer_is_read_again_with_doubling_waits(self):
+        self.node.status = 502
+        self.node.chain.answers[snrc.name_policy_call(FakeChain.CONTROLLER)] = "0x" + snrc.encode_uint(int(FakeChain.NAME_POLICY, 16))
+        waits = []
+
+        def sleep(seconds):
+            waits.append(seconds)
+            if len(waits) == 7:
+                self.node.status = 200
+
+        with mock.patch.object(time, "sleep", sleep), self.assertLogs("snrc_resolve", "WARNING") as logs:
+            self.assertEqual(snrc.wait_for_name_policies(), {"testing": FakeChain.NAME_POLICY})
+        self.assertEqual(waits, [1, 2, 4, 8, 16, 30, 30])
+        self.assertEqual([(r.getMessage(), r.fields["error"], r.fields["retry_s"]) for r in logs.records],
+                         [("node_unavailable", "HTTPError", wait) for wait in waits])
+
 
 class Aggregate3Tests(unittest.TestCase):
     def test_calls_are_encoded_as_multicall3_reads_them(self):
@@ -1774,14 +1791,57 @@ class KeepAliveTests(unittest.TestCase):
 
 
 class StartupTests(unittest.TestCase):
-    def test_a_node_that_does_not_answer_stops_the_service(self):
+    def test_the_service_waits_for_the_node_and_then_listens(self):
+        node = FakeNode()
+        self.addCleanup(node.stop)
+        node.status = 502
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        env = dict(os.environ, SNRC_RPC=node.url, SNRC_BIND="127.0.0.1", SNRC_PORT=str(port), SNRC_WORKERS="1")
+        service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(service.stderr.close)
+        self.addCleanup(service.wait)
+        self.addCleanup(service.kill)
+        # the stderr reads below end at EOF if the service hangs
+        watchdog = threading.Timer(10, service.kill)
+        watchdog.start()
+        self.addCleanup(watchdog.cancel)
+
+        self.assertRegex(service.stderr.readline(), r"WARN  node_unavailable  error=HTTPError .* retry_s=1$")
+        node.status = 200
+        lines = iter(service.stderr.readline, "")
+        self.assertTrue(any("INFO  listening" in line for line in lines), "the service did not start listening")
+        self.assertIsNone(service.poll())
+        # `listening` is logged before the socket is bound
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as res:
+                    self.assertTrue(json.loads(res.read())["ok"])
+                break
+            except URLError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.05)
+
+    def test_stopping_the_service_while_it_waits_for_the_node(self):
         node = FakeNode()
         self.addCleanup(node.stop)
         node.status = 502
         env = dict(os.environ, SNRC_RPC=node.url, SNRC_WORKERS="1")
-        service = subprocess.run([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True, timeout=10)
-        self.assertEqual(service.returncode, 1)
-        self.assertRegex(service.stderr, r"ERROR startup_failed")
+        service = subprocess.Popen([sys.executable, os.path.join(_HERE, "snrc-resolve.py")], env=env, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(service.stderr.close)
+        self.addCleanup(service.wait)
+        self.addCleanup(service.kill)
+        watchdog = threading.Timer(10, service.kill)
+        watchdog.start()
+        self.addCleanup(watchdog.cancel)
+
+        self.assertIn("node_unavailable", service.stderr.readline())
+        service.send_signal(signal.SIGTERM)
+        self.assertEqual(service.wait(timeout=5), 0)
+        self.assertRegex(service.stderr.read(), r"INFO  stopping  signal=SIGTERM")
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "reads worker processes from /proc")

@@ -115,7 +115,7 @@ the node is synced.
   `docker compose pull`; re-run the verify checks after pulling.
 - The resolver image contains the script: after updating this directory, run
   `docker compose up -d --build resolver`, then checks 2 and 5.
-- A `SNRC_*_SIMPLEX` setting added to `docker-compose.yml`, or to the
+- A `SNRC_*_SIMPLEX` setting added to `.env`, to `docker-compose.yml`, or to the
   environment of a direct run, for the earlier `.simplex` deployment (registry
   `0xa7f6497be2f1aa41aa2db55aba8a6e0145dff0d2`) overrides the defaults. Remove
   all three; `docker compose exec resolver env | grep _SIMPLEX` then prints
@@ -402,9 +402,10 @@ so the read reverts. A read that reverts, answers nothing, names no policy or
 fails with an RPC error is logged as `no_name_policy`, and reservations are read
 from the controller. For a controller that has a name policy, every lookup under
 its TLD then answers 502 until a restart: after an RPC error, or when the node
-has not yet reached the controller or its `setNamePolicy`. A node that
-does not answer stops the resolver, and the container restarts. After the
-controller's owner calls `setNamePolicy`, restart the resolver.
+has not yet reached the controller or its `setNamePolicy`. While the node
+does not answer, the resolver does not listen and reads again, waiting 1 s,
+then twice as long each time, up to 30 s. After the controller's owner calls
+`setNamePolicy`, restart the resolver.
 
 Each default is the address that `deployments.mainnet.<tld>.json` of
 [brenzi/simplex-namespace-contract](https://github.com/brenzi/simplex-namespace-contract/tree/2ecae1a77bd605dcc236ba3c3cd93e690345af2c)
@@ -423,7 +424,8 @@ answered as available. Each setting is the address of one entry of the deploymen
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
-as env vars when you run the script directly. An empty value is replaced by the
+as env vars when you run the script directly. With docker compose, the
+`.simplex` ones can be set in `.env`. An empty value is replaced by the
 default. Override the three settings of a TLD together: an unset setting is left
 at its mainnet default, which belongs to a different deployment.
 
@@ -470,7 +472,7 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
 | `request_failed` | error | a request failed unexpectedly, with its traceback |
-| `startup_failed` | error | the node did not answer the startup read of the name policies; the container restarts |
+| `node_unavailable` | warn | the node did not answer the startup read of the name policies; read again after `retry_s` |
 | `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
 | `stopping` | info | stopped by a signal |
 
