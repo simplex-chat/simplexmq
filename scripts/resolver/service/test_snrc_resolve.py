@@ -1423,18 +1423,21 @@ class BatchedReadsTests(FakeNodeTestCase):
         self.assertEqual(record["nickname"], "Acme")
         self.assertEqual(record["simplexChannel"], ["https://a.example/c#1", "https://b.example/c#2"])
         self.assertIsNone(record["btc"])
+        self.assertEqual(record["owner"], FakeChain.OWNER)
 
     def test_a_hashed_query_is_named_from_the_same_round_trip(self):
         hashed = "[" + snrc.keccak(b"acme").hex() + "].testing"
         status, body = self.assert_same_answer(snrc.registration, hashed, 2)
         self.assertEqual(body["registration"]["nameRecord"]["name"], "acme.testing")
+        self.assertEqual(body["registration"]["nameRecord"]["owner"], FakeChain.OWNER)
 
     def test_an_available_name_is_priced_in_three_round_trips(self):
         status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
         self.assertEqual(body["registration"]["type"], "available")
 
     def test_v1_answers_the_same(self):
-        self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+        status, body = self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+        self.assertEqual(body["owner"], FakeChain.OWNER)
 
     def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
         snrc.NAME_POLICIES = {"testing": FakeChain.NAME_POLICY}

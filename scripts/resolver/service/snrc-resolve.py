@@ -1144,29 +1144,26 @@ def name_record(name: str):
     return rec
 
 
-def subname_holder(name: str) -> str:
+def record_owner(name: str) -> str | None:
     labels = name.split(".")
     tld = labels[-1]
     registry, registrar = REGISTRIES[tld], REGISTRARS.get(tld)
     node = node_of(name)
     owner = decode_address(eth_call(*owner_call(registry, node)))
-    holder = decode_address(eth_call(*owner_call(registry, namehash(".".join(labels[-2:])))))
-    if owner in (ZERO_ADDR, holder):
+    if len(labels) == 2:
         return owner
-    if not registrar:
-        return ZERO_ADDR
+    holder = decode_address(eth_call(*owner_call(registry, namehash(".".join(labels[-2:])))))
+    if owner == holder != ZERO_ADDR:
+        return owner
+    if owner == ZERO_ADDR or not registrar:
+        return None
     try:
         if owner != decode_address(eth_call(*subname_hook_call(registrar))):
-            return ZERO_ADDR
-        return decode_address(eth_call(*subname_owner_call(owner, node)))
+            return None
+        held = decode_address(eth_call(*subname_owner_call(owner, node)))
     except RuntimeError:
-        return ZERO_ADDR
-
-
-def record_owner(name: str) -> str:
-    if len(name.split(".")) > 2:
-        return subname_holder(name)
-    return decode_address(eth_call(*owner_call(REGISTRIES[name.rsplit(".", 1)[-1]], node_of(name))))
+        return None
+    return None if held == ZERO_ADDR else held
 
 
 def name_response(reg, registration_body):
@@ -1191,7 +1188,7 @@ def registration(name: str):
             return 502, {"name": name, "error": "labelNotRecorded"}
         # a subname inherits the 2LD's status, so only its holder says whether
         # it exists
-        if len(name.split(".")) > 2 and rec["owner"] == ZERO_ADDR:
+        if rec["owner"] is None:
             # name_status reads pricing only when the name was already
             # unregistered, so read it here
             status = "unregistered"
@@ -1255,7 +1252,7 @@ def resolve(name: str):
 
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
     owner = record_owner(name)
-    if len(name.split(".")) > 2 and owner == ZERO_ADDR:
+    if owner is None:
         return 404, {
             "name": name,
             **reg,
