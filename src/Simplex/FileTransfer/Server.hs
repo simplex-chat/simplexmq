@@ -137,11 +137,10 @@ data EntitlementChecked = EntNotChecked | EntChecked (Maybe SessionEntitlement)
 
 xftpServer :: forall s. FileStoreClass s => XFTPServerConfig s -> TMVar Bool -> M s ()
 xftpServer cfg@XFTPServerConfig {xftpPort, transportConfig, inactiveClientExpiration, fileExpiration, xftpServerVRange, information} started = do
-  expireServerFiles Nothing fileExpiration
-  removeTmpUploads
-  removeUnstoredFiles
   restoreServerStats
   expireServerFiles Nothing fileExpiration `onException` stopServer
+  removeTmpUploads
+  removeUnstoredFiles
   raceAny_
     ( runServer
         : expireFiles fileExpiration
@@ -595,23 +594,30 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
     receiveServerFile FileRec {senderId, fileInfo = FileInfo {size, digest}} = case bodyPart of
       Nothing -> pure $ FRErr SIZE
       -- TODO validate body size from request before downloading, once it's populated
-      Just getBody -> replaceUpload $ receiveUncommitted >>= maybe skipCommitted pure
+      Just getBody -> do
+        receivedBody <- newTVarIO False
+        let getBody' n = getBody n >>= \bs -> bs <$ when (not $ B.null bs) (atomically $ writeTVar receivedBody True)
+        replaceUpload receivedBody $ receiveUncommitted getBody' >>= maybe skipCommitted pure
         where
-          replaceUpload upload = do
+          replaceUpload receivedBody upload = do
             uploads <- asks uploadingFiles
             prevUpload <- newEmptyTMVarIO
             let startUpload = do
-                  a <- asyncWithUnmask $ \unmask -> uninterruptibleMask_ (atomically $ readTMVar prevUpload) >>= mapM_ uninterruptibleCancel >> unmask upload
+                  a <- asyncWithUnmask $ \unmask -> uninterruptibleMask_ (atomically $ readTMVar prevUpload) >>= mapM_ cancel >> unmask upload
                   a <$ atomically (TM.lookupInsert senderId a uploads >>= putTMVar prevUpload)
-                removeUpload a = uninterruptibleCancel a >> atomically (TM.alter (mfilter (/= a)) senderId uploads)
-            fromRight (FRErr TIMEOUT) <$> bracket startUpload removeUpload waitCatch
+                removeUpload a = atomically (TM.alter (mfilter (/= a)) senderId uploads)
+            bracket startUpload removeUpload waitCatch >>= \case
+              Right r -> pure r
+              Left e
+                | isAsyncCancellation e -> ifM (readTVarIO receivedBody) (pure $ FRErr TIMEOUT) skipCommitted
+                | otherwise -> pure $ FRErr TIMEOUT
           -- having a filePath means the file is already uploaded and committed, must not change anything
-          receiveUncommitted = do
+          receiveUncommitted getBody' = do
             st <- asks fileStore
             liftIO (getFile st SFSender senderId) >>= \case
               Right (FileRec {filePath}, _) ->
                 ifM (isJust <$> readTVarIO filePath) (pure Nothing) $
-                  Just <$> mask (\restore -> ifM reserve (receive restore) (pure $ FRErr QUOTA))
+                  Just <$> mask (\restore -> ifM reserve (receive getBody' restore) (pure $ FRErr QUOTA))
               Left e -> pure $ Just $ FRErr e
           skipCommitted = drainCommitted
             where
@@ -631,12 +637,12 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
             quota <- asks $ fromMaybe maxBound . fileSizeQuota . config
             atomically . stateTVar' us $
               \used -> let used' = used + fromIntegral size in if used' <= quota then (True, used') else (False, used)
-          receive restore = do
+          receive getBody' restore = do
             path <- asks $ filesPath . config
             tmpId <- randomId 12
             let fPath = path </> serverFileName senderId
                 tmpPath = fPath <> "." <> B.unpack (strEncode tmpId) <> tmpUploadExtension
-            (restore (receiveChunk $ XFTPRcvChunkSpec tmpPath size digest) `onException` release tmpPath) >>= \case
+            (restore (receiveChunk getBody' $ XFTPRcvChunkSpec tmpPath size digest) `onException` release tmpPath) >>= \case
               Right () -> do
                 renameFile tmpPath fPath
                 stats <- asks serverStats
@@ -665,9 +671,9 @@ processXFTPRequest ent HTTP2Body {bodyPart} = \case
             us <- asks usedStorage
             atomically $ modifyTVar' us $ subtract (fromIntegral size)
           removeUpload fPath = liftIO $ whenM (doesFileExist fPath) (removeFile fPath) `catch` logFileError
-          receiveChunk spec = do
+          receiveChunk getBody' spec = do
             t <- asks $ fileTimeout . config
-            liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT $ receiveFile getBody spec)
+            liftIO $ fromMaybe (Left TIMEOUT) <$> timeout t (runExceptT $ receiveFile getBody' spec)
     sendServerFile :: FileRec -> RcvPublicDhKey -> M s (FileResponse, Maybe ServerFile)
     sendServerFile FileRec {senderId, filePath, fileInfo = FileInfo {size}} rDhKey = do
       readTVarIO filePath >>= \case
@@ -744,16 +750,17 @@ expireServerFiles itemDelay expCfg = do
     mbs bs = tshow (bs `div` 1048576) <> "mb"
     expireLoop st now old = do
       expired <- liftIO $ expiredFiles st now old 10000
-      forM_ expired $ \(_, filePath_, _) ->
-        forM_ filePath_ $ \fp ->
-          whenM (doesFileExist fp) $
-            (removeFile fp >> mapM_ threadDelay itemDelay) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
       let sIds = map (\(sId, _, _) -> sId) expired
       unless (null sIds) $ do
+        uploads <- asks uploadingFiles
+        forM_ sIds $ \sId -> atomically (TM.lookupDelete sId uploads) >>= mapM_ cancel
         withFileLog $ \sl -> mapM_ (logDeleteFile sl) sIds
         deleted <- liftIO $ deleteFiles st sIds
         forM_ deleted $ \(_, filePath_, fileSize) -> do
-          forM_ filePath_ $ \_ -> subtractStoredFile fileSize
+          forM_ filePath_ $ \fp -> do
+            whenM (doesFileExist fp) $
+              (removeFile fp >> mapM_ threadDelay itemDelay) `catch` \(e :: SomeException) -> logError $ "failed to remove expired file " <> tshow fp <> ": " <> tshow e
+            subtractStoredFile fileSize
           incFileStat filesExpired
         expireLoop st now old
 

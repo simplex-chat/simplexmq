@@ -25,7 +25,8 @@ serverSchemaMigrations =
     ("20260917_msg_queues_hot", m20260917_msg_queues_hot, Just down_m20260917_msg_queues_hot),
     ("20260918_expire_messages", m20260918_expire_messages, Just down_m20260918_expire_messages),
     ("20261023_server_stats", m20261023_server_stats, Just down_m20261023_server_stats),
-    ("20261108_rcv_service_queues", m20261108_rcv_service_queues, Just down_m20261108_rcv_service_queues)
+    ("20261108_rcv_service_queues", m20261108_rcv_service_queues, Just down_m20261108_rcv_service_queues),
+    ("20261121_server_stats_v2", m20261121_server_stats_v2, Just down_m20261121_server_stats_v2)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -1249,6 +1250,8 @@ down_m20261108_rcv_service_queues :: Text
 down_m20261108_rcv_service_queues =
   [r|
 DROP INDEX idx_msg_queues_rcv_service_active;
+    |]
+
 m20261023_server_stats :: Text
 m20261023_server_stats =
   [r|
@@ -1355,4 +1358,34 @@ down_m20261023_server_stats =
 DROP TABLE server_stats_queues;
 
 DROP TABLE server_stats;
+    |]
+
+m20261121_server_stats_v2 :: Text
+m20261121_server_stats_v2 =
+  [r|
+ALTER TABLE server_stats
+  ADD COLUMN rslv_rejected BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_below23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_from23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_recv_below23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_recv_from23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_relay_limit BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN fwd_worker_cmds BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN fwd_worker_cmd_ms BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN fwd_worker_cmd_max_ms BIGINT NOT NULL DEFAULT 0;
+    |]
+
+down_m20261121_server_stats_v2 :: Text
+down_m20261121_server_stats_v2 =
+  [r|
+ALTER TABLE server_stats
+  DROP COLUMN rslv_rejected,
+  DROP COLUMN p_msg_fwds_below23,
+  DROP COLUMN p_msg_fwds_from23,
+  DROP COLUMN p_msg_fwds_recv_below23,
+  DROP COLUMN p_msg_fwds_recv_from23,
+  DROP COLUMN p_msg_fwds_relay_limit,
+  DROP COLUMN fwd_worker_cmds,
+  DROP COLUMN fwd_worker_cmd_ms,
+  DROP COLUMN fwd_worker_cmd_max_ms;
     |]

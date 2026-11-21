@@ -2801,8 +2801,8 @@ testSwapQueueLinkClient =
       (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
       lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
       fd <- atomically $ C.randomBytes 2048 g
-      let ld = (EncDataBytes fd, EncDataBytes $ B.replicate 13800 'a')
-          ld' = (EncDataBytes fd, EncDataBytes $ B.replicate 13800 'b')
+      let ld = (EncDataBytes fd, EncDataBytes $ B.replicate 13832 'a')
+          ld' = (EncDataBytes fd, EncDataBytes $ B.replicate 13832 'b')
       otherKeys <- replicateM 5 $ fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
       (rPub7, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
       Right QIK {rcvId = rId} <- runExceptT $ createSMPQueue c NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing

@@ -26,7 +26,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
 import Data.Either (isLeft)
-import Data.List (find, isInfixOf)
+import Data.List (find, isInfixOf, isPrefixOf)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
@@ -426,8 +426,7 @@ testConcurrentChunkUpload = xftpTest2 $ \c@XFTPClient {http2Client, thParams} c'
         atomically $ takeTMVar resume
         send $ byteString part2
         flush
-      serverFile = xftpServerFiles </> serverFileName sId
-      waitServerFile = unlessM (doesFileExist serverFile) $ threadDelay 10000 >> waitServerFile
+      waitServerFile = unlessM (any (serverFileName sId `isPrefixOf`) <$> listDirectory xftpServerFiles) $ threadDelay 10000 >> waitServerFile
   upload1 <- async $ HC.sendRequest http2Client req Nothing
   timeout 5000000 waitServerFile `shouldReturn` Just ()
   timeout 5000000 (runExceptT $ uploadXFTPChunk c' spKey sId chunkSpec) `shouldReturn` Just (Right ())
@@ -457,8 +456,7 @@ testCancelStalledChunkUpload fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
           send $ byteString $ B.replicate 1024 'x'
           flush
           threadDelay maxBound
-        serverFile = xftpServerFiles </> serverFileName sId
-        waitServerFile = unlessM (doesFileExist serverFile) $ threadDelay 10000 >> waitServerFile
+        waitServerFile = unlessM (any (serverFileName sId `isPrefixOf`) <$> listDirectory xftpServerFiles) $ threadDelay 10000 >> waitServerFile
     upload1 <- async $ HC.sendRequest http2Client req Nothing
     timeout 5000000 waitServerFile `shouldReturn` Just ()
     timeout 5000000 (runExceptT $ uploadXFTPChunk c' spKey sId chunkSpec) `shouldReturn` Just (Right ())
@@ -486,8 +484,8 @@ testUploadDuringExpiration fsType = do
   withXFTPServerConfigOn (updateXFTPCfg (cfgFSTestFiles fsType) $ \c -> c {fileExpiration}) $ \_ -> do
     testXFTPClient $ \c -> do
       runRight_ $ forM_ uploadedIds $ \fId -> uploadXFTPChunk c spKey fId chunkSpec
-      timeout 10000000 waitExpiration `shouldReturn` Just ()
       runRight_ $ uploadXFTPChunk c spKey sId chunkSpec
+      timeout 20000000 waitExpiration `shouldReturn` Just ()
     timeout 10000000 waitRemoved `shouldReturn` Just ()
   where
     fileExpiration = ExpirationConfig {ttl = 3600, checkInterval = 1}

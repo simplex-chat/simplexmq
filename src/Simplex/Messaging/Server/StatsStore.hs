@@ -275,8 +275,18 @@ statsFields =
               ("rslv_succ", _rslvSucc),
               ("rslv_not_found", _rslvNotFound),
               ("rslv_resolver_errs", _rslvResolverErrs),
-              ("rslv_disabled", _rslvDisabled)
+              ("rslv_disabled", _rslvDisabled),
+              ("rslv_rejected", _rslvRejected)
             ]
+          <> [ ("p_msg_fwds_below23", _pMsgFwdsBelow23),
+               ("p_msg_fwds_from23", _pMsgFwdsFrom23),
+               ("p_msg_fwds_recv_below23", _pMsgFwdsRecvBelow23),
+               ("p_msg_fwds_recv_from23", _pMsgFwdsRecvFrom23),
+               ("p_msg_fwds_relay_limit", _pMsgFwdsRelayLimit),
+               ("fwd_worker_cmds", _fwdWorkerCmds),
+               ("fwd_worker_cmd_ms", _fwdWorkerCmdMs),
+               ("fwd_worker_cmd_max_ms", _fwdWorkerCmdMaxMs)
+             ]
       )
   where
     proxyFields pfx sel =
@@ -355,7 +365,15 @@ instance FromRow StatsRow where
     _pMsgFwdsRecv <- field
     _rcvServices <- serviceStatsP
     _ntfServices <- serviceStatsP
-    _rslvStats <- NameResolverStatsData <$> field <*> field <*> field <*> field <*> field
+    _rslvStats <- NameResolverStatsData <$> field <*> field <*> field <*> field <*> field <*> field
+    _pMsgFwdsBelow23 <- field
+    _pMsgFwdsFrom23 <- field
+    _pMsgFwdsRecvBelow23 <- field
+    _pMsgFwdsRecvFrom23 <- field
+    _pMsgFwdsRelayLimit <- field
+    _fwdWorkerCmds <- field
+    _fwdWorkerCmdMs <- field
+    _fwdWorkerCmdMaxMs <- field
     pure $
       StatsRow
         ServerStatsData
@@ -410,6 +428,11 @@ instance FromRow StatsRow where
             _pMsgFwds,
             _pMsgFwdsOwn,
             _pMsgFwdsRecv,
+            _pMsgFwdsBelow23,
+            _pMsgFwdsFrom23,
+            _pMsgFwdsRecvBelow23,
+            _pMsgFwdsRecvFrom23,
+            _pMsgFwdsRelayLimit,
             _ntfServices,
             _rcvServices,
             _rcvServicesSubMsg = 0,
@@ -419,6 +442,9 @@ instance FromRow StatsRow where
             _cmdSlotWaitMs = 0,
             _cmdSlotWaitMaxMs = 0,
             _cmdSlotWaitTimeouts = 0,
+            _fwdWorkerCmds,
+            _fwdWorkerCmdMs,
+            _fwdWorkerCmdMaxMs,
             _qCount = 0,
             _msgCount = 0,
             _ntfCount = 0,

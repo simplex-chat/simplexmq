@@ -51,7 +51,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfPostgresStore (dbStore), closeNtfDbStore, getEntityCounts, newNtfDbStore, withClientDB, withDB')
+import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfEntityCounts (..), NtfPostgresStore (dbStore), closeNtfDbStore, getEntityCounts, newNtfDbStore, withClientDB, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
@@ -189,7 +189,7 @@ testFullPushQueue (ATransport t, msType) = do
               Resp "4" _ OK <- signSendRecv sh sKey ("4", sId, _SEND' "hello")
               pure ()
             checkLastNtfs n = do
-              (_, _, cnt) <- getEntityCounts st
+              NtfEntityCounts {lastNtfCount = cnt} <- getEntityCounts st
               unless (cnt == n) $ threadDelay 100000 >> checkLastNtfs n
             waitLastNtfs n = timeout 5000000 (checkLastNtfs n) `shouldReturn` Just ()
         sIds <- replicateM 6 $ subscribe tknKey tId $ SMPServer SMP.testHost SMP.testPort SMP.testKeyHash

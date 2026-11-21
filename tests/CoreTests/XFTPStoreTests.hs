@@ -14,6 +14,7 @@ import qualified Database.PostgreSQL.Simple as DB
 import SMPClient (deadlockOnce)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..))
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore (..), importFileStore, exportFileStore, withDB')
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))

@@ -409,22 +409,28 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       map fromOnly <$> DB.query db updateQuery (serviceId, In (map recipientId qs)))
     results <- liftIO $ forM qs $ \sq -> do
       let rId = recipientId sq
-      (rId,) <$> if S.member rId updated
-        then readQueueRecIO (queueRec sq) $>>= \q -> do
+      let updateRec q =
+            case party of
+              SRecipientService -> q {rcvServiceId = serviceId}
+              SNotifierService -> case notifier q of
+                Just nc -> q {notifier = Just nc {ntfServiceId = serviceId}}
+                Nothing -> q
+      (rId,) <$> (if S.member rId updated
+        then readQueueRecIO (queueRec sq) $>>= (\q -> do
+          let prevSrvId = case party of
+                SRecipientService -> rcvServiceId q
+                SNotifierService -> notifier q >>= ntfServiceId
           atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
           when (prevSrvId /= serviceId) $ withLog "setQueueServices" st $ \sl -> logQueueService sl (recipientId sq) party serviceId
-          pure $ Right prevSrvId
-        Nothing -> pure $ Left AUTH
+          pure $ Right ())
+        else pure $ Left AUTH)
+    pure $ M.fromList results
+    where
       updateQuery = case party of
         SRecipientService ->
           "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"
         SNotifierService ->
           "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id IN ? AND notifier_id IS NOT NULL AND deleted_at IS NULL RETURNING recipient_id"
-      updateRec q = case party of
-        SRecipientService -> q {rcvServiceId = serviceId}
-        SNotifierService -> case notifier q of
-          Just nc -> q {notifier = Just nc {ntfServiceId = serviceId}}
-          Nothing -> q
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
@@ -435,8 +441,9 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       if null snIds
         then ([], ntfs)
         else
-          let snIds' = foldl' (\m (sId, nId) -> M.alter (Just . maybe (S.singleton nId) (S.insert nId)) sId m) M.empty snIds
-           in foldr addService ([], ntfs) (M.assocs snIds')
+          let nsIds = M.fromList [(nId, sId) | (sId, nId) <- snIds]
+              (ssNtfs, deleteNtfs) = foldr (addNtf nsIds) (M.empty, []) ntfs
+           in (M.assocs ssNtfs, deleteNtfs)
     where
       addNtf nsIds ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
         Just serviceId -> (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)

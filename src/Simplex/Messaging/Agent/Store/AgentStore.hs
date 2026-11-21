@@ -2449,7 +2449,7 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
         replace_snd_queue_id=EXCLUDED.replace_snd_queue_id,
         smp_client_version=EXCLUDED.smp_client_version,
         server_key_hash=EXCLUDED.server_key_hash
-      WHERE snd_queues.conn_id = EXCLUDED.conn_id
+      WHERE snd_queues.conn_id = EXCLUDED.conn_id OR snd_queues.status = 'new'
       RETURNING 1
     |]
     ((host server, port server, sndId, queueMode, connId', sndPrivateKey, e2ePubKey, e2eDhSecret)

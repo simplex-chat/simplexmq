@@ -551,7 +551,7 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}
                     isOwn = isOwnServer ca srv
                 liftIO (addTokenLastNtf st newNtf) >>= \case
                   Right (tkn, lastNtfs) -> do
-                    tryPushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
+                    pushNotification ps (Just srvHost) isOwn tkn $ PNMessage lastNtfs
                     liftIO $ incNtfStat_ stats ntfReceived
                     when isOwn $ liftIO $ incServerStat srvHost (ntfReceivedOwn stats)
                   Left AUTH -> liftIO $ do
