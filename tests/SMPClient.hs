@@ -88,8 +88,8 @@ ntfTestPort = testServerPort 3
 ntfTestPort2 :: HasTestEnv => ServiceName
 ntfTestPort2 = testServerPort 4
 
-testRelayPort :: HasTestEnv => ServiceName
-testRelayPort = testServerPort 0
+testForwarderPort :: HasTestEnv => ServiceName
+testForwarderPort = testServerPort 0
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -498,29 +498,23 @@ withStallingServerOn' port action = do
     (pure ())
     (const $ action accepted closed)
 
-withTCPRelayOn :: HasCallStack => ServiceName -> ServiceName -> (Int -> Socket -> Socket -> IO ()) -> IO a -> IO a
-withTCPRelayOn port srvPort relay action = do
+withTCPForwarderOn :: HasCallStack => ServiceName -> ServiceName -> (Int -> IO (ByteString -> IO Bool, ByteString -> IO Bool)) -> IO a -> IO a
+withTCPForwarderOn port srvPort onAccept action = do
   accepted <- newTVarIO 0
   serverBracket
     (\started -> runLocalTCPServer started port $ \sock -> do
-        n <- atomically $ stateTVar' accepted $ \i -> (i, i + 1)
+        (toServer, toClient) <- onAccept =<< atomically (stateTVar' accepted $ \i -> (i, i + 1))
         addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just srvPort)
         E.bracket (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)) close $ \srvSock -> do
           connect srvSock $ addrAddress addr
-          relay n sock srvSock)
+          race_ (forward toServer sock srvSock) (forward toClient srvSock sock))
     (pure ())
     (const action)
-
-forwardBytes :: Socket -> Socket -> IO ()
-forwardBytes = forwardBytesWith $ \_ -> pure True
-
-forwardBytesWith :: (ByteString -> IO Bool) -> Socket -> Socket -> IO ()
-forwardBytesWith beforeSend from to = loop
   where
-    loop = recv from 16384 >>= \s -> unless (B.null s) $ whenM (beforeSend s) $ sendAll to s >> loop
+    forward beforeSend from to = recv from 16384 >>= \s -> unless (B.null s) $ whenM (beforeSend s) $ sendAll to s >> forward beforeSend from to
 
-forwardBothWays :: (Socket -> Socket -> IO ()) -> (Socket -> Socket -> IO ()) -> Socket -> Socket -> IO ()
-forwardBothWays toServer toClient clientSock srvSock = race_ (toServer clientSock srvSock) (toClient srvSock clientSock)
+forwardAll :: ByteString -> IO Bool
+forwardAll _ = pure True
 
 withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const

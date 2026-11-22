@@ -489,10 +489,10 @@ functionalAPITests ps = do
     it "should deliver a message again after the agent stops before acknowledging it and the server restarts" $
       testRedeliveryAfterStopBeforeAck True ps
     it "should send messages while an acknowledgement waits for space in the message queue" $ do
-      pendingWith "T1: https://github.com/simplex-chat/simplexmq/pull/2079"
+      pendingWith "fixed in https://github.com/simplex-chat/simplexmq/pull/2079"
       withSmpServer ps testSendWhileAckWaitsForFullQueue
     it "should reconnect and receive messages when the connection stops forwarding" $ do
-      pendingWith "T9: transport deadlines (M5)"
+      pendingWith "until the client closes a connection after its pings time out"
       testReceiveAfterStalledConnection ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
@@ -620,7 +620,7 @@ functionalAPITests ps = do
     it "should keep the switch to an offline peer started without pending work (expected: an error after a deadline)" $
       withSmpServer ps testSwitchOfflinePeer
     it "should complete the slow switch after deleteErrorCount failures to delete the old queue" $ do
-      pendingWith "T8: deadlines on unfinished states (M9)"
+      pendingWith "until the agent stops deleting the old queue after deleteErrorCount temporary errors"
       testSlowSwitchStoppedOldServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -1852,10 +1852,10 @@ testAllowConnectionStoppedReplyServer ps@(t, ASType qsType _) =
       runRight_ $ allowConnection alice bobId confId "alice's connInfo"
       let secureCommand = [(strEncode $ AInternalCommandTag ICAllowSecure_, Just testPort2)]
       waitRows (commandServers alice) secureCommand
-      threadDelay . fromIntegral $ 2 * diffToMicroseconds (quotaExceededTimeout aCfg)
+      threadDelay 2_000000
       commandServers alice `shouldReturn` secureCommand
   where
-    aCfg = agentCfg {quotaExceededTimeout = 1, messageRetryInterval = fastMessageRetryInterval}
+    aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
     initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
 
 testInvitationErrors :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> IO ()
@@ -2658,7 +2658,7 @@ testRedeliveryAfterStopBeforeAck restartServer ps
           msgId <- sendMessage alice bobId SMP.noMsgFlags "hello"
           get alice ##> ("", bobId, SENT msgId)
         waitRows (sndDeliveries alice) []
-      withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> void $ subscribeReceive bob aliceId False
+      withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> timeout 10_000000 (void $ subscribeReceive bob aliceId False) `shouldReturn` Just ()
       pure (aliceId, bobId)
     receiveAgain (aliceId, bobId) =
       withAgentClients2 $ \alice bob -> timeout 30_000000 (receive alice bob) `shouldReturn` Just ()
@@ -2687,10 +2687,10 @@ testRedeliveryAfterStopBeforeAck restartServer ps
               | c == aliceId && redelivered == redelivered' -> pure $ Right msgId
             r -> error $ "unexpected event: " <> show r
 
-testSendWhileAckWaitsForFullQueue :: HasTestEnv => IO ()
+testSendWhileAckWaitsForFullQueue :: (HasCallStack, HasTestEnv) => IO ()
 testSendWhileAckWaitsForFullQueue = withAgentClients3 $ \alice bob carol -> do
   (aliceId, bobId) <- runRight $ makeConnection alice bob
-  (carolId, bobCarolId) : floodConns <- runRight $ replicateM 10 $ makeConnection carol bob
+  (carolId, bobCarolId) : floodConns <- runRight $ replicateM (floodCount + 1) $ makeConnection carol bob
   a1Id <- runRight $ do
     sendAndSent alice bobId "a1"
     sendAndSent alice bobId "a2"
@@ -2711,6 +2711,8 @@ testSendWhileAckWaitsForFullQueue = withAgentClients3 $ \alice bob carol -> do
     ]
       <> zipWith (\i (cId, _) -> \case ("", c, AEvt SAEConn (Msg body)) -> c == cId && body == floodMsg i; _ -> False) [1 :: Int ..] floodConns
   where
+    AgentConfig {tbqSize = queueSize} = agentCfg
+    floodCount = 2 * fromIntegral queueSize + 1
     sendAndSent :: AgentClient -> ConnId -> MsgBody -> ExceptT AgentErrorType IO ()
     sendAndSent c connId body = do
       msgId <- sendMessage c connId SMP.noMsgFlags body
@@ -2724,13 +2726,13 @@ testSendWhileAckWaitsForFullQueue = withAgentClients3 $ \alice bob carol -> do
 testReceiveAfterStalledConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testReceiveAfterStalledConnection ps = withSmpServer ps $ do
   stalled <- newTVarIO False
-  let relay _ clientSock srvSock = do
+  let onAccept _ = do
         stalledOnAccept <- readTVarIO stalled
         let forward
-              | stalledOnAccept = forwardBytes
-              | otherwise = forwardBytesWith $ \_ -> True <$ atomically (readTVar stalled >>= checkSTM . not)
-        forwardBothWays forward forward clientSock srvSock
-  withTCPRelayOn testRelayPort testPort relay $
+              | stalledOnAccept = forwardAll
+              | otherwise = \_ -> True <$ atomically (readTVar stalled >>= checkSTM . not)
+        pure (forward, forward)
+  withTCPForwarderOn testForwarderPort testPort onAccept $
     withAgent 2 agentCfg servers testDB2 $ \bob -> do
       (aliceId, bobId) <- withAgent 1 agentCfg servers testDB $ \alice -> runRight $ makeConnection alice bob
       atomically $ writeTVar stalled True
@@ -2739,7 +2741,7 @@ testReceiveAfterStalledConnection ps = withSmpServer ps $ do
         get alice ##> ("", bobId, SENT msgId)
         timeout 10_000000 (receiveMsgs bob [(aliceId, "hello")]) `shouldReturn` Just ()
   where
-    servers = initAgentServers {smp = userServers [SMPServer testHost2 testRelayPort testKeyHash], netCfg = (netCfg initAgentServers) {smpPingInterval = 1_000000, smpPingCount = 1}}
+    servers = initAgentServers {smp = userServers [SMPServer testHost2 testForwarderPort testKeyHash], netCfg = (netCfg initAgentServers) {smpPingInterval = 1_000000, smpPingCount = 1}}
 
 receiveMsgs :: AgentClient -> [(ConnId, MsgBody)] -> IO ()
 receiveMsgs _ [] = pure ()
