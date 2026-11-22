@@ -21,7 +21,7 @@ smpGenerateSite si onionHost path =
   Web.generateSite embeddedContent (serverInformation si onionHost) smpLinkPages path
 
 smpLinkPages :: [String]
-smpLinkPages = ["contact", "invitation", "a", "c", "g", "r", "i"]
+smpLinkPages = ["contact", "invitation", "a", "c", "g", "r", "i", "p", "s"]
 
 serverInformation :: ServerInformation -> Maybe TransportHost -> ByteString
 serverInformation ServerInformation {config, information} onionHost = render (Web.indexHtml embeddedContent) substs

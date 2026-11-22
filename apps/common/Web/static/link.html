@@ -514,6 +514,10 @@
         element.innerHTML = 'This is a public channel address on SimpleX&nbsp;network'
       } else if (url.includes('/r')) {
         element.innerHTML = 'This is a chat relay address on SimpleX&nbsp;network'
+      } else if (url.includes('/p')) {
+        element.innerHTML = 'This is a public group address on SimpleX&nbsp;network'
+      } else if (url.includes('/s')) {
+        element.innerHTML = 'This is a site address on SimpleX&nbsp;network'
       }
     }
   </script>
