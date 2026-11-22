@@ -1160,6 +1160,7 @@ testXFTPAgentRetryUploadRecipients = withXFTPServerThreadOn $ \_ -> do
       xftpStartWorkers rcp (Just recipientFiles)
       void $ testReceiveCF' rcp rfd Nothing filePath $ kb 256
   where
+    waitSndFileEnd :: AgentClient -> IO (AEvent 'AESndFile)
     waitSndFileEnd sndr =
       sfGet sndr >>= \case
         (_, _, SFPROG {}) -> waitSndFileEnd sndr
@@ -1188,6 +1189,7 @@ testXFTPAgentSlowDownload = withXFTPServerThreadOn $ \_ -> do
     throttle s = True <$ threadDelay (B.length s * 1000000 `div` kb 512)
     rcvCfg = agentCfg {AEnv.rcvFilesTTL = 10, AEnv.initialCleanupDelay = 1000000, AEnv.cleanupInterval = 1000000}
     rcvServers = relayXFTPServers {AEnv.netCfg = (AEnv.netCfg relayXFTPServers) {AEnv.tcpTimeoutPerKb = 1}}
+    waitRcvFileEnd :: AgentClient -> IO (RcvFileId, AEvent 'AERcvFile)
     waitRcvFileEnd rcp =
       rfGet rcp >>= \case
         (_, _, RFPROG {}) -> waitRcvFileEnd rcp

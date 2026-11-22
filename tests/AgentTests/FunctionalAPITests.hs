@@ -2670,6 +2670,7 @@ testRedeliveryAfterStopBeforeAck restartServer ps
       ups `shouldBe` [[aliceId]]
       pure msgId
       where
+        upOrMsg :: IO (Either [ConnId] AgentMsgId)
         upOrMsg =
           pGet bob >>= \case
             ("", "", AEvt SAENone (UP _ cs)) -> pure $ Left cs
@@ -2699,7 +2700,7 @@ testSendWhileAckWaitsForFullQueue = withAgentClients3 $ \alice bob carol -> do
       \case ("1", c, AEvt SAEConn OK) -> c == aliceId; _ -> False,
       \case ("", c, AEvt SAEConn (SENT _)) -> c == aliceId; _ -> False
     ]
-      <> zipWith (\i (cId, _) -> \case ("", c, AEvt SAEConn (Msg body)) -> c == cId && body == floodMsg i; _ -> False) [1 ..] floodConns
+      <> zipWith (\i (cId, _) -> \case ("", c, AEvt SAEConn (Msg body)) -> c == cId && body == floodMsg i; _ -> False) [1 :: Int ..] floodConns
   where
     sendAndSent :: AgentClient -> ConnId -> MsgBody -> ExceptT AgentErrorType IO ()
     sendAndSent c connId body = do
@@ -5876,7 +5877,7 @@ testDeferDeliveryWhileOffline ps =
     msgId <- runRight $ sendMessage alice bobId SMP.noMsgFlags "hello"
     timeout (userNetworkInterval aCfg - 500000) (get alice) `shouldReturn` Nothing
     timeout 3_000000 (get alice) `shouldReturn` Just ("", bobId, SENT msgId)
-    runRight_ $ get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
   where
     aCfg = agentCfg {userNetworkInterval = 2_000000, userOfflineDelay = 0}
 
