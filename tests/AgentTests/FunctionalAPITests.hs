@@ -492,7 +492,7 @@ functionalAPITests ps = do
       pendingWith "T1: https://github.com/simplex-chat/simplexmq/pull/2079"
       withSmpServer ps testSendWhileAckWaitsForFullQueue
     it "should reconnect and receive messages when the connection stops forwarding" $ do
-      pendingWith "T9: no fix yet"
+      pendingWith "T9: transport deadlines (M5)"
       testReceiveAfterStalledConnection ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
@@ -620,7 +620,7 @@ functionalAPITests ps = do
     it "should keep the switch to an offline peer started without pending work (expected: an error after a deadline)" $
       withSmpServer ps testSwitchOfflinePeer
     it "should complete the slow switch after deleteErrorCount failures to delete the old queue" $ do
-      pendingWith "T8: no fix yet"
+      pendingWith "T8: deadlines on unfinished states (M9)"
       testSlowSwitchStoppedOldServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
