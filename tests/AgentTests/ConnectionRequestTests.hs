@@ -327,6 +327,15 @@ connectionRequestTests =
       CSLContact SLSSimplex CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
       CSLInvitation SLSSimplex srv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im%2Cjjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
       CSLInvitation SLSSimplex shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
+    it "should parse simplex: links without the slash after the scheme" $ do
+      let channel = CSLContact SLSSimplex CCTChannel shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
+          name = SimplexNameInfo NTPublicGroup (SimplexDomain TLDSimplex "alice" [])
+      contactAddress #== ("simplex:contact#/?v=6-8&smp=" <> url queueStr)
+      connectionRequest #== ("simplex:invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> testE2ERatchetParamsStrUri)
+      channel #==# "simplex:/c#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
+      channel #== "simplex:c#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
+      name #== "simplex:/name#alice.simplex"
+      name #== "simplex:name#alice.simplex"
     it "should shorten / restore short links" $ do
       let contact = CSLContact SLSServer CCTContact
       shortenShortLink [srv] (contact srv (LinkKey "0123456789abcdef0123456789abcdef"))

@@ -110,7 +110,7 @@ boundedNonSpace = do
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
     strEncode nameType <> strEncode nameDomain
-  strP = optional "simplex:/name" *> ((strP >>= infoP) <|> infoP NTPublicGroup)
+  strP = optional ("simplex:" *> optional (A.char '/') *> "name") *> ((strP >>= infoP) <|> infoP NTPublicGroup)
     where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP
