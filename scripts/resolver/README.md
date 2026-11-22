@@ -195,8 +195,9 @@ label, so a hashed query cannot be answered with a name. See
 A subname reports the expiry and grace of the 2LD above it, since that is what
 bounds its lifetime. A subname is answered only while it is held: owned in the
 registry by the 2LD's holder, or by the subname registrar that the registrar's
-`subnameHook()` names, while its `ownerOf` names a holder. Any other subname,
-created or not, reports as not registered.
+`subnameHook()` names, while its `ownerOf` names a holder. In both cases the
+record's `owner` is the 2LD's holder. Any other subname, created or not, reports
+as not registered.
 
 ### v1: `/resolve/<name>`
 
@@ -257,7 +258,7 @@ released*.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
-`unregistered`.
+`unregistered`; for a held one, `owner` is the 2LD's holder, as in v2.
 
 #### v1 errors
 
