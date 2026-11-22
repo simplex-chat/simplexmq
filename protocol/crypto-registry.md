@@ -157,7 +157,7 @@ Other derivations:
 | tls, crypton-x509, crypton-x509-validation, cryptostore | 1.9.0, 1.7.6, 1.6.12, 0.3.0.1 | TLS, X.509, PKCS#8 |
 | [cbits/sntrup761.c](../cbits/sntrup761.c) | Copy of draft-josefsson-ntruprime-streamlined-00 ([cbits/README.md](../cbits/README.md)) | sntrup761 |
 | [cbits/sha512.c](../cbits/sha512.c) and system OpenSSL `libcrypto` | system | SHA-512 for sntrup761 |
-| `cbits/libbbs` submodule ([simplex-chat/libbbs](https://github.com/simplex-chat/libbbs)) | `11bda1da` | BBS+ (`bbs_sha256_ciphersuite`), SHA-256, SHAKE256 |
+| `cbits/libbbs` submodule ([simplex-chat/libbbs](https://github.com/simplex-chat/libbbs), branch `simplex`) | `5a51a430` | BBS+ (`bbs_sha256_ciphersuite`), SHA-256, SHAKE256 |
 | `cbits/blst` submodule ([supranational/blst](https://github.com/supranational/blst)) | `db3defd0` | BLS12-381 (C and `build/assembly.S`, `-D__BLST_PORTABLE__`) |
 | direct-sqlcipher | git `f814ee68` | SQLCipher |
 | `openssl` CLI | system | Server CA and certificate key generation (`createServerX509_`) |

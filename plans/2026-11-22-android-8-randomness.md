@@ -10,7 +10,7 @@ The Android core library fails to load on Android 8 devices whose libc has no `g
 - Apple with `BBS_CRYPTO_CC`: `SecRandomCopyBytes`, unchanged.
 - Other systems: `getentropy(3)`, unchanged; Windows keeps the shim `cbits/getentropy_win.c`.
 - `getrandom` flags: 0; the call waits until the kernel pool is initialised.
-- The change is a commit on simplex-chat/libbbs branch `simplex` (13765a1, the content of 59a0f4bf); `cbits/libbbs` points to it.
+- The change is commit 5a51a430 on simplex-chat/libbbs branch `simplex` (#4); `cbits/libbbs` points to it. The branch also has the fix of proof verification on 32-bit targets (#6) and CI that builds libbbs as simplexmq does on every shipped platform (#5).
 - `protocol/crypto-registry.md`: the libbbs randomness sources and the pinned libbbs commit.
 
 ## Randomness source
