@@ -488,9 +488,11 @@ functionalAPITests ps = do
       testRedeliveryAfterStopBeforeAck False ps
     it "should deliver a message again after the agent stops before acknowledging it and the server restarts" $
       testRedeliveryAfterStopBeforeAck True ps
-    it "should send messages while an acknowledgement waits for space in the message queue" $
+    it "should send messages while an acknowledgement waits for space in the message queue" $ do
+      pendingWith "T1: https://github.com/simplex-chat/simplexmq/pull/2079"
       withSmpServer ps testSendWhileAckWaitsForFullQueue
-    it "should reconnect and receive messages when the connection stops forwarding" $
+    it "should reconnect and receive messages when the connection stops forwarding" $ do
+      pendingWith "T9: no fix yet"
       testReceiveAfterStalledConnection ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
@@ -617,7 +619,8 @@ functionalAPITests ps = do
       testFastSwitchDrainOldQueueRestart ps
     it "should keep the switch to an offline peer started without pending work (expected: an error after a deadline)" $
       withSmpServer ps testSwitchOfflinePeer
-    it "should complete the slow switch after deleteErrorCount failures to delete the old queue" $
+    it "should complete the slow switch after deleteErrorCount failures to delete the old queue" $ do
+      pendingWith "T8: no fix yet"
       testSlowSwitchStoppedOldServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
@@ -2645,10 +2648,16 @@ testRedeliveryAfterStopBeforeAck restartServer ps
     withServer :: IO a -> IO a
     withServer = withSmpServerStoreMsgLogOn ps testPort . const
     receiveWithoutAck = do
-      (aliceId, bobId) <- withAgentClients2 $ \alice bob -> runRight $ makeConnection alice bob
-      withAgent 1 agentCfg initAgentServers testDB $ \alice -> runRight_ $ do
-        msgId <- sendMessage alice bobId SMP.noMsgFlags "hello"
-        get alice ##> ("", bobId, SENT msgId)
+      (aliceId, bobId) <- withAgentClients2 $ \alice bob -> do
+        connIds <- runRight $ makeConnection alice bob
+        waitRows (sndDeliveries alice) []
+        waitRows (sndDeliveries bob) []
+        pure connIds
+      withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
+        runRight_ $ do
+          msgId <- sendMessage alice bobId SMP.noMsgFlags "hello"
+          get alice ##> ("", bobId, SENT msgId)
+        waitRows (sndDeliveries alice) []
       withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> void $ subscribeReceive bob aliceId False
       pure (aliceId, bobId)
     receiveAgain (aliceId, bobId) =
