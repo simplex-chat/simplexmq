@@ -22,12 +22,14 @@ import qualified Data.ByteString.Lazy as LB
 import Data.Either (isLeft)
 import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import Data.Maybe (fromJust)
 import qualified Data.Set as S
 import Data.Time.Clock (addUTCTime, getCurrentTime, nominalDay)
 import Data.Time.Clock.System (getSystemTime, systemSeconds)
-import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3)
+import SMPAgentClient (agentCfg, initAgentServers, testDB, testDB2, testDB3, userServers)
+import SMPClient (forwardBothWays, forwardBytes, forwardBytesWith, testHost2, testRelayPort, withTCPRelayOn)
 import Simplex.FileTransfer.Client (XFTPClientConfig (..))
 import Simplex.FileTransfer.Description (FileChunk (..), FileDescription (..), FileDescriptionURI (..), ValidFileDescription, fileDescriptionURI, kb, mb, qrSizeLimit, pattern ValidFileDescription)
 import Simplex.FileTransfer.Protocol (FileParty (..), GrantedStorageTime (..))
@@ -103,6 +105,8 @@ xftpAgentTests =
         testXFTPAgentDeleteDuringUpload agentCfg {AEnv.xftpMaxRecipientsPerRequest = 1} 2
       it "should report NO_FILE when file is deleted from database during download" $ \_ -> testXFTPAgentDeleteDuringDownload
       it "should request additional recipient IDs when number of recipients exceeds maximum per request" testXFTPAgentRequestAdditionalRecipientIDs
+      it "should keep the recipients of a chunk when its upload is retried" $ \_ -> testXFTPAgentRetryUploadRecipients
+      it "should end a slow download with RFDONE or RFERR within rcvFilesTTL" $ \_ -> testXFTPAgentSlowDownload
       it "should complete sending file while agent is suspending" testXFTPAgentSuspendSending
       it "should suspend on timeout when file is not sent" $ \_ -> testXFTPAgentSuspendTimeout
       it "should not wait for file started while agent is suspending" testXFTPAgentSuspendNewFile
@@ -1135,3 +1139,59 @@ testXFTPAgentRequestAdditionalRecipientIDs = withXFTPServer $ do
     void $ testReceive rcp (rfds !! 99) filePath
     void $ testReceive rcp (rfds !! 299) filePath
     void $ testReceive rcp (rfds !! 499) filePath
+
+testXFTPAgentRetryUploadRecipients :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentRetryUploadRecipients = withXFTPServerThreadOn $ \_ -> do
+  filePath <- createRandomFile_ (kb 200 :: Integer) "testfile"
+  uploadLimit <- newIORef (kb 128)
+  let forwardUpTo s = atomicModifyIORef' uploadLimit $ \n -> (n - B.length s, n >= B.length s)
+      cutFirstUpload n
+        | n == 0 = forwardBothWays (forwardBytesWith forwardUpTo) forwardBytes
+        | otherwise = forwardBothWays forwardBytes forwardBytes
+  withTCPRelayOn testRelayPort xftpTestPort cutFirstUpload $ do
+    rfd <- withAgent 1 agentCfg {AEnv.xftpMaxRecipientsPerRequest = 2} relayXFTPServers testDB $ \sndr -> do
+      runRight_ $ do
+        xftpStartWorkers sndr (Just senderFiles)
+        void $ xftpSendFile sndr 1 (CF.plain filePath) 3
+      timeout 30000000 (waitSndFileEnd sndr) >>= \case
+        Just (SFDONE _ [_, _, rfd]) -> pure rfd
+        r -> error $ "expected SFDONE with 3 descriptions: " <> show r
+    withAgent 2 agentCfg relayXFTPServers testDB2 $ \rcp -> runRight_ $ do
+      xftpStartWorkers rcp (Just recipientFiles)
+      void $ testReceiveCF' rcp rfd Nothing filePath $ kb 256
+  where
+    waitSndFileEnd sndr =
+      sfGet sndr >>= \case
+        (_, _, SFPROG {}) -> waitSndFileEnd sndr
+        (_, _, r) -> pure r
+
+testXFTPAgentSlowDownload :: (HasCallStack, HasTestEnv) => IO ()
+testXFTPAgentSlowDownload = withXFTPServerThreadOn $ \_ -> do
+  filePath <- createRandomFile_ (kb 3500 :: Integer) "testfile"
+  rfd <- withTCPRelayOn testRelayPort xftpTestPort (\_ -> forwardBothWays forwardBytes forwardBytes) $
+    withAgent 1 agentCfg relayXFTPServers testDB $ \sndr -> runRight $ do
+      xftpStartWorkers sndr (Just senderFiles)
+      void $ xftpSendFile sndr 1 (CF.plain filePath) 1
+      sfProgress sndr $ mb 4
+      ("", _, SFDONE _ [rfd]) <- sfGet sndr
+      pure rfd
+  withTCPRelayOn testRelayPort xftpTestPort (\_ -> forwardBothWays forwardBytes $ forwardBytesWith throttle) $
+    withAgent 2 rcvCfg rcvServers testDB2 $ \rcp -> do
+      rfId <- runRight $ do
+        xftpStartWorkers rcp (Just recipientFiles)
+        xftpReceiveFile rcp 1 rfd Nothing True
+      timeout 25000000 (waitRcvFileEnd rcp) >>= \case
+        Just (rfId', RFDONE _) -> rfId' `shouldBe` rfId
+        Just (rfId', RFERR _) -> rfId' `shouldBe` rfId
+        r -> expectationFailure $ "expected RFDONE or RFERR: " <> show r
+  where
+    throttle s = True <$ threadDelay (B.length s * 1000000 `div` kb 512)
+    rcvCfg = agentCfg {AEnv.rcvFilesTTL = 10, AEnv.initialCleanupDelay = 1000000, AEnv.cleanupInterval = 1000000}
+    rcvServers = relayXFTPServers {AEnv.netCfg = (AEnv.netCfg relayXFTPServers) {AEnv.tcpTimeoutPerKb = 1}}
+    waitRcvFileEnd rcp =
+      rfGet rcp >>= \case
+        (_, _, RFPROG {}) -> waitRcvFileEnd rcp
+        (_, rfId, r) -> pure (rfId, r)
+
+relayXFTPServers :: HasTestEnv => AEnv.InitialAgentServers
+relayXFTPServers = initAgentServers {AEnv.xftp = userServers $ testXFTPServer {host = testHost2, port = testRelayPort} :| []}
