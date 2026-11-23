@@ -2901,7 +2901,7 @@ retrySndOp c loop = do
 withConnLockNotify :: AgentClient -> ConnId -> Text -> AM (Maybe ATransmission) -> AM ()
 withConnLockNotify c connId name action = do
   t_ <- withConnLock c connId name action
-  forM_ t_ $ atomically . writeTBQueue (subQ c)
+  forM_ t_ $ liftIO . nonBlockingWriteTBQueue (subQ c)
 
 ackMessage' :: AgentClient -> Maybe AsyncCmdId -> ConnId -> AgentMsgId -> Maybe MsgReceiptInfo -> AM ()
 ackMessage' c cmdId_ connId msgId rcptInfo_ = withConnLockNotify c connId "ackMessage" $ do
