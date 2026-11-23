@@ -52,6 +52,7 @@ import Util
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
 import Control.Concurrent (forkIO)
+import Control.Concurrent.Async (AsyncCancelled (..), async, cancel, waitCatch)
 import qualified Control.Exception as E
 import Data.List (sortOn)
 import Database.PostgreSQL.Simple (Only (..))
@@ -84,6 +85,7 @@ msgStoreTests = do
     it "should retry a message write aborted by a deadlock" $ withMsgStore testPostgresStoreConfig testWriteMsgDeadlock
     it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
     it "should end the thread cancelled during database query" $ withMsgStore testPostgresStoreConfig testCancelDBQuery
+    it "should stop when cancelled during reconnect after database error" $ withMsgStore testPostgresStoreConfig testReconnectCancel
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -636,4 +638,15 @@ testCancelDBQuery :: PostgresMsgStore -> IO ()
 testCancelDBQuery ms =
   testCancelledWhenBlocked $ \started -> runExceptT $ withDB' "test" (queueStore ms) $ \db ->
     started >> (DB.query_ db "SELECT pg_sleep(10)" :: IO [Only ()])
+
+testReconnectCancel :: PostgresMsgStore -> IO ()
+testReconnectCancel ms = do
+  let st = dbStore $ queueStore ms
+  reconnecting <- newEmptyTMVarIO
+  let st' = st {dbConnect = atomically (putTMVar reconnecting ()) >> threadDelay maxBound >> dbConnect st}
+  a <- async $ E.try @DB.SqlError $ withTransaction st' $ \db -> DB.query_ db "SELECT 1/0" :: IO [Only Int]
+  atomically $ takeTMVar reconnecting
+  cancel a
+  (either E.fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just AsyncCancelled
+  atomically (lengthTBQueue $ dbPoolConns $ dbPool st) `shouldReturn` fromIntegral (dbPoolSize st)
 #endif

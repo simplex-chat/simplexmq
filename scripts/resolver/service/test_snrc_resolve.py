@@ -745,7 +745,7 @@ class ErrorCodeTests(unittest.TestCase):
             snrc.eth_call,
             snrc.chain_now,
         )
-        snrc.REGISTRIES = {"testing": self.REGISTRY, "simplex": ""}
+        snrc.REGISTRIES = {"testing": self.REGISTRY, "nosuchtld": ""}
         snrc.REGISTRARS = {"testing": self.REGISTRAR}
         snrc.CONTROLLERS = {"testing": ""}
         snrc.chain_now = lambda: int(time.time())
@@ -1038,6 +1038,7 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(body["type"], "registered")
         self.assertEqual(body["expires"], expires)
         self.assertEqual(body["nameRecord"]["name"], "sub.acme.testing")
+        self.assertEqual(body["nameRecord"]["owner"], self.OWNER)
 
     def test_a_subname_nobody_created_is_not_registered(self):
         """The registrar only tracks 2LDs, so the parent's registration says
@@ -1047,10 +1048,42 @@ class RegistrationV2Tests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["type"], "available")
 
-    def test_a_subname_the_subname_registrar_holds_for_the_holder_is_registered(self):
+    def test_a_subname_the_subname_registrar_holds_for_the_holder_is_registered_with_the_holder_as_owner(self):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
         _, body = registration("sub.acme.testing")
         self.assertEqual(body["type"], "registered")
+        self.assertEqual(body["nameRecord"]["owner"], self.OWNER)
+
+    def test_v1_reports_the_holder_of_a_subname_the_holder_owns(self):
+        snrc.eth_call = self._chain(self.now + 3600)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["owner"], self.OWNER)
+
+    def test_v1_reports_the_holder_of_a_subname_the_subname_registrar_holds(self):
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["owner"], self.OWNER)
+
+    def test_a_subname_whose_owner_of_reverts_is_not_registered(self):
+        chain = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+
+        def eth_call(to, data):
+            if data.startswith(snrc.selector("ownerOf(uint256)")):
+                raise RuntimeError("execution reverted")
+            return chain(to, data)
+
+        snrc.eth_call = eth_call
+        _, body = registration("sub.acme.testing")
+        self.assertEqual(body["type"], "available")
+
+    def test_v1_without_a_registrar_does_not_resolve_a_subname_the_subname_registrar_owns(self):
+        snrc.REGISTRARS = {"testing": ""}
+        snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER, subname_holder=self.OWNER)
+        status, body = snrc.resolve("sub.acme.testing")
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"], "unregistered")
 
     def test_a_subname_the_subname_registrar_no_longer_holds_is_not_registered(self):
         snrc.eth_call = self._chain(self.now + 3600, owner=self.SUBNAMES, holder=self.OWNER)
@@ -1176,6 +1209,7 @@ class FakeChain:
     ORACLE = "0x1e0c9a2b9d1a4c8f7b3e5d6a9c2f4b8e1d7a3c50"
     OWNER = "0xd83bd7e0e6b8a4c1f2593a7b0c4e8d1a6f9b2c37"
     RESOLVER = "0x80fa2b1c3d4e5f60718293a4b5c6d7e8f9012345"
+    SUBNAMES = RegistrationV2Tests.SUBNAMES
     GRACE = 90 * 86400
     TEXTS = {"nickname": "Acme", "url": "https://acme.example", "simplex.channel": "https://a.example/c#1;https://b.example/c#2"}
 
@@ -1310,7 +1344,7 @@ class FakeNodeTestCase(unittest.TestCase):
         self._saved = (snrc.RPC, snrc.RPC_URL, snrc.REGISTRIES, snrc.REGISTRARS, snrc.CONTROLLERS, snrc.NAME_POLICIES)
         snrc.RPC = self.node.url
         snrc.RPC_URL = urlparse(snrc.RPC)
-        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY, "simplex": ""}
+        snrc.REGISTRIES = {"testing": FakeChain.REGISTRY}
         snrc.REGISTRARS = {"testing": FakeChain.REGISTRAR}
         snrc.CONTROLLERS = {"testing": FakeChain.CONTROLLER}
         snrc._multicall_failed_logged = False
@@ -1417,18 +1451,42 @@ class BatchedReadsTests(FakeNodeTestCase):
         self.assertEqual(record["nickname"], "Acme")
         self.assertEqual(record["simplexChannel"], ["https://a.example/c#1", "https://b.example/c#2"])
         self.assertIsNone(record["btc"])
+        self.assertEqual(record["owner"], FakeChain.OWNER)
 
     def test_a_hashed_query_is_named_from_the_same_round_trip(self):
         hashed = "[" + snrc.keccak(b"acme").hex() + "].testing"
         status, body = self.assert_same_answer(snrc.registration, hashed, 2)
         self.assertEqual(body["registration"]["nameRecord"]["name"], "acme.testing")
+        self.assertEqual(body["registration"]["nameRecord"]["owner"], FakeChain.OWNER)
 
     def test_an_available_name_is_priced_in_three_round_trips(self):
         status, body = self.assert_same_answer(snrc.registration, "free.testing", 3)
         self.assertEqual(body["registration"]["type"], "available")
 
     def test_v1_answers_the_same(self):
-        self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+        status, body = self.assert_same_answer(snrc.resolve, "acme.testing", 2)
+        self.assertEqual(body["owner"], FakeChain.OWNER)
+
+    def add_subname_of_the_subname_registrar(self, name, holder):
+        node = snrc.node_of(name)
+        self.node.chain.answers.update({
+            snrc.subname_hook_call(FakeChain.REGISTRAR): "0x" + snrc.encode_uint(int(FakeChain.SUBNAMES, 16)),
+            snrc.resolver_call(FakeChain.REGISTRY, node): "0x" + snrc.encode_uint(int(FakeChain.RESOLVER, 16)),
+            snrc.owner_call(FakeChain.REGISTRY, node): "0x" + snrc.encode_uint(int(FakeChain.SUBNAMES, 16)),
+            snrc.subname_owner_call(FakeChain.SUBNAMES, node): "0x" + snrc.encode_uint(int(holder, 16)),
+        })
+
+    def test_a_subname_the_subname_registrar_holds_takes_three_round_trips(self):
+        self.add_subname_of_the_subname_registrar("held.acme.testing", FakeChain.OWNER)
+        status, body = self.assert_same_answer(snrc.registration, "held.acme.testing", 3)
+        self.assertEqual(body["registration"]["nameRecord"]["owner"], FakeChain.OWNER)
+        status, body = self.assert_same_answer(snrc.resolve, "held.acme.testing", 3)
+        self.assertEqual(body["owner"], FakeChain.OWNER)
+
+    def test_a_subname_the_subname_registrar_no_longer_holds_is_answered_in_four_round_trips(self):
+        self.add_subname_of_the_subname_registrar("gone.acme.testing", snrc.ZERO_ADDR)
+        status, body = self.assert_same_answer(snrc.registration, "gone.acme.testing", 4)
+        self.assertEqual(body["registration"]["type"], "available")
 
     def test_reservations_held_by_a_name_policy_are_read_in_the_same_rounds(self):
         snrc.NAME_POLICIES = {"testing": FakeChain.NAME_POLICY}
@@ -1486,7 +1544,7 @@ class NamePoliciesTests(FakeNodeTestCase):
         self.assertEqual((record.getMessage(), record.fields["tld"], record.fields["reservations"]), ("no_name_policy", "testing", "controller"))
 
     def test_an_unconfigured_controller_is_not_read(self):
-        snrc.CONTROLLERS = {"simplex": ""}
+        snrc.CONTROLLERS = {"nosuchtld": ""}
         self.assertEqual(self.requests_made(snrc.name_policies), ({}, 0))
 
     def test_an_address_without_a_contract_is_read_as_no_policy(self):

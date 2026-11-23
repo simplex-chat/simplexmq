@@ -6,8 +6,8 @@
 
 | Trigger | Build | Jobs |
 |---|---|---|
-| a push to a draft pull request<br>a manual run (workflow_dispatch)<br>a push to master or stable in a fork | reduced | build-reduced: ubuntu-24.04 x86-64, GHC 9.6.3, at -O0 (-O2 on pushes), without the standard build |
-| a pull request marked ready for review, and later pushes to it<br>a push to master or stable in simplex-chat/simplexmq<br>a push of a v* tag | full | build: 5 entries (GHC 8.10.7 and 9.6.3, x86-64 and aarch64), at -O0 on pull requests and -O2 on pushes |
+| a push to a draft pull request<br>a manual run (workflow_dispatch)<br>a push to master or stable in a fork | reduced | build-reduced: 2 entries, ubuntu-24.04 x86-64, GHC 9.6.3, at -O0 (-O2 on pushes), without the standard build |
+| a pull request marked ready for review, and later pushes to it<br>a push to master or stable in simplex-chat/simplexmq<br>a push of a v* tag | full | build: 6 entries (GHC 8.10.7 and 9.6.3, x86-64 and aarch64), at -O0 on pull requests and -O2 on pushes |
 
 Both builds also run maybe-release and resolver (python). Tests run on the x86-64 entries, after xftp-web is built with Node.js 22 (`npm install`, `npm run build`) for the XFTP Web Client tests. The ubuntu-24.04 x86-64 entry also runs the tests built with `-fclient_postgres -fslow_servers -fconn_lock_checks` (agent with the PostgreSQL store, XFTP servers that delay responses for the slow-server test, and an agent that fails server requests made inside a connection lock, which the other builds skip), in the build directory dist-client-postgres, in step "Test with PostgreSQL agent store". After the tests, step "Check generated files" fails if a test changed a tracked file: the schema dump and query plan tests overwrite their files, so a stale file fails here even when the test passes on retry.
 

@@ -57,7 +57,7 @@ import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
 import Simplex.Messaging.Server.QueueStore (ServerEntityStatus (..))
 import Simplex.Messaging.Server.StoreLog (openWriteStoreLog)
 import Simplex.Messaging.SystemTime (RoundedSystemTime (..), getSystemSeconds)
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), Transport (cGet), TransportPeer (..), closeTLS, defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..), defaultHTTP2BufferSize)
 import Simplex.Messaging.Transport.HTTP2.File (fileBlockSize)
@@ -92,6 +92,7 @@ xftpServerTests = do
       it "should not disconnect clients during downloads longer than inactivity ttl" testLongDownloadExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
       it "should time out TLS handshake when TLS errors are logged" $ \_ -> testTLSHandshakeTimeout
+      it "should time out closing TLS connection" $ \_ -> testCloseTLSTimeout
       it "should time out receiving file chunk" $ \_ -> testReceiveFileTimeout
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
@@ -333,12 +334,12 @@ readBody getPart limit delay = go 0
 
 testCancelledClientConnect :: HasTestEnv => Expectation
 testCancelledClientConnect =
-  withStallingServerOn' xftpTestPort $ \accepted closed -> do
+  withStallingServerOn' xftpTestPort $ \accepted closed -> replicateM_ 1000 $ do
     ts <- getCurrentTime
     a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
-    cancel a
-    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+    timeout 5000000 (cancel a) `shouldReturn` Just ()
+    timeout 5000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
 testTLSHandshakeTimeout :: HasTestEnv => Expectation
 testTLSHandshakeTimeout =
@@ -348,6 +349,21 @@ testTLSHandshakeTimeout =
   where
     cfg :: TransportClientConfig
     cfg = defaultTransportClientConfig {logTLSErrors = True}
+
+testCloseTLSTimeout :: Expectation
+testCloseTLSTimeout = do
+  closed <- newEmptyTMVarIO
+  ctx <- T.contextNew (backend closed) (T.defaultParamsClient "localhost" "")
+  timeout 100000 (closeTLS ctx) `shouldReturn` Nothing
+  atomically (tryReadTMVar closed) `shouldReturn` Just ()
+  where
+    backend closed =
+      T.Backend
+        { T.backendFlush = pure (),
+          T.backendClose = atomically $ putTMVar closed (),
+          T.backendSend = \_ -> threadDelay maxBound,
+          T.backendRecv = \_ -> pure ""
+        }
 
 testReceiveFileTimeout :: HasTestEnv => Expectation
 testReceiveFileTimeout =
