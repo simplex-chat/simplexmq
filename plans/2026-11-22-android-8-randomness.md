@@ -50,4 +50,4 @@ flowchart TD
 
 - libbbs: its CMake tests (`make test`).
 - simplexmq: `/Core tests/Encryption tests/BBS+/` and `/Core tests/Encryption tests/Entitlement/`.
-- Android: `getentropy` absent from the undefined symbols of the armv7a and aarch64 `libsimplex.so` built from simplex-chat with this simplexmq; the app started on an Android 8 device.
+- Android: in the armv7a `libsimplex.so` built from simplex-chat with this simplexmq, `getentropy` is a weak import, which the Android linker resolves to null; every other import is exported by Android 8.0 (bionic `android-8.0.0_r1`) or defined by the app; the app started on an Android 8 device.
