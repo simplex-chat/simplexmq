@@ -47,6 +47,7 @@ fileDescriptionTests = do
     describe "file description URIs" $ do
       it "round trip file description URI" testFileDescriptionURI
       it "round trip file description URI with extra JSON" testFileDescriptionURIExtras
+      it "parse file description URI without the slash after the scheme" testFileDescriptionURIWithoutSlash
 
 fileDescPath :: FilePath
 fileDescPath = "tests/fixtures/file_description.yaml"
@@ -249,6 +250,14 @@ testFileDescriptionURIExtras = do
   vfd <- either fail pure $ validateFileDescription fileDesc
   let descr = FileDescriptionURI SSSimplex vfd $ Just "{\"something\":\"extra\",\"more\":true}"
   strDecode (strEncode descr) `shouldBe` Right descr
+
+testFileDescriptionURIWithoutSlash :: IO ()
+testFileDescriptionURIWithoutSlash = do
+  vfd <- either fail pure $ validateFileDescription fileDesc
+  let descr = FileDescriptionURI SSSimplex vfd mempty
+      (prefix, rest) = B.splitAt 9 $ strEncode descr
+  prefix `shouldBe` "simplex:/"
+  strDecode ("simplex:" <> rest) `shouldBe` Right descr
 
 testHashChunks :: HasTestEnv => IO ()
 testHashChunks = do

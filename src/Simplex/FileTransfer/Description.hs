@@ -46,7 +46,7 @@ module Simplex.FileTransfer.Description
   )
 where
 
-import Control.Applicative (optional)
+import Control.Applicative (optional, (<|>))
 import Control.Monad ((<=<))
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
@@ -57,6 +57,7 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isHexDigit)
+import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -285,8 +286,8 @@ instance StrEncoding FileDescriptionURI where
       queryStr = strEncode $ QSP QEscape qs
       qs = ("desc", strEncode description) : maybe [] (\cd -> [("data", encodeUtf8 cd)]) clientData
   strP = do
-    scheme <- strP
-    _ <- "/file" <* optional (A.char '/') <* "#/?"
+    scheme <- "simplex:" *> optional (A.char '/') $> SSSimplex <|> strP <* A.char '/'
+    _ <- "file" <* optional (A.char '/') <* "#/?"
     query <- strP
     description <- queryParam "desc" query
     let clientData = safeDecodeUtf8 <$> queryParamStr "data" query
