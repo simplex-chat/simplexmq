@@ -492,7 +492,7 @@ functionalAPITests ps = do
       pendingWith "fixed in https://github.com/simplex-chat/simplexmq/pull/2079"
       withSmpServer ps testSendWhileAckWaitsForFullQueue
     it "should reconnect and receive messages when the connection stops forwarding" $ do
-      pendingWith "until the client closes a connection after its pings time out"
+      pendingWith "until the client closes a connection as soon as its pings time out"
       testReceiveAfterStalledConnection ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
