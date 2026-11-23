@@ -111,7 +111,7 @@ where
 
 import Control.Applicative (optional)
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, cancel, waitEither)
+import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -393,10 +393,10 @@ recvTLS cxt = T.recvData cxt <* T.contextGetInformation cxt
 closeTLS :: T.Context -> IO ()
 closeTLS ctx = do
   byeThread <- async $ T.bye ctx
-  timeoutThread <- async $ threadDelay 1000000
-  (void $ waitEither byeThread timeoutThread)
-    `E.finally` (T.contextClose ctx >> cancel byeThread >> cancel timeoutThread)
-    `catchOwn'` \_ -> pure ()
+  threadDelay 50000
+  T.contextClose ctx
+  threadDelay 150000
+  cancel byeThread
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
