@@ -37,6 +37,7 @@ import AgentTests.FunctionalAPITests
     withAgentClients3,
     withAgentClientsCfg2,
     withAgentClientsCfgServers2,
+    withFullNtfSubQ,
     (##>),
     (=##>),
     pattern CON,
