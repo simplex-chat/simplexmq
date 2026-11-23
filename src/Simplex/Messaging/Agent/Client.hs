@@ -1166,7 +1166,6 @@ checkNoConnLock AgentClient {connLockHolders, connLockViolations} = do
     throwE $ INTERNAL $ "server request in connection lock " <> T.unpack name
 
 checkBatchOutsideConnLock :: AgentClient -> [q] -> AM' [(q, Either AgentErrorType r)] -> AM' [(q, Either AgentErrorType r)]
-checkBatchOutsideConnLock _ [] batch = batch
 checkBatchOutsideConnLock c qs batch = tryAllErrors' (checkNoConnLock c) >>= either (\e -> pure $ map (,Left e) qs) (const batch)
 #else
 withLockHolder :: AgentClient -> Text -> m a -> m a
