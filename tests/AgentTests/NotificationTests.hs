@@ -66,8 +66,8 @@ import SMPAgentClient (agentCfg, initAgentServers, initAgentServers2, testDB, te
 import SMPClient
 import Simplex.Messaging.Agent hiding (checkNtfToken, createConnection, joinConnection, registerNtfToken, sendMessage, verifyNtfToken)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), withStore')
-import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers, NtfSupervisor (..), NtfSupervisorCommand (..))
+import Simplex.Messaging.Agent.Client (ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), withStore')
+import Simplex.Messaging.Agent.Env.SQLite (AgentConfig, Env (..), InitialAgentServers)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, SENT)
 import Simplex.Messaging.Agent.Store.AgentStore (getSavedNtfToken)
 import Simplex.Messaging.Agent.Store.Common (withTransaction)
@@ -89,7 +89,6 @@ import Simplex.Messaging.Server.Information (ServerPublicInfo (..))
 import Simplex.Messaging.Server.QueueStore.QueueInfo (QueueInfo (..))
 import Simplex.Messaging.Transport (ASrvTransport)
 import Simplex.Messaging.Transport.Server (TransportServerConfig (..))
-import Simplex.Messaging.Util (unlessM)
 import System.Process (callCommand)
 import Test.Hspec hiding (fit, it)
 import UnliftIO
@@ -921,15 +920,7 @@ testSwitchFullNtfQueue cfg completeSwitch apns =
       exchangeGreetings a bId b aId
       _ <- registerTestToken a "abcd" NMInstant apns
       pure (aId, bId)
-    let q = ntfSubQ $ ntfSupervisor $ agentEnv a
-        setNtfSuspended suspended = atomically $ modifyTVar' (ntfNetworkOp a) $ \s -> s {opSuspended = suspended}
-        fill = unlessM (isFullTBQueue q) $ writeTBQueue q (NSCDeleteSub, ["x"]) >> fill
-    setNtfSuspended True
-    atomically $ writeTBQueue q (NSCDeleteSub, ["x"])
-    atomically $ isEmptyTBQueue q >>= checkSTM
-    atomically fill
-    timeout 20000000 (runExceptT $ switchConnectionAsync a "" bId >> completeSwitch a bId b aId) `shouldReturn` Just (Right ())
-    setNtfSuspended False
+    withFullNtfSubQ a $ timeout 20000000 (runExceptT $ switchConnectionAsync a "" bId >> completeSwitch a bId b aId) `shouldReturn` Just (Right ())
 
 testNotificationsOldToken :: HasTestEnv => APNSMockServer -> IO ()
 testNotificationsOldToken apns =
