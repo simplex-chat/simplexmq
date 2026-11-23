@@ -110,6 +110,8 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel, waitEither)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -389,9 +391,11 @@ recvTLS :: T.Context -> IO ByteString
 recvTLS cxt = T.recvData cxt <* T.contextGetInformation cxt
 
 closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `E.finally` T.contextClose ctx
+closeTLS ctx = do
+  byeThread <- async $ T.bye ctx
+  timeoutThread <- async $ threadDelay 1000000
+  (void $ waitEither byeThread timeoutThread)
+    `E.finally` (T.contextClose ctx >> cancel byeThread >> cancel timeoutThread)
     `catchOwn'` \_ -> pure ()
 
 defaultSupportedParams :: T.Supported
