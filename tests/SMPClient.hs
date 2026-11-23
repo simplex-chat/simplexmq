@@ -43,7 +43,7 @@ import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCert
 import Simplex.Messaging.Util (unlessM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
-import System.Directory (copyFile, removeFile)
+import System.Directory (copyFile, removeFile, renameFile)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
@@ -425,7 +425,8 @@ testWebCredentialReload port = do
   copyFile (fixtureFile "web2" ".key") $ privateKeyFile testWebCredentials
   threadDelay credentialReloadWait
   servedCertificateShouldBe port "web2"
-  writeFile (certificateFile testWebCredentials) ""
+  writeFile (testPath "empty.crt") ""
+  renameFile (testPath "empty.crt") $ certificateFile testWebCredentials
   threadDelay credentialReloadWait
   servedCertificateShouldBe port "web2"
   removeFile $ privateKeyFile testWebCredentials
