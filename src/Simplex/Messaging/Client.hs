@@ -215,7 +215,7 @@ data PClient v err msg = PClient
 smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
-  connected <- newTVarIO False
+  connected <- newTVarIO True
   clientCorrId <- atomically $ C.newRandomDRG g
   sentCommands <- TM.emptyIO
   sendPings <- newTVarIO False
@@ -666,10 +666,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             `E.finally` (failPendingRequests c >> disconnected c')
 
     failPendingRequests :: PClient v err msg -> IO ()
-    failPendingRequests PClient {sentCommands} = atomically $ swapTVar sentCommands mempty >>= mapM_ failRequest
-      where
-        failRequest Request {pending, responseVar} =
-          whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
+    failPendingRequests PClient {connected, sentCommands} = atomically $ do
+      writeTVar connected False
+      swapTVar sentCommands mempty >>= mapM_ failRequest
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -1394,13 +1393,17 @@ sendProtocolCommand_ c@ProtocolClient {thParams = THandleParams {blockSize, serv
           s = tEncodeBatch1 serviceAuth t
 
 sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
-sendBlock ProtocolClient {client_ = PClient {sentCommands, sndQ, msgQ}} rs t getResponses = case msgQ of
+sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses = case msgQ of
   Just _ -> register >> send
   Nothing -> E.bracket_ register unregister send
   where
     register = atomically $ forM_ rs $ \r@Request {corrId} -> TM.insert corrId r sentCommands
     unregister = atomically $ forM_ rs $ \Request {corrId} -> TM.delete corrId sentCommands
-    send = withAsync (atomically $ writeTBQueue sndQ t) (const getResponses)
+    send = withAsync (atomically $ ifM (readTVar connected) (writeTBQueue sndQ t) (mapM_ failRequest rs)) (const getResponses)
+
+failRequest :: Request err msg -> STM ()
+failRequest Request {pending, responseVar} =
+  whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
