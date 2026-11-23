@@ -88,7 +88,7 @@ import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSe
 import System.Mem.Weak (deRefWeak)
 import System.Timeout (timeout)
 import UnliftIO (IOMode (..), UnliftIO (..), askUnliftIO, race_, unliftIO, withFile)
-import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, forkIOWithUnmask, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
@@ -668,7 +668,7 @@ getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} ke
   where
     createWorker v = do
       q <- liftIO $ newTBQueueIO pushQSize
-      tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)
+      tId <- mkWeakThreadId =<< forkIOWithUnmask (\unmask -> unmask $ runPushWorker s srvHost_ isOwn q)
       atomically $ putTMVar (sessionVar v) PushWorker {workerQ = q, workerThreadId = tId}
       pure q
     existingWorker v = workerQ <$> atomically (readTMVar $ sessionVar v)

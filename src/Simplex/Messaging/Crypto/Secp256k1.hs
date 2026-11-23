@@ -1,3 +1,5 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -29,6 +31,7 @@ import Control.Monad (unless, void, when)
 import Crypto.Number.Serialize (i2ospOf_, os2ip)
 import qualified Crypto.PubKey.ECC.Types as ECT
 import Crypto.Random (ChaChaDRG)
+import qualified Data.Aeson as J
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.ByteArray (ScrubbedBytes)
 import qualified Data.ByteArray as BA
@@ -42,7 +45,7 @@ import Foreign.C
 import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (..), blobFieldDecoder)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding (Encoding (..))
-import Simplex.Messaging.Encoding.String (StrEncoding (..))
+import Simplex.Messaging.Encoding.String (StrEncoding (..), StrJSON (..))
 import System.IO.Unsafe (unsafePerformIO)
 
 -- Sizes
@@ -90,6 +93,7 @@ data RecoverableSignature = RecoverableSignature
     rsRecId :: Word8
   }
   deriving (Eq, Show)
+  deriving (J.ToJSON, J.FromJSON) via (StrJSON "RecoverableSignature" RecoverableSignature)
 
 instance Encoding RecoverableSignature where
   smpEncode RecoverableSignature {rsR, rsS, rsRecId} = rsR <> rsS <> B.singleton (27 + rsRecId)

@@ -45,6 +45,7 @@ module AgentTests.FunctionalAPITests
     nGet,
     pGet,
     getInAnyOrder,
+    withUP,
     (##>),
     (=##>),
     pattern CON,
@@ -100,7 +101,7 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAg
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
-import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, getConn, getConnIds, getRatchetX3dhKeys)
+import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, deleteSndMsgsExpired, getConn, getConnIds, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
 import qualified Simplex.Messaging.Agent.Store.DB as DB
@@ -209,6 +210,13 @@ pGet' c skipWarn = do
     RFWARN {} | skipWarn -> pGet c
     SFWARN {} | skipWarn -> pGet c
     _ -> pure t
+
+waitDisconnected :: HasCallStack => AgentClient -> IO ()
+waitDisconnected c =
+  timeout 5000000 (atomically $ readTBQueue $ subQ c) >>= \case
+    Just (_, _, AEvt SAENone (CONNECT _ _)) -> waitDisconnected c
+    Just (_, _, AEvt SAENone (DISCONNECT _ _)) -> pure ()
+    r -> error $ "expected DISCONNECT, received " <> show r
 
 pattern CONF :: ConfirmationId -> [SMPServer] -> ConnInfo -> AEvent e
 pattern CONF conId srvs connInfo <- A.CONF conId PQSupportOn srvs connInfo
@@ -470,6 +478,10 @@ functionalAPITests ps = do
       testDeliverClientRestart ps
     it "should deliver messages to the user once, even if repeat delivery is made by the server (no ACK)" $
       testDuplicateMessage ps
+    it "should deliver message again after client restart when a message was sent after it" $
+      testDuplicateMessageAfterSent ps
+    it "should acknowledge a message again after it is deleted" $
+      withSmpServer ps testAckDeletedMessage
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
     it "should connect to the server when server goes up if it initially was down" $
@@ -520,6 +532,8 @@ functionalAPITests ps = do
       testInactiveWithSubs ps
     it "should NOT disconnect active clients" $
       testActiveClientNotDisconnected ps
+  describe "Starting agent" $
+    it "should not start agent after the start timed out" testAgentStartTimeout
   describe "Suspending agent" $ do
     it "should update client when agent is suspended" $
       withSmpServer ps testSuspendingAgent
@@ -646,6 +660,11 @@ functionalAPITests ps = do
       withSmpServer ps testConnectionVerifyCodes
   describe "Delivery receipts" $ do
     it "should send and receive delivery receipt" $ withSmpServer ps testDeliveryReceipts
+    it "should deliver receipt again after client restart without acknowledgement" $ testDuplicateReceipt ps False False
+    it "should deliver receipt again after client restart before its status is saved" $ testDuplicateReceipt ps True False
+    it "should deliver receipt again after client restart when a message was sent after it" $ testDuplicateReceipt ps False True
+    it "should delete sent message after its receipt is acknowledged" $ withSmpServer ps testReceiptDeletesSentMessage
+    it "should accept and delete receipt for deleted sent message" $ withSmpServer ps testReceiptForDeletedSentMessage
     it "send delivery receipts concurrently with messages" $ testDeliveryReceiptsConcurrent ps
   describe "Connections with apps of earlier versions" $ do
     describe "app with agent versions 2-6, client versions 1-3, e2e versions 2-3" $
@@ -1623,18 +1642,24 @@ testServiceRequestResilient ps = withAgentClients2 $ \service client -> do
   reqAsync <- async $ runExceptT $ sendServiceRequestAsync client 1 connReq Nothing Nothing "resilient request"
   threadDelay 500000 -- let the enqueued send retry against the down server before bringing it up
   -- server up: the request is delivered and the service receives it
-  invId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
-    ("", "", UP _ _) <- nGet service
-    ("", _, SREQ invId _ "resilient request") <- get service
-    pure invId :: ExceptT AgentErrorType IO InvitationId
+  invId <- withSmpServerStoreLogOn ps testPort $ \_ -> do
+    let upOrReq =
+          pGet service >>= \case
+            ("", "", AEvt SAENone (UP _ _)) -> pure $ Left ()
+            ("", _, AEvt SAEConn (SREQ i _ "resilient request")) -> pure $ Right i
+            r -> error $ "unexpected event: " <> show r
+    ([()], [i]) <- partitionEithers <$> replicateM 2 upOrReq
+    pure i
   ("", "", DOWN _ _) <- nGet service
   -- server down: the service replies; the async reply is enqueued and retried until the server is back
   replyConnId <- runRight $ sendServiceReplyAsync service "1" 1 invId "resilient response"
   -- server up: the reply is delivered, the requester's blocking call returns the response, the service gets SENT
   resp <- withSmpServerStoreLogOn ps testPort $ \_ -> do
-    ("", "", UP _ _) <- nGet service
-    ("", sentConnId, A.SSENT _ _) <- get service
-    sentConnId `shouldBe` replyConnId
+    getInAnyOrder
+      service
+      [ \case ("", "", AEvt SAENone (UP _ _)) -> True; _ -> False,
+        \case ("", c, AEvt SAEConn (A.SSENT _ _)) -> c == replyConnId; _ -> False
+      ]
     wait reqAsync
   resp `shouldBe` Right "resilient response"
 
@@ -1789,10 +1814,8 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
     threadDelay 500000
     withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ -> do
       runRight $ do
-        ("", "", UP _ _) <- nGet bob
+        liftIO $ getUpInfoCon bob [aliceId] aliceId "alice's connInfo"
         get alice2 ##> ("", bobId, CON)
-        get bob ##> ("", aliceId, INFO "alice's connInfo")
-        get bob ##> ("", aliceId, CON)
         exchangeGreetings alice2 bobId bob aliceId
     disposeAgentClient alice2
     disposeAgentClient bob
@@ -1841,9 +1864,7 @@ testInvitationErrors ps restart = do
   ("", "", DOWN _ [_]) <- nGet a
   withServer2 ps $ do
     get a ##> ("", bId, CON) -- note that server 1 is down, CON event is sent when HELLO is sent to server 2
-    ("", "", UP _ [_]) <- nGet b'
-    get b' ##> ("", aId, INFO "alice's connInfo")
-    get b' ##> ("", aId, CON)
+    getUpInfoCon b' [aId] aId "alice's connInfo"
     withServer1 ps $ do
       ("", "", UP _ [_]) <- nGet a
       runRight_ $ exchangeGreetingsViaProxyMsgId_ False PQEncOn 2 (2 + n) a bId b' aId
@@ -1866,6 +1887,20 @@ restartAgent_ getAgent restart c cIds
       all isRight rs `shouldBe` True
       pure c'
   | otherwise = pure c
+
+getUpInfoCon :: HasCallStack => AgentClient -> [ConnId] -> ConnId -> ConnInfo -> Expectation
+getUpInfoCon c upConnIds connId info =
+  getInAnyOrder
+    c
+    [ \case ("", "", AEvt SAENone (UP _ cs)) -> S.fromList cs == S.fromList upConnIds; _ -> False,
+      \case ("", cId, AEvt SAEConn (INFO info')) -> cId == connId && info' == info; _ -> False,
+      \case ("", cId, AEvt SAEConn CON) -> cId == connId; _ -> False
+    ]
+
+waitAck :: AgentClient -> ConnId -> IO ()
+waitAck c connId = do
+  ServerQueueInfo {info = QueueInfo {qiSize}} <- runRight $ getConnectionQueueInfo c NRMInteractive connId
+  when (qiSize > 0) $ threadDelay 20000 >> waitAck c connId
 
 testContactErrors :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> IO ()
 testContactErrors ps restart = do
@@ -1896,6 +1931,7 @@ testContactErrors ps restart = do
             Left _ -> putStrLn "retrying send" >> threadDelay 200000 >> loopSend
     loopSend
     ("", _, A.REQ invId PQSupportOn _ "bob's connInfo" _ _) <- get a
+    waitAck a contactId
     pure invId
   ("", "", DOWN _ [_]) <- nGet a
   (bId, _) <- runRight $ A.prepareConnectionToAccept a 1 True invId PQSupportOn
@@ -1925,17 +1961,12 @@ testContactErrors ps restart = do
             Left _ -> putStrLn "retrying accept confirm" >> threadDelay 200000 >> loopConfirm (n + 1)
     n <- loopConfirm 1
     ("", _, A.CONF confId PQSupportOn _ "alice's connInfo") <- get b''
-    let waitAck = do
-          ServerQueueInfo {info = QueueInfo {qiSize}} <- runRight $ getConnectionQueueInfo b'' NRMInteractive aId
-          when (qiSize > 0) $ threadDelay 20000 >> waitAck
-    waitAck
+    waitAck b'' aId
     pure (n, confId)
   ("", "", DOWN _ [_]) <- nGet b''
   runRight_ $ allowConnection b'' aId confId "bob's connInfo"
   withServer1 ps $ do
-    ("", "", UP _ [_, _]) <- nGet a'
-    get a' ##> ("", bId, A.INFO PQSupportOn "bob's connInfo")
-    get a' ##> ("", bId, A.CON PQEncOn)
+    getUpInfoCon a' [contactId, bId] bId "bob's connInfo"
     get b'' ##> ("", aId, A.CON PQEncOn) -- note that server 2 is down, this event is delivered when HELLO is sent to server 1
     a'' <- restartAgentA restart a' [contactId, bId]
     withServer2 ps $ do
@@ -2123,6 +2154,7 @@ testInvitationShortLinkRestart ps = withAgentClients2 $ \a b -> do
       newLinkData = UserInvLinkData userData
   (bId, CCLink connReq (Just shortLink)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMInvitation (Just newLinkData) Nothing CR.IKUsePQ False SMOnlyCreate
+  waitDisconnected a
   withSmpServer ps $ do
     runRight_ $ subscribeConnection a bId
     (_, connData', connReq') <- runRight $ getConnShortLink b 1 shortLink
@@ -2137,6 +2169,7 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
       newLinkData = UserContactLinkData userCtData
   (contactId, CCLink connReq0 (Just shortLink)) <- withSmpServer ps $
     runRight $ A.createConnection a NRMInteractive 1 True True SCMContact (Just newLinkData) Nothing CR.IKPQOn False SMOnlyCreate
+  waitDisconnected a
   Right connReq <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
   let updatedData = UserLinkData "updated user data"
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData, ratchetKeys = Nothing}
@@ -2149,6 +2182,7 @@ testContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     -- update user data
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
+  waitDisconnected b
   withSmpServer ps $ do
     (fd4, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     linkConnReq fd4 `shouldBe` connReq
@@ -2162,6 +2196,7 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
   ((contactId, CCLink connReq0 Nothing), shortLink) <- withSmpServer ps $ runRight $ do
     r@(contactId, _) <- A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMOnlyCreate
     (r,) <$> setConnShortLink a contactId SCMContact newLinkData Nothing
+  waitDisconnected a
   Right connReq <- pure $ smpDecode (smpEncode (binaryConnReq connReq0))
   let updatedData = UserLinkData "updated user data"
       updatedCtData = UserContactData {direct = False, owners = [], relays = [relayLink1, relayLink2], userData = updatedData, ratchetKeys = Nothing}
@@ -2174,6 +2209,7 @@ testAddContactShortLinkRestart ps = withAgentClients2 $ \a b -> do
     -- update user data
     shortLink' <- runRight $ setConnShortLink a contactId SCMContact updatedLinkData Nothing
     shortLink' `shouldBe` shortLink
+  waitDisconnected b
   withSmpServer ps $ do
     (fd4, ContactLinkData _ updatedCtData', _) <- runRight $ getConnShortLink b 1 shortLink
     linkConnReq fd4 `shouldBe` connReq
@@ -2183,6 +2219,7 @@ testOldContactQueueShortLink :: (HasCallStack, HasTestEnv) => (ASrvTransport, AS
 testOldContactQueueShortLink ps@(_, msType) = withAgentClients2 $ \a b -> do
   (contactId, CCLink connReq Nothing) <- withSmpServer ps $ runRight $
     A.createConnection a NRMInteractive 1 True True SCMContact Nothing Nothing CR.IKPQOn False SMOnlyCreate
+  waitDisconnected a
   -- make it an "old" queue
   let updateStoreLog f = replaceSubstringInFile f " queue_mode=C" ""
 #if defined(dbServerPostgres)
@@ -2526,6 +2563,41 @@ testDuplicateMessage ps = do
       get bob2 =##> \case ("", c, Msg "hello 3") -> c == aliceId; _ -> False
   disposeAgentClient alice2
   disposeAgentClient bob2
+
+testDuplicateMessageAfterSent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testDuplicateMessageAfterSent ps = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      get bob =##> \case ("", c, MSG MsgMeta {integrity = MsgOk, recipient = (2, _), pqEncryption = PQEncOn, redelivered = False} _ "hello") -> c == aliceId; _ -> False
+      3 <- sendMessage bob aliceId SMP.noMsgFlags "hello too"
+      get bob ##> ("", aliceId, SENT 3)
+      liftIO $ waitDeleted (sndDeliveries bob) (aliceId, 3)
+    disposeAgentClient bob
+    threadDelay 250000
+    bob1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB2
+    runRight_ $ do
+      subscribeConnection bob1 aliceId
+      get bob1 =##> \case ("", c, MSG MsgMeta {integrity = MsgOk, recipient = (2, _), pqEncryption = PQEncOn, redelivered = True} _ "hello") -> c == aliceId; _ -> False
+      ackMessage bob1 aliceId 2 Nothing
+    disposeAgentClient bob1
+  disposeAgentClient alice
+
+testAckDeletedMessage :: (HasCallStack, HasTestEnv) => IO ()
+testAckDeletedMessage =
+  withAgentClients2 $ \alice bob -> runRight_ $ do
+    (aliceId, bobId) <- makeConnection alice bob
+    2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+    get alice ##> ("", bobId, SENT 2)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+    ackMessage bob aliceId 2 Nothing
+    ackMessage bob aliceId 2 Nothing
+    ackMessageAsync bob "1" aliceId 2 Nothing
+    liftIO $ noMessages bob "nothing else should be delivered to bob"
 
 testSkippedMessages :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testSkippedMessages (t, msType) = do
@@ -3148,6 +3220,22 @@ processedRatchetKeyHashes c = withTransaction (store $ agentEnv c) (`DB.query_` 
 sndMessages :: AgentClient -> IO [(ConnId, Int64)]
 sndMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_messages ORDER BY conn_id, internal_id")
 
+rcvMessages :: AgentClient -> IO [(ConnId, Int64)]
+rcvMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM rcv_messages ORDER BY conn_id, internal_id")
+
+sndDeliveries :: AgentClient -> IO [(ConnId, Int64)]
+sndDeliveries c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_message_deliveries ORDER BY conn_id, internal_id")
+
+waitDeleted :: HasCallStack => IO [(ConnId, Int64)] -> (ConnId, Int64) -> IO ()
+waitDeleted getMsgs msg = go (100 :: Int)
+  where
+    go n = do
+      msgs <- getMsgs
+      when (msg `elem` msgs) $
+        if n > 0
+          then threadDelay 100000 >> go (n - 1)
+          else expectationFailure $ "message was not deleted: " <> show msg
+
 connInvitations :: AgentClient -> IO [(InvitationId, Maybe ConnId)]
 connInvitations c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT invitation_id, contact_conn_id FROM conn_invitations")
 
@@ -3261,6 +3349,23 @@ testActiveClientNotDisconnected (t, msType) = do
           -- and after 2 sec of inactivity no DOWN is sent as we have a live subscription
           liftIO $ timeout 1200000 (get alice) `shouldReturn` Nothing
     milliseconds ts = systemSeconds ts * 1000 + fromIntegral (systemNanoseconds ts `div` 1000000)
+
+testAgentStartTimeout :: HasTestEnv => IO ()
+testAgentStartTimeout = do
+  Right st <- createStore testDB
+  locked <- newEmptyTMVarIO
+  unlock <- newEmptyTMVarIO
+  locker <- async $ withTransaction st $ \db -> do
+    lockClientNotices db
+    atomically $ putTMVar locked ()
+    atomically $ readTMVar unlock
+  atomically $ readTMVar locked
+  r <- timeout 100000 $ runExceptT $ getSMPAgentClient_ 1 agentCfg initAgentServers st False
+  atomically $ putTMVar unlock ()
+  wait locker
+  case r of
+    Nothing -> closeDBStore st
+    Just c -> mapM_ disposeAgentClient c >> expectationFailure "agent started after timeout"
 
 testSuspendingAgent :: HasTestEnv => IO ()
 testSuspendingAgent =
@@ -3942,7 +4047,7 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
         confId <- withSmpServerStoreLogOn ps testPort $ \_ -> do
           -- both servers need to be online for connection to progress because of SKEY
           get b =##> \case ("2", c, JOINED sqSecured) -> c == aId && sqSecured; _ -> False
-          pGet a >>= \case
+          confId <- pGet a >>= \case
             ("", "", AEvt _ (UP _ [_])) -> do
               ("", _, CONF confId _ "bob's connInfo") <- get a
               pure confId
@@ -3950,6 +4055,8 @@ testJoinConnectionAsyncReplyError ps@(t, ASType qsType _) = do
               ("", "", UP _ [_]) <- nGet a
               pure confId
             r -> error $ "unexpected response " <> show r
+          waitAck a bId
+          pure confId
         nGet a =##> \case ("", "", DOWN _ [c]) -> c == bId; _ -> False
         runRight_ $ do
           allowConnectionAsync a "3" bId confId "alice's connInfo"
@@ -4618,6 +4725,63 @@ testDeliveryReceipts =
     get b =##> \case ("", c, Rcvd 4) -> c == aId; _ -> False
     ackMessage b aId 5 (Just "") `catchError` \case (A.CMD PROHIBITED _) -> pure (); e -> liftIO $ expectationFailure ("unexpected error " <> show e)
     ackMessage b aId 5 Nothing
+
+testDuplicateReceipt :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> Bool -> IO ()
+testDuplicateReceipt ps statusLost sentAfter = do
+  alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
+  bob <- getSMPAgentClient' 2 agentCfg initAgentServers testDB2
+  withSmpServerStoreMsgLogOn ps testPort $ \_ -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    runRight_ $ do
+      2 <- sendMessage alice bobId SMP.noMsgFlags "hello"
+      get alice ##> ("", bobId, SENT 2)
+      liftIO $ waitDeleted (sndDeliveries alice) (bobId, 2)
+      get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+      ackMessage bob aliceId 2 $ Just ""
+      get alice =##> \case ("", c, RCVD MsgMeta {integrity = MsgOk, redelivered = False} [MsgReceipt {agentMsgId = 2, msgRcptStatus = MROk}]) -> c == bobId; _ -> False
+      when sentAfter $ do
+        4 <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+        get alice ##> ("", bobId, SENT 4)
+        liftIO $ waitDeleted (sndDeliveries alice) (bobId, 4)
+    when statusLost $
+      withTransaction (store $ agentEnv alice) (`DB.execute_` "UPDATE snd_messages SET rcpt_internal_id = NULL, rcpt_status = NULL")
+    disposeAgentClient alice
+    threadDelay 250000
+    alice1 <- getSMPAgentClient' 3 agentCfg initAgentServers testDB
+    runRight_ $ do
+      subscribeConnection alice1 bobId
+      get alice1 =##> \case ("", c, RCVD MsgMeta {integrity = MsgOk, redelivered = True} [MsgReceipt {agentMsgId = 2, msgRcptStatus = MROk}]) -> c == bobId; _ -> False
+      ackMessage alice1 bobId 3 Nothing
+    disposeAgentClient alice1
+  disposeAgentClient bob
+
+testReceiptDeletesSentMessage :: (HasCallStack, HasTestEnv) => IO ()
+testReceiptDeletesSentMessage =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    liftIO $ waitDeleted (sndDeliveries a) (bId, 2)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    ackMessage b aId 2 $ Just ""
+    get a =##> \case ("", c, Rcvd 2) -> c == bId; _ -> False
+    ackMessage a bId 3 Nothing
+    liftIO $ sndMessages a >>= (`shouldNotContain` [(bId, 2)])
+
+testReceiptForDeletedSentMessage :: (HasCallStack, HasTestEnv) => IO ()
+testReceiptForDeletedSentMessage =
+  withAgentClients2 $ \a b -> runRight_ $ do
+    (aId, bId) <- makeConnection a b
+    2 <- sendMessage a bId SMP.noMsgFlags "hello"
+    get a ##> ("", bId, SENT 2)
+    liftIO $ waitDeleted (sndDeliveries a) (bId, 2)
+    get b =##> \case ("", c, Msg "hello") -> c == aId; _ -> False
+    liftIO $ withTransaction (store $ agentEnv a) $ \db -> deleteSndMsgsExpired db 0 100
+    ackMessage b aId 2 $ Just ""
+    mId <- sendMessage b aId SMP.noMsgFlags "hi"
+    get b ##> ("", aId, SENT mId)
+    get a =##> \case ("", c, Msg' 4 PQEncOn "hi") -> c == bId; _ -> False
+    liftIO $ rcvMessages a >>= (`shouldNotContain` [(bId, 3)])
 
 testDeliveryReceiptsConcurrent :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testDeliveryReceiptsConcurrent (t, msType) =
@@ -5412,12 +5576,18 @@ createStore schema = createAgentStore dbOpts $ MigrationConfig MCError Nothing
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users DEFAULT VALUES")
+
+lockClientNotices :: DB.Connection -> IO ()
+lockClientNotices db = DB.execute_ db "LOCK TABLE client_notices"
 #else
 createStore :: String -> IO (Either MigrationError DBStore)
 createStore dbPath = createAgentStore (DBOpts dbPath [] "" False True DB.TQOff) (MigrationConfig MCError Nothing)
 
 insertUser :: DBStore -> IO ()
 insertUser st = withTransaction st (`DB.execute_` "INSERT INTO users (user_id) VALUES (1)")
+
+lockClientNotices :: DB.Connection -> IO ()
+lockClientNotices _ = pure ()
 #endif
 
 testServerMultipleIdentities :: (HasCallStack, HasTestEnv) => IO ()
