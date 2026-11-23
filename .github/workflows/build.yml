@@ -458,7 +458,7 @@ jobs:
           TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
           PR_BODY: ${{ github.event.pull_request.draft == true && github.event.pull_request.body || '' }}
           ATTEMPTS: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) && 3 || 1 }}
-        run: scripts/ci/run-tests.sh ./simplexmq-test
+        run: scripts/ci/run-tests.sh ./simplexmq-test ${{ matrix.ghc == '8.10.7' && '+RTS -N1 -RTS -j4' || '' }}
 
       - name: Test with PostgreSQL agent store
         if: ${{ !cancelled() && steps.build-client-postgres.outcome == 'success' }}
