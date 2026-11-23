@@ -158,7 +158,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (NominalDiffTime, UTCTime (..), diffUTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -172,6 +172,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
+import Simplex.Messaging.SystemTime (SystemSeconds, getSystemSeconds, roundedSeconds)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -483,7 +484,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport 'TClient),
     -- | network configuration
     networkConfig :: NetworkConfig,
-    sentCommandsTTL :: NominalDiffTime,
+    sentCommandsTTL :: Int64,
     clientALPN :: Maybe [ALPN],
     serviceCredentials :: Maybe ServiceCredentials,
     -- | client-server protocol version range
@@ -528,7 +529,7 @@ data Request err msg = Request
   { corrId :: CorrId,
     entityId :: EntityId,
     command :: ProtoCommand msg,
-    createdAt :: UTCTime,
+    createdAt :: SystemSeconds,
     pending :: TVar Bool,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
@@ -691,9 +692,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         loop :: Int64 -> IO ()
         loop delay = do
           threadDelay' delay
-          ts <- getCurrentTime
-          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> diffUTCTime ts createdAt < sentCommandsTTL
-          diff <- diffUTCTime ts <$> readTVarIO lastReceived
+          ts <- getSystemSeconds
+          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> roundedSeconds ts - roundedSeconds createdAt < sentCommandsTTL
+          diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
           if remaining > 1_000_000 -- delay pings only for significant time
@@ -1440,7 +1441,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonc
   where
     mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
-      createdAt <- getCurrentTime
+      createdAt <- getSystemSeconds
       pending <- newTVarIO True
       responseVar <- newEmptyTMVarIO
       let r =
