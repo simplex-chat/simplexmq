@@ -724,16 +724,17 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
             Just Request {entityId, command, pending, responseVar} -> do
+              let resp = if entityId == entId then clientResp else Left unexpected
               wasPending <-
                 atomically $ do
                   TM.delete corrId sentCommands
                   ifM
                     (swapTVar pending False)
-                    (True <$ tryPutTMVar responseVar (if entityId == entId then clientResp else Left unexpected))
+                    (True <$ tryPutTMVar responseVar resp)
                     (pure False)
               if wasPending
-                then pure $ case clientResp of
-                  Right r | entityId == entId && responseEvent r -> Just (entId, STEvent clientResp)
+                then pure $ case resp of
+                  Right r | responseEvent r -> Just (entId, STEvent resp)
                   _ -> Nothing
                 else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
       where
