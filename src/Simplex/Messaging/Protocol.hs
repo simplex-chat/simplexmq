@@ -1842,6 +1842,8 @@ class (ProtocolTypeI (ProtoType msg), ProtocolEncoding v err msg, ProtocolEncodi
   useServiceAuth :: ProtoCommand msg -> Bool
   protocolPing :: ProtoCommand msg
   protocolError :: msg -> Maybe err
+  responseEvent :: msg -> Bool
+  responseEvent _ = False
 
 type ProtoServer msg = ProtocolServer (ProtoType msg)
 
@@ -1862,6 +1864,10 @@ instance Protocol SMPVersion ErrorType BrokerMsg where
     ERR e -> Just e
     _ -> Nothing
   {-# INLINE protocolError #-}
+  responseEvent = \case
+    MSG {} -> True
+    _ -> False
+  {-# INLINE responseEvent #-}
 
 class ProtocolMsgTag (Tag msg) => ProtocolEncoding v err msg | msg -> err, msg -> v where
   type Tag msg

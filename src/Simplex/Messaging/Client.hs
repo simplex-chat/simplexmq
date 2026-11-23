@@ -732,7 +732,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
                     (True <$ tryPutTMVar responseVar (if entityId == entId then clientResp else Left unexpected))
                     (pure False)
               if wasPending
-                then pure Nothing
+                then pure $ case clientResp of
+                  Right r | entityId == entId && responseEvent r -> Just (entId, STEvent clientResp)
+                  _ -> Nothing
                 else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
       where
         unexpected = unexpectedResponse respOrErr
@@ -874,36 +876,33 @@ createSMPQueue c nm nonce_ (rKey, rpKey) dhKey auth subMode qrd ntfCreds =
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO (Maybe ServiceId)
 subscribeSMPQueue c rpKey rId = do
   liftIO $ enablePings c
-  sendSMPCommand c NRMBackground (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= except
+  sendSMPCommand c NRMBackground (Just rpKey) rId SUB >>= except . processSUBResponse_
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 -- This command is always sent in background request mode
 subscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
 subscribeSMPQueues c qs = do
   liftIO $ enablePings c
-  sendProtocolCommands c NRMBackground cs >>= mapM (processSUBResponse c)
+  L.map processSUBResponse <$> sendProtocolCommands c NRMBackground cs
   where
     cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
 
 -- This command is always sent in background request mode
 streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> ([(RecipientId, Either SMPClientError (Maybe ServiceId))] -> IO ()) -> IO ()
-streamSubscribeSMPQueues c qs cb = streamProtocolCommands c NRMBackground cs $ mapM process >=> cb
+streamSubscribeSMPQueues c qs cb = streamProtocolCommands c NRMBackground cs $ cb . map process
   where
     cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
-    process r@(Response rId _) = (rId,) <$> processSUBResponse c r
+    process r@(Response rId _) = (rId, processSUBResponse r)
 
-processSUBResponse :: SMPClient -> Response ErrorType BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
-processSUBResponse c (Response rId r) = pure r $>>= processSUBResponse_ c rId
+processSUBResponse :: Response ErrorType BrokerMsg -> Either SMPClientError (Maybe ServiceId)
+processSUBResponse (Response _ r) = r >>= processSUBResponse_
 
-processSUBResponse_ :: SMPClient -> RecipientId -> BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
-processSUBResponse_ c rId = \case
-  OK -> pure $ Right Nothing
-  SOK serviceId_ -> pure $ Right serviceId_
-  cmd@MSG {} -> writeSMPMessage c rId cmd $> Right Nothing
-  r' -> pure . Left $ unexpectedResponse r'
-
-writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
-writeSMPMessage c rId msg = mapM_ (`nonBlockingWriteTBQueue` serverTransmission c [(rId, STEvent (Right msg))]) (msgQ $ client_ c)
+processSUBResponse_ :: BrokerMsg -> Either SMPClientError (Maybe ServiceId)
+processSUBResponse_ = \case
+  OK -> Right Nothing
+  SOK serviceId_ -> Right serviceId_
+  MSG {} -> Right Nothing
+  r' -> Left $ unexpectedResponse r'
 
 serverTransmission :: ProtocolClient v err msg -> NonEmpty (RecipientId, ServerTransmission err msg) -> ServerTransmissionBatch v err msg
 serverTransmission ProtocolClient {thParams, client_ = PClient {transportSession}} ts = (transportSession, thParams, ts)
@@ -916,7 +915,7 @@ getSMPMessage :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPCli
 getSMPMessage c rpKey rId =
   sendSMPCommand c NRMInteractive (Just rpKey) rId GET >>= \case
     OK -> pure Nothing
-    cmd@(MSG msg) -> liftIO (writeSMPMessage c rId cmd) $> Just msg
+    MSG msg -> pure $ Just msg
     r -> throwE $ unexpectedResponse r
 {-# INLINE getSMPMessage #-}
 
@@ -1119,7 +1118,7 @@ ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT S
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c NRMBackground (Just rpKey) rId (ACK msgId) >>= \case
     OK -> pure True
-    cmd@MSG {} -> liftIO (writeSMPMessage c rId cmd) $> False
+    MSG {} -> pure False
     r -> throwE $ unexpectedResponse r
 
 -- | Irreversibly suspend SMP queue.
