@@ -155,10 +155,10 @@ import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe, isNothing)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (NominalDiffTime, UTCTime (..), diffUTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
 import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import Network.Socket (HostName, ServiceName)
@@ -172,6 +172,7 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
+import Simplex.Messaging.SystemTime (SystemSeconds, getSystemSeconds, roundedSeconds)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -214,7 +215,7 @@ data PClient v err msg = PClient
 smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
-  connected <- newTVarIO True
+  connected <- newTVarIO False
   clientCorrId <- atomically $ C.newRandomDRG g
   sentCommands <- TM.emptyIO
   sendPings <- newTVarIO False
@@ -483,7 +484,7 @@ data ProtocolClientConfig v = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport 'TClient),
     -- | network configuration
     networkConfig :: NetworkConfig,
-    sentCommandsTTL :: NominalDiffTime,
+    sentCommandsTTL :: Int64,
     clientALPN :: Maybe [ALPN],
     serviceCredentials :: Maybe ServiceCredentials,
     -- | client-server protocol version range
@@ -528,7 +529,7 @@ data Request err msg = Request
   { corrId :: CorrId,
     entityId :: EntityId,
     command :: ProtoCommand msg,
-    createdAt :: UTCTime,
+    createdAt :: SystemSeconds,
     pending :: TVar Bool,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
@@ -665,9 +666,10 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             `E.finally` (failPendingRequests c >> disconnected c')
 
     failPendingRequests :: PClient v err msg -> IO ()
-    failPendingRequests PClient {connected, sentCommands} = atomically $ do
-      writeTVar connected False
-      swapTVar sentCommands mempty >>= mapM_ failRequest
+    failPendingRequests PClient {sentCommands} = atomically $ swapTVar sentCommands mempty >>= mapM_ failRequest
+      where
+        failRequest Request {pending, responseVar} =
+          whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -691,9 +693,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
         loop :: Int64 -> IO ()
         loop delay = do
           threadDelay' delay
-          ts <- getCurrentTime
-          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> diffUTCTime ts createdAt < sentCommandsTTL
-          diff <- diffUTCTime ts <$> readTVarIO lastReceived
+          ts <- getSystemSeconds
+          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> roundedSeconds ts - roundedSeconds createdAt < sentCommandsTTL
+          diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
           if remaining > 1_000_000 -- delay pings only for significant time
@@ -1392,19 +1394,13 @@ sendProtocolCommand_ c@ProtocolClient {thParams = THandleParams {blockSize, serv
           s = tEncodeBatch1 serviceAuth t
 
 sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
-sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses =
-  -- two separate "atomically" needed to avoid blocking
-  E.bracketOnError
-    (atomically $ ifM (readTVar connected) (mapM_ addRequest rs >> tryWriteTBQueue sndQ t) (True <$ mapM_ failRequest rs))
-    (\_ -> when (isNothing msgQ) $ atomically $ mapM_ removeRequest rs)
-    (\sent -> if sent then getResponses else withAsync (atomically $ writeTBQueue sndQ t) (const getResponses))
+sendBlock ProtocolClient {client_ = PClient {sentCommands, sndQ, msgQ}} rs t getResponses = case msgQ of
+  Just _ -> register >> send
+  Nothing -> E.bracket_ register unregister send
   where
-    addRequest r@Request {corrId} = TM.insert corrId r sentCommands
-    removeRequest Request {corrId} = TM.delete corrId sentCommands
-
-failRequest :: Request err msg -> STM ()
-failRequest Request {pending, responseVar} =
-  whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
+    register = atomically $ forM_ rs $ \r@Request {corrId} -> TM.insert corrId r sentCommands
+    unregister = atomically $ forM_ rs $ \Request {corrId} -> TM.delete corrId sentCommands
+    send = withAsync (atomically $ writeTBQueue sndQ t) (const getResponses)
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
@@ -1412,7 +1408,7 @@ nonBlockingWriteTBQueue q x = do
   unless sent $ void $ forkIO $ atomically $ writeTBQueue q x
 
 getResponse :: ProtocolClient v err msg -> NetworkRequestMode -> Maybe Int -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, sentCommands, msgQ}} nm tOut Request {corrId, entityId, pending, responseVar} = do
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} nm tOut Request {entityId, pending, responseVar} = do
   r <- fromMaybe (netTimeoutInt tcpTimeout nm) tOut `timeout` atomically (takeTMVar responseVar)
   response <- atomically $ do
     writeTVar pending False
@@ -1421,10 +1417,7 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, se
     -- See `processMsg`.
     ((r <|>) <$> tryTakeTMVar responseVar) >>= \case
       Just r' -> writeTVar timeoutErrorCount 0 $> r'
-      Nothing -> do
-        modifyTVar' timeoutErrorCount (+ 1)
-        when (isNothing msgQ) $ TM.delete corrId sentCommands
-        pure $ Left PCEResponseTimeout
+      Nothing -> modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: Protocol v err msg => ProtocolClient v err msg ->  ClientCommand msg -> IO (PCTransmission err msg)
@@ -1440,7 +1433,7 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonc
   where
     mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
-      createdAt <- getCurrentTime
+      createdAt <- getSystemSeconds
       pending <- newTVarIO True
       responseVar <- newEmptyTMVarIO
       let r =

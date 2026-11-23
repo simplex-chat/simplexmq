@@ -74,8 +74,6 @@ smpProxyTests = do
       testProxyClosesRelayConnectionAfterDisconnect
     it "does not keep oversized forwarded command" $ \_ ->
       testForwardOversizedNotKept
-    it "fails commands of closed client at once" $ \_ ->
-      testClosedClientCommandsFail
     it "releases command kept for late response" $ \_ ->
       testLateResponseCommandReleased
   describe "agent client reconnection" $ do
@@ -642,34 +640,20 @@ testForwardOversizedNotKept =
       `shouldReturn` Left (PCETransportError TELargeMsg)
     pClientSentCommandsCount c `shouldReturn` 0
 
-testClosedClientCommandsFail :: HasTestEnv => IO ()
-testClosedClientCommandsFail =
-  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
-    g <- C.newRandom
-    ts <- getCurrentTime
-    closed <- newEmptyTMVarIO
-    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> atomically $ putTMVar closed ())
-    closeProtocolClient c
-    atomically $ takeTMVar closed
-    Just rs <- timeout 1000000 $ sendProtocolCommands c NRMBackground $ L.fromList $ replicate 300 (NoEntity, Nothing, SMP.Cmd SMP.SIdleClient SMP.PING)
-    forM_ rs $ \(Response _ r) -> r `shouldBe` Left (PCENetworkError SMP.NEFailedError)
-    pClientSentCommandsCount c `shouldReturn` 0
-    atomically (lengthTBQueue $ pClientSndQ c) `shouldReturn` 0
-
 testLateResponseCommandReleased :: HasTestEnv => IO ()
 testLateResponseCommandReleased =
-  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {authErrorDelay = 2000000}) testPort $ \_ -> do
+  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {authErrorDelay = 4000000}) testPort $ \_ -> do
     g <- C.newRandom
     ts <- getCurrentTime
     msgQ <- newTBQueueIO 4
-    let clientCfg = defaultSMPClientConfig {networkConfig = defaultNetworkConfig {smpPingInterval = 100000}, sentCommandsTTL = 0.5}
+    let clientCfg = defaultSMPClientConfig {networkConfig = defaultNetworkConfig {smpPingInterval = 100000}, sentCommandsTTL = 2}
     c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) clientCfg [] (Just msgQ) ts (\_ -> pure ())
     rId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
     (_, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) (Just rpKey) rId (SMP.Cmd SMP.SRecipient SMP.SUB))
       `shouldReturn` Left PCEResponseTimeout
     pClientSentCommandsCount c `shouldReturn` 1
-    threadDelay 1000000
+    threadDelay 3000000
     pClientSentCommandsCount c `shouldReturn` 0
     (_, _, [(_, STUnexpectedError _)]) <- atomically $ readTBQueue msgQ
     pure ()
