@@ -9,14 +9,14 @@
 
 ## Rules
 
-1. A server request is never made under a connection lock; in builds with `conn_lock_checks`, used by the tests with the PostgreSQL agent store, such a request fails.
-2. The second locked step reads the connection again; when its state changed, the step is dropped, postponed during ratchet synchronization, or undone.
+1. A server request is never made under a connection lock; in builds with `conn_lock_checks`, used by the tests with the PostgreSQL agent store, such a request fails, and `disposeAgentClient` then throws.
+2. The locked step after a server request reads again the state that its writes depend on; when that state changed, the step is dropped, postponed during ratchet synchronization, or undone.
 3. A queue created on a server is recorded under the connection lock or deleted from the server; connection deletion takes the same locks.
 4. API threads and lock holders never wait for space in subQ or msgQ; lock holders never wait for space in ntfSubQ.
 
 ## Helpers
 
-- `requestAndCommit`: validates the connection under the lock, makes the request, validates again and commits under the lock.
+- `requestAndCommit`: makes the request between two locked runs of the caller's check, which may write or end the step, and commits after the second run in its lock.
 - `recordNewQueue`: records a queue created on a server under the lock, or deletes it from the server.
 
 ## Sequence
@@ -50,7 +50,7 @@ sequenceDiagram
 - agent, connection locks:
   - `requestAndCommit` in ICDuplexSecure, ICQSecure, ICQSndSecure, ICQDelete and `ackMessage`;
   - `recordNewQueue` in `createRcvQueue`, `createReplyQueue` and `switchDuplexConnection`;
-  - request outside the lock in ICAck, ICAckDel, ICAllowSecure, ICDeleteRcvQueue, JOIN of a service request, `setConnShortLink`, `deleteConnShortLink`, `suspendConnection`, `connectReplyQueues`;
+  - request outside the lock in ICAck, ICAckDel, ICAllowSecure, ICDeleteRcvQueue, ICReplyDel, JOIN of a service request, `setConnShortLink`, `deleteConnShortLink`, `suspendConnection`, `connectReplyQueues`;
   - `acceptContact` under the invitation lock; `serviceRequest_` without the connection lock;
   - deletion under the locks of its connections, where the connections are marked deleted in synchronous deletion too;
   - a connection whose deletion waits for delivery is not given new queues;
@@ -60,12 +60,11 @@ sequenceDiagram
   - the receive queue status is set to Secured under the lock, only from Confirmed;
   - ICQSecure and ICQSndSecure are postponed while the ratchet is not synchronized, after the other commands of their server, and resumed after synchronization;
   - SWCH is refused while the ratchet is not synchronized.
-- agent, events written without waiting:
+- agent, events and notification commands written without waiting:
   - MSGNTF of `ackMessage`, DEL_CONNS, DEL_USER;
   - errors of `subscribeConnections`, `deleteConnections`, `subscribeAllConnections`, `deleteUser`, `xftpDeleteSndFilesRemote`;
   - the notification commands of connection deletion, ICQDelete and QEND.
 - clients:
-  - a message in the response to ACK, SUB or GET is written to msgQ without waiting;
+  - a message in the response to ACK, SUB or GET is written to msgQ by the receiving thread, in the order of reception;
   - a command waits for send-queue space only until its response timeout, and is not queued after it ends;
   - a command that ends without a response is removed, except in clients with msgQ, where it is kept for 15 minutes for a late response.
-- moved to separate pull requests: the HTTP/2 request timeout, the SUSPENDED event written without waiting.
