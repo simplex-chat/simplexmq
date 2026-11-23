@@ -208,11 +208,11 @@ testPushClientKilled :: HasTestEnv => Expectation
 testPushClientKilled =
   withStallingServerOn' apnsTestPort $ \accepted _ -> do
     s <- newNtfPushServer 1 apnsConfig
-    a <- async $ getPushClient s PPApnsTest
+    a <- async $ getPushClient s PPApnsTest 0
     atomically $ takeTMVar accepted
     killThread $ asyncThreadId a
     timeout 1000000 (either fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just (Just ThreadKilled)
-    isNothing <$> TM.lookupIO PPApnsTest (pushClients s) `shouldReturn` True
+    isNothing <$> TM.lookupIO (PPApnsTest, 0) (pushClients s) `shouldReturn` True
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
 
