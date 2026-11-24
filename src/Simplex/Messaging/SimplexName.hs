@@ -111,7 +111,7 @@ boundedNonSpace = do
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
     strEncode nameType <> strEncode nameDomain
-  strP = optional nameSchemeP *> ((strP >>= infoP) <|> infoP NTPublicGroup)
+  strP = optional nameSchemeP *> (strP >>= infoP)
     where
       nameSchemeP =
         strP >>= \case

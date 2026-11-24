@@ -337,6 +337,7 @@ connectionRequestTests =
       name #== "simplex:/name#alice.simplex"
       name #== "simplex:name#alice.simplex"
       (strDecode "https://simplex.chat/name#alice.simplex" :: Either String SimplexNameInfo) `shouldSatisfy` isLeft
+      (strDecode "simplex:namealice" :: Either String SimplexNameInfo) `shouldSatisfy` isLeft
     it "should shorten / restore short links" $ do
       let contact = CSLContact SLSServer CCTContact
       shortenShortLink [srv] (contact srv (LinkKey "0123456789abcdef0123456789abcdef"))
