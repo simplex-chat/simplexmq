@@ -156,11 +156,17 @@ module Simplex.Messaging.Agent.Client
     waitUntilForeground,
     waitWhileSuspended,
     suspendSendingAndDatabase,
+    suspendMsgDelivery,
     suspendOperation,
     notifySuspended,
     whenSuspending,
+    addSndFileInProgress,
+    removeSndFileInProgress,
+    removeDeletedOrFailedSndFilesInProgress,
+    waitUntilUploadsAllowed,
     withStore,
     withStore',
+    withStoreIsolation',
     withStoreBatch,
     withStoreBatch',
     unsafeWithStore,
@@ -235,7 +241,7 @@ import Simplex.FileTransfer.Description (ChunkReplicaId (..), FileDigest (..), k
 import Simplex.FileTransfer.Protocol (FileInfo (..), FileResponse)
 import Simplex.FileTransfer.Transport (XFTPErrorType (DIGEST), XFTPRcvChunkSpec (..), XFTPVersion)
 import qualified Simplex.FileTransfer.Transport as XFTP
-import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..))
+import Simplex.FileTransfer.Types (DeletedSndChunkReplica (..), NewSndChunkReplica (..), RcvFileChunkReplica (..), SndFileChunk (..), SndFileChunkReplica (..), SndFileId)
 import Simplex.FileTransfer.Util (uniqueCombine)
 import Simplex.Messaging.Agent.Env.SQLite
 import Simplex.Messaging.Agent.Lock
@@ -244,7 +250,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
-import Simplex.Messaging.Agent.Store.Common (DBStore)
+import Simplex.Messaging.Agent.Store.Common (DBStore, IsolationLevel (..), withTransactionIsolation)
 import Simplex.Messaging.Agent.Store.DB (SQLError)
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Agent.Store.Entity
@@ -371,6 +377,8 @@ data AgentClient = AgentClient
     asyncCmdWorkers :: TMap (ConnId, Maybe SMPServer) Worker,
     ntfNetworkOp :: TVar AgentOpState,
     rcvNetworkOp :: TVar AgentOpState,
+    sndFilesOp :: TVar AgentOpState,
+    sndFilesInProgress :: TVar (Set SndFileId),
     msgDeliveryOp :: TVar AgentOpState,
     sndNetworkOp :: TVar AgentOpState,
     databaseOp :: TVar AgentOpState,
@@ -451,7 +459,7 @@ getAgentWorker' toW fromW name hasWork c@AgentClient {agentEnv} key ws work = do
 
 newWorker :: AgentClient -> STM Worker
 newWorker c = do
-  workerId <- stateTVar (workerSeq c) $ \next -> (next, next + 1)
+  workerId <- stateTVar' (workerSeq c) $ \next -> (next, next + 1)
   doWork <- newTMVar () -- new worker is created  with "some work to do" (indicated by () in TMVar)
   action <- newTMVar Nothing
   restarts <- newTVar $ RestartCount 0 0
@@ -466,19 +474,20 @@ runWorkerAsync Worker {action} work =
   where
     start = atomically . putTMVar action . Just =<< mkWeakThreadId =<< forkIO work
 
-data AgentOperation = AONtfNetwork | AORcvNetwork | AOMsgDelivery | AOSndNetwork | AODatabase
+data AgentOperation = AONtfNetwork | AORcvNetwork | AOSndFiles | AOMsgDelivery | AOSndNetwork | AODatabase
   deriving (Eq, Show)
 
 agentOpSel :: AgentOperation -> (AgentClient -> TVar AgentOpState)
 agentOpSel = \case
   AONtfNetwork -> ntfNetworkOp
   AORcvNetwork -> rcvNetworkOp
+  AOSndFiles -> sndFilesOp
   AOMsgDelivery -> msgDeliveryOp
   AOSndNetwork -> sndNetworkOp
   AODatabase -> databaseOp
 
 agentOperations :: [AgentClient -> TVar AgentOpState]
-agentOperations = [ntfNetworkOp, rcvNetworkOp, msgDeliveryOp, sndNetworkOp, databaseOp]
+agentOperations = [ntfNetworkOp, rcvNetworkOp, sndFilesOp, msgDeliveryOp, sndNetworkOp, databaseOp]
 
 data AgentOpState = AgentOpState {opSuspended :: !Bool, opsInProgress :: !Int}
 
@@ -539,6 +548,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
   asyncCmdWorkers <- TM.emptyIO
   ntfNetworkOp <- newTVarIO $ AgentOpState False 0
   rcvNetworkOp <- newTVarIO $ AgentOpState False 0
+  sndFilesOp <- newTVarIO $ AgentOpState False 0
+  sndFilesInProgress <- newTVarIO S.empty
   msgDeliveryOp <- newTVarIO $ AgentOpState False 0
   sndNetworkOp <- newTVarIO $ AgentOpState False 0
   databaseOp <- newTVarIO $ AgentOpState False 0
@@ -583,6 +594,8 @@ newAgentClient clientId InitialAgentServers {smp, ntf, xftp, entitlements, netCf
         asyncCmdWorkers,
         ntfNetworkOp,
         rcvNetworkOp,
+        sndFilesOp,
+        sndFilesInProgress,
         msgDeliveryOp,
         sndNetworkOp,
         databaseOp,
@@ -1009,6 +1022,7 @@ closeAgentClient c = do
   atomically $ SS.clear $ currentSubs c
   clear subscrConns
   clear getMsgLocks
+  atomically $ readTVar (sndFilesInProgress c) >>= mapM_ (removeSndFileInProgress c)
   where
     clearWorkers :: Ord k => (AgentClient -> TMap k a) -> IO (Map k a)
     clearWorkers workers = atomically $ swapTVar (workers c) mempty
@@ -1055,7 +1069,7 @@ reconnectSMPServer c userId srv = do
 
 closeUserXFTPClients :: AgentClient -> UserId -> IO ()
 closeUserXFTPClients c userId = do
-  vs <- atomically $ stateTVar (xftpClients c) $ \cs ->
+  vs <- atomically $ stateTVar' (xftpClients c) $ \cs ->
     let (userCs, cs') = M.partitionWithKey (\(userId', _, _) _ -> userId == userId') cs
      in (M.elems userCs, cs')
   mapM_ (forkIO . closeClient_ c) vs
@@ -1157,7 +1171,7 @@ withSMPClient c nm q cmdStr action = do
 
 sendOrProxySMPMessage :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> ConnId -> ByteString -> Maybe SMP.SndPrivateAuthKey -> SMP.SenderId -> MsgFlags -> SMP.MsgBody -> AM (Maybe SMPServer)
 sendOrProxySMPMessage c nm userId destSrv connId cmdStr spKey_ senderId msgFlags msg =
-  fst <$> sendOrProxySMPCommand c nm userId destSrv connId cmdStr senderId sendViaProxy sendDirectly
+  fst <$> sendOrProxySMPCommand c nm userId destSrv False connId cmdStr senderId sendViaProxy sendDirectly
   where
     sendViaProxy smp proxySess = do
       incSMPServerStat c userId destSrv sentViaProxyAttempts
@@ -1173,13 +1187,14 @@ sendOrProxySMPCommand ::
   NetworkRequestMode ->
   UserId ->
   SMPServer ->
+  Bool ->
   ConnId -> -- session entity ID, for short links LinkId is used
   ByteString ->
   SMP.EntityId -> -- sender or link ID
   (SMPClient -> ProxiedRelay -> ExceptT SMPClientError IO (Either ProxyClientError a)) ->
   (SMPClient -> ExceptT SMPClientError IO a) ->
   AM (Maybe SMPServer, a)
-sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
+sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} viaProxyForKnown connId cmdStr entId sendCmdViaProxy sendCmdDirectly = do
   tSess <- mkTransportSession c userId destSrv connId
   ifM shouldUseProxy (sendViaProxy Nothing tSess) ((Nothing,) <$> sendDirectly tSess)
   where
@@ -1187,10 +1202,10 @@ sendOrProxySMPCommand c nm userId destSrv@ProtocolServer {host = destHosts} conn
       cfg <- getNetworkConfig c
       case smpProxyMode cfg of
         SPMAlways -> pure True
-        SPMUnknown -> unknownServer cfg
+        SPMUnknown -> (viaProxyForKnown ||) <$> unknownServer cfg
         SPMUnprotected
           | ipAddressProtected cfg destSrv -> pure False
-          | otherwise -> unknownServer cfg
+          | otherwise -> (viaProxyForKnown ||) <$> unknownServer cfg
         SPMNever -> pure False
     directAllowed = do
       cfg <- getNetworkConfig c
@@ -1981,7 +1996,7 @@ secureQueue c nm rq@RcvQueue {rcvId, rcvPrivateKey} senderKey =
 
 secureSndQueue :: AgentClient -> NetworkRequestMode -> SndQueue -> AM ()
 secureSndQueue c nm SndQueue {userId, connId, server, sndId, sndPrivateKey} =
-  void $ sendOrProxySMPCommand c nm userId server connId "SKEY <key>" sndId secureViaProxy secureDirectly
+  void $ sendOrProxySMPCommand c nm userId server False connId "SKEY <key>" sndId secureViaProxy secureDirectly
   where
     -- TODO track statistics
     secureViaProxy smp proxySess = proxySecureSndSMPQueue smp nm proxySess sndPrivateKey sndId
@@ -1997,14 +2012,14 @@ deleteQueueLink c nm rq@RcvQueue {rcvId, rcvPrivateKey} =
 
 secureGetQueueLink :: AgentClient -> NetworkRequestMode -> UserId -> InvShortLink -> AM (SMP.SenderId, QueueLinkData)
 secureGetQueueLink c nm userId InvShortLink {server, linkId, sndPrivateKey} =
-  snd <$> sendOrProxySMPCommand c nm userId server (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server False (unEntityId linkId) "LKEY <key>" linkId secureGetViaProxy secureGetDirectly
   where
     secureGetViaProxy smp proxySess = proxySecureGetSMPQueueLink smp nm proxySess sndPrivateKey linkId
     secureGetDirectly smp = secureGetSMPQueueLink smp nm sndPrivateKey linkId
 
 getQueueLink :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SMP.LinkId -> AM (SMP.SenderId, QueueLinkData)
 getQueueLink c nm userId server lnkId =
-  snd <$> sendOrProxySMPCommand c nm userId server (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server False (unEntityId lnkId) "LGET" lnkId getViaProxy getDirectly
   where
     getViaProxy smp proxySess = proxyGetSMPQueueLink smp nm proxySess lnkId
     getDirectly smp = getSMPQueueLink smp nm lnkId
@@ -2015,7 +2030,7 @@ getQueueLink c nm userId server lnkId =
 -- `sendOrProxySMPCommand`, which honours the network config (SPMNever etc.).
 resolveName :: AgentClient -> NetworkRequestMode -> UserId -> SMPServer -> SimplexDomain -> AM NameResponse
 resolveName c nm userId server domain =
-  snd <$> sendOrProxySMPCommand c nm userId server "" "RSLV" NoEntity resolveViaProxy resolveDirectly
+  snd <$> sendOrProxySMPCommand c nm userId server True "" "RSLV" NoEntity resolveViaProxy resolveDirectly
   where
     resolveViaProxy smp proxySess = proxyResolveName smp nm proxySess domain
     resolveDirectly smp = directResolveName smp nm domain
@@ -2291,7 +2306,7 @@ waitForWork = void . atomically . readTMVar
 {-# INLINE waitForWork #-}
 
 withWork :: AgentClient -> TMVar () -> (DB.Connection -> IO (Either StoreError (Maybe a))) -> (a -> AM ()) -> AM ()
-withWork c doWork = withWork_ c doWork . withStore' c
+withWork c doWork = withWork_ c doWork . withStoreIsolation' c RepeatableRead
 {-# INLINE withWork #-}
 
 -- setting doWork flag to "no work" before getWork rather than after prevents race condition when flag is set to "has work" by another thread after getWork call.
@@ -2351,8 +2366,10 @@ endAgentOperation :: AgentClient -> AgentOperation -> STM ()
 endAgentOperation c op = endOperation c op $ case op of
   AONtfNetwork -> pure ()
   AORcvNetwork ->
-    suspendOperation c AOMsgDelivery $
-      suspendSendingAndDatabase c
+    suspendOperation c AOSndFiles $
+      suspendMsgDelivery c
+  AOSndFiles ->
+    suspendMsgDelivery c
   AOMsgDelivery ->
     suspendSendingAndDatabase c
   AOSndNetwork ->
@@ -2360,6 +2377,11 @@ endAgentOperation c op = endOperation c op $ case op of
       notifySuspended c
   AODatabase ->
     notifySuspended c
+
+suspendMsgDelivery :: AgentClient -> STM ()
+suspendMsgDelivery c =
+  suspendOperation c AOMsgDelivery $
+    suspendSendingAndDatabase c
 
 suspendSendingAndDatabase :: AgentClient -> STM ()
 suspendSendingAndDatabase c =
@@ -2369,7 +2391,7 @@ suspendSendingAndDatabase c =
 
 suspendOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
 suspendOperation c op endedAction = do
-  n <- stateTVar (agentOpSel op c) $ \s -> (opsInProgress s, s {opSuspended = True})
+  n <- stateTVar' (agentOpSel op c) $ \s -> (opsInProgress s, s {opSuspended = True})
   -- unsafeIOToSTM $ putStrLn $ "suspendOperation_ " <> show op <> " " <> show n
   when (n == 0) $ whenSuspending c endedAction
 
@@ -2381,7 +2403,7 @@ notifySuspended c = do
 
 endOperation :: AgentClient -> AgentOperation -> STM () -> STM ()
 endOperation c op endedAction = do
-  (suspended, n) <- stateTVar (agentOpSel op c) $ \s ->
+  (suspended, n) <- stateTVar' (agentOpSel op c) $ \s ->
     let n = max 0 (opsInProgress s - 1)
      in ((opSuspended s, n), s {opsInProgress = n})
   -- unsafeIOToSTM $ putStrLn $ "endOperation: " <> show op <> " " <> show suspended <> " " <> show n
@@ -2391,6 +2413,29 @@ whenSuspending :: AgentClient -> STM () -> STM ()
 whenSuspending c = whenM ((== ASSuspending) <$> readTVar (agentState c))
 {-# INLINE whenSuspending #-}
 
+addSndFileInProgress :: AgentClient -> SndFileId -> STM ()
+addSndFileInProgress c fId = do
+  added <- stateTVar' (sndFilesInProgress c) $ \fs -> (S.notMember fId fs, S.insert fId fs)
+  when added $ modifyTVar' (sndFilesOp c) $ \s -> s {opsInProgress = opsInProgress s + 1}
+
+removeSndFileInProgress :: AgentClient -> SndFileId -> STM ()
+removeSndFileInProgress c fId = do
+  removed <- stateTVar' (sndFilesInProgress c) $ \fs -> (S.member fId fs, S.delete fId fs)
+  when removed $ endAgentOperation c AOSndFiles
+
+removeDeletedOrFailedSndFilesInProgress :: AgentClient -> IO ()
+removeDeletedOrFailedSndFilesInProgress c = do
+  fIds <- readTVarIO $ sndFilesInProgress c
+  unless (S.null fIds) $
+    E.mask $ \restore ->
+      whenM (atomically $ tryBeginAgentOperation c AODatabase) $
+        restore (removeDeletedOrFailed fIds) `E.finally` atomically (endAgentOperation c AODatabase)
+  where
+    removeDeletedOrFailed fIds =
+      E.tryAny (withTransaction (agentClientStore c) getNotDeletedOrFailedSndFileIds) >>= \case
+        Right fIds' -> atomically $ mapM_ (removeSndFileInProgress c) $ fIds `S.difference` S.fromList fIds'
+        Left e -> logError $ "removeDeletedOrFailedSndFilesInProgress error: " <> tshow e
+
 beginAgentOperation :: AgentClient -> AgentOperation -> STM ()
 beginAgentOperation c op = do
   let opVar = agentOpSel op c
@@ -2399,6 +2444,9 @@ beginAgentOperation c op = do
   when (opSuspended s) retry
   -- unsafeIOToSTM $ putStrLn $ "beginOperation! " <> show op <> " " <> show (opsInProgress s + 1)
   writeTVar opVar $! s {opsInProgress = opsInProgress s + 1}
+
+tryBeginAgentOperation :: AgentClient -> AgentOperation -> STM Bool
+tryBeginAgentOperation c op = (True <$ beginAgentOperation c op) `orElse` pure False
 
 agentOperationBracket :: MonadUnliftIO m => AgentClient -> AgentOperation -> (AgentClient -> IO ()) -> m a -> m a
 agentOperationBracket c op check action =
@@ -2423,15 +2471,37 @@ waitWhileSuspended c =
     suspended :: Monad m => (TVar AgentState -> m AgentState) -> m Bool
     suspended rd = (ASSuspended ==) <$> rd (agentState c)
 
+waitUntilUploadsAllowed :: AgentClient -> IO ()
+waitUntilUploadsAllowed c = atomically $ unlessM uploadsAllowed retry
+  where
+    uploadsAllowed =
+      readTVar (agentState c) >>= \case
+        ASForeground -> pure True
+        ASSuspending -> do
+          AgentOpState {opsInProgress} <- readTVar $ sndFilesOp c
+          AgentOpState {opSuspended} <- readTVar $ sndNetworkOp c
+          pure $ opsInProgress > 0 && not opSuspended
+        ASSuspended -> pure False
+
 withStore' :: AgentClient -> (DB.Connection -> IO a) -> AM a
 withStore' c action = withStore c $ fmap Right . action
 {-# INLINE withStore' #-}
 
 withStore :: AgentClient -> (DB.Connection -> IO (Either StoreError a)) -> AM a
-withStore c action = do
+withStore c action = withStore_ c (`withTransaction` action)
+
+withStoreIsolation' :: AgentClient -> IsolationLevel -> (DB.Connection -> IO a) -> AM a
+withStoreIsolation' c isolation action = withStoreIsolation c isolation $ fmap Right . action
+{-# INLINE withStoreIsolation' #-}
+
+withStoreIsolation :: AgentClient -> IsolationLevel -> (DB.Connection -> IO (Either StoreError a)) -> AM a
+withStoreIsolation c isolation action = withStore_ c $ \st -> withTransactionIsolation st isolation action
+
+withStore_ :: AgentClient -> (DBStore -> IO (Either StoreError a)) -> AM a
+withStore_ c transaction = do
   st <- asks store
   withExceptT storeError . ExceptT . liftIO . agentOperationBracket c AODatabase (\_ -> pure ()) $
-    withTransaction st action `E.catch` handleDBErrors
+    transaction st `E.catch` handleDBErrors
   where
     handleDBErrors :: E.SomeException -> IO (Either StoreError a)
     handleDBErrors e = pure $ Left $ case E.fromException e of
@@ -2492,7 +2562,7 @@ pickServer = \case
   (_, srv) :| [] -> pure srv
   servers -> do
     gen <- asks randomServer
-    atomically $ snd . (servers L.!!) <$> stateTVar gen (randomR (0, L.length servers - 1))
+    atomically $ snd . (servers L.!!) <$> stateTVar' gen (randomR (0, L.length servers - 1))
 
 getNextServer ::
   (ProtocolTypeI p, UserProtocol p) =>

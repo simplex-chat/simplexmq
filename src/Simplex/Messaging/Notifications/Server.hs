@@ -88,7 +88,7 @@ import System.IO (BufferMode (..), hClose, hPrint, hPutStrLn, hSetBuffering, hSe
 import System.Mem.Weak (deRefWeak)
 import System.Timeout (timeout)
 import UnliftIO (IOMode (..), UnliftIO (..), askUnliftIO, race_, unliftIO, withFile)
-import UnliftIO.Concurrent (forkIO, killThread, mkWeakThreadId)
+import UnliftIO.Concurrent (forkIO, forkIOWithUnmask, killThread, mkWeakThreadId)
 import UnliftIO.Directory (doesFileExist, renameFile)
 import UnliftIO.Exception
 import UnliftIO.STM
@@ -161,7 +161,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
             >>= mapM (deRefWeak . workerThreadId >=> mapM_ killThread)
 
     saveServer :: M ()
-    saveServer = asks store >>= liftIO . closeNtfDbStore >> saveServerStats
+    saveServer = saveServerStats >> asks store >>= liftIO . closeNtfDbStore
 
     serverStatsThread_ :: NtfServerConfig -> [M ()]
     serverStatsThread_ NtfServerConfig {logStatsInterval = Just interval, logStatsStartTime, serverStatsLogFile} =
@@ -177,7 +177,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
         asks serverStats
       let interval = 1000000 * logInterval
       forever $ do
-        withFile statsFilePath AppendMode $ \h -> liftIO $ do
+        handleAny (\e -> logError $ "Server stats log error: " <> tshow e) $ withFile statsFilePath AppendMode $ \h -> liftIO $ do
           hSetBuffering h LineBuffering
           ts <- getCurrentTime
           fromTime' <- atomicSwapIORef fromTime ts
@@ -240,12 +240,14 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       env <- ask
       rtsOpts <- liftIO $ maybe ("set " <> rtsOptionsEnv) T.pack <$> lookupEnv (T.unpack rtsOptionsEnv)
       let interval = 1000000 * saveInterval
+          saveMetrics = do
+            ts <- getCurrentTime
+            sm <- getNtfServerMetrics st ss rtsOpts
+            rtm <- getNtfRealTimeMetrics env
+            writeFileAtomic metricsFile (ntfPrometheusMetrics sm rtm ts)
       liftIO $ forever $ do
         threadDelay interval
-        ts <- getCurrentTime
-        sm <- getNtfServerMetrics st ss rtsOpts
-        rtm <- getNtfRealTimeMetrics env
-        T.writeFile metricsFile $ ntfPrometheusMetrics sm rtm ts
+        saveMetrics `catchAny` \e -> logError $ "Prometheus metrics error: " <> tshow e
 
     getNtfServerMetrics :: NtfPostgresStore -> NtfServerStats -> Text -> IO NtfServerMetrics
     getNtfServerMetrics st ss rtsOptions = do
@@ -667,7 +669,7 @@ getOrCreatePushWorker s@NtfPushServer {pushWorkers, pushWorkerSeq, pushQSize} ke
   where
     createWorker v = do
       q <- liftIO $ newTBQueueIO pushQSize
-      tId <- mkWeakThreadId =<< forkIO (runPushWorker s srvHost_ isOwn q)
+      tId <- mkWeakThreadId =<< forkIOWithUnmask (\unmask -> unmask $ runPushWorker s srvHost_ isOwn q)
       atomically $ putTMVar (sessionVar v) PushWorker {workerQ = q, workerThreadId = tId}
       pure q
     existingWorker v = workerQ <$> atomically (readTMVar $ sessionVar v)
@@ -677,7 +679,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
   (tkn@NtfTknRec {ntfTknId, token = t@(DeviceToken pp _), tknStatus}, ntf) <- atomically (readTBQueue q)
   liftIO $ logDebug $ "sending push notification to " <> T.pack (show pp)
   st <- asks store
-  case ntf of
+  r <- tryAny $ case ntf of
     PNVerification _ ->
       liftIO (deliverNotification st pp tkn ntf) >>= \case
         Right _ -> do
@@ -700,6 +702,9 @@ runPushWorker s srvHost_ isOwn q = forever $ do
         Right () -> do
           incNtfStatT t ntfDelivered
           when isOwn $ liftIO $ mapM_ (`incServerStat` ntfDeliveredOwn stats) srvHost_
+  case r of
+    Right () -> pure ()
+    Left e -> logError $ "push notification error (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> tshow e
   where
     checkActiveTkn :: NtfTknStatus -> M () -> M ()
     checkActiveTkn status action

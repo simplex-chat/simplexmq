@@ -20,7 +20,7 @@ import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Exception (SomeException)
-import Control.Monad (forM_, replicateM_)
+import Control.Monad (forM_, replicateM_, when)
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteArray (ScrubbedBytes)
@@ -45,7 +45,7 @@ import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
 import Simplex.Messaging.Agent.Store.Migrations.App (appMigrations)
 import Simplex.Messaging.Agent.Store.SQLite
-import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withTransaction')
+import Simplex.Messaging.Agent.Store.SQLite.Common (DBStore (..), withConnection', withTransaction')
 import qualified Simplex.Messaging.Agent.Store.SQLite.DB as DB
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -58,6 +58,7 @@ import Simplex.Messaging.Protocol (EntityId (..), QueueMode (..), SubscriptionMo
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Agent.Store.Entity
 import System.Random
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import UnliftIO.Directory (removeFile)
 import Util
@@ -101,6 +102,9 @@ storeTests :: Spec
 storeTests = do
   withStore2 $ do
     describe "stress test" testConcurrentWrites
+    describe "busy commit" $ do
+      testBusyCommit
+      testBusyCommitBudget
   withStore $ do
     describe "db setup" $ do
       testCompiledThreadsafe
@@ -170,6 +174,46 @@ testConcurrentWrites =
       (internalId, internalRcvId, _, _) <- updateRcvIds db connId
       let rcvMsgData = mkRcvMsgData internalId internalRcvId 0 "0" "hash_dummy"
       createRcvMsg db connId rq rcvMsgData
+
+testBusyCommit :: SpecWith (DBStore, DBStore)
+testBusyCommit =
+  it "should roll back busy commit and repeat transaction" $ \(s1, s2) -> do
+    reading <- newEmptyMVar
+    commits <- newTVarIO (0 :: Int)
+    attempts <- newTVarIO (0 :: Int)
+    withConnection' s1 $ \db -> SQL.setTrace db $ Just $ \q -> when ("COMMIT" `T.isPrefixOf` q) $ atomically $ modifyTVar' commits (+ 1)
+    let insert db = do
+          SQL.execute_ db "INSERT INTO users (user_id) VALUES (2)"
+          atomically $ modifyTVar' attempts (+ 1)
+    concurrently_
+      ( withConnection' s2 $ \db -> SQL.withTransaction db $ do
+          _ <- SQL.query_ db "SELECT user_id FROM users" :: IO [Only Int]
+          putMVar reading ()
+          timeout 5000000 (atomically $ readTVar commits >>= check . (> 1)) `shouldReturn` Just ()
+      )
+      (takeMVar reading >> withTransaction' s1 insert)
+    readTVarIO attempts >>= (`shouldSatisfy` (> 1))
+    withTransaction' s1 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
+
+testBusyCommitBudget :: SpecWith (DBStore, DBStore)
+testBusyCommitBudget =
+  it "should roll back busy commit after retry budget and keep store usable" $ \(s1, s2) -> do
+    reading <- newEmptyMVar
+    failed <- newEmptyMVar
+    let insert db = SQL.execute_ db "INSERT INTO users (user_id) VALUES (2)"
+    concurrently_
+      ( withConnection' s2 $ \db -> SQL.withTransaction db $ do
+          _ <- SQL.query_ db "SELECT user_id FROM users" :: IO [Only Int]
+          putMVar reading ()
+          takeMVar failed
+      )
+      ( do
+          takeMVar reading
+          withTransaction' s1 insert `shouldThrow` (\e -> SQL.sqlError e == SQL.ErrorBusy)
+          putMVar failed ()
+      )
+    withTransaction' s1 insert
+    withConnection' s2 (`SQL.query_` "SELECT user_id FROM users") `shouldReturn` [Only (1 :: Int), Only 2]
 
 testCompiledThreadsafe :: SpecWith DBStore
 testCompiledThreadsafe =
@@ -542,7 +586,8 @@ mkRcvMsgData internalId internalRcvId externalSndId brokerId internalHash =
             recipient = (unId internalId, ts),
             sndMsgId = externalSndId,
             broker = (SMP.unsafeMsgId $ mconcat (replicate 24 brokerId), ts),
-            pqEncryption = CR.PQEncOn
+            pqEncryption = CR.PQEncOn,
+            redelivered = False
           },
       msgType = AM_A_MSG_,
       msgFlags = SMP.noMsgFlags,

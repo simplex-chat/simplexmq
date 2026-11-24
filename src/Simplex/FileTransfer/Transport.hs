@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
@@ -37,6 +38,7 @@ module Simplex.FileTransfer.Transport
   )
 where
 
+import Control.Applicative ((<|>))
 import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
@@ -63,10 +65,15 @@ import Simplex.Messaging.Parsers
 import Simplex.Messaging.Protocol (BlockingInfo, CommandError)
 import Simplex.Messaging.Transport (ALPN, CertChainPubKey, ServiceCredentials, SessionId, THandle (..), THandleParams (..), TransportError (..), TransportPeer (..))
 import Simplex.Messaging.Transport.HTTP2.File
-import Simplex.Messaging.Util (bshow, tshow, (<$?>), (<$$>))
+import Simplex.Messaging.Util (bshow, isAsyncCancellation, tshow, (<$?>), (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
+#if __GLASGOW_HASKELL__ == 810
+import System.IO (Handle, IOMode (..), hClose, openFile)
+import qualified UnliftIO.Exception as UE
+#else
 import System.IO (Handle, IOMode (..), withFile)
+#endif
 
 data XFTPRcvChunkSpec = XFTPRcvChunkSpec
   { filePath :: FilePath,
@@ -171,7 +178,7 @@ instance Encoding XFTPServerHandshake where
     (xftpVersionRange, sessionId, authPubKey) <- smpP
     -- decode the (length-prefixed) signature bytes deterministically: empty bytes decode to Nothing.
     -- (Must not use `optional`, which would backtrack and leave the bytes for the parsers that follow.)
-    webIdentityProof <- C.decodeSignature <$?> smpP
+    webIdentityProof <- (C.decodeSignature <$?> smpP) <|> (Nothing <$ A.endOfInput)
     serverInfoBytes <- ifHasServerInfo (maxVersion xftpVersionRange) (unLarge <$$> smpP) (pure Nothing)
     Tail _compat <- smpP
     pure XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, webIdentityProof, serverInfoBytes}
@@ -197,7 +204,7 @@ receiveFile getBody chunk = ExceptT $ runExceptT (receiveFile_ receive chunk) `E
     receive h sz = hReceiveFile getBody h sz >>= \sz' -> pure $ if sz' == 0 then Right () else Left SIZE
     handlers =
       [ E.Handler $ \(e :: HTTP2Error) -> logWarn (err e) $> Left TIMEOUT,
-        E.Handler $ \(e :: E.SomeException) -> logError (err e) $> Left FILE_IO
+        E.Handler $ \(e :: E.SomeException) -> if isAsyncCancellation e then E.throwIO e else logError (err e) $> Left FILE_IO
       ]
     err e = "receiveFile error: " <> tshow e
 
@@ -236,7 +243,11 @@ receiveSbFile getBody h = receive
 
 receiveFile_ :: (Handle -> Word32 -> IO (Either XFTPErrorType ())) -> XFTPRcvChunkSpec -> ExceptT XFTPErrorType IO ()
 receiveFile_ receive XFTPRcvChunkSpec {filePath, chunkSize, chunkDigest} = do
+#if __GLASGOW_HASKELL__ == 810
+  ExceptT $ UE.bracket (openFile filePath WriteMode) hClose (`receive` chunkSize)
+#else
   ExceptT $ withFile filePath WriteMode (`receive` chunkSize)
+#endif
   digest' <- liftIO $ LC.sha256Hash <$> LB.readFile filePath
   when (digest' /= chunkDigest) $ throwE DIGEST
 

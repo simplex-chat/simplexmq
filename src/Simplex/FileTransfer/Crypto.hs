@@ -7,12 +7,14 @@
 module Simplex.FileTransfer.Crypto
   ( encryptFile,
     decryptChunks,
-    readChunks,
+    sha512HashChunks,
   ) where
 
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
+import Crypto.Hash (Context, hashFinalize, hashInit, hashUpdate)
+import Crypto.Hash.Algorithms (SHA512)
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (first)
 import qualified Data.ByteArray as BA
@@ -75,7 +77,7 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
     destFile@(CryptoFile path _) <- withExceptT FTCEFileIOError $ getDestFile fileName
     authOk <- CF.withFile destFile WriteMode $ \h -> liftIO $ do
       CF.hPut h ch'
-      state' <- foldM (decryptChunk h) state $ reverse chPaths'
+      state' <- foldM (decryptChunk h expectedLen) state $ reverse chPaths'
       decryptLastChunk h state' expectedLen
     unless authOk $ do
       removeFile path
@@ -89,11 +91,11 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
         (!expectedLen, ch2) <- liftEitherWith FTCECryptoError $ LC.splitLen ch1
         let len1 = LB.length ch2
         pure ((sb', len1), expectedLen, ch2)
-      decryptChunk h (!sb, !len) chPth = do
+      decryptChunk h expectedLen (!sb, !len) chPth = do
         ch <- LB.readFile chPth
         let len' = len + LB.length ch
             (ch', sb') = LC.sbDecryptChunkLazy sb ch
-        CF.hPut h ch'
+        CF.hPut h $ LB.take (expectedLen - len) ch'
         pure (sb', len')
       decryptLastChunk h (!sb, !len) expectedLen = do
         ch <- LB.readFile lastPath
@@ -115,5 +117,10 @@ decryptChunks encSize (chPath : chPaths) key nonce getDestFile = case reverse ch
         A.Partial _ -> throwE $ FTCEInvalidHeader "incomplete"
         A.Done rest hdr -> pure (hdr, LB.fromStrict rest <> s')
 
-readChunks :: [FilePath] -> IO LB.ByteString
-readChunks = foldM (\s path -> (s <>) <$> LB.readFile path) ""
+sha512HashChunks :: [FilePath] -> IO ByteString
+sha512HashChunks = fmap (BA.convert . hashFinalize) . foldM hashChunk (hashInit :: Context SHA512)
+  where
+    hashChunk ctx path = withFile path ReadMode $ hashHandle ctx
+    hashHandle !ctx h = do
+      s <- B.hGet h 65536
+      if B.null s then pure ctx else hashHandle (hashUpdate ctx s) h

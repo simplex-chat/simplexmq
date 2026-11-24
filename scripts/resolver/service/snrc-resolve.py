@@ -38,13 +38,14 @@ Environment:
                          (default: mainnet,
                           0x58fc46996d975c57883564648bda5206d1a0102b)
   SNRC_REGISTRY_SIMPLEX  ENSRegistry for the .simplex deployment
-                         (default: empty — TLD not yet deployed)
+                         (default: mainnet,
+                          0x3ce23ef6a00d89105299b52aadd72b92681414be)
   SNRC_REGISTRAR_<TLD>   BaseRegistrar (ERC-721) for the TLD; expiry and status
-                         (default: mainnet for .testing, empty for .simplex)
+                         (default: mainnet)
   SNRC_CONTROLLER_<TLD>  SimplexController (proxy) for the TLD; reservations,
                          read from the policy its `namePolicy()` names, if any,
                          and through its `prices()` oracle what registering costs
-                         (default: mainnet for .testing, empty for .simplex)
+                         (default: mainnet)
   SNRC_PORT              Listen port (default: 8000)
   SNRC_BIND              Bind address (default: 0.0.0.0)
   SNRC_WORKERS           Worker processes sharing the port (default: CPU count, at most 4)
@@ -99,6 +100,9 @@ BIND = os.environ.get("SNRC_BIND", "0.0.0.0")
 PORT = int(os.environ.get("SNRC_PORT", "8000"))
 # The smp-server gives up after 3 s, so a slower call only holds a thread.
 RPC_TIMEOUT_S = float(os.environ.get("SNRC_RPC_TIMEOUT", "") or 5)
+# Waits between startup reads while the node is not answering, doubling up to the maximum.
+STARTUP_RETRY_MIN_S = 1
+STARTUP_RETRY_MAX_S = 30
 # The node and the beacon client usually share the host, so not every core.
 MAX_DEFAULT_WORKERS = 4
 WORKERS = int(os.environ.get("SNRC_WORKERS", "") or min(MAX_DEFAULT_WORKERS, os.cpu_count() or 1))
@@ -115,8 +119,7 @@ TRUSTED_PROXIES = tuple(
 )
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
-# happens on the rightmost label of the queried name. Empty / unset means
-# "not deployed" — requests for that TLD return 400 with a clear error.
+# happens on the rightmost label of the queried name.
 # `... or "..."` makes the script's defaults the single source of truth:
 # unset AND empty-string both fall through to the literal. docker-compose
 # can therefore pass `SNRC_REGISTRY_TESTING=${SNRC_REGISTRY_TESTING:-}`
@@ -124,13 +127,15 @@ TRUSTED_PROXIES = tuple(
 REGISTRIES = {
     "testing": os.environ.get("SNRC_REGISTRY_TESTING", "")
     or "0x58fc46996d975c57883564648bda5206d1a0102b",  # mainnet .testing
-    "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", ""),  # not deployed yet
+    "simplex": os.environ.get("SNRC_REGISTRY_SIMPLEX", "")
+    or "0x3ce23ef6a00d89105299b52aadd72b92681414be",
 }
 
 REGISTRARS = {
     "testing": os.environ.get("SNRC_REGISTRAR_TESTING", "")
     or "0xef47eb4384b46c89e4482a677c2cbcbd2a6fd85a",  # mainnet .testing
-    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", ""),  # not deployed yet
+    "simplex": os.environ.get("SNRC_REGISTRAR_SIMPLEX", "")
+    or "0x4c0589dbc22862babb25eb72d11bba49d84aabe8",
 }
 
 CONTROLLERS = {
@@ -138,7 +143,8 @@ CONTROLLERS = {
     # Proxy address, not SimplexControllerImpl: storage is held by the proxy.
     # Recorded in deployments.json as ETHRegistrarController.
     or "0xeeb9b6bf5fb68fb726005f7ba549c2f4b32f2dad",  # mainnet .testing
-    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", ""),  # not deployed yet
+    "simplex": os.environ.get("SNRC_CONTROLLER_SIMPLEX", "")
+    or "0x68fab655a0204865a2f3ab3a607037e09648c92b",
 }
 
 # The name policy each TLD's controller names, which holds its reservations in
@@ -546,6 +552,18 @@ def name_policies() -> dict:
             continue
         policies[tld] = policy
     return policies
+
+
+def wait_for_name_policies() -> dict:
+    """name_policies(), read again until the node answers, as it starts with the resolver."""
+    delay = STARTUP_RETRY_MIN_S
+    while True:
+        try:
+            return name_policies()
+        except Exception as e:
+            log_event(logging.WARNING, "node_unavailable", error=type(e).__name__, message=str(e), retry_s=delay)
+        time.sleep(delay)
+        delay = min(delay * 2, STARTUP_RETRY_MAX_S)
 
 
 def pricing_params(tld: str):
@@ -1096,13 +1114,12 @@ def upstream_error(subject: dict, e: Exception) -> dict:
     }
 
 
-def name_record(name: str):
+def name_record(name: str, owner: str):
     """The NameRecord for a registered name. A name with no resolver set still
     has one, with every field unset."""
     registry = REGISTRIES[name.rsplit(".", 1)[-1]]
     node = node_of(name)
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
-    owner = decode_address(eth_call(*owner_call(registry, node)))
     rec = {
         "name": canonical_name(name),
         "nickname": "",
@@ -1144,23 +1161,28 @@ def name_record(name: str):
     return rec
 
 
-def subname_holder(name: str) -> str:
+def record_owner(name: str) -> str | None:
     labels = name.split(".")
     tld = labels[-1]
     registry, registrar = REGISTRIES[tld], REGISTRARS.get(tld)
     node = node_of(name)
     owner = decode_address(eth_call(*owner_call(registry, node)))
+    if len(labels) == 2:
+        return owner
     holder = decode_address(eth_call(*owner_call(registry, namehash(".".join(labels[-2:])))))
-    if owner in (ZERO_ADDR, holder):
+    if owner == ZERO_ADDR:
+        return None
+    if owner == holder:
         return owner
     if not registrar:
-        return ZERO_ADDR
+        return None
     try:
         if owner != decode_address(eth_call(*subname_hook_call(registrar))):
-            return ZERO_ADDR
-        return decode_address(eth_call(*subname_owner_call(owner, node)))
+            return None
+        held = decode_address(eth_call(*subname_owner_call(owner, node)))
     except RuntimeError:
-        return ZERO_ADDR
+        return None
+    return None if held == ZERO_ADDR else held
 
 
 def name_response(reg, registration_body):
@@ -1178,14 +1200,10 @@ def registration(name: str):
     reg = name_status(name)
     status = reg["status"]
     if status in ("registered", "grace"):
-        rec = name_record(name)
-        # the client checks that the record names what it asked about, so a
-        # hashed query the registrar cannot name is refused rather than answered
-        if rec["name"] is None:
-            return 502, {"name": name, "error": "labelNotRecorded"}
+        owner = record_owner(name)
         # a subname inherits the 2LD's status, so only its holder says whether
         # it exists
-        if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
+        if owner is None:
             # name_status reads pricing only when the name was already
             # unregistered, so read it here
             status = "unregistered"
@@ -1193,6 +1211,11 @@ def registration(name: str):
             if pricing:
                 reg.update({k: v for k, v in pricing.items() if not k.startswith("_")})
         else:
+            rec = name_record(name, owner)
+            # the client checks that the record names what it asked about, so a
+            # hashed query the registrar cannot name is refused rather than answered
+            if rec["name"] is None:
+                return 502, {"name": name, "error": "labelNotRecorded"}
             return name_response(reg, {
                 "type": "registered",
                 "expires": reg["expires"],
@@ -1248,7 +1271,8 @@ def resolve(name: str):
         return (404 if reg["status"] == "unregistered" else 410), body
 
     resolver_addr = decode_address(eth_call(*resolver_call(registry, node)))
-    if len(name.split(".")) > 2 and subname_holder(name) == ZERO_ADDR:
+    owner = record_owner(name)
+    if owner is None:
         return 404, {
             "name": name,
             **reg,
@@ -1260,7 +1284,6 @@ def resolve(name: str):
         # A registered name always resolves: with no resolver set the record is
         # still returned with every field unset, so "taken until <date>" stays
         # answerable.
-        owner = decode_address(eth_call(*owner_call(registry, node)))
         return 200, {
             "name": canonical_name(name) or name,
             "nickname": "",
@@ -1276,8 +1299,6 @@ def resolve(name: str):
             "resolver": ZERO_ADDR,
             **reg,
         }
-
-    owner = decode_address(eth_call(*owner_call(registry, node)))
 
     prefetch(record_reads(resolver_addr, node))
     texts = {}
@@ -1551,11 +1572,10 @@ def supervise(workers: int):
 
 def main():
     setup_logging()
-    try:
-        NAME_POLICIES.update(name_policies())
-    except Exception:
-        log_event(logging.ERROR, "startup_failed", exc_info=True)
-        sys.exit(1)
+    # as PID 1 in the container, the process ignores SIGTERM without a handler
+    signal.signal(signal.SIGTERM, stop_on)
+    signal.signal(signal.SIGINT, stop_on)
+    NAME_POLICIES.update(wait_for_name_policies())
     log_event(
         logging.INFO,
         "listening",
@@ -1570,8 +1590,6 @@ def main():
     if WORKERS > 1:
         supervise(WORKERS)
     else:
-        signal.signal(signal.SIGTERM, stop_on)
-        signal.signal(signal.SIGINT, stop_on)
         serve(reuse_port=False)
 
 

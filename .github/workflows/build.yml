@@ -107,7 +107,7 @@ jobs:
 # =============================
 
   build:
-    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
+    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}${{ matrix.client_postgres && ', PostgreSQL agent store' || '' }}"
     needs: maybe-release
     if: needs.maybe-release.outputs.reduced != 'true'
     permissions:
@@ -135,6 +135,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+          --shm-size 1g
         ports:
           # Maps tcp port 5432 on service container to the host
           - 5432:5432
@@ -160,6 +161,13 @@ jobs:
             runner: "ubuntu-24.04"
             ghc: "9.6.3"
             should_run: true
+          - os: 24.04
+            os_underscore: 24_04
+            arch: x86-64
+            runner: "ubuntu-24.04"
+            ghc: "9.6.3"
+            should_run: true
+            client_postgres: true
           - os: 22.04
             os_underscore: 22_04
             arch: aarch64
@@ -265,7 +273,7 @@ jobs:
           toolchain=$(docker exec builder dpkg-query -W -f '${db:Status-Status} ${binary:Package} ${Version}\n' 'binutils*' 'cpp*' 'gcc*' '*-dev' | grep '^installed ' | sha256sum | cut -c1-16)
           target=${{ matrix.os }}-${{ matrix.arch }}-ghc${{ matrix.ghc }}-$toolchain
           echo "deps=deps-$target" >> "$GITHUB_OUTPUT"
-          echo "dist=dist-$target" >> "$GITHUB_OUTPUT"
+          echo "dist=dist-$target${{ matrix.client_postgres && '-client-postgres' || '' }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore dependencies from cache
         id: restore-deps
@@ -290,6 +298,7 @@ jobs:
           path: |
             dist-newstyle
             dist-postgres
+            dist-client-postgres
           key: ${{ steps.keys.outputs.dist }}-${{ env.opt }}-${{ env.branch }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.keys.outputs.dist }}-${{ env.opt }}-${{ env.branch }}-
@@ -305,11 +314,11 @@ jobs:
 
       - name: Build smp-server, xftp-server (postgresql) and tests
         id: build-postgres
-        if: matrix.should_run == true
+        if: matrix.should_run == true && matrix.client_postgres != true
         shell: docker exec -t builder sh -eu {0}
         run: |
-          chmod -fR 777 ~/.cabal ./dist-newstyle ./dist-postgres || :; git config --global --add safe.directory '*'
-          scripts/ci/prune-old-builds.sh dist-newstyle dist-postgres
+          chmod -fR 777 ~/.cabal ./dist-newstyle ./dist-postgres ./dist-client-postgres || :; git config --global --add safe.directory '*'
+          scripts/ci/prune-old-builds.sh dist-newstyle dist-postgres dist-client-postgres
           cabal update
           cabal build --builddir=${{ env.postgres_dist }} --jobs=$(nproc) --enable-tests -fserver_postgres ${{ env.ghc_options }}
           mkdir -p /out
@@ -321,13 +330,32 @@ jobs:
           strip /out/smp-server /out/xftp-server /out/ntf-server
 
       - name: Copy simplexmq-test from container
-        if: matrix.should_run == true
+        if: matrix.should_run == true && matrix.client_postgres != true
         shell: bash
         run: |
           docker cp builder:/out/simplexmq-test .
 
+      - name: Build tests with PostgreSQL agent store
+        id: build-client-postgres
+        if: matrix.should_run == true && matrix.client_postgres == true
+        shell: docker exec -t builder sh -eu {0}
+        run: |
+          chmod -fR 777 ~/.cabal ./dist-client-postgres || :; git config --global --add safe.directory '*'
+          scripts/ci/prune-old-builds.sh dist-client-postgres
+          cabal update
+          cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers ${{ env.ghc_options }} simplexmq-test
+          mkdir -p /out
+          bin=$(find /project/dist-client-postgres -name simplexmq-test -type f -executable)
+          cp "$bin" /out/simplexmq-test-client-postgres
+
+      - name: Copy simplexmq-test-client-postgres from container
+        if: matrix.should_run == true && matrix.client_postgres == true
+        shell: bash
+        run: |
+          docker cp builder:/out/simplexmq-test-client-postgres .
+
       - name: Copy smp-server, xftp-server (postgresql) from container and prepare it
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.should_run == true
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.should_run == true && matrix.client_postgres != true
         id: prepare-postgres
         shell: bash
         run: |
@@ -352,7 +380,7 @@ jobs:
 
       - name: Build everything else (standard)
         id: build-standard
-        if: matrix.should_run == true && needs.maybe-release.outputs.reduced != 'true'
+        if: matrix.should_run == true && matrix.client_postgres != true && needs.maybe-release.outputs.reduced != 'true'
         shell: docker exec -t builder sh -eu {0}
         run: |
           cabal build --jobs=$(nproc) ${{ env.ghc_options }}
@@ -366,7 +394,7 @@ jobs:
 
       - name: Copy binaries from container and prepare them
         id: prepare-regular
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.should_run == true
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.should_run == true && matrix.client_postgres != true
         shell: bash
         run: |
           docker cp builder:/out .
@@ -391,7 +419,7 @@ jobs:
           cat hashes.output >> "$GITHUB_OUTPUT"
 
       - name: Upload binaries
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.should_run == true
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.should_run == true && matrix.client_postgres != true
         uses: simplex-chat/action-gh-release@v2
         with:
           append_body: true
@@ -431,6 +459,7 @@ jobs:
           path: |
             dist-newstyle
             dist-postgres
+            dist-client-postgres
           key: ${{ steps.keys.outputs.dist }}-${{ env.opt }}-${{ env.branch }}-${{ github.sha }}
 
       - name: Increase PostgreSQL connection limit
@@ -449,11 +478,25 @@ jobs:
           sudo mount -t tmpfs -o size=2G tmpfs tests/tmp
           sudo chown $(id -u):$(id -g) tests/tmp
 
-      - name: Test
+      - name: Setup Node.js
         if: matrix.should_run == true && matrix.arch == 'x86-64'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Build xftp-web for tests
+        if: matrix.should_run == true && matrix.arch == 'x86-64'
+        working-directory: xftp-web
+        run: |
+          npm install
+          ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs
+          npm run build
+
+      - name: Test
+        if: matrix.should_run == true && matrix.arch == 'x86-64' && matrix.client_postgres != true
         timeout-minutes: 120
         shell: bash
-        env:
+        env: &test-env
           PGHOST: localhost
           REDUCED: ${{ needs.maybe-release.outputs.reduced }}
           TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}
@@ -461,11 +504,23 @@ jobs:
           ATTEMPTS: ${{ (github.ref == 'refs/heads/stable' || startsWith(github.ref, 'refs/tags/v')) && 3 || 1 }}
         run: scripts/ci/run-tests.sh ./simplexmq-test
 
+      - name: Test with PostgreSQL agent store
+        if: ${{ !cancelled() && steps.build-client-postgres.outcome == 'success' }}
+        timeout-minutes: 120
+        shell: bash
+        env: *test-env
+        run: scripts/ci/run-tests.sh ./simplexmq-test-client-postgres
+
+      - name: Check generated files
+        if: ${{ !cancelled() && matrix.should_run == true && matrix.arch == 'x86-64' }}
+        shell: bash
+        run: git diff --exit-code
+
       - name: Remove -O2 build directories
         id: remove-o2
-        if: env.cache_o0 == 'true' && !cancelled() && steps.build-postgres.outcome == 'success' && steps.build-standard.outcome != 'failure'
+        if: env.cache_o0 == 'true' && !cancelled() && (steps.build-postgres.outcome == 'success' || steps.build-client-postgres.outcome == 'success') && steps.build-standard.outcome != 'failure'
         shell: docker exec -t builder sh -eu {0}
-        run: rm -rf dist-newstyle dist-postgres
+        run: rm -rf dist-newstyle dist-postgres dist-client-postgres
 
       - name: Restore -O0 build directories from cache
         id: restore-build-o0
@@ -475,6 +530,7 @@ jobs:
           path: |
             dist-newstyle
             dist-postgres
+            dist-client-postgres
           key: ${{ steps.keys.outputs.dist }}-O0-${{ env.branch }}-${{ github.sha }}
           restore-keys: |
             ${{ steps.keys.outputs.dist }}-O0-${{ env.branch }}-
@@ -489,9 +545,13 @@ jobs:
         if: ${{ !cancelled() && steps.remove-o2.outcome == 'success' }}
         shell: docker exec -t builder sh -eu {0}
         run: |
-          scripts/ci/prune-old-builds.sh dist-newstyle dist-postgres
-          cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres --ghc-options=-O0
-          cabal build --jobs=$(nproc) --ghc-options=-O0
+          scripts/ci/prune-old-builds.sh dist-newstyle dist-postgres dist-client-postgres
+          if [ "${{ matrix.client_postgres }}" = true ]; then
+            cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers --ghc-options=-O0 simplexmq-test
+          else
+            cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres --ghc-options=-O0
+            cabal build --jobs=$(nproc) --ghc-options=-O0
+          fi
 
       - name: Record source hashes for -O0 build (GHC 8.10.7)
         if: ${{ !cancelled() && matrix.ghc == '8.10.7' && steps.build-o0.outcome == 'success' }}
@@ -505,10 +565,11 @@ jobs:
           path: |
             dist-newstyle
             dist-postgres
+            dist-client-postgres
           key: ${{ steps.keys.outputs.dist }}-O0-${{ env.branch }}-${{ github.sha }}
 
   build-reduced:
-    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}"
+    name: "ubuntu-${{ matrix.os }}-${{ matrix.arch }}, GHC: ${{ matrix.ghc }}${{ matrix.client_postgres && ', PostgreSQL agent store' || '' }}"
     needs: maybe-release
     if: needs.maybe-release.outputs.reduced == 'true'
     permissions:
@@ -518,6 +579,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     services: *build-services
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: 24.04
@@ -526,4 +588,11 @@ jobs:
             runner: "ubuntu-24.04"
             ghc: "9.6.3"
             should_run: true
+          - os: 24.04
+            os_underscore: 24_04
+            arch: x86-64
+            runner: "ubuntu-24.04"
+            ghc: "9.6.3"
+            should_run: true
+            client_postgres: true
     steps: *build-steps

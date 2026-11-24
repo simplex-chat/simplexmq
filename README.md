@@ -308,10 +308,6 @@ smp-server delete
 smp-server init [-l] -n <fqdn>
 ```
 
-## SMP server design
-
-![SMP server design](./design/server.svg)
-
 ## SMP agent design
 
 ![SMP agent design](./design/agent2.svg)

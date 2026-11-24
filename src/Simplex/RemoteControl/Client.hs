@@ -67,6 +67,7 @@ import Simplex.Messaging.Transport (TSbChainKeys (..), TLS (..), TransportPeer (
 import Simplex.Messaging.Transport.Buffer (peekBuffered)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTransportClient)
 import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
+import Simplex.Messaging.Transport.Server (validateClientCertificate)
 import Simplex.Messaging.Util
 import Simplex.Messaging.Version
 import Simplex.RemoteControl.Discovery (getLocalAddress, recvAnnounce, startTLSServer, withListener, withSender)
@@ -158,13 +159,16 @@ connectRCHost drg pairing@RCHostPairing {caKey, caCert, idPrivKey, knownHost} ct
     tlsHooks r knownHost_ hostCAHash =
       def
         { TLS.onNewHandshake = \_ -> atomically $ isNothing <$> tryReadTMVar r,
-          TLS.onClientCertificate = \(X.CertificateChain chain) ->
+          TLS.onClientCertificate = \cc@(X.CertificateChain chain) ->
             case chain of
               [_leaf, ca] -> do
                 let kh = certFingerprint ca
                     accept = maybe True (\h -> hostFingerprint h == kh) knownHost_
                 if accept
-                  then atomically (putTMVar hostCAHash kh) $> TLS.CertificateUsageAccept
+                  then
+                    validateClientCertificate cc >>= \case
+                      Nothing -> atomically (putTMVar hostCAHash kh) $> TLS.CertificateUsageAccept
+                      Just reason -> pure $ TLS.CertificateUsageReject reason
                   else pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
               _ ->
                 pure $ TLS.CertificateUsageReject TLS.CertificateRejectUnknownCA
@@ -227,7 +231,7 @@ prepareHostSession
     knownHost' <- updateKnownHost ca dhPubKey
     let ctrlHello = RCCtrlHello {}
     -- TODO send error response if something fails
-    (sk, nonce') <- atomically $ stateTVar sndKey C.sbcHkdf
+    (sk, nonce') <- atomically $ stateTVar' sndKey C.sbcHkdf
     encBody' <- liftEitherWith (const RCEBlockSize) $ C.sbEncrypt sk nonce' (LB.toStrict $ J.encode ctrlHello) helloBlockSize
     let ctrlEncHello = RCCtrlEncHello {kem = kemCiphertext, encBody = encBody'}
     pure (ctrlEncHello, keys, hostHello, pairing {knownHost = Just knownHost'})
@@ -352,7 +356,7 @@ prepareCtrlSession
       let KEMHybridSecret hybridKey = kemHybridSecret dhPubKey dhPrivKey kemSharedKey
       -- keys are swapped in controller
       (sndKey, rcvKey) <- swap <$> bimapM newTVarIO newTVarIO (C.sbcInit "" hybridKey)
-      (sk, nonce) <- atomically $ stateTVar rcvKey C.sbcHkdf
+      (sk, nonce) <- atomically $ stateTVar' rcvKey C.sbcHkdf
       helloBody <- liftEitherWith (const RCEDecrypt) $ C.sbDecrypt sk nonce encBody
       logDebug "Decrypted ctrl HELLO"
       RCCtrlHello {} <- liftEitherWith RCESyntax $ J.eitherDecodeStrict helloBody

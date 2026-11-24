@@ -230,6 +230,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateRcvFileRedirect,
     updateRcvFileNoTmpPath,
     updateRcvFileDeleted,
+    getRcvFileDeleted,
     deleteRcvFile',
     getNextRcvChunkToDownload,
     getNextRcvFileToDecrypt,
@@ -262,6 +263,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     getCleanupSndFilesPrefixPaths,
     getCleanupSndFilesDeleted,
     getSndFilesExpired,
+    getNotDeletedOrFailedSndFileIds,
     createDeletedSndChunkReplica,
     getNextDeletedSndChunkReplica,
     updateDeletedSndChunkReplicaDelay,
@@ -1168,16 +1170,20 @@ getWorkItems itemName getIds getItem markFailed =
   runExceptT $ handleWrkErr itemName "getIds" getIds >>= mapM (tryE . tryGetItem itemName getItem markFailed)
 
 tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
-tryGetItem itemName getItem markFailed itemId = ExceptT (getItem itemId) `catchAllErrors` \e -> mark >> throwE e
+tryGetItem itemName getItem markFailed itemId = ExceptT getItem' `catchE` \e -> mark >> throwE e
   where
+    getItem' = E.handleJust workItemError (pure . Left . fromSomeException) $ getItem itemId
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
 handleWrkErr :: forall e a. AnyStoreError e => String -> String -> IO a -> ExceptT e IO a
-handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.try action
+handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust workItemError action
   where
     mkError :: E.SomeException -> e
     mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
+
+workItemError :: E.SomeException -> Maybe E.SomeException
+workItemError e = if isTransactionConflict e then Nothing else Just e
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
@@ -1257,7 +1263,7 @@ getLastMsg db connId msgId =
           m.msg_type, m.msg_body, m.pq_encryption, s.internal_id, s.rcpt_status, r.user_ack
         FROM rcv_messages r
         JOIN messages m ON r.conn_id = m.conn_id AND r.internal_id = m.internal_id
-        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_msg_id = r.internal_id
+        JOIN connections c ON r.conn_id = c.conn_id AND c.last_internal_rcv_msg_id = r.internal_rcv_id
         LEFT JOIN snd_messages s ON s.conn_id = r.conn_id AND s.rcpt_internal_id = r.internal_id
         WHERE r.conn_id = ? AND r.broker_id = ?
       |]
@@ -1265,7 +1271,7 @@ getLastMsg db connId msgId =
 
 toRcvMsg :: (Int64, InternalTs, BrokerId, BrokerTs) :. (AgentMsgId, MsgIntegrity, MsgHash, AgentMessageType, MsgBody, PQEncryption, Maybe AgentMsgId, Maybe MsgReceiptStatus, BoolInt) -> RcvMsg
 toRcvMsg ((agentMsgId, internalTs, brokerId, brokerTs) :. (sndMsgId, integrity, internalHash, msgType, msgBody, pqEncryption, rcptInternalId_, rcptStatus_, BI userAck)) =
-  let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption}
+  let msgMeta = MsgMeta {recipient = (agentMsgId, internalTs), broker = (brokerId, brokerTs), sndMsgId, integrity, pqEncryption, redelivered = False}
       msgReceipt = MsgReceipt <$> rcptInternalId_ <*> rcptStatus_
    in RcvMsg {internalId = InternalId agentMsgId, msgMeta, msgType, msgBody, internalHash, msgReceipt, userAck}
 
@@ -2061,7 +2067,8 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
           db
           [sql|
             SELECT conn_id
-            FROM ntf_subscriptions
+            FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
             WHERE ntf_host = ? AND ntf_port = ? AND ntf_sub_action IS NOT NULL
               AND (ntf_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
@@ -2106,6 +2113,7 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
           [sql|
             SELECT conn_id
             FROM ntf_subscriptions ns
+            JOIN connections c USING (conn_id)
             WHERE smp_host = ? AND smp_port = ? AND ntf_sub_smp_action IS NOT NULL AND ntf_sub_action_ts IS NOT NULL
               AND (smp_failed = 0 OR updated_by_supervisor = 1)
             ORDER BY ntf_sub_action_ts ASC
@@ -3402,6 +3410,11 @@ updateRcvFileDeleted db rcvFileId = do
   updatedAt <- getCurrentTime
   DB.execute db "UPDATE rcv_files SET deleted = 1, updated_at = ? WHERE rcv_file_id = ?" (updatedAt, rcvFileId)
 
+getRcvFileDeleted :: DB.Connection -> DBRcvFileId -> IO Bool
+getRcvFileDeleted db rcvFileId =
+  maybeFirstRow' True fromOnlyBI $
+    DB.query db "SELECT deleted FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
+
 deleteRcvFile' :: DB.Connection -> DBRcvFileId -> IO ()
 deleteRcvFile' db rcvFileId =
   DB.execute db "DELETE FROM rcv_files WHERE rcv_file_id = ?" (Only rcvFileId)
@@ -3893,6 +3906,10 @@ getSndFilesExpired db ttl = do
       WHERE created_at < ?
     |]
     (Only cutoffTs)
+
+getNotDeletedOrFailedSndFileIds :: DB.Connection -> IO [SndFileId]
+getNotDeletedOrFailedSndFileIds db =
+  map fromOnly <$> DB.query_ db "SELECT snd_file_entity_id FROM snd_files WHERE deleted = 0 AND failed = 0"
 
 createDeletedSndChunkReplica :: DB.Connection -> UserId -> FileChunkReplica -> FileDigest -> IO ()
 createDeletedSndChunkReplica db userId FileChunkReplica {server, replicaId, replicaKey} chunkDigest = do

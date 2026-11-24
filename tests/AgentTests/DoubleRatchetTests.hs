@@ -14,7 +14,7 @@
 module AgentTests.DoubleRatchetTests where
 
 import Control.Concurrent.STM
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Control.Monad.Except
 import Control.Monad.IO.Class
 import Crypto.Random (ChaChaDRG)
@@ -29,6 +29,7 @@ import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings
 import Simplex.Messaging.Encoding
+import Simplex.Messaging.Encoding.String (Str (..))
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util ((<$$>))
 import Simplex.Messaging.Version
@@ -41,6 +42,9 @@ doubleRatchetTests = do
     it "should serialize and parse message header" $ do
       testAlgs $ testMessageHeader currentE2EEncryptVersion
     describe "message tests" $ runMessageTests initRatchets False
+    describe "message tests, version 2 ratchets, sent by v7.0" $ runMessageTests (initRatchetsV2 (withTVar encryptV70 noSndKEM) (decrypt' noRcvKEM)) False
+    describe "message tests, version 2 ratchets, received by v7.0" $ runMessageTests (initRatchetsV2 (encrypt' noSndKEM) (withTVar decryptV70 noRcvKEM)) False
+    describe "message tests, version 2 ratchets, sent by v7.1.0" $ runMessageTests (initRatchetsV2 (withTVar encryptV710 noSndKEM) (decrypt' noRcvKEM)) False
     it "should encode/decode ratchet as JSON" $ do
       testAlgs testKeyJSON
       testAlgs testRatchetJSON
@@ -587,6 +591,15 @@ initRatchetsKEMProposedAgain = do
       alice = initRcvRatchet vs pkAlice2 paramsAlice PQSupportOn
   pure (alice, bob, encrypt' hasSndKEM, decrypt' hasRcvKEM, (!#>))
 
+initRatchetsV2 :: (AlgorithmI a, DhAlgorithm a) => Encrypt a -> Decrypt a -> IO (Ratchet a, Ratchet a, Encrypt a, Decrypt a, EncryptDecryptSpec a)
+initRatchetsV2 encrypt decrypt = do
+  (alice, bob, _, _, _) <- initRatchets
+  let vs = RatchetVersions (VersionE2E 2) (VersionE2E 2)
+      (s, msg) #> r = do
+        Right msg' <- encrypt s msg
+        decrypt r msg' `shouldReturn` Right (Right msg)
+  pure (alice {rcVersion = vs}, bob {rcVersion = vs}, encrypt, decrypt, (#>))
+
 testRatchetVersions :: RatchetVersions
 testRatchetVersions =
   let v = maxVersion supportedE2EEncryptVRange
@@ -614,6 +627,42 @@ encrypt' = withTVar $ encrypt_ Nothing
 
 decrypt' :: (AlgorithmI a, DhAlgorithm a) => (Ratchet a -> ()) -> Decrypt a
 decrypt' = withTVar decrypt_
+
+encryptV70 :: forall a. AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
+encryptV70 (_, rc@Ratchet {rcVersion = RatchetVersions {current}, rcDHRs, rcPN, rcNs, rcSnd}, _) msg = runExceptT $ do
+  (mek@MsgEncryptKey {msgRcAD, msgEncHeader}, rc'@Ratchet {rcVersion = RatchetVersions {maxSupported}}) <- rcEncryptHeader rc Nothing currentE2EEncryptVersion
+  msg' <-
+    if current >= VersionE2E 3
+      then rcEncryptMsg mek paddedMsgLen msg
+      else do
+        Just SndRatchet {rcHKs} <- pure rcSnd
+        Right (_ :: VersionE2E, iv, _ :: C.AuthTag, Large _) <- pure $ smpDecode msgEncHeader
+        (tag, hdr) <- C.encryptAEAD rcHKs iv 88 msgRcAD $ smpEncode (maxSupported, C.publicKey rcDHRs, rcPN, rcNs)
+        let emHeader = smpEncode (current, iv, tag) <> smpEncode hdr
+        Right (Large _, emAuthTag :: C.AuthTag, Tail emBody) <- smpDecode <$> rcEncryptMsg (mek {msgEncHeader = emHeader} :: MsgEncryptKey a) paddedMsgLen msg
+        pure $ smpEncode (emHeader, emAuthTag, Tail emBody)
+  pure (msg', rc', SMDNoChange)
+
+decryptV70 :: forall a. (AlgorithmI a, DhAlgorithm a) => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (Either CryptoError ByteString, Ratchet a, SkippedMsgDiff))
+decryptV70 st@(_, Ratchet {rcAD = Str ad, rcRcv, rcNHKr}, smks) msg = do
+  Right (Large emHeader, _ :: C.AuthTag, Tail _) <- pure $ smpDecode msg
+  Right (v, iv, tag, Large body) <- pure $ smpDecode emHeader
+  let hks = maybe [] (\RcvRatchet {rcHKr} -> [rcHKr]) rcRcv <> [rcNHKr] <> M.keys smks
+  forM_ hks $ \hk -> do
+    hdr_ <- runExceptT $ C.decryptAEAD hk iv ad body tag
+    forM_ hdr_ $ \hdr -> msgHeaderV70 @a v hdr `shouldBe` ((\(h, Tail _) -> h) <$> smpDecode hdr)
+  decrypt_ st msg
+
+msgHeaderV70 :: AlgorithmI a => VersionE2E -> ByteString -> Either String (MsgHeader a)
+msgHeaderV70 v hdr
+  | v >= VersionE2E 3 = (\(h, Tail _) -> h) <$> smpDecode hdr
+  | otherwise = (\(msgMaxVersion, msgDHRs, msgPN, msgNs, Tail _) -> MsgHeader {msgMaxVersion, msgDHRs, msgKEM = Nothing, msgPN, msgNs}) <$> smpDecode hdr
+
+encryptV710 :: forall a. AlgorithmI a => (TVar ChaChaDRG, Ratchet a, SkippedMsgKeys) -> ByteString -> IO (Either CryptoError (ByteString, Ratchet a, SkippedMsgDiff))
+encryptV710 (_, rc@Ratchet {rcVersion = RatchetVersions {current}}, _) msg = runExceptT $ do
+  (mek@MsgEncryptKey {msgEncHeader}, rc') <- rcEncryptHeader rc Nothing currentE2EEncryptVersion
+  msg' <- rcEncryptMsg (mek {msgEncHeader = smpEncode current <> B.drop 2 msgEncHeader} :: MsgEncryptKey a) paddedMsgLen msg
+  pure (msg', rc', SMDNoChange)
 
 noSndKEM :: Ratchet a -> ()
 noSndKEM Ratchet {rcSndKEM = PQEncOn} = error "snd ratchet has KEM"

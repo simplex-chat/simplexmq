@@ -19,7 +19,7 @@ import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Data.Time (UTCTime)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Util (whenM, ($>>=))
+import Simplex.Messaging.Util (stateTVar', whenM, ($>>=))
 import UnliftIO.Exception (bracketOnError)
 
 data SessionVar a = SessionVar
@@ -43,7 +43,7 @@ getSessVarIO sessSeq sessKey vs ts = TM.lookupOrInsertIO sessKey (createSessionV
 createSessionVar :: TVar Int -> UTCTime -> STM (SessionVar a)
 createSessionVar sessSeq sessionVarTs = do
   sessionVar <- newEmptyTMVar
-  sessionVarId <- stateTVar sessSeq $ \next -> (next, next + 1)
+  sessionVarId <- stateTVar' sessSeq $ \next -> (next, next + 1)
   pure SessionVar {sessionVar, sessionVarId, sessionVarTs}
 
 removeSessVar :: Ord k => SessionVar a -> k -> TMap k (SessionVar a) -> STM ()

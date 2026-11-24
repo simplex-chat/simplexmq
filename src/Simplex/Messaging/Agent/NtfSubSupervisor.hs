@@ -46,6 +46,7 @@ import Simplex.Messaging.Agent.RetryInterval
 import Simplex.Messaging.Agent.Stats
 import Simplex.Messaging.Agent.Store
 import Simplex.Messaging.Agent.Store.AgentStore
+import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
 import qualified Simplex.Messaging.Agent.Store.DB as DB
 import Simplex.Messaging.Client (NetworkRequestMode (..), nonBlockingWriteTBQueue)
 import qualified Simplex.Messaging.Crypto as C
@@ -53,7 +54,7 @@ import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Types
 import Simplex.Messaging.Protocol (NtfServer, sameSrvAddr)
 import qualified Simplex.Messaging.Protocol as SMP
-import Simplex.Messaging.Util (catchAllErrors, catchAllErrors', diffToMicroseconds, threadDelay', tryAllErrors, tshow, whenM)
+import Simplex.Messaging.Util (catchAllErrors, catchAllErrors', diffToMicroseconds, stateTVar', threadDelay', tryAllErrors, tshow, whenM)
 import System.Random (randomR)
 import UnliftIO
 import UnliftIO.Concurrent (forkIO)
@@ -214,7 +215,7 @@ runNtfWorker c srv Worker {doWork} =
     runNtfOperation :: AM ()
     runNtfOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (withStore' c $ \db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems c doWork (withStoreIsolation' c RepeatableRead $ \db -> getNextNtfSubNTFActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfWorker - length nextSubs = " <> tshow (length nextSubs)
         currTs <- liftIO getCurrentTime
         let (creates, checks, deletes, rotates) = splitActions currTs nextSubs
@@ -382,7 +383,7 @@ runNtfSMPWorker c srv Worker {doWork} = forever $ do
     runNtfSMPOperation :: AM ()
     runNtfSMPOperation = do
       ntfBatchSize <- asks $ ntfBatchSize . config
-      withWorkItems c doWork (withStore' c $ \db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
+      withWorkItems c doWork (withStoreIsolation' c RepeatableRead $ \db -> getNextNtfSubSMPActions db srv ntfBatchSize) $ \nextSubs -> do
         logInfo $ "runNtfSMPWorker - length nextSubs = " <> tshow (length nextSubs)
         let (creates, deletes) = splitActions nextSubs
         retrySubActions c creates createNotifierKeys
@@ -596,5 +597,5 @@ getNtfServer c = do
     [srv] -> pure $ Just srv
     servers -> do
       gen <- asks randomServer
-      atomically . stateTVar gen $
+      atomically . stateTVar' gen $
         first (Just . (servers !!)) . randomR (0, length servers - 1)

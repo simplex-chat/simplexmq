@@ -16,7 +16,6 @@ import Data.Functor (($>))
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
-import UnliftIO.Async (forConcurrently)
 import qualified UnliftIO.Exception as E
 import UnliftIO.STM
 
@@ -48,10 +47,10 @@ withGetLock getLock key name a =
     (const a)
 
 withGetLocks :: MonadUnliftIO m => (k -> IO Lock) -> Set k -> Text -> m a -> m a
-withGetLocks getLock keys name = E.bracket holdLocks releaseLocks . const
+withGetLocks getLock keys name a = go (S.toList keys)
   where
-    holdLocks = forConcurrently (S.toList keys) $ \key -> liftIO $ getPutLock getLock key name
-    releaseLocks = mapM_ (atomically . takeTMVar)
+    go [] = a
+    go (k : ks) = withGetLock getLock k name (go ks)
 
 getPutLock :: (k -> IO Lock) -> k -> Text -> IO Lock
 getPutLock getLock key name = getLock key >>= \l -> atomically (putTMVar l name) $> l

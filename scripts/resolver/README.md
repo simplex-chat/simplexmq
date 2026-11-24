@@ -1,7 +1,7 @@
 # Self-hosted SNRC stack
 
 One `docker compose up` runs the self-hosted SimpleX Namespace (SNRC) backend
-against **Ethereum mainnet** (where the `.testing` contracts live):
+against **Ethereum mainnet** (where the `.testing` and `.simplex` contracts are deployed):
 
 | # | Component | What it does |
 |---|---|---|
@@ -46,8 +46,10 @@ docker compose logs --tail=20 reth
 ```
 
 This is the long pole (~1 day on mainnet). Until reth is synced the resolver
-returns `502`. A TLD whose controller has a name policy then still answers `502`
-until `docker compose restart resolver` (see Configuring addresses).
+returns `502`. If the resolver started before the node reached block 26459168,
+where the `.simplex` controller's name policy was set, every lookup under
+`.simplex` then still returns `502` until `docker compose restart resolver` (see
+Configuring addresses).
 
 ## Verify
 
@@ -63,8 +65,9 @@ curl -s -X POST http://127.0.0.1:8545 \
 **2. resolver is healthy:**
 ```sh
 curl -s http://127.0.0.1:8000/health | jq
-# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x…", "simplex": ""},
-#    "blockNumber": 23400000, "chainLagSeconds": 12}
+# → {"ok": true, "rpc": "http://reth:8545", "registries": {"testing": "0x58fc46996d975c57883564648bda5206d1a0102b",
+#    "simplex": "0x3ce23ef6a00d89105299b52aadd72b92681414be"},
+#    "blockNumber": 26462784, "chainLagSeconds": 12}
 ```
 
 `chainLagSeconds` is how far the node is behind the wall clock. A resolver that
@@ -80,8 +83,18 @@ curl -s http://127.0.0.1:8000/resolve/foobar.testing | jq
 **4. the route your router will call** (check 3 passes on an older resolver too):
 ```sh
 curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
-# → {"type":"registered","expires":1780000000,"graceUntil":…,"nameRecord":{…}}
+# → {"lastBlockTs":…,"registration":{"type":"registered","expires":1780000000,"graceUntil":…,"reservedReason_":…,"nameRecord":{…}}}
 ```
+
+**5. a reservation read from `.simplex`'s name policy:**
+```sh
+curl -s http://127.0.0.1:8000/v2/resolve/simplex.simplex | jq
+# → {"lastBlockTs":…,"registration":{"type":"reserved","reservedReason":"internal"}}
+```
+
+If check 5 returns `502` while check 4 passes, and the `listening` log line
+shows `simplex=-` in `name_policies`, run `docker compose restart resolver` once
+the node is synced.
 
 **Wire your smp-server:** in its `[NAMES]` section set
 `resolver_endpoint: http://127.0.0.1:8000` (no auth needed for loopback).
@@ -100,6 +113,13 @@ curl -s http://127.0.0.1:8000/v2/resolve/foobar.testing | jq
 
 - **All images track `:latest`** (reth, nimbus) — you get upstream fixes on each
   `docker compose pull`; re-run the verify checks after pulling.
+- The resolver image contains the script: after updating this directory, run
+  `docker compose up -d --build resolver`, then checks 2 and 5.
+- A `SNRC_*_SIMPLEX` setting added to `.env`, to `docker-compose.yml`, or to the
+  environment of a direct run, for the earlier `.simplex` deployment (registry
+  `0xa7f6497be2f1aa41aa2db55aba8a6e0145dff0d2`) overrides the defaults. Remove
+  all three; `docker compose exec resolver env | grep _SIMPLEX` then prints
+  nothing.
 - All ports bind to loopback; expose only what you put behind a TLS reverse proxy.
 
 ## Teardown
@@ -119,7 +139,7 @@ The resolver (`snrc-resolve.py`, host `127.0.0.1:8000`) is also runnable
 standalone for local dev (no Docker), via [`uv`](https://docs.astral.sh/uv/):
 
 ```sh
-uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing
+uv run scripts/resolver/service/snrc-resolve.py  # defaults to local reth + mainnet .testing and .simplex
 ```
 
 Tests and lint run from `scripts/resolver/service`:
@@ -175,8 +195,9 @@ label, so a hashed query cannot be answered with a name. See
 A subname reports the expiry and grace of the 2LD above it, since that is what
 bounds its lifetime. A subname is answered only while it is held: owned in the
 registry by the 2LD's holder, or by the subname registrar that the registrar's
-`subnameHook()` names, while its `ownerOf` names a holder. Any other subname,
-created or not, reports as not registered.
+`subnameHook()` names, while its `ownerOf` names a holder. In both cases the
+record's `owner` is the 2LD's holder. Any other subname, created or not, reports
+as not registered.
 
 ### v1: `/resolve/<name>`
 
@@ -221,7 +242,7 @@ name already knows when it expires. Both timestamps are Unix seconds, and
 | `grace` | lapsed, but only the previous owner may renew it, until `graceEnds` |
 | `expired` | lapsed and past grace; anyone may register it |
 | `unregistered` | never registered, and free to take |
-| `unknown` | no `SNRC_REGISTRAR_<TLD>` configured, so status could not be read |
+| `unknown` | the resolver has no registrar for the TLD, so status could not be read |
 
 A reservation is orthogonal to the status: a name held back by the registry
 carries `reasonCode` and `reason` whether or not it is registered.
@@ -237,7 +258,7 @@ released*.
 
 A subname reports the status of the 2LD above it, which is only as good as the
 name it sits under. A subname that is not held, as v2 defines it, answers 404
-`unregistered`.
+`unregistered`; for a held one, `owner` is the 2LD's holder, as in v2.
 
 #### v1 errors
 
@@ -266,7 +287,7 @@ look free.
 
 | Status | Meaning |
 |---|---|
-| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when no registrar is configured) |
+| 200 | resolved (`status` is `registered` or `grace`, or `unknown` when the resolver has no registrar for the TLD) |
 | 400 | TLD not configured, or not a fully-qualified name |
 | 404 | `unregistered` |
 | 410 | `expired`: lapsed and past grace, so anyone may take it |
@@ -334,9 +355,6 @@ per second, and charges a premium on a lapsed name that it does not expose. A
 quote from one is therefore only safe for a name that was never registered: an
 `expired` name gets no price rather than one below what the registrar charges.
 
-**Set `SNRC_CONTROLLER_<TLD>` wherever `SNRC_REGISTRAR_<TLD>` is.** Without a
-controller there is no oracle, so no name can be priced.
-
 **Upgrade this service before the routers that query it.** Routers from SMP v22
 call `/v2/resolve`, which an older resolver does not serve. Every name then
 answers `ERR NAME RESOLVER "HTTP 404"` until this service is upgraded, while
@@ -371,16 +389,12 @@ is where every expiry field comes from, and `labelOf`, which is how a hashed
 query is answered with a name. A name registered without recording its label
 cannot answer one, and `/v2/resolve` refuses it rather than answer with a name
 the client will reject. Its `subnameHook()` names the subname registrar, whose
-`ownerOf` says who holds a subname it owns. With no registrar for a TLD,
-`/resolve` still works and reports `"status": "unknown"`, and only subnames the
-2LD's holder owns in the registry are answered. The **controller** holds
-`reservedNames`, which is where `reasonCode` comes from. With no controller a
-held-back name reads as not reserved, and no name can be priced.
+`ownerOf` says who holds a subname it owns. The **controller** holds
+`reservedNames`, which is where `reasonCode` comes from.
 
-All three default to the mainnet `.testing` deployment. `.simplex` is unset
-until it is deployed.
+All three default to the mainnet deployments of `.testing` and `.simplex`.
 
-Newer contracts, which `.simplex` will run, keep `reservedNames` in a **name
+Newer contracts, which the `.simplex` deployment uses, keep `reservedNames` in a **name
 policy** (`SimplexNamePolicy`), with the same `Reason`, and their controller
 answers no `reservedNames` call. The resolver reads each controller's
 `namePolicy()` once at startup, before its workers start, and reads reservations
@@ -389,21 +403,32 @@ so the read reverts. A read that reverts, answers nothing, names no policy or
 fails with an RPC error is logged as `no_name_policy`, and reservations are read
 from the controller. For a controller that has a name policy, every lookup under
 its TLD then answers 502 until a restart: after an RPC error, or when the node
-has not yet reached the controller or its `setNamePolicy`. A node that
-does not answer stops the resolver, and the container restarts. After the
-controller's owner calls `setNamePolicy`, restart the resolver.
+has not yet reached the controller or its `setNamePolicy`. While the node
+does not answer, the resolver does not listen and reads again, waiting 1 s,
+then twice as long each time, up to 30 s. After the controller's owner calls
+`setNamePolicy`, restart the resolver.
 
-The controller default is the **proxy**, not `SimplexControllerImpl`. Storage
-lives in the proxy, so the implementation address answers nothing. The two
-deployment files use different names for that proxy:
-`deployments.mainnet.testing.json` records it under the ENS role name
-`ETHRegistrarController`, and `verification.mainnet.testing.json` calls it
-`SimplexControllerProxy`. Both are the same address, and it is the one used
-here.
+Each default is the address that `deployments.mainnet.<tld>.json` of
+[brenzi/simplex-namespace-contract](https://github.com/brenzi/simplex-namespace-contract/tree/2ecae1a77bd605dcc236ba3c3cd93e690345af2c)
+records, the **proxy** where the contract is upgradeable: the controller of
+`.testing` and all three of `.simplex`. The implementations, the entries named
+`<contract>@<address>` or `SimplexControllerImpl` in its
+`verification.mainnet.<tld>.json`, hold no names: a registrar implementation
+returns 0 from `nameExpires` for every name, so every unreserved name is
+answered as available. Each setting is the address of one entry of the deployments file:
+
+| Setting | Entry of `deployments.mainnet.<tld>.json` |
+|---|---|
+| `SNRC_REGISTRY_<TLD>` | `ENSRegistry` |
+| `SNRC_REGISTRAR_<TLD>` | `BaseRegistrarImplementation` |
+| `SNRC_CONTROLLER_<TLD>` | `ETHRegistrarController` |
 
 To override any of them, set `SNRC_REGISTRY_<TLD>`, `SNRC_REGISTRAR_<TLD>` or
 `SNRC_CONTROLLER_<TLD>` on the `resolver` service in `docker-compose.yml`, or
-as env vars when you run the script directly.
+as env vars when you run the script directly. With docker compose, the
+`.simplex` ones can be set in `.env`. An empty value is replaced by the
+default. Override the three settings of a TLD together: an unset setting is left
+at its mainnet default, which belongs to a different deployment.
 
 ### Load and scaling
 
@@ -448,7 +473,7 @@ Each event is one line: UTC time, level, event name, then `key=value` fields.
 | `client_gone` | warn | the caller hung up before the answer, usually an smp-server past its timeout |
 | `http_error` | warn | a malformed request; idle keep-alive timeouts only at debug |
 | `request_failed` | error | a request failed unexpectedly, with its traceback |
-| `startup_failed` | error | the node did not answer the startup read of the name policies; the container restarts |
+| `node_unavailable` | warn | the node did not answer the startup read of the name policies; read again after `retry_s` |
 | `worker_exited`, `worker_failed` | error | a worker stopped; the others stop too, so the container restarts |
 | `stopping` | info | stopped by a signal |
 

@@ -16,12 +16,14 @@ import Control.Monad
 import Control.Monad.Except
 import Control.Monad.IO.Unlift
 import qualified Crypto.PubKey.RSA as RSA
+import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64.URL as B64
 import Data.ByteString.Builder (byteString)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import qualified Data.CaseInsensitive as CI
+import Data.Either (isLeft)
 import Data.List (find, isInfixOf)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Time.Clock (getCurrentTime)
@@ -30,26 +32,27 @@ import Data.X509.Validation (Fingerprint (..), getFingerprint)
 import Network.HPACK.Token (tokenKey)
 import qualified Network.HTTP2.Client as H2
 import qualified Network.TLS as T
-import SMPClient (withStallingServerOn')
+import SMPClient (copyWebCredential, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, withStallingServerOn, withStallingServerOn')
 import ServerTests (logSize)
 import Simplex.FileTransfer.Client hiding (createXFTPChunk)
 import qualified Simplex.FileTransfer.Client as A
 import Simplex.FileTransfer.Description (kb)
 import Simplex.FileTransfer.Protocol (FileCmd (..), FileCommand (..), FileInfo (..), SFileParty (..), XFTPFileId, xftpBlockSize, xftpEncodeAuthTransmission)
 import Simplex.FileTransfer.Server.Env (AFStoreType, XFTPServerConfig (..))
-import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), pattern VersionXFTP)
+import Simplex.FileTransfer.Transport (XFTPClientHandshake (..), XFTPClientHello (..), XFTPErrorType (..), XFTPRcvChunkSpec (..), XFTPServerHandshake (..), receiveFile, pattern VersionXFTP)
 import Simplex.Messaging.Client (NetworkConfig (..), NetworkTimeout (..), ProtocolClientError (..), defaultNetworkConfig)
 import qualified Simplex.Messaging.Crypto as C
 import qualified Simplex.Messaging.Crypto.Lazy as LC
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Protocol (BasicAuth, EntityId (..), RecipientId, SenderId, pattern NoEntity)
 import Simplex.Messaging.Server.Expiration (ExpirationConfig (..))
-import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS)
+import Simplex.Messaging.Transport (CertChainPubKey (..), TLS (..), TransportPeer (..), closeTLS, defaultSupportedParams, defaultSupportedParamsHTTPS)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), TransportHost (..), defaultTransportClientConfig, runTLSTransportClient)
 import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Transport.Server (TransportServerConfig (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
+import Simplex.Messaging.Version (mkVersionRange)
 import System.Directory (listDirectory, removeFile)
 import System.FilePath ((</>))
 import Test.Hspec hiding (fit, it)
@@ -71,6 +74,9 @@ xftpServerTests = do
       it "should expire chunks after set interval" testFileChunkExpiration
       it "should disconnect inactive clients" testInactiveClientExpiration
       it "should close connection when connecting client is cancelled" $ \_ -> testCancelledClientConnect
+      it "should time out TLS handshake when TLS errors are logged" $ \_ -> testTLSHandshakeTimeout
+      it "should time out closing TLS connection" $ \_ -> testCloseTLSTimeout
+      it "should time out receiving file chunk" $ \_ -> testReceiveFileTimeout
       it "should not allow uploading chunks after specified storage quota" testFileStorageQuota
       it "should release storage of interrupted uploads" testInterruptedUploadStorage
       it "should store file records to log and restore them after server restart" testFileLog
@@ -84,9 +90,11 @@ xftpServerTests = do
       it "should not change content for uploaded and committed files" testFileSkipCommitted
       it "should close connection when handshake times out" testHandshakeTimeout
       it "should close connection when cancelled during handshake" testCancelledHandshake
+      it "should decode handshake of servers before v6.5.0 and refuse an invalid signature" testOldServerHandshake
     describe "XFTP SNI and CORS" $ beforeWith (const (pure ())) $ do
       it "should select web certificate when SNI is used" testSNICertSelection
       it "should select XFTP certificate when SNI is not used" testNoSNICertSelection
+      it "should serve the replaced RSA and ECDSA web certificates without restart when SNI is used" testSNICertReload
       it "should add CORS headers when SNI is used" testCORSHeaders
       it "should respond to OPTIONS preflight with CORS headers" testCORSPreflight
       it "should not add CORS headers without SNI" testNoCORSWithoutSNI
@@ -244,12 +252,40 @@ testInactiveClientExpiration fsType = withXFTPServerConfigOn (updateXFTPCfg (cfg
 
 testCancelledClientConnect :: HasTestEnv => Expectation
 testCancelledClientConnect =
-  withStallingServerOn' xftpTestPort $ \accepted closed -> do
+  withStallingServerOn' xftpTestPort $ \accepted closed -> replicateM_ 1000 $ do
     ts <- getCurrentTime
     a <- async $ getXFTPClient (1, testXFTPServer, Nothing) testXFTPClientConfig [] ts (\_ -> pure Nothing) (\_ -> pure ())
     timeout 5000000 (atomically $ takeTMVar accepted) `shouldReturn` Just ()
-    cancel a
-    timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+    timeout 5000000 (cancel a) `shouldReturn` Just ()
+    timeout 5000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
+
+testTLSHandshakeTimeout :: HasTestEnv => Expectation
+testTLSHandshakeTimeout =
+  withStallingServerOn xftpTestPort $
+    timeout 1000000 (runTLSTransportClient defaultSupportedParams Nothing cfg Nothing "localhost" xftpTestPort Nothing $ \(_ :: TLS 'TClient) -> pure ())
+      `shouldReturn` Nothing
+  where
+    cfg :: TransportClientConfig
+    cfg = defaultTransportClientConfig {logTLSErrors = True}
+
+testCloseTLSTimeout :: Expectation
+testCloseTLSTimeout = do
+  closed <- newEmptyTMVarIO
+  ctx <- T.contextNew (backend closed) (T.defaultParamsClient "localhost" "")
+  timeout 100000 (closeTLS ctx) `shouldReturn` Nothing
+  atomically (tryReadTMVar closed) `shouldReturn` Just ()
+  where
+    backend closed =
+      T.Backend
+        { T.backendFlush = pure (),
+          T.backendClose = atomically $ putTMVar closed (),
+          T.backendSend = \_ -> threadDelay maxBound,
+          T.backendRecv = \_ -> pure ""
+        }
+
+testReceiveFileTimeout :: HasTestEnv => Expectation
+testReceiveFileTimeout =
+  timeout 100000 (runExceptT $ receiveFile (\_ -> "" <$ threadDelay maxBound) $ XFTPRcvChunkSpec testChunkPath chSize "") `shouldReturn` Nothing
 
 testFileStorageQuota :: HasTestEnv => AFStoreType -> Expectation
 testFileStorageQuota fsType = withXFTPServerConfigOn (updateXFTPCfg (cfgFS fsType) $ \c -> c {fileSizeQuota = Just $ chSize * 2}) $
@@ -435,6 +471,21 @@ testCancelledHandshake _ =
     cancel a
     timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
+testOldServerHandshake :: HasTestEnv => AFStoreType -> Expectation
+testOldServerHandshake _ = do
+  (chain, pk) <- loadServerCredential xftpCredentials
+  signKey <- either error pure $ C.x509ToPrivate' pk
+  (k, _) :: C.KeyPairX25519 <- atomically . C.generateKeyPair =<< C.newRandom
+  let vr = mkVersionRange (VersionXFTP 1) (VersionXFTP 3)
+      key = CertChainPubKey chain (C.signX509 signKey $ C.publicToX509 k)
+      decode :: ByteString -> Either String XFTPServerHandshake
+      decode sig = smpDecode =<< first show (C.unPad =<< C.pad (smpEncode (vr, "session" :: ByteString, key) <> sig) xftpBlockSize)
+  XFTPServerHandshake {xftpVersionRange, sessionId, authPubKey, serverInfoBytes} <- either error pure $ decode ""
+  (xftpVersionRange, sessionId, authPubKey, serverInfoBytes) `shouldBe` (vr, "session", key, Nothing)
+  isLeft (decode $ smpEncode ("invalid" :: ByteString)) `shouldBe` True
+  where
+    XFTPServerConfig {xftpCredentials} = testXFTPServerConfig
+
 -- SNI and CORS tests
 
 lookupResponseHeader :: B.ByteString -> H2.Response -> Maybe B.ByteString
@@ -478,6 +529,21 @@ testNoSNICertSelection =
         X.Certificate {X.certPubKey = X.PubKeyEd448 _} : _ -> pure ()
         leaf : _ -> expectationFailure $ "Expected Ed448 cert, got: " <> show (X.certPubKey leaf)
         [] -> expectationFailure "Empty certificate chain"
+
+testSNICertReload :: HasTestEnv => Expectation
+testSNICertReload = do
+  copyWebCredential "web"
+  withXFTPServerCfg cfg $ \_ -> do
+    testWebCredentialReload xftpTestPort
+    testWebCredentialReplaced xftpTestPort "web_ecdsa" "web_ecdsa"
+    testWebCredentialReplaced xftpTestPort "web_ecdsa384" "web_ecdsa"
+  where
+    XFTPServerConfig {transportConfig} = testXFTPServerConfigSNI
+    cfg =
+      testXFTPServerConfigSNI
+        { httpCredentials = Just testWebCredentials,
+          transportConfig = transportConfig {credentialCheckInterval = testCredentialCheckInterval}
+        }
 
 testCORSHeaders :: HasTestEnv => Expectation
 testCORSHeaders =

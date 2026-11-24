@@ -10,6 +10,8 @@ import CoreTests.BatchingTests
 import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
+import CoreTests.EthCryptoTests
+import CoreTests.LockTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
@@ -53,6 +55,7 @@ import CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests)
 import NtfServerTests (ntfServerTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBOpts)
 import SMPClient (testServerDBConnectInfo, testServerDBOpts)
+import SMPProxyTests (smpProxyPostgresTests)
 import Simplex.Messaging.Notifications.Server.Store.Migrations (ntfServerMigrations)
 import Simplex.Messaging.Server.QueueStore.Postgres.Migrations (serverMigrations)
 import XFTPClient (testXFTPDBConnectInfo)
@@ -89,6 +92,7 @@ main = do
             describe "Encoding tests" encodingTests
             describe "Version range" versionRangeTests
             describe "Encryption tests" cryptoTests
+            describe "Ethereum crypto tests" ethCryptoTests
             describe "Encrypted files tests" cryptoFileTests
             describe "Message store tests" msgStoreTests
             describe "SOCKS settings tests" socksSettingsTests
@@ -106,6 +110,7 @@ main = do
 #endif
           describe "SMP server via TLS, memory message store" $ do
             describe "SMP syntax" $ serverSyntaxTests (transport @TLS)
+            describe "Web credentials" webCredentialTests
             before (pure (transport @TLS, ASType SQSMemory SMSMemory)) serverTests
           -- xdescribe "SMP server via WebSockets" $ do
           --   describe "SMP syntax" $ serverSyntaxTests (transport @WS)
@@ -116,8 +121,9 @@ main = do
           describe "Notifications server (SMP server: postgres-only store)" $
             ntfServerTests (transport @TLS, ASType SQSPostgres SMSPostgres)
           describe "SMP client agent, server postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
-          describe "SMP proxy, postgres-only message store" $
+          describe "SMP proxy, postgres-only message store" $ do
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
+            smpProxyPostgresTests
 #endif
           describe "SMP client agent, server memory message store" $ agentTests (transport @TLS, ASType SQSMemory SMSMemory)
           describe "SMP proxy, memory message store" $
@@ -140,7 +146,9 @@ main = do
           describe "XRCP" remoteControlTests
           describe "Web" webTests
         sequential $ do
-          describe "Core tests" $ describe "Retry interval tests" retryIntervalTests
+          describe "Core tests" $ do
+            describe "Retry interval tests" retryIntervalTests
+            describe "Lock tests" lockTests
 #if defined(dbServerPostgres)
           describe "SMP server via TLS, postgres-only message store" $
             before (pure (transport @TLS, ASType SQSPostgres SMSPostgres)) $ describe "Timing of AUTH error" testTiming

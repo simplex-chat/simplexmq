@@ -10,43 +10,49 @@ import AgentTests.FunctionalAPITests (runRight_)
 import Control.Logger.Simple
 import Control.Monad
 import qualified Crypto.PubKey.RSA as RSA
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.HashMap.Strict as HM
 import Data.Ini (Ini (..), lookupValue, readIniFile, writeIniFile)
 import Data.List (isInfixOf, isPrefixOf)
+import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import Data.X509.Validation (Fingerprint (..))
 import qualified Network.HTTP.Client as H1
+import qualified Network.HTTP.Types as N
 import qualified Network.HTTP2.Client as H2
+import Network.Socket (ServiceName)
+import Network.Wai (Application, responseLBS)
+import SMPClient (copyWebCredential, fixtureFile, testCredentialCheckInterval, testWebCredentialReload, testWebCredentialReplaced, testWebCredentials, webServerCfg, withServerCfg)
 import Simplex.FileTransfer.Server.Main (xftpServerCLI)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Server.CLI (simplexmqVersionCommit)
+import Simplex.Messaging.Server.Env.STM (ServerConfig (serverStoreCfg), ServerStoreCfg (SSCMemory), checkHTTPSCredentials, newEnv)
 import Simplex.Messaging.Server.Main (smpServerCLI, smpServerCLI_)
-import Simplex.Messaging.Transport (TLS (..), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
+import Simplex.Messaging.Transport (TLS (..), Transport (cGet, cPut, getLn), TransportPeer (..), defaultSupportedParams, defaultSupportedParamsHTTPS, supportedClientSMPRelayVRange)
 import Simplex.Messaging.Transport.Client (TransportClientConfig (..), defaultTransportClientConfig, runTLSTransportClient, smpClientHandshake)
-import Simplex.Messaging.Transport.HTTP2 (HTTP2Body (..))
 import qualified Simplex.Messaging.Transport.HTTP2.Client as HC
-import Simplex.Messaging.Transport.Server (loadFileFingerprint)
+import Simplex.Messaging.Transport.Server (CredentialError (..), ServerCredentials (..), loadFileFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (catchAll_)
 import qualified SMPWeb
-import Simplex.Messaging.Server.Web (serveStaticFiles, attachStaticFiles)
-import System.Directory (doesFileExist, listDirectory)
+import Simplex.Messaging.Server.Web (WebHttpsParams (..), serveStaticFiles, attachStaticFiles, runHTTPSServer)
+import System.Directory (doesFileExist)
 import System.Environment (withArgs)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Silently (capture_)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
-import Test.Main (withStdin)
+import Test.Main (ProcessResult (..), captureProcessResult, withStdin)
 import UnliftIO (catchAny)
-import UnliftIO.Async (async, cancel)
+import UnliftIO.Async (async, cancel, race_)
 import UnliftIO.Concurrent (threadDelay)
 import UnliftIO.Exception (bracket)
 import Util
 
 #if defined(dbServerPostgres)
-import qualified Data.ByteString.Char8 as B
 import qualified Database.PostgreSQL.Simple as PSQL
 import Database.PostgreSQL.Simple.Types (Query (..))
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBConnstr, ntfTestServerDBOpts)
@@ -95,6 +101,12 @@ cliTests = do
   describe "XFTP server CLI" $ do
     it "should initialize, start and delete the server (no store log)" $ xftpServerTest False
     it "should initialize, start and delete the server (with store log)" $ xftpServerTest True
+  describe "Static site on HTTPS port" $ do
+    it "should serve the replaced web certificate with a 4096-bit RSA key without restart" testStaticSiteCertReload
+    it "should throw the error of an invalid credential at start" testStaticSiteInvalidCredential
+  describe "Server start" $ do
+    it "should exit with the reason of a rejected web certificate" testStartRejectedWebCertificate
+    it "should exit with the reason of an invalid credential" testStartInvalidCredential
 
 smpServerTest :: HasTestEnv => Bool -> Bool -> IO ()
 smpServerTest storeLog basicAuth = do
@@ -168,22 +180,23 @@ smpServerTestStatic = do
 
     threadDelay 2000000
 
-    let cfgHttp = defaultTransportClientConfig {clientALPN = Just ["h2"], useSNI = True}
+    let cfgHttp = defaultTransportClientConfig {clientALPN = Just ["h2", "http/1.1"], useSNI = True}
     runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
-      tlsALPN tls `shouldBe` Just "h2"
+      tlsALPN tls `shouldBe` Just "http/1.1"
       case getCerts tls of
         X.Certificate {X.certPubKey = X.PubKeyRSA rsa} : _ca -> RSA.public_size rsa `shouldBe` 512
         leaf : _ -> error $ "Unexpected leaf cert: " <> show leaf
         [] -> error "Empty chain"
 
-      let h2cfg = HC.defaultHTTP2ClientConfig {HC.bodyHeadSize = 1024 * 1024}
+      getIndexHTTP11 tls `shouldReturn` html
+    runTLSTransportClient defaultSupportedParamsHTTPS Nothing cfgHttp Nothing "localhost" "5223" (Just caHTTP) $ \tls -> do
+      tlsALPN tls `shouldBe` Just "http/1.1"
+      let h2cfg = HC.defaultHTTP2ClientConfig {HC.connTimeout = 1000000}
       bracket (either (error . show) pure =<< HC.attachHTTP2Client h2cfg "localhost" "5223" mempty 65536 tls) HC.closeHTTP2Client $ \h2 -> do
         let req = H2.requestNoBody "GET" "/" []
-        HC.HTTP2Response {HC.respBody = HTTP2Body {bodyHead = shsBody}} <- either (error . show) pure =<< HC.sendRequest h2 req (Just 1000000)
-        BL.fromStrict shsBody `shouldBe` html
-        fds <- length <$> listDirectory "/dev/fd"
-        replicateM_ 100 $ HC.sendRequest h2 req (Just 1000000)
-        length <$> listDirectory "/dev/fd" >>= (`shouldSatisfy` (< fds + 10))
+        HC.sendRequest h2 req (Just 1000000) >>= \case
+          Left _ -> pure ()
+          Right _ -> expectationFailure "served over HTTP/2"
     logDebug "Combined HTTPS works"
 
     -- "local" CA signing SMP credentials
@@ -203,6 +216,67 @@ smpServerTestStatic = do
     getCerts tls =
       let X.CertificateChain cc = tlsPeerCert tls
        in map (X.signedObject . X.getSigned) cc
+    getIndexHTTP11 :: TLS 'TClient -> IO BL.ByteString
+    getIndexHTTP11 tls = do
+      cPut tls "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+      getLn tls `shouldReturn` "HTTP/1.1 200 OK"
+      [len] <- mapMaybe (B.stripPrefix "Content-Length: ") <$> getHeaders
+      BL.fromStrict <$> cGet tls (read $ B.unpack len)
+      where
+        getHeaders =
+          getLn tls >>= \case
+            "" -> pure []
+            h -> (h :) <$> getHeaders
+
+testStaticSiteCertReload :: (HasCallStack, HasTestEnv) => IO ()
+testStaticSiteCertReload = do
+  copyWebCredential "web"
+  race_ (runHTTPSServer staticSiteParams emptyApp) $ do
+    threadDelay httpsServerStartWait
+    testWebCredentialReload staticSitePort
+    testWebCredentialReplaced staticSitePort "web_rsa2048" "web"
+    testWebCredentialReplaced staticSitePort "web2" "web2"
+  where
+    httpsServerStartWait = 1000000
+
+testStaticSiteInvalidCredential :: (HasCallStack, HasTestEnv) => IO ()
+testStaticSiteInvalidCredential = do
+  copyWebCredential "web"
+  writeFile (privateKeyFile testWebCredentials) ""
+  runHTTPSServer staticSiteParams emptyApp `shouldThrow` (== CENoPrivateKey)
+
+staticSitePort :: HasTestEnv => ServiceName
+staticSitePort = testServerPort 9
+
+staticSiteParams :: HasTestEnv => WebHttpsParams
+staticSiteParams =
+  WebHttpsParams
+    { port = read staticSitePort,
+      cert = certificateFile testWebCredentials,
+      key = privateKeyFile testWebCredentials,
+      checkCredential = checkHTTPSCredentials,
+      credentialCheckInterval = testCredentialCheckInterval
+    }
+
+emptyApp :: Application
+emptyApp _ respond = respond $ responseLBS N.ok200 [] ""
+
+testStartRejectedWebCertificate :: (HasCallStack, HasTestEnv) => IO ()
+testStartRejectedWebCertificate = do
+  copyWebCredential "web_rsa2048"
+  ProcessResult {prStdout, prExitCode, prException} <-
+    captureProcessResult . void . newEnv $ withServerCfg webServerCfg $ \cfg_ -> cfg_ {serverStoreCfg = SSCMemory Nothing}
+  (prExitCode, show <$> prException) `shouldBe` (ExitFailure 1, Nothing)
+  prStdout `shouldSatisfy` B.isInfixOf "Error: unsupported HTTPS credentials, required 4096-bit RSA\n"
+
+testStartInvalidCredential :: (HasCallStack, HasTestEnv) => IO ()
+testStartInvalidCredential = do
+  writeFile (testPath "empty.key") ""
+  ProcessResult {prStdout, prExitCode, prException} <-
+    captureProcessResult . void . loadServerCredential $
+      ServerCredentials {caCertificateFile = Nothing, certificateFile = fixtureFile "web" ".crt", privateKeyFile = testPath "empty.key"}
+  (prExitCode, show <$> prException) `shouldBe` (ExitFailure 1, Nothing)
+  prStdout `shouldBe` "invalid credential: no private key\n"
 
 smpCloudScriptsDisableWeb :: HasCallStack => IO ()
 smpCloudScriptsDisableWeb = do
@@ -242,6 +316,7 @@ ntfServerTest storeLog = do
   r `shouldContain` ["SMP notifications server v" <> simplexmqVersionCommit]
   r `shouldContain` (if storeLog then ["Store log: " <> ntfLogPath <> "/ntf-server-store.log"] else ["Store log disabled."])
   r `shouldContain` ["Serving NTF protocol on port 443 (TLS)..."]
+  r `shouldNotSatisfy` any (B.unpack ntfTestServerDBConnstr `isInfixOf`)
   capture_ (withStdin "Y" . withArgs ["delete"] $ ntfServerCLI ntfCfgPath ntfLogPath)
     >>= (`shouldSatisfy` ("WARNING: deleting the server will make all queues inaccessible" `isPrefixOf`))
   doesFileExist (cfgPath <> "/ca.key") `shouldReturn` False

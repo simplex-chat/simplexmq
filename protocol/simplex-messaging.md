@@ -392,7 +392,7 @@ Simplex messaging clients must cryptographically authorize commands for the foll
 
 To authorize/verify transmissions clients and routers MUST use either signature algorithm Ed25519 algorithm defined in [RFC8709][15] or [deniable authentication scheme](#deniable-client-authentication-scheme) based on NaCL crypto_box.
 
-It is recommended that clients use signature algorithm for the recipient commands and deniable authentication scheme for sender commands (to have non-repudiation quality in the whole protocol stack).
+It is recommended that clients use signature algorithm for the recipient commands and deniable authentication scheme for sender commands (to have repudiation quality in the whole protocol stack).
 
 To encrypt/decrypt message bodies delivered to the recipients, routers/clients MUST use NaCL crypto_box.
 

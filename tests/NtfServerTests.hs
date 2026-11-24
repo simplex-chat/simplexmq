@@ -13,7 +13,8 @@
 
 module NtfServerTests where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (killThread, threadDelay)
+import Control.Exception (AsyncException (..), fromException)
 import Control.Monad (forM, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
@@ -23,6 +24,7 @@ import Data.ByteString.Char8 (ByteString)
 import Data.List (isInfixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
+import Data.Maybe (isJust, isNothing)
 import Data.Text.Encoding (encodeUtf8)
 import qualified Database.PostgreSQL.Simple as PSQL
 import NtfClient
@@ -40,23 +42,27 @@ import ServerTests
     pattern Resp,
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
+import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
-import Simplex.Messaging.Notifications.Server.Env (NtfServerConfig (..))
+import Simplex.Messaging.Notifications.Server.Env (NtfPushServer (pushClients), NtfServerConfig (..), getPushClient, newNtfPushServer)
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Store.Postgres (closeNtfDbStore, newNtfDbStore, withDB')
+import Simplex.Messaging.Notifications.Server.Store.Postgres (addNtfToken, closeNtfDbStore, mkNtfTknRec, newNtfDbStore, setTokenActive, updateTknCronInterval, updateTokenCronSentAt, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
 import Simplex.Messaging.Server.Env.STM (AStoreType)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
+import Simplex.Messaging.SystemTime (getSystemDate)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Transport.Client (TransportHost (..))
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (async, asyncThreadId, waitCatch)
 import UnliftIO.STM
 import Util
 
@@ -67,12 +73,18 @@ ntfServerTests ps@(t, _) = do
     it "rejects APNS test provider unless enabled" $ testApnsTestProviderRejected t
   describe "APNS client" $ do
     it "should validate APNS server certificate" testApnsServerCertificate
+  describe "APNS push delivery" $ do
+    it "resumes sending notifications after the push provider is unreachable" $ testPushWorkerResumesAfterOutage t
+    it "does not connect to the push provider when the key file is not configured" testNoConnectWithoutKeyFile
+    it "stops connecting to the push provider when the push worker is killed" testPushClientKilled
+    it "stops the server after a periodic notification starts a push worker" $ testPeriodicNtfServerStop t
   describe "Database pool" $ do
     it "answers SNEW with one database connection" $ testSNEWOneDBConnection t
   describe "Notification subscriptions (NKEY)" $ testNotificationSubscription ps createNtfQueueNKEY
   describe "Notification subscriptions (NEW with ntf creds)" $ testNotificationSubscription ps createNtfQueueNEW
   describe "Retried notification subscription" $ testRetriedNtfSubscription ps
   describe "Notification server restart" $ testResubscribeAfterRestart ps
+  describe "Notification subscription address" $ testSNEWServerAddress ps
   describe "Notification service" $ do
     it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
 
@@ -114,6 +126,66 @@ testApnsServerCertificate = withAPNSMockServer $ \_ -> do
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
     certError s (e :: IOError) = s `isInfixOf` show e
+
+testPushWorkerResumesAfterOutage :: HasTestEnv => ASrvTransport -> Expectation
+testPushWorkerResumesAfterOutage (ATransport (t :: TProxy c 'TServer)) = do
+  g <- C.newRandom
+  (tknPub, tknKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  let tkn = DeviceToken PPApnsTest "abcd"
+      newTkn = NewNtfTkn tkn tknPub dhPub
+  withNtfServerCfg ntfCfg $ \_ ->
+    testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
+      RespNtf "1" NoEntity (NRTknId _ _) <- signSendRecvNtf nh tknKey ("1", NoEntity, TNEW newTkn)
+      threadDelay 1000000
+      withAPNSMockServer $ \apns -> do
+        RespNtf "2" NoEntity (NRTknId _ _) <- signSendRecvNtf nh tknKey ("2", NoEntity, TNEW newTkn)
+        delivered <- timeout 5000000 $ getMockNotification apns tkn
+        isJust delivered `shouldBe` True
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
+    ntfCfg =
+      ntfServerCfg
+        { transports = [(ntfTestPort, ATransport t, False)],
+          apnsConfig = apnsConfig {reconnectInterval = RetryInterval {initialInterval = 100000, increaseAfter = 0, maxInterval = 200000}}
+        }
+
+testNoConnectWithoutKeyFile :: HasTestEnv => Expectation
+testNoConnectWithoutKeyFile =
+  createAPNSPushClient "localhost" apnsCfgMissingKey `shouldThrow` keyFileError
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
+    apnsCfgMissingKey = apnsConfig {authKeyFileEnv = "APNS_KEY_FILE_MISSING"}
+    keyFileError (e :: IOError) = "APNS_KEY_FILE_MISSING" `isInfixOf` show e
+
+testPushClientKilled :: HasTestEnv => Expectation
+testPushClientKilled =
+  withStallingServerOn' apnsTestPort $ \accepted _ -> do
+    s <- newNtfPushServer 1 apnsConfig
+    a <- async $ getPushClient s PPApnsTest
+    atomically $ takeTMVar accepted
+    killThread $ asyncThreadId a
+    timeout 1000000 (either fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just (Just ThreadKilled)
+    isNothing <$> TM.lookupIO PPApnsTest (pushClients s) `shouldReturn` True
+  where
+    NtfServerConfig {apnsConfig} = ntfServerCfg
+
+testPeriodicNtfServerStop :: HasTestEnv => ASrvTransport -> Expectation
+testPeriodicNtfServerStop t = do
+  g <- C.newRandom
+  (tknPub, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  ts <- getSystemDate
+  let tknId = EntityId "periodic"
+      tkn = mkNtfTknRec tknId (NewNtfTkn (DeviceToken PPApnsTest "abcd") tknPub dhPub) dhPriv (C.dh' dhPub dhPriv) (NtfRegCode "code") ts
+  st <- newNtfDbStore ntfTestDBCfg
+  Right () <- addNtfToken st tkn
+  Right () <- setTokenActive st tkn
+  Right () <- updateTknCronInterval st tknId 20
+  Right () <- updateTokenCronSentAt st tknId 0
+  closeNtfDbStore st
+  withStallingServerOn' apnsTestPort $ \accepted _ ->
+    withNtfServerCfg ntfServerCfg {transports = [(ntfTestPort, t, False)], pushQSize = 64} $ \_ -> atomically $ takeTMVar accepted
 
 testSNEWOneDBConnection :: HasTestEnv => ASrvTransport -> Expectation
 testSNEWOneDBConnection (ATransport (t :: TProxy c 'TServer)) = do
@@ -340,6 +412,23 @@ testResubscribeAfterRestart (ATransport t, msType) =
           Just APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <-
             5000000 `timeout` getMockNotification apns (DeviceToken PPApnsTest "abcd")
           pure ()
+
+testSNEWServerAddress :: (ASrvTransport, AStoreType) -> Spec
+testSNEWServerAddress (ATransport t, _msType) =
+  it "should reject a server without key hash or with a null byte in the host" $ do
+    g <- C.newRandom
+    (_nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    withAPNSMockServer $ \apns ->
+      ntfTest t $ \nh -> do
+        (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
+        let nulHostSrv = SMPServer (THDomainName "\0" :| []) SMP.testPort SMP.testKeyHash
+            emptyKeyHashSrv = SMPServer SMP.testHost SMP.testPort (C.KeyHash "")
+        RespNtf "3" NoEntity (NRErr (CMD SYNTAX)) <-
+          signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf nulHostSrv (EntityId "abcd")) nKey)
+        RespNtf "4" NoEntity (NRErr (CMD SYNTAX)) <-
+          signSendRecvNtf nh tknKey ("4", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf emptyKeyHashSrv (EntityId "abcd")) nKey)
+        pure ()
 
 testResubscribeOnServiceIdChange :: HasTestEnv => (ASrvTransport, AStoreType) -> Expectation
 testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = do

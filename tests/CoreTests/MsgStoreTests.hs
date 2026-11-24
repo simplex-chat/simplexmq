@@ -15,6 +15,7 @@
 module CoreTests.MsgStoreTests where
 
 import AgentTests.FunctionalAPITests (runRight_)
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (bracket)
 import Control.Monad
@@ -33,16 +34,20 @@ import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..))
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), withLog')
 import Simplex.Messaging.Server.QueueStore.Types
+import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Util
 
 #if defined(dbServerPostgres)
 import AgentTests.FunctionalAPITests (runRight)
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.Async (AsyncCancelled (..), async, cancel, waitCatch)
+import qualified Control.Exception as E
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
 import Simplex.Messaging.Agent.Store.Postgres.Common
@@ -57,12 +62,16 @@ msgStoreTests = do
   describe "STM message store" $ do
     someMsgStoreTests testSMTStoreConfig
     it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
+    it "should time out store log write" testStoreLogTimeout
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
     it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
+    it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
+    it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
+    it "should stop when cancelled during reconnect after database error" $ withMsgStore testPostgresStoreConfig testReconnectCancel
 #endif
   describe "Notification store" $ do
     it "should remove keys of expired notifications" testExpireNtfs
@@ -72,6 +81,7 @@ msgStoreTests = do
     someMsgStoreTests cfg = do
       it "should get queue and store/read messages" $ withMsgStore cfg testGetQueue
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
+      it "should peek the first message of each queue in a batch" $ withMsgStore cfg testPeekMsgs
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
 
 -- TODO constrain to STM stores?
@@ -211,6 +221,40 @@ testWriteAckMessages ms = do
     void $ ExceptT $ deleteQueue ms q1
     void $ ExceptT $ deleteQueue ms q2
 
+testPeekMsgs :: MsgStoreClass s => s -> IO ()
+testPeekMsgs ms = do
+  g <- C.newRandom
+  (rId1, qr1) <- testNewQueueRec g QMMessaging
+  (rId2, qr2) <- testNewQueueRec g QMMessaging
+  (rId3, qr3) <- testNewQueueRec g QMMessaging
+  runRight_ $ do
+    q1 <- ExceptT $ addQueue ms rId1 qr1
+    q2 <- ExceptT $ addQueue ms rId2 qr2
+    q3 <- ExceptT $ addQueue ms rId3 qr3
+    let write q s = writeMsg ms q True =<< mkMessage s
+        peek qs = M.map body <$> tryPeekMsgs ms qs
+    Just (Message {msgId = mId1}, True) <- write q1 "message 1"
+    Just _ <- write q1 "message 2"
+    Just (Message {msgId = mId3}, True) <- write q2 "message 3"
+    Just (Message {msgId = mId4}, False) <- write q2 "message 4"
+    Just (Message {msgId = mId5}, False) <- write q2 "message 5"
+    Nothing <- write q2 "message 6"
+    msgs <- peek [q1, q2, q3, q1]
+    liftIO $ msgs `shouldBe` M.fromList [(rId1, Just "message 1"), (rId2, Just "message 3")]
+    Msg "message 1" <- tryDelMsg ms q1 mId1
+    Msg "message 3" <- tryDelMsg ms q2 mId3
+    Msg "message 4" <- tryDelMsg ms q2 mId4
+    Msg "message 5" <- tryDelMsg ms q2 mId5
+    msgs' <- peek [q2, q1, q3]
+    liftIO $ msgs' `shouldBe` M.fromList [(rId1, Just "message 2"), (rId2, Nothing)]
+    void $ ExceptT $ deleteQueue ms q1
+    void $ ExceptT $ deleteQueue ms q2
+    void $ ExceptT $ deleteQueue ms q3
+  where
+    body :: Message -> Maybe ByteString
+    body Message {msgBody = MaxLenBS s} = Just s
+    body MessageQuota {} = Nothing
+
 testLinkDataSecuredQueue :: MsgStoreClass s => s -> IO ()
 testLinkDataSecuredQueue ms = do
   g <- C.newRandom
@@ -284,6 +328,13 @@ testDeleteQueueMaps ms = do
   queueMapSizes ms `shouldReturn` (0, 0, 0, 0)
   where
     expectAuth = either (`shouldBe` AUTH) (\_ -> expectationFailure "deleted queue is still found")
+
+testStoreLogTimeout :: HasTestEnv => IO ()
+testStoreLogTimeout = do
+  sl <- openWriteStoreLog False $ testPath "store.log"
+  sl_ <- newTVarIO $ Just sl
+  timeout 100000 (withLog' "test" sl_ $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+  closeStoreLog sl
 
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
@@ -443,4 +494,30 @@ testExpireMessagesInBatches ms = do
     fillPastQuota q = go 0
       where
         go n = write q "fill" >>= maybe (pure n) (const $ go (n + 1))
+
+testClosedStore :: PostgresMsgStore -> IO ()
+testClosedStore ms = do
+  closeMsgStore ms
+  r <- newEmptyTMVarIO
+  _ <- forkIO $ E.uninterruptibleMask_ (E.try $ withTransaction (dbStore $ queueStore ms) (`DB.query_` "SELECT 1")) >>= atomically . putTMVar r
+  res <- timeout 5000000 $ atomically $ readTMVar r
+  case res of
+    Just (Left (_ :: E.SomeException)) -> pure ()
+    Just (Right (_ :: [Only Int])) -> expectationFailure "query succeeded on a closed store"
+    Nothing -> expectationFailure "query waited on a closed store"
+
+testDBOperationTimeout :: PostgresMsgStore -> IO ()
+testDBOperationTimeout ms =
+  timeout 100000 (runExceptT $ withDB' "test" (queueStore ms) $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+
+testReconnectCancel :: PostgresMsgStore -> IO ()
+testReconnectCancel ms = do
+  let st = dbStore $ queueStore ms
+  reconnecting <- newEmptyTMVarIO
+  let st' = st {dbConnect = atomically (putTMVar reconnecting ()) >> threadDelay maxBound >> dbConnect st}
+  a <- async $ E.try @DB.SqlError $ withTransaction st' $ \db -> DB.query_ db "SELECT 1/0" :: IO [Only Int]
+  atomically $ takeTMVar reconnecting
+  cancel a
+  (either E.fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just AsyncCancelled
+  atomically (lengthTBQueue $ dbPoolConns $ dbPool st) `shouldReturn` fromIntegral (dbPoolSize st)
 #endif

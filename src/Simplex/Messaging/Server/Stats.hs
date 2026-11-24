@@ -134,6 +134,9 @@ data ServerStats = ServerStats
     cmdSlotWaitMs :: IORef Int,
     cmdSlotWaitMaxMs :: IORef Int,
     cmdSlotWaitTimeouts :: IORef Int,
+    fwdWorkerCmds :: IORef Int,
+    fwdWorkerCmdMs :: IORef Int,
+    fwdWorkerCmdMaxMs :: IORef Int,
     qCount :: IORef Int,
     msgCount :: IORef Int,
     ntfCount :: IORef Int,
@@ -201,6 +204,9 @@ data ServerStatsData = ServerStatsData
     _cmdSlotWaitMs :: Int,
     _cmdSlotWaitMaxMs :: Int,
     _cmdSlotWaitTimeouts :: Int,
+    _fwdWorkerCmds :: Int,
+    _fwdWorkerCmdMs :: Int,
+    _fwdWorkerCmdMaxMs :: Int,
     _qCount :: Int,
     _msgCount :: Int,
     _ntfCount :: Int,
@@ -270,6 +276,9 @@ newServerStats ts = do
   cmdSlotWaitMs <- newIORef 0
   cmdSlotWaitMaxMs <- newIORef 0
   cmdSlotWaitTimeouts <- newIORef 0
+  fwdWorkerCmds <- newIORef 0
+  fwdWorkerCmdMs <- newIORef 0
+  fwdWorkerCmdMaxMs <- newIORef 0
   qCount <- newIORef 0
   msgCount <- newIORef 0
   ntfCount <- newIORef 0
@@ -336,6 +345,9 @@ newServerStats ts = do
         cmdSlotWaitMs,
         cmdSlotWaitMaxMs,
         cmdSlotWaitTimeouts,
+        fwdWorkerCmds,
+        fwdWorkerCmdMs,
+        fwdWorkerCmdMaxMs,
         qCount,
         msgCount,
         ntfCount,
@@ -404,6 +416,9 @@ getServerStatsData s = do
   _cmdSlotWaitMs <- readIORef $ cmdSlotWaitMs s
   _cmdSlotWaitMaxMs <- readIORef $ cmdSlotWaitMaxMs s
   _cmdSlotWaitTimeouts <- readIORef $ cmdSlotWaitTimeouts s
+  _fwdWorkerCmds <- readIORef $ fwdWorkerCmds s
+  _fwdWorkerCmdMs <- readIORef $ fwdWorkerCmdMs s
+  _fwdWorkerCmdMaxMs <- readIORef $ fwdWorkerCmdMaxMs s
   _qCount <- readIORef $ qCount s
   _msgCount <- readIORef $ msgCount s
   _ntfCount <- readIORef $ ntfCount s
@@ -470,6 +485,9 @@ getServerStatsData s = do
         _cmdSlotWaitMs,
         _cmdSlotWaitMaxMs,
         _cmdSlotWaitTimeouts,
+        _fwdWorkerCmds,
+        _fwdWorkerCmdMs,
+        _fwdWorkerCmdMaxMs,
         _qCount,
         _msgCount,
         _ntfCount,
@@ -539,6 +557,9 @@ setServerStats s d = do
   writeIORef (cmdSlotWaitMs s) $! _cmdSlotWaitMs d
   writeIORef (cmdSlotWaitMaxMs s) $! _cmdSlotWaitMaxMs d
   writeIORef (cmdSlotWaitTimeouts s) $! _cmdSlotWaitTimeouts d
+  writeIORef (fwdWorkerCmds s) $! _fwdWorkerCmds d
+  writeIORef (fwdWorkerCmdMs s) $! _fwdWorkerCmdMs d
+  writeIORef (fwdWorkerCmdMaxMs s) $! _fwdWorkerCmdMaxMs d
   writeIORef (qCount s) $! _qCount d
   writeIORef (msgCount s) $! _msgCount d
   writeIORef (ntfCount s) $! _ntfCount d
@@ -746,6 +767,9 @@ instance StrEncoding ServerStatsData where
           _cmdSlotWaitMs = 0,
           _cmdSlotWaitMaxMs = 0,
           _cmdSlotWaitTimeouts = 0,
+          _fwdWorkerCmds = 0,
+          _fwdWorkerCmdMs = 0,
+          _fwdWorkerCmdMaxMs = 0,
           _qCount,
           _msgCount = 0,
           _ntfCount = 0,

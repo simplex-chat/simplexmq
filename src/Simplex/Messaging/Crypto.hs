@@ -179,12 +179,14 @@ module Simplex.Messaging.Crypto
 
     -- * pseudo-random bytes
     randomBytes,
+    randomBytes',
 
     -- * digests
     sha256Hash,
     sha512Hash,
     sha3_256,
     sha3_384,
+    keccak256,
     md5Hash,
 
     -- * Message padding / un-padding
@@ -224,7 +226,7 @@ import Crypto.Cipher.AES (AES256)
 import qualified Crypto.Cipher.Types as AES
 import qualified Crypto.Cipher.XSalsa as XSalsa
 import qualified Crypto.Error as CE
-import Crypto.Hash (Digest, MD5, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
+import Crypto.Hash (Digest, Keccak_256, MD5, SHA3_256, SHA3_384, SHA256 (..), SHA512 (..), hash, hashDigestSize)
 import qualified Crypto.KDF.HKDF as H
 import qualified Crypto.MAC.Poly1305 as Poly1305
 import qualified Crypto.PubKey.Curve25519 as X25519
@@ -239,7 +241,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Bifunctor (bimap, first)
 import Data.Bits (xor)
-import Data.ByteArray (ByteArrayAccess)
+import Data.ByteArray (ByteArray, ByteArrayAccess)
 import qualified Data.ByteArray as BA
 import Data.ByteString.Base64 (decode)
 import qualified Data.ByteString.Base64.URL as U
@@ -261,7 +263,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll, parseString)
-import Simplex.Messaging.Util (packZipWith, (<$?>))
+import Simplex.Messaging.Util (packZipWith, stateTVar', (<$?>))
 
 -- | Cryptographic algorithms.
 data Algorithm = Ed25519 | Ed448 | X25519 | X448
@@ -735,7 +737,7 @@ newRandom :: IO (TVar ChaChaDRG)
 newRandom = newTVarIO =<< drgNew
 
 newRandomDRG :: TVar ChaChaDRG -> STM (TVar ChaChaDRG)
-newRandomDRG g = newTVar =<< stateTVar g (`withDRG` drgNew)
+newRandomDRG g = newTVar =<< stateTVar' g (`withDRG` drgNew)
 
 generateAKeyPair :: AlgorithmI a => SAlgorithm a -> TVar ChaChaDRG -> STM AKeyPair
 generateAKeyPair a g = bimap (APublicKey a) (APrivateKey a) <$> generateKeyPair g
@@ -753,7 +755,7 @@ generateDhKeyPair :: (AlgorithmI a, DhAlgorithm a) => SAlgorithm a -> TVar ChaCh
 generateDhKeyPair a g = bimap (APublicDhKey a) (APrivateDhKey a) <$> generateKeyPair g
 
 generateKeyPair :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (KeyPair a)
-generateKeyPair g = stateTVar g (`withDRG` generateKeyPair_)
+generateKeyPair g = stateTVar' g (`withDRG` generateKeyPair_)
 
 generateKeyPair_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (KeyPair a)
 generateKeyPair_ = do
@@ -761,7 +763,7 @@ generateKeyPair_ = do
   pure (toPublic pk, pk)
 
 generatePrivateKey :: forall a. AlgorithmI a => TVar ChaChaDRG -> STM (PrivateKey a)
-generatePrivateKey g = stateTVar g (`withDRG` generatePrivateKey_)
+generatePrivateKey g = stateTVar' g (`withDRG` generatePrivateKey_)
 
 generatePrivateKey_ :: forall a. AlgorithmI a => MonadPseudoRandom ChaChaDRG (PrivateKey a)
 generatePrivateKey_ = case sAlgorithm @a of
@@ -1048,6 +1050,11 @@ sha3_256 = BA.convert . (hash :: ByteString -> Digest SHA3_256)
 sha3_384 :: ByteString -> ByteString
 sha3_384 = BA.convert . (hash :: ByteString -> Digest SHA3_384)
 {-# INLINE sha3_384 #-}
+
+-- | Keccak-256, the hash Ethereum uses. Not SHA3-256: they differ in the padding byte and produce entirely different digests.
+keccak256 :: ByteString -> ByteString
+keccak256 = BA.convert . (hash :: ByteString -> Digest Keccak_256)
+{-# INLINE keccak256 #-}
 
 md5Hash :: ByteString -> ByteString
 md5Hash = BA.convert . (hash :: ByteString -> Digest MD5)
@@ -1436,7 +1443,12 @@ randomCbNonce :: TVar ChaChaDRG -> STM CbNonce
 randomCbNonce = fmap CryptoBoxNonce . randomBytes 24
 
 randomBytes :: Int -> TVar ChaChaDRG -> STM ByteString
-randomBytes n gVar = stateTVar gVar $ randomBytesGenerate n
+randomBytes = randomBytes'
+{-# INLINE randomBytes #-}
+
+randomBytes' :: ByteArray a => Int -> TVar ChaChaDRG -> STM a
+randomBytes' n gVar = stateTVar' gVar $ randomBytesGenerate n
+{-# INLINE randomBytes' #-}
 
 reverseNonce :: CbNonceI n => n -> CbNonce
 reverseNonce = CryptoBoxNonce . B.reverse . unCbNonce

@@ -20,6 +20,7 @@ import qualified Crypto.PubKey.Curve25519 as X25519
 import qualified Crypto.PubKey.Ed25519 as Ed25519
 import qualified Data.ByteArray as BA
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as LB
 import Data.Int (Int64)
 import Data.List (intercalate)
@@ -194,7 +195,7 @@ xftpWebTests = do
         pendingWith "TS project not compiled"
 
 xftpWebSourceHygieneTests :: Spec
-xftpWebSourceHygieneTests = describe "source hygiene" $
+xftpWebSourceHygieneTests = describe "source hygiene" $ do
   it "does not commit XFTP web debug logs that expose secrets or plaintext" $ do
     let files =
           [ "xftp-web/src/client.ts",
@@ -208,6 +209,17 @@ xftpWebSourceHygieneTests = describe "source hygiene" $
     forM_ files $ \path -> do
       contents <- B.readFile path
       mapM_ (\marker -> contents `shouldNotSatisfy` B.isInfixOf marker) markers
+  it "renders XFTP web error messages as text" $ do
+    let files =
+          [ "xftp-web/web/download.ts",
+            "xftp-web/web/upload.ts",
+            "xftp-web/web/main.ts",
+            "apps/xftp-server/static/xftp-web-bundle/index.js"
+          ]
+        messageAsHTML line = "innerHTML" `B.isInfixOf` line && any (`B.isInfixOf` line) ["msg", "message"]
+    forM_ files $ \path -> do
+      contents <- B.readFile path
+      (path, filter messageAsHTML $ BC.lines contents) `shouldBe` (path, [])
 
 -- ── protocol/encoding ──────────────────────────────────────────────
 
@@ -2137,7 +2149,7 @@ tsDescriptionTests = describe "protocol/description" $ do
             <> "fd.redirect === null ? 'null' : 'redirect'"
             <> "].join(',');"
             <> jsOut "new TextEncoder().encode(r)"
-      tsResult `shouldBe` "recipient,27262976,8388608,4,2,2097152,null"
+      tsResult `shouldBe` "recipient,13631488,4194304,4,2,1048576,null"
 
     it "encode with redirect round-trips" $ do
       tsResult <-
@@ -2233,6 +2245,53 @@ tsDescriptionTests = describe "protocol/description" $ do
             <> "const r = Desc.validateFileDescription(fd);"
             <> jsOut "new TextEncoder().encode(r || 'ok')"
       tsResult `shouldBe` "chunks total size is different than file size"
+
+    it "incorrect chunk size" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "fd.chunks[3].chunkSize = 2097152;"
+            <> "fd.size += 1048576;"
+            <> "const r = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(r || 'ok')"
+      tsResult `shouldBe` "incorrect chunk size"
+
+    it "redirect description size limit" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "fd.redirect = {size: 1024, digest: new Uint8Array(64)};"
+            <> "const tooLarge = Desc.validateFileDescription(fd);"
+            <> "fd.chunks = fd.chunks.slice(0, 1);"
+            <> "fd.size = fd.chunks[0].chunkSize;"
+            <> "const atLimit = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode([tooLarge || 'ok', atLimit || 'ok'].join(','))"
+      tsResult `shouldBe` "redirect file description is too large,ok"
+
+    it "no chunks" $ do
+      fixture <- B.readFile "tests/fixtures/file_description.yaml"
+      tsResult <-
+        callNode $
+          impDesc
+            <> "const yaml = new TextDecoder().decode("
+            <> jsUint8 fixture
+            <> ");"
+            <> "const fd = Desc.decodeFileDescription(yaml);"
+            <> "fd.chunks = [];"
+            <> "fd.size = 0;"
+            <> "const r = Desc.validateFileDescription(fd);"
+            <> jsOut "new TextEncoder().encode(r || 'ok')"
+      tsResult `shouldBe` "no chunks"
 
 -- ── protocol/chunks ───────────────────────────────────────────────
 
@@ -2863,6 +2922,12 @@ tsIntegrationTests = describe "integration" $ do
     agentDeleteTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "agent redirect: upload with redirect, download" $
     agentRedirectTest testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent download: accept only chunks of the size in the description" $
+    agentChunkSizeTest "r.server" "null" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent download: download chunks of one server in sequence for all its addresses" $
+    agentChunkSizeTest "r.server + ',' + chunkNo" "null" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
+  it "agent redirect: accept only chunks of the size in the description" $
+    agentChunkSizeTest "r.server" "{size: 1024, digest: new Uint8Array(64)}" testXFTPServerConfigEd25519SNI "tests/fixtures/ed25519/ca.crt"
   it "cross-language: TS upload, Haskell download" $
     tsUploadHaskellDownloadTest testXFTPServerConfigSNI "tests/fixtures/ca.crt"
   it "cross-language: TS upload with redirect, Haskell download" $
@@ -2967,11 +3032,11 @@ fullRoundTripTest cfg caFile = do
              \const rcvKeys = [K.encodePubKeyEd25519(rcvKp1.publicKey)];\
              \const {senderId, recipientIds} = await createXFTPChunk(agent, server, sndKp.privateKey, file, rcvKeys, null);\
              \await uploadXFTPChunk(agent, server, sndKp.privateKey, senderId, chunkData);\
-             \const dl1 = await downloadXFTPChunk(agent, server, rcvKp1.privateKey, recipientIds[0], digest);\
+             \const dl1 = await downloadXFTPChunk(agent, server, rcvKp1.privateKey, recipientIds[0], chunkData.length, digest);\
              \const match1 = dl1.length === chunkData.length && dl1.every((b, i) => b === chunkData[i]);\
              \const newIds = await addXFTPRecipients(agent, server, sndKp.privateKey, senderId,\
              \  [K.encodePubKeyEd25519(rcvKp2.publicKey)]);\
-             \const dl2 = await downloadXFTPChunk(agent, server, rcvKp2.privateKey, newIds[0], digest);\
+             \const dl2 = await downloadXFTPChunk(agent, server, rcvKp2.privateKey, newIds[0], chunkData.length, digest);\
              \const match2 = dl2.length === chunkData.length && dl2.every((b, i) => b === chunkData[i]);\
              \await deleteXFTPChunk(agent, server, sndKp.privateKey, senderId);\
              \closeXFTPAgent(agent);"
@@ -3109,6 +3174,59 @@ agentRedirectTest cfg caFile = do
              \};"
           <> jsOut "new Uint8Array([hasRedirect, nameMatch, sizeMatch, dataMatch])"
     result `shouldBe` B.pack [1, 1, 1, 1]
+
+agentChunkSizeTest :: HasTestEnv => String -> String -> XFTPServerConfig STMFileStore -> FilePath -> Expectation
+agentChunkSizeTest replicaServer redirect cfg caFile = do
+  withXFTPServerCfg cfg $ \_ -> do
+    Fingerprint fp <- loadFileFingerprint caFile
+    let fpStr = map (toEnum . fromIntegral) $ B.unpack $ strEncode fp
+        addr = "xftp://" <> fpStr <> "@localhost:" <> xftpTestPort
+    result <-
+      callNode $
+        "import sodium from 'libsodium-wrappers-sumo';\
+        \import crypto from 'node:crypto';\
+        \import * as Addr from './dist/protocol/address.js';\
+        \import * as Agent from './dist/agent.js';\
+        \await sodium.ready;\
+        \const server = Addr.parseXFTPServer('"
+          <> addr
+          <> "');\
+             \const uploadAgent = Agent.newXFTPAgent();\
+             \const encrypted = Agent.encryptFileForUpload(new Uint8Array(crypto.randomBytes(200000)), 'chunk-size.bin');\
+             \const {rcvDescription} = await Agent.uploadFile(uploadAgent, [server], encrypted);\
+             \Agent.closeXFTPAgent(uploadAgent);\
+             \const [chunk] = rcvDescription.chunks;\
+             \const chunks = [1, 2, 3, 4].map(chunkNo => ({\
+             \  ...chunk, chunkNo, chunkSize: 65536, replicas: chunk.replicas.map(r => ({...r, server: "
+          <> replicaServer
+          <> "}))\
+             \}));\
+             \const fd = {...rcvDescription, size: 262144, chunkSize: 65536, chunks, redirect: "
+          <> redirect
+          <> "};\
+             \const agent = Agent.newXFTPAgent();\
+             \const connect = agent._connectFn;\
+             \let bodies = 0;\
+             \agent._connectFn = async (srv) => {\
+             \  const client = await connect(srv);\
+             \  const post = client.transport.post;\
+             \  client.transport.post = async (body, headers) => {\
+             \    const resp = await post(body, headers);\
+             \    if (resp.length > 16384) bodies++;\
+             \    return resp;\
+             \  };\
+             \  return client;\
+             \};\
+             \let stored = 0;\
+             \let outcome = 'downloaded';\
+             \try {\
+             \  await Agent.downloadFileRaw(agent, fd, async () => { stored++; });\
+             \} catch (e) {\
+             \  outcome = e.message;\
+             \}\
+             \Agent.closeXFTPAgent(agent);"
+          <> jsOut "new TextEncoder().encode([chunk.chunkSize, outcome, stored, bodies].join(','))"
+    result `shouldBe` "262144,chunk size mismatch,0,1"
 
 tsUploadHaskellDownloadTest :: HasTestEnv => XFTPServerConfig STMFileStore -> FilePath -> Expectation
 tsUploadHaskellDownloadTest cfg caFile = do

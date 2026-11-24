@@ -3,6 +3,8 @@
 // Handles YAML-encoded file descriptions matching Haskell Data.Yaml output format.
 // Base64url encoding matches Haskell Data.ByteString.Base64.URL.encode (with padding).
 
+import {chunkSize3, serverChunkSizes} from "./chunks.js"
+
 // -- Base64url (RFC 4648 section 5) with '=' padding
 
 const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -62,10 +64,6 @@ export function base64urlDecode(s: string): Uint8Array {
 }
 
 // -- FileSize encoding/decoding
-
-export const kb = (n: number): number => n * 1024
-export const mb = (n: number): number => n * 1048576
-export const gb = (n: number): number => n * 1073741824
 
 export function encodeFileSize(bytes: number): string {
   const ks = Math.floor(bytes / 1024)
@@ -351,12 +349,15 @@ function parseReplicaField(
 // -- Validation
 
 export function validateFileDescription(fd: FileDescription): string | null {
+  if (fd.chunks.length === 0) return "no chunks"
   for (let i = 0; i < fd.chunks.length; i++) {
     if (fd.chunks[i].chunkNo !== i + 1) return "chunk numbers are not sequential"
   }
   let total = 0
   for (const c of fd.chunks) total += c.chunkSize
   if (total !== fd.size) return "chunks total size is different than file size"
+  if (fd.chunks.some(c => !serverChunkSizes.includes(c.chunkSize))) return "incorrect chunk size"
+  if (fd.redirect !== null && fd.size > chunkSize3) return "redirect file description is too large"
   return null
 }
 

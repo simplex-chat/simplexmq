@@ -458,8 +458,8 @@ printSMPServerConfig transports st = case dbStoreCfg st of
   Just cfg -> printDBConfig cfg
   Nothing -> printServerConfig "SMP" transports $ storeLogFile' st
   where
-    printDBConfig PostgresStoreCfg {dbOpts = DBOpts {connstr, schema}} = do
-      B.putStrLn $ "PostgreSQL database: " <> connstr <> ", schema: " <> schema
+    printDBConfig PostgresStoreCfg {dbOpts = DBOpts {schema}} = do
+      B.putStrLn $ "PostgreSQL database schema: " <> schema
       printServerTransports "SMP" transports
 
 deleteDirIfExists :: FilePath -> IO ()
