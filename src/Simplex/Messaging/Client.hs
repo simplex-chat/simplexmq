@@ -172,7 +172,6 @@ import Simplex.Messaging.Protocol
 import Simplex.Messaging.Protocol.Types
 import Simplex.Messaging.Server.QueueStore.QueueInfo
 import Simplex.Messaging.SimplexName (SimplexDomain, fullDomainName)
-import Simplex.Messaging.SystemTime (SystemSeconds, getSystemSeconds, roundedSeconds)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport
@@ -484,7 +483,6 @@ data ProtocolClientConfig v = ProtocolClientConfig
     defaultTransport :: (ServiceName, ATransport 'TClient),
     -- | network configuration
     networkConfig :: NetworkConfig,
-    sentCommandsTTL :: Int64,
     clientALPN :: Maybe [ALPN],
     serviceCredentials :: Maybe ServiceCredentials,
     -- | client-server protocol version range
@@ -505,7 +503,6 @@ defaultClientConfig clientALPN useSNI serverVRange =
     { qSize = 64,
       defaultTransport = ("443", transport @TLS),
       networkConfig = defaultNetworkConfig,
-      sentCommandsTTL = 15 * 60,
       clientALPN,
       serviceCredentials = Nothing,
       serverVRange,
@@ -529,7 +526,6 @@ data Request err msg = Request
   { corrId :: CorrId,
     entityId :: EntityId,
     command :: ProtoCommand msg,
-    createdAt :: SystemSeconds,
     pending :: TVar Bool,
     responseVar :: TMVar (Either (ProtocolClientError err) msg)
   }
@@ -585,7 +581,7 @@ type SMPTransportSession = TransportSession BrokerMsg
 -- A single queue can be used for multiple 'SMPClient' instances,
 -- as 'SMPServerTransmission' includes server information.
 getProtocolClient :: forall v err msg. Protocol v err msg => TVar ChaChaDRG -> NetworkRequestMode -> TransportSession msg -> ProtocolClientConfig v -> [HostName] -> Maybe (TBQueue (ServerTransmissionBatch v err msg)) -> UTCTime -> (ProtocolClient v err msg -> IO ()) -> IO (Either (ProtocolClientError err) (ProtocolClient v err msg))
-getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, sentCommandsTTL, clientALPN, serviceCredentials, serverVRange, proxiedRelayVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
+getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qSize, networkConfig, clientALPN, serviceCredentials, serverVRange, proxiedRelayVRange, agreeSecret, proxyServer, useSNI} presetDomains msgQ proxySessTs disconnected = do
   case chooseTransportHost networkConfig (host srv) of
     Right useHost ->
       (getCurrentTime >>= mkProtocolClient useHost >>= runClient useTransport useHost)
@@ -687,13 +683,11 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
       atomically $ writeTVar timeoutErrorCount 0
 
     monitor :: ProtocolClient v err msg -> IO ()
-    monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount, sentCommands}} = loop smpPingInterval
+    monitor c@ProtocolClient {client_ = PClient {sendPings, lastReceived, timeoutErrorCount}} = loop smpPingInterval
       where
         loop :: Int64 -> IO ()
         loop delay = do
           threadDelay' delay
-          ts <- getSystemSeconds
-          atomically $ modifyTVar' sentCommands $ M.filter $ \Request {createdAt} -> roundedSeconds ts - roundedSeconds createdAt < sentCommandsTTL
           diff <- diffUTCTime <$> getCurrentTime <*> readTVarIO lastReceived
           let idle = diffToMicroseconds diff
               remaining = smpPingInterval - idle
@@ -1441,7 +1435,6 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonc
   where
     mkRequest :: CorrId -> IO (Request err msg)
     mkRequest corrId = do
-      createdAt <- getSystemSeconds
       pending <- newTVarIO True
       responseVar <- newEmptyTMVarIO
       let r =
@@ -1449,7 +1442,6 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonc
               { corrId,
                 entityId,
                 command,
-                createdAt,
                 pending,
                 responseVar
               }

@@ -76,8 +76,8 @@ smpProxyTests = do
       testForwardOversizedNotKept
     it "fails commands of closed client at once" $ \_ ->
       testClosedClientCommandsFail
-    it "releases command kept for late response" $ \_ ->
-      testLateResponseCommandReleased
+    it "delivers late response to the message queue" $ \_ ->
+      testLateResponseDelivered
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
@@ -656,23 +656,20 @@ testClosedClientCommandsFail =
     pClientSentCommandsCount c `shouldReturn` 0
     atomically (lengthTBQueue $ pClientSndQ c) `shouldReturn` 0
 
-testLateResponseCommandReleased :: HasTestEnv => IO ()
-testLateResponseCommandReleased =
-  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {authErrorDelay = 4000000}) testPort $ \_ -> do
+testLateResponseDelivered :: HasTestEnv => IO ()
+testLateResponseDelivered =
+  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {authErrorDelay = 2000000}) testPort $ \_ -> do
     g <- C.newRandom
     ts <- getCurrentTime
     msgQ <- newTBQueueIO 4
-    let clientCfg = defaultSMPClientConfig {networkConfig = defaultNetworkConfig {smpPingInterval = 100000}, sentCommandsTTL = 2}
-    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) clientCfg [] (Just msgQ) ts (\_ -> pure ())
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) defaultSMPClientConfig [] (Just msgQ) ts (\_ -> pure ())
     rId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
     (_, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
     runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) (Just rpKey) rId (SMP.Cmd SMP.SRecipient SMP.SUB))
       `shouldReturn` Left PCEResponseTimeout
     pClientSentCommandsCount c `shouldReturn` 1
-    threadDelay 3000000
+    (_, _, [(_, STResponse _ (Left (PCEProtocolError SMP.AUTH)))]) <- atomically $ readTBQueue msgQ
     pClientSentCommandsCount c `shouldReturn` 0
-    (_, _, [(_, STUnexpectedError _)]) <- atomically $ readTBQueue msgQ
-    pure ()
 
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which

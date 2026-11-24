@@ -67,4 +67,4 @@ sequenceDiagram
 - clients:
   - a message in the response to ACK, SUB or GET is written to msgQ by the receiving thread, in the order of reception;
   - a command waits for send-queue space only until its response timeout, and is not queued after it ends;
-  - a command that ends without a response is removed, except in clients with msgQ, where it is kept for 15 minutes for a late response.
+  - a command that ends without a response is removed, except in clients with msgQ, where it is kept until its late response or disconnection.
