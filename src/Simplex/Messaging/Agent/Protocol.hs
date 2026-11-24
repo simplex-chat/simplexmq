@@ -1234,7 +1234,7 @@ instance ConnectionModeI m => StrEncoding (ConnectionRequestUri m) where
     where
       crEncode :: ByteString -> ConnReqUriData -> (Maybe (RcvE2ERatchetParamsUri 'C.X448), Maybe RatchetKeyId) -> ByteString
       crEncode crMode ConnReqUriData {crScheme, crAgentVRange, crSmpQueues, crClientData} (e2eParams, rk) =
-        strEncode crScheme <> "/" <> crMode <> "#/?" <> queryStr
+        strEncode crScheme <> crMode <> "#/?" <> queryStr
         where
           queryStr =
             strEncode . QSP QEscape $
@@ -1289,7 +1289,7 @@ instance StrEncoding AConnectionRequestUri where
 connReqUriP :: Maybe ServiceScheme -> Parser AConnectionRequestUri
 connReqUriP overrideScheme = do
   crScheme <- (`fromMaybe` overrideScheme) <$> strP -- always parse, but use the passed one if any
-  crMode <- A.char '/' *> crModeP <* optional (A.char '/') <* "#/?"
+  crMode <- crModeP <* optional (A.char '/') <* "#/?"
   query <- strP
   aVRange <- queryParam "v" query
   crSmpQueues <- queryParamParser queuesP "smp" query
@@ -1737,11 +1737,11 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
     CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
     where
       slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
-        B.concat [authority, "/", B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
+        B.concat [strEncode baseUri, B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
         where
-          (authority, paramHosts) = case sch of
-            SLSSimplex -> ("simplex:", h : hs)
-            SLSServer -> ("https://" <> strEncode h, hs)
+          (baseUri, paramHosts) = case sch of
+            SLSSimplex -> (SSSimplex, h : hs)
+            SLSServer -> (SSAppServer (SrvLoc h ""), hs)
           lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "/"
           queryStr = if B.null query then "" else "?" <> query
           query =
@@ -1756,7 +1756,7 @@ instance StrEncoding AConnShortLink where
   strEncode (ACSL _ l) = strEncode l
   {-# INLINE strEncode #-}
   strP = do
-    (sch, h_) <- authorityP <* A.char '/'
+    (sch, h_) <- baseUriP
     ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
     case ct_ of
       Nothing -> do
@@ -1769,10 +1769,11 @@ instance StrEncoding AConnShortLink where
         srv <- serverQueryP h_
         pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
     where
-      authorityP =
-        "simplex:" $> (SLSSimplex, Nothing)
-          <|> "https://" *> ((SLSServer,) . Just <$> strP)
-          <|> fail "bad short link scheme"
+      baseUriP =
+        strP >>= \case
+          SSSimplex -> pure (SLSSimplex, Nothing)
+          SSAppServer (SrvLoc h "") -> pure (SLSServer, Just h)
+          SSAppServer _ -> fail "bad short link scheme"
       contactTypeP = do
         Just <$> (A.anyChar >>= ctTypeP . toUpper)
           <|> A.char 'i' $> Nothing
