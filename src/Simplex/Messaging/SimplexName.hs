@@ -36,7 +36,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
-import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.ServiceScheme (ServiceScheme)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, (<$?>))
 
 data SimplexNameInfo = SimplexNameInfo
@@ -111,11 +111,8 @@ boundedNonSpace = do
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
     strEncode nameType <> strEncode nameDomain
-  strP = optional nameSchemeP *> ((strP >>= infoP) <|> infoP NTPublicGroup)
+  strP = optional ((strP :: A.Parser ServiceScheme) *> "name") *> ((strP >>= infoP) <|> infoP NTPublicGroup)
     where
-      nameSchemeP = strP >>= \case
-        SSSimplex -> "name"
-        SSAppServer _ -> fail "bad name scheme"
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP
       bareName = parseBare . safeDecodeUtf8 <$?> boundedNonSpace
