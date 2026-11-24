@@ -49,6 +49,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     createNewConn,
     updateNewConnRcv,
     updateNewConnSnd,
+    deleteNewConnSnd,
     createSndConn,
     getClientNotices,
     updateClientNotices,
@@ -130,6 +131,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateRcvMsgHash,
     createSndMsgBody,
     updateSndIds,
+    getNextSndIds,
+    updateLastIdsSnd_,
     createSndMsg,
     updateSndMsgHash,
     createSndMsgDelivery,
@@ -285,6 +288,7 @@ module Simplex.Messaging.Agent.Store.AgentStore
     fromOnlyBI,
     getWorkItem,
     getWorkItems,
+    catchNonConflict,
   )
 where
 
@@ -359,7 +363,7 @@ import Database.SQLite.Simple.QQ (sql)
 #endif
 
 checkConstraint :: StoreError -> IO (Either StoreError a) -> IO (Either StoreError a)
-checkConstraint err action = action `E.catch` (pure . Left . handleSQLError err)
+checkConstraint err action = action `catchNonConflict` (pure . Left . handleSQLError err)
 
 handleSQLError :: StoreError -> SQLError -> StoreError
 #if defined(dbPostgres)
@@ -567,14 +571,18 @@ updateNewConnSnd db connId sq =
     updateConn :: IO (Either StoreError SndQueue)
     updateConn = addConnSndQueue_ db connId sq
 
+deleteNewConnSnd :: DB.Connection -> ConnId -> IO ()
+deleteNewConnSnd db connId = DB.execute db "DELETE FROM snd_queues WHERE conn_id = ? AND status = 'new'" (Only connId)
+
 createSndConn :: DB.Connection -> TVar ChaChaDRG -> ConnData -> NewSndQueue -> IO (Either StoreError (ConnId, SndQueue))
 createSndConn db gVar cData q@SndQueue {server} =
   -- check confirmed snd queue doesn't already exist, to prevent it being deleted by REPLACE in insertSndQueue_
-  ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) $
-    createConn_ db gVar cData $ \connId -> do
+  ifM (liftIO $ checkConfirmedSndQueueExists_ db q) (pure $ Left SESndQueueExists) . runExceptT $ do
+    (connId, sq) <- ExceptT . createConn_ db gVar cData $ \connId -> do
       serverKeyHash_ <- createServer db server
       createConnRecord db connId cData SCMInvitation
       insertSndQueue_ db connId q serverKeyHash_
+    (connId,) <$> except sq
 
 createConnRecord :: DB.Connection -> ConnId -> ConnData -> SConnectionMode c -> IO ()
 createConnRecord db connId ConnData {userId, connAgentVersion, enableNtfs, pqSupport, serviceRequestExpiresAt} cMode = do
@@ -670,10 +678,9 @@ addConnSndQueue db connId sq =
     _ -> pure $ Left SEConnNotFound
 
 addConnSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> IO (Either StoreError SndQueue)
-addConnSndQueue_ db connId sq@SndQueue {server} =
-  ifM (checkConfirmedSndQueueExists_ db sq) (pure $ Left SESndQueueExists) $ do
-    serverKeyHash_ <- createServer db server
-    Right <$> insertSndQueue_ db connId sq serverKeyHash_
+addConnSndQueue_ db connId sq@SndQueue {server} = do
+  serverKeyHash_ <- createServer db server
+  insertSndQueue_ db connId sq serverKeyHash_
 
 setRcvQueueStatus :: DB.Connection -> RcvQueue -> QueueStatus -> IO ()
 setRcvQueueStatus db RcvQueue {rcvId, server = ProtocolServer {host, port}} status =
@@ -1041,10 +1048,15 @@ createSndMsgBody db aMessage =
 
 updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 updateSndIds db connId = runExceptT $ do
+  ids@(internalId, internalSndId, _) <- ExceptT $ getNextSndIds db connId
+  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
+  pure ids
+
+getNextSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
+getNextSndIds db connId = runExceptT $ do
   (lastInternalId, lastInternalSndId, prevSndHash) <- ExceptT $ retrieveLastIdsAndHashSnd_ db connId
   let internalId = InternalId $ unId lastInternalId + 1
       internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()
@@ -1172,7 +1184,12 @@ getWorkItems itemName getIds getItem markFailed =
 tryGetItem :: (Show i, AnyStoreError e) => String -> (i -> IO (Either e a)) -> (i -> IO ()) -> i -> ExceptT e IO a
 tryGetItem itemName getItem markFailed itemId = ExceptT getItem' `catchE` \e -> mark >> throwE e
   where
-    getItem' = E.handleJust workItemError (pure . Left . fromSomeException) $ getItem itemId
+    getItem' = getItem itemId `catchNonConflict` readError
+    readError e
+#if defined(dbPostgres)
+      | abortsTransaction e = E.throwIO $ RetryAfter (markFailed itemId) $ itemName <> " ID " <> show itemId <> " read error: " <> show e
+#endif
+      | otherwise = pure $ Left $ fromSomeException e
     mark = handleWrkErr itemName ("markFailed ID " <> show itemId) $ markFailed itemId
 
 -- Errors caught by this function will suspend worker as if there is no more work,
@@ -1182,8 +1199,11 @@ handleWrkErr itemName opName action = ExceptT $ first mkError <$> E.tryJust work
     mkError :: E.SomeException -> e
     mkError e = mkWorkItemError $ itemName <> " " <> opName <> " error: " <> show e
 
-workItemError :: E.SomeException -> Maybe E.SomeException
-workItemError e = if isTransactionConflict e then Nothing else Just e
+workItemError :: E.Exception e => e -> Maybe e
+workItemError e = if isTransactionConflict (E.toException e) then Nothing else Just e
+
+catchNonConflict :: E.Exception e => IO a -> (e -> IO a) -> IO a
+catchNonConflict = E.catchJust workItemError
 
 updatePendingMsgRIState :: DB.Connection -> ConnId -> InternalId -> RI2State -> IO ()
 updatePendingMsgRIState db connId msgId RI2State {slowInterval, fastInterval} =
@@ -1637,10 +1657,17 @@ createCommand db corrId connId srv_ cmd = runExceptT $ do
   (host_, port_, serverKeyHash_) <- serverFields
   createdAt <- liftIO getCurrentTime
   liftIO . E.handle handleErr $
+#if defined(dbPostgres)
+    DB.execute
+      db
+      "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) SELECT ?, ?, ?, conn_id, ?, ?, ?::BYTEA, ?::TIMESTAMPTZ FROM connections WHERE conn_id = ? FOR KEY SHARE"
+      (host_, port_, Binary corrId, cmdTag, cmd, serverKeyHash_, createdAt, connId)
+#else
     DB.execute
       db
       "INSERT INTO commands (host, port, corr_id, conn_id, command_tag, command, server_key_hash, created_at) VALUES (?,?,?,?,?,?,?,?)"
       (host_, port_, Binary corrId, connId, cmdTag, cmd, serverKeyHash_, createdAt)
+#endif
   where
     cmdTag = agentCommandTag cmd
 #if defined(dbPostgres)
@@ -2099,7 +2126,7 @@ getNextNtfSubNTFActions db ntfServer@(NtfServer ntfHost ntfPort _) ntfBatchSize 
 
 markNtfSubActionNtfFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionNtfFailed_ db connId =
-  DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1 where conn_id = ?" (Only connId)
+  DB.execute db "UPDATE ntf_subscriptions SET ntf_failed = 1, updated_by_supervisor = 0 where conn_id = ?" (Only connId)
 
 getNextNtfSubSMPActions :: DB.Connection -> SMPServer -> Int -> IO (Either StoreError [Either StoreError (NtfSubSMPAction, NtfSubscription)])
 getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize =
@@ -2144,7 +2171,7 @@ getNextNtfSubSMPActions db smpServer@(SMPServer smpHost smpPort _) ntfBatchSize 
 
 markNtfSubActionSMPFailed_ :: DB.Connection -> ConnId -> IO ()
 markNtfSubActionSMPFailed_ db connId =
-  DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1 where conn_id = ?" (Only connId)
+  DB.execute db "UPDATE ntf_subscriptions SET smp_failed = 1, updated_by_supervisor = 0 where conn_id = ?" (Only connId)
 
 markUpdatedByWorker :: DB.Connection -> ConnId -> IO ()
 markUpdatedByWorker db connId =
@@ -2398,13 +2425,13 @@ insertRcvQueue_ db connId' rq@RcvQueue {..} subMode serverKeyHash_ = do
 
 -- * createSndConn helpers
 
-insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO SndQueue
+insertSndQueue_ :: DB.Connection -> ConnId -> NewSndQueue -> Maybe C.KeyHash -> IO (Either StoreError SndQueue)
 insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
   -- to preserve ID if the queue already exists.
   -- possibly, it can be done in one query.
   currQId_ <- maybeFirstRow fromOnly $ DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? AND host = ? AND port = ? AND snd_id = ?" (connId', host server, port server, sndId)
   qId <- maybe (newQueueId_ <$> DB.query db "SELECT snd_queue_id FROM snd_queues WHERE conn_id = ? ORDER BY snd_queue_id DESC LIMIT 1" (Only connId')) pure currQId_
-  DB.execute
+  (rs :: [Only Int]) <- DB.query
     db
     [sql|
       INSERT INTO snd_queues
@@ -2426,10 +2453,12 @@ insertSndQueue_ db connId' sq@SndQueue {..} serverKeyHash_ = do
         replace_snd_queue_id=EXCLUDED.replace_snd_queue_id,
         smp_client_version=EXCLUDED.smp_client_version,
         server_key_hash=EXCLUDED.server_key_hash
+      WHERE snd_queues.conn_id = EXCLUDED.conn_id
+      RETURNING 1
     |]
     ((host server, port server, sndId, queueMode, connId', sndPrivateKey, e2ePubKey, e2eDhSecret)
     :. (status, qId, BI primary, dbReplaceQueueId, smpClientVersion, serverKeyHash_))
-  pure (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
+  pure $ if null rs then Left SESndQueueExists else Right (sq :: NewSndQueue) {connId = connId', dbQueueId = qId}
 
 newQueueId_ :: [Only Int64] -> DBEntityId
 newQueueId_ [] = DBEntityId 1
@@ -3156,7 +3185,9 @@ createWithRandomId' db gVar create = tryCreate 3
 #if defined(dbPostgres)
     handleErr n e = case constraintViolation e of
       Just _ -> tryCreate (n - 1)
-      Nothing -> pure . Left . SEInternal $ bshow e
+      Nothing
+        | isTransactionConflict (E.toException e) -> E.throwIO e
+        | otherwise -> pure . Left . SEInternal $ bshow e
 #else
     handleErr n e
       | SQL.sqlError e == SQL.ErrorConstraint = tryCreate (n - 1)

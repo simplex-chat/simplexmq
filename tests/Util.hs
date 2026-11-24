@@ -8,16 +8,17 @@
 
 module Util where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (ThreadId, myThreadId, threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception as E
 import Control.Logger.Simple
-import Control.Monad (replicateM, when)
+import Control.Monad (replicateM, unless, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
+import Data.Maybe (fromMaybe)
 import Data.String (IsString (..))
-import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
+import GHC.Conc (BlockReason (..), ThreadStatus (..), getNumCapabilities, getNumProcessors, setNumCapabilities, threadStatus)
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import Network.Socket (ServiceName)
@@ -29,7 +30,7 @@ import System.Process (callCommand)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it, xit)
 import qualified Test.Hspec as Hspec
-import Test.Hspec.Core.Spec (Example (..), Result (..), ResultStatus (..))
+import Test.Hspec.Core.Spec (Example (..), FailureReason (..), Item (..), Result (..), ResultStatus (..), mapSpecItem_)
 
 withNumCapabilities :: Int -> IO a -> IO a
 withNumCapabilities new a = getNumCapabilities >>= \old -> bracket_ (setNumCapabilities new) (setNumCapabilities old) a
@@ -43,6 +44,28 @@ inParrallel n action = do
   (es, rs) <- partitionEithers <$> mapM waitCatch streams
   map show es `shouldBe` []
   length rs `shouldBe` n
+
+testCancelledInside :: (IO () -> IO a) -> IO ()
+testCancelledInside action = do
+  canceller <- myThreadId
+  testCancelledWhenBlocked $ \started -> action $ started >> waitStatus canceller (== ThreadBlocked BlockedOnException)
+
+testCancelledWhenBlocked :: (IO () -> IO a) -> IO ()
+testCancelledWhenBlocked action = do
+  started <- newEmptyTMVarIO
+  a <- async $ action $ atomically $ putTMVar started ()
+  atomically $ takeTMVar started
+  waitStatus (asyncThreadId a) (/= ThreadRunning)
+  cancel a
+  waitCatch a >>= \case
+    Left e -> fromException e `shouldBe` Just AsyncCancelled
+    Right _ -> expectationFailure "cancelled thread continued"
+
+waitStatus :: ThreadId -> (ThreadStatus -> Bool) -> IO ()
+waitStatus t done = do
+  threadDelay 1000
+  status <- threadStatus t
+  unless (done status) $ waitStatus t done
 
 combinations :: Int -> [a] -> [[a]]
 combinations 0 _ = [[]]
@@ -117,6 +140,14 @@ eventuallyRemove path retries = case retries of
     action = removeDirectoryRecursive path
 
 data TestWrapper a = TestWrapper String (HasTestEnv => a)
+
+-- | Abort a test after the specified number of microseconds.
+deadline :: Int -> SpecWith b -> SpecWith b
+deadline limit = mapSpecItem_ $ \item@Item {itemLocation, itemExample} ->
+  item
+    { itemExample = \params aw pc ->
+        fromMaybe (Result "timed out" . Failure itemLocation $ Reason "time limit") <$> timeout limit (itemExample params aw pc)
+    }
 
 -- TODO [ntfdb] running wiht LogWarn level shows potential issue "Queue count differs"
 testLogLevel :: LogLevel

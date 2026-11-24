@@ -19,6 +19,7 @@ module Simplex.Messaging.Server.StoreLog
     writeStoreLogRecord,
     logCreateQueue,
     logCreateLink,
+    logSwapLink,
     logDeleteLink,
     logSecureQueue,
     logUpdateKeys,
@@ -66,6 +67,7 @@ import System.FilePath (takeDirectory, takeFileName)
 data StoreLogRecord
   = CreateQueue RecipientId QueueRec
   | CreateLink RecipientId LinkId QueueLinkData
+  | CreateLinkKeys RecipientId LinkId QueueLinkData (NonEmpty RcvPublicAuthKey)
   | DeleteLink RecipientId
   | SecureQueue QueueId SndPublicAuthKey
   | UpdateKeys RecipientId (NonEmpty RcvPublicAuthKey)
@@ -83,6 +85,7 @@ data StoreLogRecord
 data SLRTag
   = CreateQueue_
   | CreateLink_
+  | CreateLinkKeys_
   | DeleteLink_
   | SecureQueue_
   | UpdateKeys_
@@ -154,6 +157,7 @@ instance StrEncoding SLRTag where
   strEncode = \case
     CreateQueue_ -> "CREATE"
     CreateLink_ -> "LINK"
+    CreateLinkKeys_ -> "LKEYS"
     DeleteLink_ -> "LDELETE"
     SecureQueue_ -> "SECURE"
     UpdateKeys_ -> "KEYS"
@@ -171,6 +175,7 @@ instance StrEncoding SLRTag where
     A.choice
       [ "CREATE" $> CreateQueue_,
         "LINK" $> CreateLink_,
+        "LKEYS" $> CreateLinkKeys_,
         "LDELETE" $> DeleteLink_,
         "SECURE" $> SecureQueue_,
         "KEYS" $> UpdateKeys_,
@@ -189,6 +194,7 @@ instance StrEncoding StoreLogRecord where
   strEncode = \case
     CreateQueue rId q -> B.unwords [strEncode CreateQueue_, "rid=" <> strEncode rId, strEncode q]
     CreateLink rId lnkId d -> strEncode (CreateLink_, rId, lnkId, d)
+    CreateLinkKeys rId lnkId d rKeys -> strEncode (CreateLinkKeys_, rId, lnkId, d, rKeys)
     DeleteLink rId -> strEncode (DeleteLink_, rId)
     SecureQueue rId sKey -> strEncode (SecureQueue_, rId, sKey)
     UpdateKeys rId rKeys -> strEncode (UpdateKeys_, rId, rKeys)
@@ -206,6 +212,7 @@ instance StrEncoding StoreLogRecord where
     strP_ >>= \case
       CreateQueue_ -> CreateQueue <$> ("rid=" *> strP_) <*> strP
       CreateLink_ -> CreateLink <$> strP_ <*> strP_ <*> strP
+      CreateLinkKeys_ -> CreateLinkKeys <$> strP_ <*> strP_ <*> strP_ <*> strP
       DeleteLink_ -> DeleteLink <$> strP
       SecureQueue_ -> SecureQueue <$> strP_ <*> strP
       UpdateKeys_ -> UpdateKeys <$> strP_ <*> strP
@@ -252,6 +259,13 @@ logCreateQueue s rId q = writeStoreLogRecord s $ CreateQueue rId q
 
 logCreateLink :: StoreLog 'WriteMode -> RecipientId -> LinkId -> QueueLinkData -> IO ()
 logCreateLink s rId lnkId d = writeStoreLogRecord s $ CreateLink rId lnkId d
+
+logSwapLink :: StoreLog 'WriteMode -> RecipientId -> LinkId -> QueueLinkData -> Maybe (NonEmpty RcvPublicAuthKey) -> IO ()
+logSwapLink s rId lnkId d = \case
+  Just rKeys -> do
+    writeStoreLogRecord s $ CreateLinkKeys rId lnkId d rKeys
+    logUpdateKeys s rId rKeys
+  Nothing -> logCreateLink s rId lnkId d
 
 logDeleteLink :: StoreLog 'WriteMode -> RecipientId -> IO ()
 logDeleteLink s = writeStoreLogRecord s . DeleteLink

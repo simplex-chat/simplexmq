@@ -50,8 +50,8 @@ data FileServerStatsData = FileServerStatsData
   }
   deriving (Show)
 
-newFileServerStats :: UTCTime -> IO FileServerStats
-newFileServerStats ts = do
+newFileServerStats :: Int -> Int64 -> UTCTime -> IO FileServerStats
+newFileServerStats storedCount storedSize ts = do
   fromTime <- newIORef ts
   filesCreated <- newIORef 0
   fileRecipients <- newIORef 0
@@ -62,8 +62,8 @@ newFileServerStats ts = do
   filesDownloaded <- newPeriodStats
   fileDownloads <- newIORef 0
   fileDownloadAcks <- newIORef 0
-  filesCount <- newIORef 0
-  filesSize <- newIORef 0
+  filesCount <- newIORef storedCount
+  filesSize <- newIORef storedSize
   pure FileServerStats {fromTime, filesCreated, fileRecipients, filesUploaded, filesExpired, filesDeleted, filesBlocked, filesDownloaded, fileDownloads, fileDownloadAcks, filesCount, filesSize}
 
 getFileServerStatsData :: FileServerStats -> IO FileServerStatsData

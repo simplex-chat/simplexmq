@@ -56,6 +56,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeLatin1, encodeUtf8)
 import qualified Data.Text.IO as T
+import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Options.Applicative
 import Simplex.Messaging.Agent.Protocol (ConnectionLink (..), ConnectionMode (..), connReqUriP')
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
@@ -340,7 +341,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
             s ->
               case strDecode $ encodeUtf8 $ T.pack s of
                 Right auth -> pure . Just $ ServerPassword auth
-                _ -> putStrLn "Invalid password. Only latin letters, digits and symbols other than '@' and ':' are allowed" >> serverPassword
+                _ -> putStrLn "Invalid password. Passwords can contain printable ASCII characters except whitespace, '@', ':' and '/'" >> serverPassword
         checkInitOptions InitOptions {sourceCode, serverInfo, operatorCountry, hostingCountry} = do
           let err_
                 | isNothing sourceCode && hasServerInfo serverInfo =
@@ -440,6 +441,9 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
         transports = iniTransports ini
         sharedHTTP = any (\(_, _, addHTTP) -> addHTTP) transports
         iniStoreType = either error id $! readStoreType ini
+        iniStatsSaveInterval = case readIniDefault defStatsSaveInterval "STORE_LOG" "stats_save_interval" ini of
+          n | n < 1 -> error $ "invalid INI setting stats_save_interval: " <> show n
+          n -> n
         iniStoreCfg :: SupportedStore qs ms => SQSType qs -> SMSType ms -> ServerStoreCfg (MsgStoreType qs ms)
         iniStoreCfg SQSMemory SMSMemory = SSCMemory $ enableStoreLog' ini $> StorePaths {storeLogFile = storeLogFilePath, storeMsgsFile = restoreMessagesFile storeMsgsFilePath}
 #if defined(dbServerPostgres)
@@ -495,6 +499,7 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
               logStatsStartTime = 0, -- seconds from 00:00 UTC
               serverStatsLogFile = combine logPath "smp-server-stats.daily.log",
               serverStatsBackupFile = logStats $> combine logPath "smp-server-stats.log",
+              statsSaveInterval = iniStatsSaveInterval,
               prometheusInterval = eitherToMaybe (lookupValue "STORE_LOG" "prometheus_interval" ini) >>= readMaybe . T.unpack,
               prometheusMetricsFile = combine logPath "smp-server-metrics.txt",
               pendingENDInterval = 15000000, -- 15 seconds
@@ -525,14 +530,18 @@ smpServerCLI_ generateSite serveStaticFiles attachStaticFiles cfgPath logPath =
                               }
                         },
                     ownServerDomains = either (const []) textToOwnServers $ lookupValue "PROXY" "own_server_domains" ini,
+                    maxConnectingClients = Just $ readIniDefault defaultProxyConnectConcurrency "PROXY" "connect_concurrency" ini,
+                    sessionPerConnectedServer = True,
                     msgQSize = Nothing, -- to prevent accumulation of late responses, and deadlocks in SMP proxy
                     persistErrorInterval = 30 -- seconds
                   },
               allowSMPProxy = True,
               serverClientConcurrency = readIniDefault defaultProxyClientConcurrency "PROXY" "client_concurrency" ini,
+              proxyRelayConcurrency = readIniDefault defaultProxyRelayConcurrency "PROXY" "relay_concurrency" ini,
               serverResolverConcurrency = readIniDefault defaultNameResolverConcurrency "NAMES" "resolver_concurrency" ini,
               serverForwardWorkers = readIniDefault defaultForwardWorkers "PROXY" "forward_workers" ini,
               maxClientCmdWait = defaultMaxClientCmdWait,
+              maxFwdCorrIds = defaultMaxFwdCorrIds,
               namesConfig = readNamesConfig ini,
               information = serverPublicInfo ini,
               startOptions
@@ -691,9 +700,18 @@ serverPublicInfo ini = serverInfo <$!> infoValue "source_code"
           adminContacts = iniContacts "admin_simplex" "admin_email" "admin_pgp" "admin_pgp_fingerprint",
           complaintsContacts = iniContacts "complaints_simplex" "complaints_email" "complaints_pgp" "complaints_pgp_fingerprint",
           hosting = iniEntity "hosting" "hosting_country",
-          hostingType = either error id <$!> strDecodeIni "INFORMATION" "hosting_type" ini
+          hostingType = either error id <$!> strDecodeIni "INFORMATION" "hosting_type" ini,
+          clientSupport = iniClientSupport
         }
     infoValue name = eitherToMaybe $ lookupValue "INFORMATION" name ini
+    iniClientSupport =
+      let minClientVersion = MinClientVersion <$> (either error id <$!> strDecodeIni "INFORMATION" "client_min_version" ini) <*> (dateValue <$!> infoValue "client_min_version_date")
+          stableRelease = infoValue "client_stable_release"
+          betaRelease = infoValue "client_beta_release"
+       in case (minClientVersion, stableRelease, betaRelease) of
+            (Nothing, Nothing, Nothing) -> Nothing
+            _ -> Just ClientSupport {minClientVersion, stableRelease, betaRelease}
+    dateValue = fromMaybe (error "Use YYYY-MM-DD for client_min_version_date") . iso8601ParseM . T.unpack
     iniEntity nameField countryField =
       (\name -> Entity {name, country = countryValue countryField})
         <$!> infoValue nameField
@@ -948,7 +966,8 @@ cliCommandP cfgPath logPath iniFile =
                   complaintsContacts = Nothing,
                   hosting = fst hosting_,
                   hostingType,
-                  serverCountry
+                  serverCountry,
+                  clientSupport = Nothing
                 },
             operatorCountry = snd operator_,
             hostingCountry = snd hosting_,

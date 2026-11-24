@@ -217,7 +217,31 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         atomically $ writeTVar (queueRec sq) $ Just q {queueData = Just (lnkId, d)}
         withLog "addQueueLinkData" st $ \s -> logCreateLink s rId lnkId d
       -- the sender key condition is checked in SQL because without cache each command reads its own copy of the queue record
-      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR queue_mode = ?)"
+      qry = "UPDATE msg_queues SET fixed_data = ?, user_data = ?, link_id = ? WHERE recipient_id = ? AND deleted_at IS NULL AND (sender_key IS NULL OR queue_mode = ?) AND get_byte(recipient_keys, 0) = 1"
+
+  swapQueueLinkData :: PostgresQueueStore q -> q -> LinkId -> LinkDataHash -> Maybe (NonEmpty RcvPublicAuthKey) -> QueueLinkData -> IO (Either ErrorType (Maybe EncUserDataBytes))
+  swapQueueLinkData st sq lnkId h rKeys_ d =
+    withQueueRec sq $ \q ->
+      withDB "swapQueueLinkData" st swap >>= \case
+        Just ud -> pure $ Just ud
+        Nothing -> do
+          let !q' = q {recipientKeys = fromMaybe (recipientKeys q) rKeys_, queueData = Just (lnkId, d)}
+          atomically $ writeTVar (queueRec sq) $ Just q'
+          withLog "swapQueueLinkData" st $ \s -> logSwapLink s rId lnkId d rKeys_
+          pure Nothing
+    where
+      rId = recipientId sq
+      swap db =
+        firstRow id AUTH (DB.query db "SELECT link_id, fixed_data, user_data FROM msg_queues WHERE recipient_id = ? AND deleted_at IS NULL FOR UPDATE" (Only rId))
+          $>>= \case
+            (Just lnkId', Just fd', Just ud')
+              | lnkId' /= lnkId || fd' /= fst d -> pure $ Left AUTH
+              | linkDataHash ud' /= h -> pure $ Right $ Just ud'
+              | otherwise -> Right Nothing <$ updateLink db
+            _ -> pure $ Left AUTH
+      updateLink db = case rKeys_ of
+        Just rKeys -> DB.execute db "UPDATE msg_queues SET user_data = ?, recipient_keys = ? WHERE recipient_id = ?" (snd d, rKeys, rId)
+        Nothing -> DB.execute db "UPDATE msg_queues SET user_data = ? WHERE recipient_id = ?" (snd d, rId)
 
   deleteQueueLinkData :: PostgresQueueStore q -> q -> IO (Either ErrorType ())
   deleteQueueLinkData st sq =
@@ -245,11 +269,12 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
         Just k | sKey /= k -> throwE AUTH
         _ -> pure ()
 
-  updateKeys :: PostgresQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
-  updateKeys st sq rKeys =
+  updateKeys :: PostgresQueueStore q -> q -> Maybe (NonEmpty RcvPublicAuthKey) -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys st sq prevKeys_ rKeys =
     withQueueRec sq $ \q -> do
-      assertUpdated $ withDB' "updateKeys" st $ \db ->
-        DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL" (rKeys, rId)
+      assertUpdated $ withDB' "updateKeys" st $ \db -> case prevKeys_ of
+        Just prevKeys -> DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL AND recipient_keys = ?" (rKeys, rId, prevKeys)
+        Nothing -> DB.execute db "UPDATE msg_queues SET recipient_keys = ? WHERE recipient_id = ? AND deleted_at IS NULL" (rKeys, rId)
       atomically $ writeTVar (queueRec sq) $ Just q {recipientKeys = rKeys}
       withLog "updateKeys" st $ \s -> logUpdateKeys s rId rKeys
     where
@@ -384,12 +409,21 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       map fromOnly <$> DB.query db updateQuery (serviceId, In (map recipientId qs)))
     results <- liftIO $ forM qs $ \sq -> do
       let rId = recipientId sq
-      (rId,) <$> if S.member rId updated
-        then readQueueRecIO (queueRec sq) $>>= \q -> do
+      let updateRec q =
+            case party of
+              SRecipientService -> q {rcvServiceId = serviceId}
+              SNotifierService -> case notifier q of
+                Just nc -> q {notifier = Just nc {ntfServiceId = serviceId}}
+                Nothing -> q
+      (rId,) <$> (if S.member rId updated
+        then readQueueRecIO (queueRec sq) $>>= (\q -> do
+          let prevSrvId = case party of
+                SRecipientService -> rcvServiceId q
+                SNotifierService -> notifier q >>= ntfServiceId
           atomically $ writeTVar (queueRec sq) $ Just $ updateRec q
-          withLog "setQueueServices" st $ \sl -> logQueueService sl rId party serviceId
-          pure $ Right ()
-        else pure $ Left AUTH
+          when (prevSrvId /= serviceId) $ withLog "setQueueServices" st $ \sl -> logQueueService sl (recipientId sq) party serviceId
+          pure $ Right ())
+        else pure $ Left AUTH)
     pure $ M.fromList results
     where
       updateQuery = case party of
@@ -397,11 +431,6 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
           "UPDATE msg_queues SET rcv_service_id = ? WHERE recipient_id IN ? AND deleted_at IS NULL RETURNING recipient_id"
         SNotifierService ->
           "UPDATE msg_queues SET ntf_service_id = ? WHERE recipient_id IN ? AND notifier_id IS NOT NULL AND deleted_at IS NULL RETURNING recipient_id"
-      updateRec q = case party of
-        SRecipientService -> q {rcvServiceId = serviceId}
-        SNotifierService -> case notifier q of
-          Just nc -> q {notifier = Just nc {ntfServiceId = serviceId}}
-          Nothing -> q
 
   getQueueNtfServices :: PostgresQueueStore q -> [(NotifierId, a)] -> IO (Either ErrorType ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]))
   getQueueNtfServices st ntfs = E.uninterruptibleMask_ $ runExceptT $ do
@@ -412,16 +441,13 @@ instance StoreQueueClass q => QueueStoreClass q (PostgresQueueStore q) where
       if null snIds
         then ([], ntfs)
         else
-          let snIds' = foldl' (\m (sId, nId) -> M.alter (Just . maybe (S.singleton nId) (S.insert nId)) sId m) M.empty snIds
-           in foldr addService ([], ntfs) (M.assocs snIds')
+          let nsIds = M.fromList [(nId, sId) | (sId, nId) <- snIds]
+              (ssNtfs, deleteNtfs) = foldr (addNtf nsIds) (M.empty, []) ntfs
+           in (M.assocs ssNtfs, deleteNtfs)
     where
-      addService ::
-        (Maybe ServiceId, S.Set NotifierId) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)]) ->
-        ([(Maybe ServiceId, [(NotifierId, a)])], [(NotifierId, a)])
-      addService (serviceId, snIds) (ssNtfs, ntfs') =
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-         in ((serviceId, sNtfs) : ssNtfs, restNtfs)
+      addNtf nsIds ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId nsIds of
+        Just serviceId -> (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
+        Nothing -> (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => PostgresQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
@@ -636,7 +662,7 @@ withDB' op st action = withDB op st $ fmap Right . action
 
 withDB :: forall a q. Text -> PostgresQueueStore q -> (DB.Connection -> IO (Either ErrorType a)) -> ExceptT ErrorType IO a
 withDB op st action =
-  ExceptT $ withTransaction (dbStore st) action `catchOwn'` logErr
+  ExceptT $ withRetriedTransaction (dbStore st) action `catchOwn'` logErr
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)

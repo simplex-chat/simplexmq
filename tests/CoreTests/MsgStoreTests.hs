@@ -23,22 +23,28 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Except
 import Crypto.Random (ChaChaDRG)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
+import Data.Functor (($>))
 import Data.Int (Int64)
 import qualified Data.Map.Strict as M
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Simplex.Messaging.Crypto (pattern MaxLenBS)
 import qualified Simplex.Messaging.Crypto as C
-import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), noMsgFlags, randomMsgId)
+import Simplex.Messaging.Encoding.String (strEncode)
+import Simplex.Messaging.Protocol (EncDataBytes (..), EntityId (..), ErrorType (..), LinkId, Message (..), NotifierId, QueueLinkData, RecipientId, SParty (..), linkDataHash, noMsgFlags, randomMsgId)
 import Simplex.Messaging.Server.MsgStore.STM
 import Simplex.Messaging.Server.MsgStore.Types
 import Simplex.Messaging.Server.NtfStore
 import Simplex.Messaging.Server.QueueStore
 import Simplex.Messaging.Server.QueueStore.QueueInfo
-import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), withLog')
+import Simplex.Messaging.Server.QueueStore.STM (STMQueueStore (..), readQueueRecIO, withLog')
 import Simplex.Messaging.Server.QueueStore.Types
-import Simplex.Messaging.Server.StoreLog (closeStoreLog, openWriteStoreLog)
+import Simplex.Messaging.Server.StoreLog (StoreLogRecord (..), closeStoreLog, openWriteStoreLog)
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
+import Simplex.Messaging.Util (($>>=))
+import SMPClient (testStoreLogFile)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Util
@@ -48,13 +54,15 @@ import AgentTests.FunctionalAPITests (runRight)
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Async (AsyncCancelled (..), async, cancel, waitCatch)
 import qualified Control.Exception as E
+import Data.List (sortOn)
 import Database.PostgreSQL.Simple (Only (..))
 import qualified Database.PostgreSQL.Simple as DB
 import Simplex.Messaging.Agent.Store.Postgres.Common
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
+import Simplex.Messaging.Protocol (messageId)
 import Simplex.Messaging.Server.MsgStore.Postgres
 import Simplex.Messaging.Server.QueueStore.Postgres
-import SMPClient (testStoreDBOpts)
+import SMPClient (deadlockOnce, testStoreDBOpts)
 #endif
 
 msgStoreTests :: Spec
@@ -63,14 +71,20 @@ msgStoreTests = do
     someMsgStoreTests testSMTStoreConfig
     it "should remove deleted queues from queue store maps" $ withMsgStore testSMTStoreConfig testDeleteQueueMaps
     it "should time out store log write" testStoreLogTimeout
+    it "should end the thread cancelled during store log write" testCancelStoreLogWrite
+    it "should log the queue change of the thread cancelled before store log write" $ withMsgStore testSMTStoreConfig testCancelBeforeStoreLogWrite
 #if defined(dbServerPostgres)
   describe "Postgres-only message store" $ do
     someMsgStoreTests testPostgresStoreConfig
     it "should correctly update message counts and canWrite flag" $ withMsgStore testPostgresStoreConfig testUpdateMessageCounts
     it "tryDelPeekMsg (ACK not from NSE) should reset message counts when queue is empty" $ withMsgStore testPostgresStoreConfig testResetMessageCounts
+    it "should fold service messages in pages without holding a database connection" $ withMsgStore testPostgresStoreConfig testFoldServiceMessagesInPages
     it "should expire messages across commit batches" $ withMsgStore testPostgresStoreConfig testExpireMessagesInBatches
     it "should fail database operations after the store is closed" $ withMsgStore testPostgresStoreConfig testClosedStore
     it "should time out database operation" $ withMsgStore testPostgresStoreConfig testDBOperationTimeout
+    it "should retry a message write aborted by a deadlock" $ withMsgStore testPostgresStoreConfig testWriteMsgDeadlock
+    it "should end the thread cancelled during database transaction" $ withMsgStore testPostgresStoreConfig testCancelDBTransaction
+    it "should end the thread cancelled during database query" $ withMsgStore testPostgresStoreConfig testCancelDBQuery
     it "should stop when cancelled during reconnect after database error" $ withMsgStore testPostgresStoreConfig testReconnectCancel
 #endif
   describe "Notification store" $ do
@@ -83,6 +97,8 @@ msgStoreTests = do
       it "should write/ack messages" $ withMsgStore cfg testWriteAckMessages
       it "should peek the first message of each queue in a batch" $ withMsgStore cfg testPeekMsgs
       it "should not add link data to secured messaging queue" $ withMsgStore cfg testLinkDataSecuredQueue
+      it "should not update recipient keys changed after the command was verified" $ withMsgStore cfg testUpdateChangedKeys
+      it "should swap link data and recipient keys" $ withMsgStore cfg testSwapQueueLinkData
 
 -- TODO constrain to STM stores?
 withMsgStore :: MsgStoreClass s => MsgStoreConfig s -> (s -> IO ()) -> IO ()
@@ -282,6 +298,60 @@ testLinkDataSecuredQueue ms = do
     void $ ExceptT $ deleteQueue ms q
     void $ ExceptT $ deleteQueue ms cq
 
+testUpdateChangedKeys :: MsgStoreClass s => s -> IO ()
+testUpdateChangedKeys ms = do
+  g <- C.newRandom
+  (k1, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (k2, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+  (rId, qr@QueueRec {recipientKeys = ks}) <- testNewQueueRec g QMContact
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    ExceptT $ updateKeys st q (Just ks) [k1]
+    liftIO $ updateKeys st q (Just ks) [k2] `shouldReturn` Left AUTH
+    (_, QueueRec {recipientKeys}) <- ExceptT $ getQueueRec ms SRecipient rId
+    liftIO $ recipientKeys `shouldBe` [k1]
+    void $ ExceptT $ deleteQueue ms q
+testSwapQueueLinkData :: MsgStoreClass s => s -> IO ()
+testSwapQueueLinkData ms = do
+  g <- C.newRandom
+  (rKey2, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let st = queueStore ms
+      rndId = atomically $ EntityId <$> C.randomBytes 24 g
+      (fd, ud) = testLinkData
+      d1 = (fd, EncDataBytes "user data 1")
+      d2 = (fd, EncDataBytes "user data 2")
+  lnkId <- rndId
+  otherLnkId <- rndId
+  (rId, qr) <- testNewQueueRecData g QMContact (Just (lnkId, testLinkData))
+  (noLinkRId, noLinkQr) <- testNewQueueRec g QMContact
+  let rKeys = recipientKeys qr <> [rKey2]
+      storedKeys = fmap recipientKeys <$> (getQueue ms SRecipient rId $>>= readQueueRecIO . queueRec)
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    noLinkQ <- ExceptT $ addQueue ms noLinkRId noLinkQr
+    liftIO $ do
+      swapQueueLinkData st noLinkQ lnkId (linkDataHash ud) Nothing d1 `shouldReturn` Left AUTH
+      swapQueueLinkData st q otherLnkId (linkDataHash ud) Nothing d1 `shouldReturn` Left AUTH
+      swapQueueLinkData st q lnkId (linkDataHash ud) Nothing (EncDataBytes "other fixed data", snd d1) `shouldReturn` Left AUTH
+      swapQueueLinkData st q lnkId (linkDataHash $ snd d1) (Just rKeys) d1 `shouldReturn` Right (Just ud)
+      getQueueLinkData st q lnkId `shouldReturn` Right testLinkData
+      storedKeys `shouldReturn` Right (recipientKeys qr)
+      swapQueueLinkData st q lnkId (linkDataHash ud) Nothing d1 `shouldReturn` Right Nothing
+      getQueueLinkData st q lnkId `shouldReturn` Right d1
+    staleQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ do
+      swapQueueLinkData st q lnkId (linkDataHash $ snd d1) (Just rKeys) d2 `shouldReturn` Right Nothing
+      getQueueLinkData st q lnkId `shouldReturn` Right d2
+      storedKeys `shouldReturn` Right rKeys
+      addQueueLinkData st staleQ lnkId d1 `shouldReturn` Left AUTH
+    freshQ <- ExceptT $ getQueue ms SRecipient rId
+    liftIO $ do
+      addQueueLinkData st freshQ lnkId d1 `shouldReturn` Left AUTH
+      getQueueLinkData st freshQ lnkId `shouldReturn` Right d2
+    void $ ExceptT $ deleteQueue ms q
+    void $ ExceptT $ deleteQueue ms noLinkQ
+
 -- sizes of queues, senders, links and notifiers maps
 type QueueMapSizes = (Int, Int, Int, Int)
 
@@ -335,6 +405,23 @@ testStoreLogTimeout = do
   sl_ <- newTVarIO $ Just sl
   timeout 100000 (withLog' "test" sl_ $ \_ -> threadDelay 500000) `shouldReturn` Nothing
   closeStoreLog sl
+testCancelStoreLogWrite :: HasTestEnv => IO ()
+testCancelStoreLogWrite =
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl -> do
+    sl' <- newTVarIO $ Just sl
+    testCancelledInside $ \waitCancel -> withLog' "test" sl' $ \_ -> waitCancel
+
+testCancelBeforeStoreLogWrite :: HasTestEnv => STMMsgStore -> IO ()
+testCancelBeforeStoreLogWrite ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  Right q <- addQueue ms rId qr
+  bracket (openWriteStoreLog False testStoreLogFile) closeStoreLog $ \sl ->
+    testCancelledInside $ \waitCancel -> do
+      slAfterCancel <- unsafeInterleaveIO $ waitCancel $> Just sl
+      sl' <- newTVarIO slAfterCancel
+      deleteStoreQueue (queueStore ms) {storeLog = sl'} q
+  B.readFile testStoreLogFile `shouldReturn` strEncode (DeleteQueue rId) <> "\n"
 
 mkMsgNtf :: TVar ChaChaDRG -> Int64 -> IO MsgNtf
 mkMsgNtf g ts = do
@@ -457,6 +544,29 @@ testResetMessageCounts ms = do
       void $ withTransaction (dbStore $ queueStore ms) $ \db ->
         DB.execute db "UPDATE msg_queues SET msg_queue_size = ?, msg_can_write = ? WHERE recipient_id = ?" (size, canWrt, recipientId q)
 
+testFoldServiceMessagesInPages :: PostgresMsgStore -> IO ()
+testFoldServiceMessagesInPages ms = do
+  g <- C.newRandom
+  serviceId <- atomically $ EntityId <$> C.randomBytes 24 g
+  void $ withTransaction st $ \db ->
+    DB.execute db "INSERT INTO services (service_id, service_role, service_cert, service_cert_hash, created_at) VALUES (?, 'M', '', '', 0)" (Only serviceId)
+  void $ newQueue g Nothing
+  qs <- replicateM 150 $ newQueue g (Just serviceId)
+  runRight_ $ forM_ (take 75 qs) $ \q -> writeMsg ms q True =<< mkMessage "message"
+  expected <- runRight $ forM qs $ \q -> do
+    msg_ <- tryPeekMsg ms q
+    pure (recipientId q, (Right (messageId <$> msg_), dbPoolSize st))
+  Right folded <- foldRcvServiceMessages ms serviceId collect []
+  sortOn fst folded `shouldBe` sortOn fst expected
+  where
+    st = dbStore $ queueStore ms
+    newQueue g rcvServiceId = do
+      (rId, qr) <- testNewQueueRec g QMMessaging
+      runRight $ ExceptT $ addQueue ms rId qr {rcvServiceId}
+    collect acc rId r = do
+      freeConns <- fromIntegral <$> atomically (lengthTBQueue $ dbPoolConns $ dbPool st)
+      pure $ (rId, (fmap (messageId . snd) <$> r, freeConns)) : acc
+
 testExpireMessagesInBatches :: PostgresMsgStore -> IO ()
 testExpireMessagesInBatches ms = do
   g <- C.newRandom
@@ -509,6 +619,25 @@ testClosedStore ms = do
 testDBOperationTimeout :: PostgresMsgStore -> IO ()
 testDBOperationTimeout ms =
   timeout 100000 (runExceptT $ withDB' "test" (queueStore ms) $ \_ -> threadDelay 500000) `shouldReturn` Nothing
+
+testWriteMsgDeadlock :: PostgresMsgStore -> IO ()
+testWriteMsgDeadlock ms = do
+  g <- C.newRandom
+  (rId, qr) <- testNewQueueRec g QMMessaging
+  void $ withTransaction (dbStore $ queueStore ms) $ \db -> DB.execute_ db $ deadlockOnce "INSERT ON messages"
+  runRight_ $ do
+    q <- ExceptT $ addQueue ms rId qr
+    Just (_, True) <- writeMsg ms q True =<< mkMessage "message 1"
+    Msg "message 1" <- tryPeekMsg ms q
+    checkQueueSize ms q (1, True)
+testCancelDBTransaction :: PostgresMsgStore -> IO ()
+testCancelDBTransaction ms =
+  testCancelledInside $ \waitCancel -> runExceptT $ withDB' "test" (queueStore ms) $ \_ -> waitCancel
+
+testCancelDBQuery :: PostgresMsgStore -> IO ()
+testCancelDBQuery ms =
+  testCancelledWhenBlocked $ \started -> runExceptT $ withDB' "test" (queueStore ms) $ \db ->
+    started >> (DB.query_ db "SELECT pg_sleep(10)" :: IO [Only ()])
 
 testReconnectCancel :: PostgresMsgStore -> IO ()
 testReconnectCancel ms = do

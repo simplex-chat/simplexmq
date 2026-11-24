@@ -287,6 +287,7 @@ import Simplex.Messaging.Protocol
     pattern SMPServer,
   )
 import qualified Simplex.Messaging.Protocol as SMP
+import Simplex.Messaging.Server.Information (ClientSupport)
 import Simplex.Messaging.ServiceScheme
 import Simplex.Messaging.Transport.Client (TransportHost, TransportHosts_ (..))
 import Simplex.Messaging.Util
@@ -449,6 +450,7 @@ data AEvent (e :: AEntity) where
   ERR :: AgentErrorType -> AEvent AEConn
   ERRS :: NonEmpty (ConnId, AgentErrorType) -> AEvent AENone
   SUSPENDED :: AEvent AENone
+  CLIENT_SUPPORT :: ClientSupport -> AEvent AENone
   RFPROG :: Int64 -> Int64 -> AEvent AERcvFile
   RFDONE :: FilePath -> AEvent AERcvFile
   RFERR :: AgentErrorType -> AEvent AERcvFile
@@ -534,6 +536,7 @@ data AEventTag (e :: AEntity) where
   ERR_ :: AEventTag AEConn
   ERRS_ :: AEventTag AENone
   SUSPENDED_ :: AEventTag AENone
+  CLIENT_SUPPORT_ :: AEventTag AENone
   -- XFTP commands and responses
   RFDONE_ :: AEventTag AERcvFile
   RFPROG_ :: AEventTag AERcvFile
@@ -601,6 +604,7 @@ aEventTag = \case
   ERR _ -> ERR_
   ERRS _ -> ERRS_
   SUSPENDED -> SUSPENDED_
+  CLIENT_SUPPORT _ -> CLIENT_SUPPORT_
   RFPROG {} -> RFPROG_
   RFDONE {} -> RFDONE_
   RFERR {} -> RFERR_
@@ -1741,7 +1745,7 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
         where
           (authority, paramHosts) = case sch of
             SLSSimplex -> ("simplex:", h : hs)
-            SLSServer -> ("https://" <> strEncode h, hs)
+            SLSServer -> ("https://" <> strEncode (SrvLoc h ""), hs)
           lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "/"
           queryStr = if B.null query then "" else "?" <> query
           query =
@@ -1800,12 +1804,12 @@ instance Encoding AConnShortLink where
   smpP =
     smpP >>= \case
       CMInvitation -> do
-        (srv, lnkId, k) <- smpP
-        pure $ ACSL SCMInvitation $ CSLInvitation SLSServer srv lnkId (LinkKey k)
+        ((hs, p, kh), lnkId, k) <- smpP
+        pure $ ACSL SCMInvitation $ CSLInvitation SLSServer (SMPServer hs p kh) lnkId (LinkKey k)
       CMContact -> do
         ct <- ctTypeP =<< A.anyChar
-        (srv, k) <- smpP
-        pure $ ACSL SCMContact $ CSLContact SLSServer ct srv (LinkKey k)
+        ((hs, p, kh), k) <- smpP
+        pure $ ACSL SCMContact $ CSLContact SLSServer ct (SMPServer hs p kh) (LinkKey k)
 
 ctTypeP :: Char -> Parser ContactConnType
 ctTypeP = \case

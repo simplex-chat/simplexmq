@@ -31,7 +31,6 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     getUsedSMPServers,
     getNtfServiceCredentials,
     setNtfServiceCredentials,
-    updateNtfServiceId,
     getServerNtfSubscriptions,
     findNtfSubscription,
     getNtfSubscription,
@@ -49,6 +48,7 @@ module Simplex.Messaging.Notifications.Server.Store.Postgres
     batchUpdateSrvSubErrors,
     removeServiceAndAssociations,
     addTokenLastNtf,
+    NtfEntityCounts (..),
     getEntityCounts,
     withDB',
     withClientDB,
@@ -88,7 +88,6 @@ import Simplex.Messaging.Agent.Store.Postgres.DB (fromTextField_)
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..))
 import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError)
 import Simplex.Messaging.Encoding
-import Simplex.Messaging.Encoding.String
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Store.Migrations
@@ -105,6 +104,7 @@ import Text.Hex (decodeHex)
 #if !defined(dbPostgres)
 import qualified Data.X509 as X
 import Simplex.Messaging.Agent.Store.Postgres.DB (blobFieldDecoder)
+import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Util (eitherToMaybe)
 #endif
@@ -315,44 +315,6 @@ setNtfServiceCredentials db srvId (kh, (cert, pk)) =
       WHERE smp_server_id = ?
     |]
     (kh, cert, pk, srvId)
-
-updateNtfServiceId :: DB.Connection -> SMPServer -> Maybe ServiceId -> IO ()
-updateNtfServiceId db srv newServiceId_ = do
-  maybeFirstRow id (getSMPServiceForUpdate_ db srv) >>= mapM_ updateService
-  where
-    updateService (srvId, currServiceId_) = unless (currServiceId_ == newServiceId_) $ do
-      when (isJust currServiceId_) $ do
-        void $ removeServiceAssociation_ db srvId
-        logError $ "STORE: service ID for " <> enc (host srv) <> toServiceId <> ", removed sub associations"
-      void $ case newServiceId_ of
-        Just newServiceId ->
-          DB.execute
-            db
-            [sql|
-              UPDATE smp_servers
-              SET ntf_service_id = ?,
-                  smp_notifier_count = 0,
-                  smp_notifier_ids_hash = DEFAULT
-              WHERE smp_server_id = ?
-            |]
-            (newServiceId, srvId)
-        Nothing ->
-          DB.execute
-            db
-            [sql|
-              UPDATE smp_servers
-              SET ntf_service_id = NULL,
-                  ntf_service_cert = NULL,
-                  ntf_service_cert_hash = NULL,
-                  ntf_service_priv_key = NULL,
-                  smp_notifier_count = 0,
-                  smp_notifier_ids_hash = DEFAULT
-              WHERE smp_server_id = ?
-            |]
-            (Only srvId)
-    toServiceId = maybe " removed" ((" changed to " <>) . enc) newServiceId_
-    enc :: StrEncoding a => a -> Text
-    enc = decodeLatin1 . strEncode
 
 getServerNtfSubscriptions :: NtfPostgresStore -> Int64 -> Maybe NtfSubscriptionId -> Int -> IO (Either ErrorType [ServerNtfSub])
 getServerNtfSubscriptions st srvId afterSubId_ count =
@@ -619,11 +581,11 @@ removeServiceAssociation_ db srvId =
     db
     [sql|
       UPDATE subscriptions s
-      SET status = ?, ntf_service_assoc = FALSE
+      SET status = CASE WHEN s.status IN ? THEN ? ELSE s.status END, ntf_service_assoc = FALSE
       WHERE smp_server_id = ?
-        AND (s.status != ? OR s.ntf_service_assoc != FALSE)
+        AND ((s.status IN ? AND s.status != ?) OR s.ntf_service_assoc != FALSE)
     |]
-    (NSInactive, srvId, NSInactive)
+    (In subscribeNtfStatuses, NSInactive, srvId, In subscribeNtfStatuses, NSInactive)
 
 removeServiceAndAssociations :: NtfPostgresStore -> SMPServer -> IO (Either ErrorType (Int64, Int))
 removeServiceAndAssociations st srv = do
@@ -650,9 +612,6 @@ removeServiceAndAssociations st srv = do
         [sql|
           UPDATE smp_servers
           SET ntf_service_id = NULL,
-              ntf_service_cert = NULL,
-              ntf_service_cert_hash = NULL,
-              ntf_service_priv_key = NULL,
               smp_notifier_count = 0,
               smp_notifier_ids_hash = DEFAULT
           WHERE smp_server_id = ?
@@ -728,13 +687,32 @@ toLastNtf (qRow :. (ts, nonce, Binary encMeta)) =
   let ntfTs = MkSystemTime (systemSeconds $ utcToSystemTime ts) 0
    in PNMessageData {smpQueue = rowToSMPQueue qRow, ntfTs, nmsgNonce = nonce, encNMsgMeta = encMeta}
 
-getEntityCounts :: NtfPostgresStore -> IO (Int64, Int64, Int64)
+data NtfEntityCounts = NtfEntityCounts
+  { tokenStatusCounts :: [(Text, Int64)],
+    approxSubCount :: Int64,
+    subStatusCounts :: [(Text, Int64)],
+    lastNtfCount :: Int64
+  }
+
+getEntityCounts :: NtfPostgresStore -> IO NtfEntityCounts
 getEntityCounts st =
-  fmap (fromRight (0, 0, 0)) $ withDB' "getEntityCounts" st $ \db -> do
-    tCnt <- count <$> DB.query_ db "SELECT count(1) FROM tokens"
-    sCnt <- count <$> DB.query_ db "SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'subscriptions' AND relkind = 'r'"
-    nCnt <- count <$> DB.query_ db "SELECT count(1) FROM last_notifications"
-    pure (tCnt, sCnt, nCnt)
+  fmap (fromRight $ NtfEntityCounts [] 0 [] 0) $ withDB' "getEntityCounts" st $ \db -> do
+    tokenStatusCounts <- DB.query_ db "SELECT status, count(1) FROM tokens GROUP BY status"
+    approxSubCount <- count <$> DB.query_ db "SELECT reltuples::BIGINT FROM pg_class WHERE relname = 'subscriptions' AND relkind = 'r'"
+    uncommonSubCounts <- DB.query_ db "SELECT status, count(1) FROM subscriptions WHERE status NOT IN ('ACTIVE', 'DELETED', 'AUTH') GROUP BY status"
+    commonSubCounts <-
+      DB.query_
+        db
+        [sql|
+          SELECT v.status, (v.freq * GREATEST(c.reltuples, 0))::BIGINT
+          FROM pg_stats s
+          CROSS JOIN LATERAL unnest(s.most_common_vals::TEXT::TEXT[], s.most_common_freqs) AS v(status, freq)
+          JOIN pg_class c ON c.oid = 'subscriptions'::regclass
+          WHERE s.schemaname = current_schema() AND s.tablename = 'subscriptions' AND s.attname = 'status'
+            AND v.status IN ('ACTIVE', 'DELETED', 'AUTH')
+        |]
+    lastNtfCount <- count <$> DB.query_ db "SELECT count(1) FROM last_notifications"
+    pure NtfEntityCounts {tokenStatusCounts, approxSubCount, subStatusCounts = commonSubCounts <> uncommonSubCounts, lastNtfCount}
   where
     count (Only n : _) = n
     count [] = 0
@@ -757,7 +735,7 @@ withDB op st = withDB_ op st False
 
 withDB_ :: forall a. Text -> NtfPostgresStore -> Bool -> (DB.Connection -> IO (Either ErrorType a)) -> IO (Either ErrorType a)
 withDB_ op st priority action =
-  E.uninterruptibleMask_ $ E.try (withTransactionPriority (dbStore st) priority action) >>= either logErr pure
+  E.uninterruptibleMask_ $ E.try (withRetriedTransactionPriority (dbStore st) priority action) >>= either logErr pure
   where
     logErr :: E.SomeException -> IO (Either ErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left (STORE err)
@@ -766,7 +744,7 @@ withDB_ op st priority action =
 
 withClientDB :: Text -> NtfPostgresStore -> (DB.Connection -> IO a) -> IO (Either SMPClientError a)
 withClientDB op st action =
-  E.uninterruptibleMask_ $ E.try (withTransaction (dbStore st) action) >>= bimapM logErr pure
+  E.uninterruptibleMask_ $ E.try (withRetriedTransaction (dbStore st) action) >>= bimapM logErr pure
   where
     logErr :: E.SomeException -> IO SMPClientError
     logErr e = logError ("STORE: " <> op <> ", withDB, " <> tshow e) $> PCEIOError (E.displayException e)

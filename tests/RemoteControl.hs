@@ -19,10 +19,12 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (stripPrefix)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Network.Socket as N
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Transport (TSbChainKeys (..))
 import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Transport.Server (startTCPServer)
 import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
@@ -30,6 +32,7 @@ import Simplex.RemoteControl.Invitation
   ( RCEncInvitation (..),
     RCInvitation (..),
     RCSignedInvitation,
+    RCVerifiedInvitation (..),
     signInvitation,
     verifySignedInvitation,
   )
@@ -43,12 +46,14 @@ remoteControlTests :: Spec
 remoteControlTests = do
   describe "preferred bindings should go first" testPreferAddress
   describe "Invitation parsing" $ do
-    it "should parse bracketed IPv6 host with port" testInvitationBracketedIPv6Host
+    it "should encode and parse bracketed IPv6 host with port" testInvitationBracketedIPv6Host
+    it "should encode, parse and verify signed IPv6 invitation" testSignedInvitationBracketedIPv6Host
     it "should reject bracketed non-IPv6 host" testInvitationBracketedNonIPv6HostRejected
   describe "New controller/host pairing" $ do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
     it "should reject host certificate not signed by CA of known host" testHostCertNotSignedByCA
+    it "returns a TLS startup error when the listening port is occupied" testOccupiedPort
   describe "Multicast discovery" $ do
     it "should find paired host and connect" testMulticast
     it "should accept announcement only within timestamp window" testAnnouncementTimestamp
@@ -88,10 +93,9 @@ testPreferAddress = do
 testInvitationBracketedIPv6Host :: IO ()
 testInvitationBracketedIPv6Host = do
   invitation <- testIPv6Invitation
-  let bracketedUri =
-        B.pack . replaceFirst "@2001:db8::1:" "@[2001:db8::1]:" . B.unpack $
-          strEncode invitation
+  let bracketedUri = strEncode invitation
       expectedHost = either error id (strDecode "2001:db8::1") :: TransportHost
+  bracketedUri `shouldSatisfy` B.isInfixOf "@[2001:db8::1]:5223"
   case strDecode bracketedUri of
     Left err -> expectationFailure err
     Right RCInvitation {host, port} -> do
@@ -101,9 +105,7 @@ testInvitationBracketedIPv6Host = do
 testInvitationBracketedNonIPv6HostRejected :: IO ()
 testInvitationBracketedNonIPv6HostRejected = do
   invitation <- testIPv6Invitation
-  let bracketedUri =
-        B.pack . replaceFirst "@2001:db8::1:" "@[simplex.chat]:" . B.unpack $
-          strEncode invitation
+  let bracketedUri = B.pack . replaceFirst "@[2001:db8::1]:" "@[simplex.chat]:" . B.unpack $ strEncode invitation
   case strDecode bracketedUri :: Either String RCInvitation of
     Left _ -> pure ()
     Right _ -> expectationFailure "expected parse failure for bracketed non-IPv6 host"
@@ -116,6 +118,33 @@ replaceFirst needle replacement = go
       case stripPrefix needle input of
         Just rest -> replacement <> rest
         Nothing -> c : go cs
+
+testSignedInvitationBracketedIPv6Host :: IO ()
+testSignedInvitationBracketedIPv6Host = do
+  drg <- C.newRandom
+  (skey, sKey) <- atomically $ C.generateKeyPair @'C.Ed25519 drg
+  (idkey, idKey) <- atomically $ C.generateKeyPair @'C.Ed25519 drg
+  (dh, _) <- atomically $ C.generateKeyPair @'C.X25519 drg
+  let invitation =
+        RCInvitation
+          (C.KeyHash "test-ca")
+          (either error id $ strDecode "2001:db8::1")
+          5223
+          supportedRCPVRange
+          (J.String "app")
+          (MkSystemTime 0 0)
+          skey
+          idkey
+          dh
+      encoded = strEncode $ signInvitation sKey idKey invitation
+  encoded `shouldSatisfy` B.isInfixOf "@[2001:db8::1]:5223"
+  case strDecode encoded :: Either String RCSignedInvitation of
+    Left err -> expectationFailure err
+    Right signed -> case verifySignedInvitation signed of
+      Just (RCVerifiedInvitation RCInvitation {host, port}) -> do
+        host `shouldBe` either error id (strDecode "2001:db8::1")
+        port `shouldBe` 5223
+      Nothing -> expectationFailure "expected valid signed IPv6 invitation"
 
 testIPv6Invitation :: IO RCInvitation
 testIPv6Invitation = do
@@ -135,6 +164,23 @@ testIPv6Invitation = do
         idkey,
         dh
       }
+
+testOccupiedPort :: IO ()
+testOccupiedPort = do
+  drg <- C.newRandom
+  hp <- RC.newRCHostPairing drg
+  started <- newEmptyTMVarIO
+  bracket (startTCPServer started Nothing "0") N.close $ \listener -> do
+    port <- N.socketPort listener
+    result <- timeout 5000000 $ runExceptT $ RC.connectRCHost drg hp (J.String "app") False Nothing (Just $ fromIntegral port)
+    case result of
+      Just (Left e) -> do
+        e `shouldBe` RCETLSStartFailed
+        LB.unpack (J.encode e) `shouldContain` "\"tlsStartFailed\""
+      Just (Right (_, _, client, _)) -> do
+        uninterruptibleCancel $ HC.action client
+        expectationFailure "Started a second listener on an occupied port"
+      Nothing -> expectationFailure "Remote control did not report the listener startup failure"
 
 testNewPairing :: IO ()
 testNewPairing = do

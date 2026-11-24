@@ -171,11 +171,13 @@ data AgentConfig = AgentConfig
     logStatsInterval :: Int64,
     cleanupStepInterval :: Int,
     maxWorkerRestartsPerMin :: Int,
+    prohibitRequestsInConnLock :: Bool,
     storedMsgDataTTL :: NominalDiffTime,
     rcvFilesTTL :: NominalDiffTime,
     sndFilesTTL :: NominalDiffTime,
     xftpConsecutiveRetries :: Int,
     xftpMaxRecipientsPerRequest :: Int,
+    xftpMaxDownloadSessions :: Int,
     deleteErrorCount :: Int,
     keepAddressKeys :: Int,
     ntfCron :: Word16,
@@ -249,11 +251,13 @@ defaultAgentConfig =
       logStatsInterval = 10 * 1000000, -- 10 seconds
       cleanupStepInterval = 200000, -- 200ms
       maxWorkerRestartsPerMin = 5,
+      prohibitRequestsInConnLock = False,
       storedMsgDataTTL = 21 * nominalDay,
       rcvFilesTTL = 2 * nominalDay,
       sndFilesTTL = nominalDay,
       xftpConsecutiveRetries = 3,
       xftpMaxRecipientsPerRequest = 200,
+      xftpMaxDownloadSessions = 16,
       deleteErrorCount = 10,
       keepAddressKeys = 3,
       ntfCron = 20, -- minutes

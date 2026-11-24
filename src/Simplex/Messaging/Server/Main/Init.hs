@@ -83,7 +83,7 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> ("enable = " <> onOff enableStoreLog <> "\n\n")
     <> "# Queue storage mode: `memory` or `database` (to store queue records in PostgreSQL database).\n\
         \# `memory` - in-memory persistence, with optional append-only log (`enable = on`).\n\
-        \# `database`- PostgreSQL databass (requires `store_messages = database`).\n\
+        \# `database`- PostgreSQL database (requires `store_messages = database`).\n\
         \store_queues = memory\n\n\
         \# Database connection settings for PostgreSQL database (`store_queues = database`).\n"
     <> iniDbOpts dbOptions defaultDBOpts
@@ -104,8 +104,10 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
     <> "# Log daily server statistics to CSV file\n"
     <> ("log_stats = " <> onOff logStats <> "\n\n")
     <> "# Log interval for real-time Prometheus metrics\n\
-        \# prometheus_interval = 60\n\n\
-        \[AUTH]\n\
+        \# prometheus_interval = 60\n\n"
+    <> "# Interval to save server statistics, seconds (requires log_stats)\n"
+    <> ("# stats_save_interval = " <> tshow defStatsSaveInterval <> "\n\n")
+    <> "[AUTH]\n\
         \# Set new_queues option to off to completely prohibit creating new messaging queues.\n\
         \# This can be useful when you want to decommission the server, but not all connections are switched yet.\n\
         \new_queues = on\n\n\
@@ -160,6 +162,12 @@ iniFileContent cfgPath logPath opts host basicAuth controlPortPwds =
         \# Number of workers processing messages that one proxy server forwards to this server.\n\
         \# Messages to one queue are processed by one worker, in the order they are received.\n"
     <> ("# forward_workers = " <> tshow defaultForwardWorkers)
+    <> "\n\n\
+        \# Limit number of connections to destination servers being established at once.\n"
+    <> ("# connect_concurrency = " <> tshow defaultProxyConnectConcurrency)
+    <> "\n\n\
+        \# Limit number of messages forwarded to one destination server and awaiting its response.\n"
+    <> ("# relay_concurrency = " <> tshow defaultProxyRelayConcurrency)
     <> "\n\n\
         \[NAMES]\n\
         \# Public-namespace resolution via the snrc-resolve.py REST resolver.\n\
@@ -242,6 +250,13 @@ informationIniContent InitOptions {sourceCode, serverInfo} =
     <> "\n\
        \# Hosting type can be `virtual`, `dedicated`, `colocation`, `owned`\n"
     <> ("hosting_type = " <> maybe "virtual" (decodeLatin1 . strEncode) hostingType <> "\n\n")
+    <> "# Client support announced to the apps.\n\
+       \# Clients with protocol version below client_min_version are not supported from client_min_version_date.\n\
+       \# client_min_version = 23\n\
+       \# client_min_version_date = YYYY-MM-DD\n\
+       \# The latest app releases.\n\
+       \# client_stable_release = 7.1.2\n\
+       \# client_beta_release = 7.2.0-beta.1\n\n"
   where
     ServerPublicInfo {operator, website, hosting, hostingType, serverCountry} = serverInfo
     countryStr optName country = optDisabled country <> optName <> "_country = " <> fromMaybe "ISO-3166 2-letter code" country <> "\n"

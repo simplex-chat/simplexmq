@@ -30,6 +30,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Protocol (EntityId (..), ProtocolServer (..), QueueMode (..), currentSMPClientVersion, supportedSMPClientVRange, pattern VersionSMPC)
 import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.Transport.Client (TransportHost)
 import Simplex.Messaging.Version
 import Test.Hspec hiding (fit, it)
 import Util
@@ -290,6 +291,16 @@ connectionRequestTests =
     it "should reject KEM ciphertext without KEM key in e2e params" $
       strDecode @(RcvE2ERatchetParamsUri 'C.X448) (strEncode testE2ERatchetParams <> "&kem_ct=" <> strEncode (B.replicate 1039 '\0'))
         `shouldSatisfy` isLeft
+    it "should reject links with invalid key encoding" $ do
+      let invalidDhKeyQueueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url "MCowBQYDK2VuAyE9jiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+          invalidE2EParamsStrUri = "v%3D3%26x3dh%3DMEIwBQYDK2VvAzk9mKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+      strDecode @AConnectionRequestUri ("simplex:/contact#/?v=6-8&smp=" <> url invalidDhKeyQueueStr) `shouldSatisfy` isLeft
+      strDecode @AConnectionRequestUri ("simplex:/invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> invalidE2EParamsStrUri) `shouldSatisfy` isLeft
+    it "should generate a bracketed IPv6 application-server authority" $ do
+      let ipv6Host = either error id (strDecode "2001:db8::1") :: TransportHost
+          request = CRInvitationUri (connReqData {crScheme = SSAppServer $ SrvLoc ipv6Host ""}) testE2ERatchetParams
+          encoded = strEncode request
+      encoded `shouldSatisfy` B.isPrefixOf "https://[2001:db8::1]/invitation#/?"
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
       smpEncodingTest queue
       smpEncodingTest queueNoQM -- this passes, no queue mode patch in SMPQueueUri encoding
@@ -316,7 +327,18 @@ connectionRequestTests =
       smpEncodingTest (aBinaryConnReq contactAddress2queuesNew)
       smpEncodingTest (aBinaryConnReq contactAddressV6)
       smpEncodingTest (aBinaryConnReq contactAddressClientData)
+    it "should parse server without key hash only in short links as binary" $ do
+      let addr = queueAddr {smpServer = shortSrv}
+      smpDecode @SMPQueueUri (smpEncode $ SMPQueueUri supportedSMPClientVRange addr) `shouldSatisfy` isLeft
+      smpDecode @SMPQueueInfo (smpEncode $ SMPQueueInfo (VersionSMPC 1) addr) `shouldSatisfy` isLeft
+      smpEncodingTest $ ACSL SCMContact $ CSLContact SLSServer CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef")
+      smpEncodingTest $ ACSL SCMInvitation $ CSLInvitation SLSServer shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef")
     it "should serialize / parse short links" $ do
+      let ipv6Host = either error id (strDecode "2001:db8::1") :: TransportHost
+          ipv6Srv = srv {host = [ipv6Host, "jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion"]}
+          linkKey = LinkKey "0123456789abcdef0123456789abcdef"
+          ipv6Contact = CSLContact SLSServer CCTContact ipv6Srv linkKey
+          ipv6Invitation = CSLInvitation SLSServer ipv6Srv (EntityId "0123456789abcdef01234567") linkKey
       CSLContact SLSServer CCTContact srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
       CSLContact SLSServer CCTGroup srv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/g#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
       CSLContact SLSServer CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef") #==# "https://smp.simplex.im/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY"
@@ -327,6 +349,10 @@ connectionRequestTests =
       CSLContact SLSSimplex CCTContact shortSrv (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
       CSLInvitation SLSSimplex srv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im%2Cjjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
       CSLInvitation SLSSimplex shortSrv (EntityId "0123456789abcdef01234567") (LinkKey "0123456789abcdef0123456789abcdef") #==# "simplex:/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=smp.simplex.im"
+      ipv6Contact #==# "https://[2001:db8::1]/a#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      ipv6Invitation #==# "https://[2001:db8::1]/i#MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3/MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY?h=jjbyvoemxysm7qxap7m5d5m35jzv5qq6gnlv7s4rsn7tdwwmuqciwpid.onion&p=5223&c=1234-w"
+      smpEncodingTest ipv6Contact
+      smpEncodingTest ipv6Invitation
     it "should shorten / restore short links" $ do
       let contact = CSLContact SLSServer CCTContact
       shortenShortLink [srv] (contact srv (LinkKey "0123456789abcdef0123456789abcdef"))

@@ -11,6 +11,7 @@ module Simplex.FileTransfer.Server.Store.Postgres
   ( PostgresFileStore (..),
     importFileStore,
     exportFileStore,
+    withDB',
   )
 where
 
@@ -46,7 +47,7 @@ import Simplex.FileTransfer.Server.Store.Postgres.Migrations (xftpServerMigratio
 import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Store.Postgres (closeDBStore, createDBStore)
-import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withTransaction)
+import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore, withRetriedTransaction, withTransaction)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfig (..), MigrationConfirmation (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -100,31 +101,35 @@ instance FileStoreClass PostgresFileStore where
       DB.execute db "UPDATE files SET file_path = ? WHERE sender_id = ? AND file_path IS NULL AND status = 'active'" (fPath, sId)
     withLog "setFilePath" st $ \s -> logPutFile s sId fPath
 
-  addRecipient st senderId (FileRecipient rId rKey) = E.uninterruptibleMask_ $ runExceptT $ do
-    void $ withDB "addRecipient" st $ \db ->
+  addRecipients st senderId rcps = E.uninterruptibleMask_ $ runExceptT $ do
+    void $ withDB "addRecipients" st $ \db ->
       E.try
-        ( DB.execute
+        ( DB.executeMany
             db
             "INSERT INTO recipients (recipient_id, sender_id, recipient_key) VALUES (?,?,?)"
-            (rId, senderId, Binary (C.encodePubKey rKey))
+            (map (\(FileRecipient rId rKey) -> (rId, senderId, Binary (C.encodePubKey rKey))) $ L.toList rcps)
         )
         >>= either handleDuplicate (pure . Right)
-    withLog "addRecipient" st $ \s -> logAddRecipients s senderId (pure $ FileRecipient rId rKey)
+    withLog "addRecipients" st $ \s -> logAddRecipients s senderId rcps
 
   deleteFile st sId = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "deleteFile" st $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id = ?" (Only sId)
+    path <- withDB "deleteFile" st $ \db ->
+      firstRow fromOnly AUTH $ DB.query db "DELETE FROM files WHERE sender_id = ? RETURNING file_path" (Only sId)
     withLog "deleteFile" st $ \s -> logDeleteFile s sId
+    pure path
 
   deleteFiles st sIds = E.uninterruptibleMask_ $ do
-    withTransaction (dbStore st) $ \db ->
-      DB.execute db "DELETE FROM files WHERE sender_id IN ?" (Only (In sIds))
-    withLog "deleteFiles" st $ \s -> mapM_ (logDeleteFile s) sIds
+    deleted <- fmap toFileSizes $ withRetriedTransaction (dbStore st) $ \db ->
+      DB.query db "DELETE FROM files WHERE sender_id IN ? RETURNING sender_id, file_path, file_size" (Only (In sIds))
+    withLog "deleteFiles" st $ \s -> mapM_ (\(sId, _, _) -> logDeleteFile s sId) deleted
+    pure deleted
 
-  blockFile st sId info _deleted = E.uninterruptibleMask_ $ runExceptT $ do
-    assertUpdated $ withDB' "blockFile" st $ \db ->
-      DB.execute db "UPDATE files SET status = ? WHERE sender_id = ?" (EntityBlocked info, sId)
+  blockFile st sId info = E.uninterruptibleMask_ $ runExceptT $ do
+    path <- withDB "blockFile" st $ \db ->
+      firstRow fromOnly AUTH (DB.query db "SELECT file_path FROM files WHERE sender_id = ? FOR UPDATE" (Only sId))
+        >>= mapM (\p -> p <$ DB.execute db "UPDATE files SET status = ?, file_path = NULL WHERE sender_id = ?" (EntityBlocked info, sId))
     withLog "blockFile" st $ \s -> logBlockFile s sId info
+    pure path
 
   deleteRecipient st rId _fr =
     void $ runExceptT $ withDB' "deleteRecipient" st $ \db ->
@@ -154,19 +159,16 @@ instance FileStoreClass PostgresFileStore where
     withLog "ackFile" st $ \s -> logAckFile s rId
 
   expiredFiles st now old limit =
-    fmap toResult $ withTransaction (dbStore st) $ \db ->
+    fmap toFileSizes $ withTransaction (dbStore st) $ \db ->
       DB.query
         db
-        "(SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)"
-        (roundedSeconds now, limit, old - fileTimePrecision, limit)
-    where
-      toResult :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
-      toResult = map (\(sId, path, size) -> (sId, path, fromIntegral size))
+        "SELECT sender_id, file_path, file_size FROM ((SELECT sender_id, file_path, file_size FROM files WHERE expires_at < ? LIMIT ?) UNION ALL (SELECT sender_id, file_path, file_size FROM files WHERE expires_at IS NULL AND created_at < ? LIMIT ?)) expired LIMIT ?"
+        (roundedSeconds now, limit, old - fileTimePrecision, limit, limit)
 
   getUsedStorage st =
     withTransaction (dbStore st) $ \db -> do
-      [Only total] <- DB.query_ db "SELECT COALESCE(SUM(file_size::BIGINT), 0)::BIGINT FROM files WHERE file_path IS NOT NULL"
-      pure total
+      [(count, total)] <- DB.query_ db "SELECT COUNT(*), COALESCE(SUM(file_size::BIGINT), 0)::BIGINT FROM files WHERE file_path IS NOT NULL"
+      pure (fromIntegral (count :: Int64), total)
 
   getFileCount st =
     withTransaction (dbStore st) $ \db -> do
@@ -174,6 +176,9 @@ instance FileStoreClass PostgresFileStore where
       pure (fromIntegral (count :: Int64))
 
 -- Internal helpers
+
+toFileSizes :: [(SenderId, Maybe FilePath, Int32)] -> [(SenderId, Maybe FilePath, Word32)]
+toFileSizes = map (\(sId, path, size) -> (sId, path, fromIntegral size))
 
 mkFileRec :: SenderId -> FileInfo -> Maybe FilePath -> RoundedFileTime -> Maybe RoundedFileTime -> ServerEntityStatus -> IO FileRec
 mkFileRec senderId fileInfo path createdAt expiresAt status = do
@@ -196,7 +201,7 @@ rowToFileRec (sId, size, digest, sndKeyBs, path, createdAt, expiresAt, status) =
 
 withDB :: forall a. Text -> PostgresFileStore -> (DB.Connection -> IO (Either XFTPErrorType a)) -> ExceptT XFTPErrorType IO a
 withDB op st action =
-  ExceptT $ withTransaction (dbStore st) action `catchOwn'` logErr
+  ExceptT $ withRetriedTransaction (dbStore st) action `catchOwn'` logErr
   where
     logErr :: E.SomeException -> IO (Either XFTPErrorType a)
     logErr e = logError ("STORE: " <> err) $> Left INTERNAL

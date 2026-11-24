@@ -31,7 +31,7 @@ data SrvLoc = SrvLoc TransportHost ServiceName
 
 instance StrEncoding SrvLoc where
   strEncode (SrvLoc host port)
-    | null port = strEncode host
+    | null port = h
     | otherwise = h <> B.pack (':' : port)
     where
       h = case host of

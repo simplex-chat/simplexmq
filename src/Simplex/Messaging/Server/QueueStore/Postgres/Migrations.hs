@@ -23,7 +23,10 @@ serverSchemaMigrations =
     ("20250915_queue_ids_hash", m20250915_queue_ids_hash, Just down_m20250915_queue_ids_hash),
     ("20260916_prometheus_indexes", m20260916_prometheus_indexes, Just down_m20260916_prometheus_indexes),
     ("20260917_msg_queues_hot", m20260917_msg_queues_hot, Just down_m20260917_msg_queues_hot),
-    ("20260918_expire_messages", m20260918_expire_messages, Just down_m20260918_expire_messages)
+    ("20260918_expire_messages", m20260918_expire_messages, Just down_m20260918_expire_messages),
+    ("20261023_server_stats", m20261023_server_stats, Just down_m20261023_server_stats),
+    ("20261108_rcv_service_queues", m20261108_rcv_service_queues, Just down_m20261108_rcv_service_queues),
+    ("20261121_server_stats_v2", m20261121_server_stats_v2, Just down_m20261121_server_stats_v2)
   ]
 
 -- | The list of migrations in ascending order by date
@@ -1235,4 +1238,154 @@ BEGIN
   r_stored_queues := (SELECT COUNT(1) FROM msg_queues WHERE deleted_at IS NULL);
 END;
 $$;
+    |]
+
+m20261108_rcv_service_queues :: Text
+m20261108_rcv_service_queues =
+  [r|
+CREATE INDEX idx_msg_queues_rcv_service_active ON msg_queues (rcv_service_id, recipient_id) WHERE deleted_at IS NULL AND rcv_service_id IS NOT NULL;
+    |]
+
+down_m20261108_rcv_service_queues :: Text
+down_m20261108_rcv_service_queues =
+  [r|
+DROP INDEX idx_msg_queues_rcv_service_active;
+    |]
+
+m20261023_server_stats :: Text
+m20261023_server_stats =
+  [r|
+CREATE TABLE server_stats(
+  server_stats_id SMALLINT NOT NULL PRIMARY KEY CHECK (server_stats_id = 1),
+  saved_at BIGINT NOT NULL,
+  from_time BIGINT NOT NULL,
+  q_created BIGINT NOT NULL,
+  q_secured BIGINT NOT NULL,
+  q_deleted_all BIGINT NOT NULL,
+  q_deleted_new BIGINT NOT NULL,
+  q_deleted_secured BIGINT NOT NULL,
+  q_deleted_all_b BIGINT NOT NULL,
+  q_blocked BIGINT NOT NULL,
+  q_sub BIGINT NOT NULL,
+  q_sub_all_b BIGINT NOT NULL,
+  q_sub_auth BIGINT NOT NULL,
+  q_sub_duplicate BIGINT NOT NULL,
+  q_sub_prohibited BIGINT NOT NULL,
+  q_sub_end BIGINT NOT NULL,
+  q_sub_end_b BIGINT NOT NULL,
+  ntf_created BIGINT NOT NULL,
+  ntf_new_created BIGINT NOT NULL,
+  ntf_deleted BIGINT NOT NULL,
+  ntf_deleted_b BIGINT NOT NULL,
+  ntf_sub BIGINT NOT NULL,
+  ntf_sub_b BIGINT NOT NULL,
+  ntf_sub_auth BIGINT NOT NULL,
+  ntf_sub_duplicate BIGINT NOT NULL,
+  msg_sent BIGINT NOT NULL,
+  msg_sent_auth BIGINT NOT NULL,
+  msg_sent_quota BIGINT NOT NULL,
+  msg_sent_large BIGINT NOT NULL,
+  msg_sent_block BIGINT NOT NULL,
+  msg_recv BIGINT NOT NULL,
+  msg_recv_get BIGINT NOT NULL,
+  msg_get BIGINT NOT NULL,
+  msg_get_no_msg BIGINT NOT NULL,
+  msg_get_auth BIGINT NOT NULL,
+  msg_get_duplicate BIGINT NOT NULL,
+  msg_get_prohibited BIGINT NOT NULL,
+  msg_expired BIGINT NOT NULL,
+  msg_sent_ntf BIGINT NOT NULL,
+  msg_recv_ntf BIGINT NOT NULL,
+  msg_ntfs BIGINT NOT NULL,
+  msg_ntfs_b BIGINT NOT NULL,
+  msg_ntf_no_sub BIGINT NOT NULL,
+  msg_ntf_lost BIGINT NOT NULL,
+  msg_ntf_expired BIGINT NOT NULL,
+  p_relays_requests BIGINT NOT NULL,
+  p_relays_successes BIGINT NOT NULL,
+  p_relays_errors_connect BIGINT NOT NULL,
+  p_relays_errors_compat BIGINT NOT NULL,
+  p_relays_errors_other BIGINT NOT NULL,
+  p_relays_own_requests BIGINT NOT NULL,
+  p_relays_own_successes BIGINT NOT NULL,
+  p_relays_own_errors_connect BIGINT NOT NULL,
+  p_relays_own_errors_compat BIGINT NOT NULL,
+  p_relays_own_errors_other BIGINT NOT NULL,
+  p_msg_fwds_requests BIGINT NOT NULL,
+  p_msg_fwds_successes BIGINT NOT NULL,
+  p_msg_fwds_errors_connect BIGINT NOT NULL,
+  p_msg_fwds_errors_compat BIGINT NOT NULL,
+  p_msg_fwds_errors_other BIGINT NOT NULL,
+  p_msg_fwds_own_requests BIGINT NOT NULL,
+  p_msg_fwds_own_successes BIGINT NOT NULL,
+  p_msg_fwds_own_errors_connect BIGINT NOT NULL,
+  p_msg_fwds_own_errors_compat BIGINT NOT NULL,
+  p_msg_fwds_own_errors_other BIGINT NOT NULL,
+  p_msg_fwds_recv BIGINT NOT NULL,
+  rcv_services_assoc_new BIGINT NOT NULL,
+  rcv_services_assoc_duplicate BIGINT NOT NULL,
+  rcv_services_assoc_updated BIGINT NOT NULL,
+  rcv_services_assoc_removed BIGINT NOT NULL,
+  rcv_services_sub_count BIGINT NOT NULL,
+  rcv_services_sub_duplicate BIGINT NOT NULL,
+  rcv_services_sub_queues BIGINT NOT NULL,
+  rcv_services_sub_end BIGINT NOT NULL,
+  ntf_services_assoc_new BIGINT NOT NULL,
+  ntf_services_assoc_duplicate BIGINT NOT NULL,
+  ntf_services_assoc_updated BIGINT NOT NULL,
+  ntf_services_assoc_removed BIGINT NOT NULL,
+  ntf_services_sub_count BIGINT NOT NULL,
+  ntf_services_sub_duplicate BIGINT NOT NULL,
+  ntf_services_sub_queues BIGINT NOT NULL,
+  ntf_services_sub_end BIGINT NOT NULL,
+  rslv_reqs BIGINT NOT NULL,
+  rslv_succ BIGINT NOT NULL,
+  rslv_not_found BIGINT NOT NULL,
+  rslv_resolver_errs BIGINT NOT NULL,
+  rslv_disabled BIGINT NOT NULL
+);
+
+CREATE TABLE server_stats_queues(
+  period_set SMALLINT NOT NULL,
+  queue_hash BIGINT NOT NULL,
+  PRIMARY KEY (period_set, queue_hash)
+);
+    |]
+
+down_m20261023_server_stats :: Text
+down_m20261023_server_stats =
+  [r|
+DROP TABLE server_stats_queues;
+
+DROP TABLE server_stats;
+    |]
+
+m20261121_server_stats_v2 :: Text
+m20261121_server_stats_v2 =
+  [r|
+ALTER TABLE server_stats
+  ADD COLUMN rslv_rejected BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_below23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_from23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_recv_below23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_recv_from23 BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN p_msg_fwds_relay_limit BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN fwd_worker_cmds BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN fwd_worker_cmd_ms BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN fwd_worker_cmd_max_ms BIGINT NOT NULL DEFAULT 0;
+    |]
+
+down_m20261121_server_stats_v2 :: Text
+down_m20261121_server_stats_v2 =
+  [r|
+ALTER TABLE server_stats
+  DROP COLUMN rslv_rejected,
+  DROP COLUMN p_msg_fwds_below23,
+  DROP COLUMN p_msg_fwds_from23,
+  DROP COLUMN p_msg_fwds_recv_below23,
+  DROP COLUMN p_msg_fwds_recv_from23,
+  DROP COLUMN p_msg_fwds_relay_limit,
+  DROP COLUMN fwd_worker_cmds,
+  DROP COLUMN fwd_worker_cmd_ms,
+  DROP COLUMN fwd_worker_cmd_max_ms;
     |]

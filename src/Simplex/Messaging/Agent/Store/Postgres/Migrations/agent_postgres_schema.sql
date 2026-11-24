@@ -1,6 +1,7 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -177,7 +178,7 @@ CREATE TABLE smp_agent_test_protocol_schema.commands (
     command bytea NOT NULL,
     agent_version integer DEFAULT 1 NOT NULL,
     server_key_hash bytea,
-    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00-05'::timestamp with time zone NOT NULL,
     failed smallint DEFAULT 0
 );
 
@@ -240,14 +241,14 @@ CREATE TABLE smp_agent_test_protocol_schema.connections (
     ratchet_sync_state text DEFAULT 'ok'::text NOT NULL,
     deleted_at_wait_delivery timestamp with time zone,
     pq_support smallint DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00+00'::timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT '1970-01-01 00:00:00-05'::timestamp with time zone NOT NULL,
     service_request_expires_at timestamp with time zone
 );
 
 
 
 CREATE TABLE smp_agent_test_protocol_schema.deleted_snd_chunk_replicas (
-    deleted_snd_chunk_replica_id bigint NOT NULL,
+    deleted_snd_chunk_replica_id bigint CONSTRAINT deleted_snd_chunk_replicas_deleted_snd_chunk_replica_i_not_null NOT NULL,
     user_id bigint NOT NULL,
     xftp_server_id bigint NOT NULL,
     replica_id bytea NOT NULL,
@@ -274,7 +275,7 @@ ALTER TABLE smp_agent_test_protocol_schema.deleted_snd_chunk_replicas ALTER COLU
 
 
 CREATE TABLE smp_agent_test_protocol_schema.encrypted_rcv_message_hashes (
-    encrypted_rcv_message_hash_id bigint NOT NULL,
+    encrypted_rcv_message_hash_id bigint CONSTRAINT encrypted_rcv_message_hashe_encrypted_rcv_message_hash_not_null NOT NULL,
     conn_id bytea NOT NULL,
     hash bytea NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -417,7 +418,7 @@ ALTER TABLE smp_agent_test_protocol_schema.ntf_tokens_to_delete ALTER COLUMN ntf
 
 
 CREATE TABLE smp_agent_test_protocol_schema.processed_ratchet_key_hashes (
-    processed_ratchet_key_hash_id bigint NOT NULL,
+    processed_ratchet_key_hash_id bigint CONSTRAINT processed_ratchet_key_hashe_processed_ratchet_key_hash_not_null NOT NULL,
     conn_id bytea NOT NULL,
     hash bytea NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -650,8 +651,8 @@ ALTER TABLE smp_agent_test_protocol_schema.skipped_messages ALTER COLUMN skipped
 
 
 CREATE TABLE smp_agent_test_protocol_schema.snd_file_chunk_replica_recipients (
-    snd_file_chunk_replica_recipient_id bigint NOT NULL,
-    snd_file_chunk_replica_id bigint NOT NULL,
+    snd_file_chunk_replica_recipient_id bigint CONSTRAINT snd_file_chunk_replica_reci_snd_file_chunk_replica_rec_not_null NOT NULL,
+    snd_file_chunk_replica_id bigint CONSTRAINT snd_file_chunk_replica_recip_snd_file_chunk_replica_id_not_null NOT NULL,
     rcv_replica_id bytea NOT NULL,
     rcv_replica_key bytea NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,

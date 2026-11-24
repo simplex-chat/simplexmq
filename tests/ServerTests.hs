@@ -19,12 +19,14 @@
 module ServerTests where
 
 import Control.Concurrent (ThreadId, killThread, threadDelay)
-import Control.Concurrent.Async (concurrently_)
+import Control.Concurrent.Async (concurrently, concurrently_)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.Trans.Except (runExceptT)
 import qualified Crypto.PubKey.ECC.Types as ECC
+import Crypto.Random (ChaChaDRG)
 import Data.Bifunctor (first)
 import qualified Data.ByteString.Base64 as B64
 import Data.ByteString.Char8 (ByteString)
@@ -34,7 +36,7 @@ import Data.Hashable (hash)
 import qualified Data.IntSet as IS
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (isPrefixOf)
-import Data.Maybe (catMaybes, isJust)
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import qualified Data.Set as S
 import Data.String (IsString (..))
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
@@ -44,7 +46,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.Validation as XV
 import GHC.Stack (withFrozenCallStack)
 import SMPClient
-import Simplex.Messaging.Client (authTransmission)
+import Simplex.Messaging.Client (ProtocolClientConfig (..), pattern NRMInteractive, ProtocolClientError (..), addSMPQueueLink, authTransmission, createSMPQueue, defaultSMPClientConfig, getProtocolClient, getSMPQueueLink, swapSMPQueueLink)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding
 import Simplex.Messaging.Encoding.String
@@ -72,6 +74,8 @@ import Simplex.Messaging.Server.Env.STM (readWriteQueueStore)
 import Simplex.Messaging.Server.MsgStore.Postgres (PostgresMsgStoreCfg (..), exportDbMessages)
 import Simplex.Messaging.Server.MsgStore.Types (MsgStoreClass (..), newMsgStore)
 import Simplex.Messaging.Server.StoreLog (closeStoreLog)
+import CoreTests.ServerStatsTests (withStatsDB)
+import Simplex.Messaging.Server.StatsStore (getDBStats)
 #endif
 
 serverTests :: SpecWith (ASrvTransport, AStoreType)
@@ -110,9 +114,16 @@ serverTests = do
     testServiceSubAssociatedQueue
     testServiceDowngradeConnected
     testServiceSubsReplacesConnection
+    testServiceRepeatedSUB
+    testServiceSubsReturnsToConnection
+    testServiceSubBlockedQueue
+    testServiceDeletesOtherServiceQueue
   describe "Store log" testWithStoreLog
   describe "Restore messages" testRestoreMessages
   describe "Restore messages (old / v2)" testRestoreExpireMessages
+  describe "Save server stats" $ do
+    testSaveStatsPeriodically
+    testStartupStoreCounts
   describe "Save prometheus metrics" testPrometheusMetrics
   describe "Delay of AUTH error" testAuthErrorDelay
   describe "Message notifications" $ do
@@ -122,15 +133,23 @@ serverTests = do
     testMessageServiceNotifications
     testServiceNotificationsTwoRestarts
     testNotificationsInChunks
+    testServiceNotificationsRepeatedNSUB
+    testServiceNotificationsReturnToConnection
   describe "Message expiration" $ do
     testMsgExpireOnSend
     testMsgExpireOnInterval
     testMsgNOTExpireOnInterval
   describe "Blocking queues" $ testBlockMessageQueue
+  describe "Inactive clients" testInactiveClientExpiration
   describe "Short links" $ do
     testInvQueueLinkData
     testContactQueueLinkData
     testDuplicateQueueLinkData
+    testSwapQueueLink
+    testSwapQueueLinkKeys
+    testConcurrentSwapQueueLink
+    testSwapQueueLinkClient
+    testSwapQueueLinkStoreLog
 
 pattern Resp :: CorrId -> QueueId -> BrokerMsg -> Transmission (Either ErrorType BrokerMsg)
 pattern Resp corrId queueId command <- (corrId, queueId, Right command)
@@ -1353,6 +1372,125 @@ testServiceSubsReplacesConnection =
           Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg sh1
           pure ()
 
+testServiceRepeatedSUB :: SpecWith (ASrvTransport, AStoreType)
+testServiceRepeatedSUB =
+  it "should count the queue once when the service repeats SUB in one block" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      Resp "1" NoEntity (Ids rId _ _) <- signSendRecv h rKey ("1", NoEntity, New rPub dhPub)
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1@THandle {params} -> do
+        let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId "2", rId, SUB)
+        Right auth <- pure $ authTransmission (thAuth params) True (Just rKey) Nothing tForAuth
+        let sub = Right (auth, tToSend)
+        [Right (), Right ()] <- tPut sh1 [sub, sub]
+        [Resp "2" _ (SOK (Just serviceId)), Resp "2" _ (SOK (Just _))] <- tGetClient sh1
+        Resp "" rId' END <- tGet1 h
+        rId' `shouldBe` rId
+        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
+          subscribeServiceQueues sh2 aServicePK "3" serviceId [rId]
+          Resp "" _ (ENDS n idsHash) <- tGet1 sh1
+          (n, idsHash) `shouldBe` (1, queueIdsHash [rId])
+
+testServiceSubsReturnsToConnection :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubsReturnsToConnection =
+  it "should move the service subscription back to the replaced connection when it subscribes again" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      (rId, sId, dec, serviceId) <- runSMPServiceClient t (tlsCred, serviceKeys) $ \sh -> do
+        Resp "1" NoEntity (Ids_ rId sId srvDh serviceId) <- serviceSignSendRecv sh rKey servicePK ("1", NoEntity, New rPub dhPub)
+        pure (rId, sId, decryptMsgV3 $ C.dh' srvDh dhPriv, serviceId)
+      let subscribeService sh corrId = subscribeServiceQueues sh aServicePK corrId serviceId [rId]
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1 -> do
+        subscribeService sh1 "2"
+        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
+          subscribeService sh2 "3"
+          Resp "" _ (ENDS 1 _) <- tGet1 sh1
+          subscribeService sh1 "4"
+          Resp "" _ (ENDS 1 _) <- tGet1 sh2
+          Resp "5" _ OK <- sendRecv h ("", "5", sId, _SEND "hello")
+          Resp "" _ (Msg mId msg) <- tGet1 sh1
+          dec mId msg `shouldBe` Right "hello"
+          Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg sh2
+          pure ()
+
+testServiceSubBlockedQueue :: SpecWith (ASrvTransport, AStoreType)
+testServiceSubBlockedQueue =
+  it "should keep the service subscription to a blocked queue when another connection subscribes it" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    creds <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_fp, tlsCred) = tlsCredentials [creds]
+        cpPort = testServerPort 8
+        cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {controlPort = Just cpPort, controlPortAdminAuth = Just "admin"}
+        info = BlockingInfo BRContent Nothing
+    serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+    let aServicePK = C.APrivateAuthKey C.SEd25519 servicePK
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \h -> do
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      runSMPServiceClient t (tlsCred, serviceKeys) $ \sh1 -> do
+        Resp "1" NoEntity (Ids_ rId sId _ serviceId) <- serviceSignSendRecv sh1 rKey servicePK ("1", NoEntity, New rPub dhPub)
+        [_, blocked] <- controlPortCommands cpPort ["auth admin", "block " <> B.unpack (strEncode sId) <> " " <> B.unpack (strEncode info)]
+        blocked `shouldStartWith` "ok, queue blocked"
+        Resp "2" _ (ERR (BLOCKED _)) <- signSendRecv h rKey ("2", rId, SUB)
+        runSMPServiceClient t (tlsCred, serviceKeys) $ \sh2 -> do
+          subscribeServiceQueues sh2 aServicePK "3" serviceId [rId]
+          Resp "" _ (ENDS n idsHash) <- tGet1 sh1
+          (n, idsHash) `shouldBe` (1, queueIdsHash [rId])
+
+testServiceDeletesOtherServiceQueue :: SpecWith (ASrvTransport, AStoreType)
+testServiceDeletesOtherServiceQueue =
+  it "should keep the subscription count of a service connection that deletes a queue of another service" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    credsA <- genCredentials g Nothing (0, 2400) "localhost"
+    credsB <- genCredentials g Nothing (0, 2400) "localhost"
+    let (_, tlsCredA) = tlsCredentials [credsA]
+        (_, tlsCredB) = tlsCredentials [credsB]
+    serviceKeysA@(_, servicePKA) <- atomically $ C.generateKeyPair g
+    serviceKeysB@(_, servicePKB) <- atomically $ C.generateKeyPair g
+    withSmpServerConfigOn at (cfgMS msType) testPort $ \_ -> do
+      (rPubA, rKeyA) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rPubB, rKeyB) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      runSMPServiceClient t (tlsCredA, serviceKeysA) $ \shA -> do
+        Resp "1" NoEntity (Ids_ rIdA _ _ _) <- serviceSignSendRecv shA rKeyA servicePKA ("1", NoEntity, New rPubA dhPub)
+        runSMPServiceClient t (tlsCredB, serviceKeysB) $ \shB -> do
+          Resp "2" NoEntity (Ids_ rIdB _ _ serviceIdB) <- serviceSignSendRecv shB rKeyB servicePKB ("2", NoEntity, New rPubB dhPub)
+          Resp "3" _ OK <- signSendRecv shB rKeyA ("3", rIdA, DEL)
+          Resp "" rIdA' DELD <- tGet1 shA
+          rIdA' `shouldBe` rIdA
+          runSMPServiceClient t (tlsCredB, serviceKeysB) $ \shB' -> do
+            subscribeServiceQueues shB' (C.APrivateAuthKey C.SEd25519 servicePKB) "4" serviceIdB [rIdB]
+            Resp "" _ (ENDS n idsHash) <- tGet1 shB
+            (n, idsHash) `shouldBe` (1, queueIdsHash [rIdB])
+
+subscribeServiceQueues :: (HasCallStack, Transport c) => THandleSMP c 'TClient -> C.APrivateAuthKey -> ByteString -> ServiceId -> [RecipientId] -> IO ()
+subscribeServiceQueues sh servicePK corrId serviceId rIds = do
+  let n = fromIntegral $ length rIds
+      idsHash = queueIdsHash rIds
+  signSend_ sh servicePK Nothing (corrId, serviceId, SUBS n idsHash)
+  void $
+    receiveInAnyOrder
+      sh
+      [ \case
+          Resp corrId' serviceId' (SOKS n' idsHash') | corrId' == CorrId corrId -> Just () <$ ((serviceId', n', idsHash') `shouldBe` (serviceId, n, idsHash))
+          _ -> pure Nothing,
+        \case
+          Resp "" NoEntity ALLS -> pure $ Just ()
+          _ -> pure Nothing
+      ]
+
 readServiceSubsMetric :: String -> Maybe Int
 readServiceSubsMetric content =
   case filter ("simplex_smp_subscribtion_service_subs_total " `isPrefixOf`) (lines content) of
@@ -1516,8 +1654,7 @@ testRestoreMessages =
       pure ()
     rId <- readTVarIO recipientId
     logSize testStoreLogFile `shouldReturn` 2
-    logSize testServerStatsBackupFile `shouldReturn` 101
-    Right stats1 <- strDecode <$> B.readFile testServerStatsBackupFile
+    stats1 <- readSavedStats msType
     checkStats stats1 [rId] 5 1
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
       Just rKey <- readTVarIO recipientKey
@@ -1532,8 +1669,7 @@ testRestoreMessages =
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     -- the last message is not removed because it was not ACK'd
     -- logSize testStoreMsgsFile `shouldReturn` 3
-    logSize testServerStatsBackupFile `shouldReturn` 101
-    Right stats2 <- strDecode <$> B.readFile testServerStatsBackupFile
+    stats2 <- readSavedStats msType
     checkStats stats2 [rId] 5 3
 
     withSmpServerConfigOn at cfg' testPort . runTest t $ \h -> do
@@ -1550,11 +1686,10 @@ testRestoreMessages =
       pure ()
     logSize testStoreLogFile `shouldReturn` (if compacting then 1 else 2)
     removeFile testStoreLogFile
-    logSize testServerStatsBackupFile `shouldReturn` 101
-    Right stats3 <- strDecode <$> B.readFile testServerStatsBackupFile
+    stats3 <- readSavedStats msType
     checkStats stats3 [rId] 5 5
     removeFileIfExists testStoreMsgsFile
-    removeFile testServerStatsBackupFile
+    removeFileIfExists testServerStatsBackupFile
   where
     runTest :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO ()) -> ThreadId -> Expectation
     runTest _ test' server = do
@@ -1579,6 +1714,76 @@ checkStats s qs sent received = do
   IS.toList _day `shouldBe` map (hash . unEntityId) qs
   IS.toList _week `shouldBe` map (hash . unEntityId) qs
   IS.toList _month `shouldBe` map (hash . unEntityId) qs
+
+readSavedStats :: HasTestEnv => AStoreType -> IO ServerStatsData
+readSavedStats = \case
+  ASType _ SMSMemory -> do
+    logSize testServerStatsBackupFile `shouldReturn` 106
+    either error id . strDecode <$> B.readFile testServerStatsBackupFile
+#if defined(dbServerPostgres)
+  ASType _ SMSPostgres -> withStatsDB $ fmap (fromMaybe $ error "no saved stats") . getDBStats
+#else
+  ASType _ SMSPostgres -> error "compiled without server_postgres flag"
+#endif
+
+testSaveStatsPeriodically :: SpecWith (ASrvTransport, AStoreType)
+testSaveStatsPeriodically =
+  it "should save stats while running and restore them on start" $ \(at@(ATransport t), msType) -> do
+    removeFileIfExists testServerStatsBackupFile
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {serverStatsBackupFile = Just testServerStatsBackupFile, statsSaveInterval = 1}
+    (rId, stats1, snapshot) <- withSmpServerConfigOn at cfg' testPort $ \_ -> do
+      (sId, rId) <- runClient t $ \h -> runClient t $ \rh -> do
+        (sId, rId, _, _) <- createAndSecureQueue rh sPub
+        Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello")
+        pure (sId, rId)
+      threadDelay 2500000
+      stats1 <- readSavedStats msType
+      snapshot <- case msType of
+        ASType _ SMSMemory -> Just <$> B.readFile testServerStatsBackupFile
+        _ -> pure Nothing
+      runClient t $ \h -> do
+        Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+        pure ()
+      pure (rId, stats1, snapshot)
+    checkStats stats1 [rId] 1 0
+    -- a crash leaves the last periodic save, not the save on shutdown
+    mapM_ (B.writeFile testServerStatsBackupFile) snapshot
+    stats2 <- withSmpServerConfigOn at cfg' testPort $ \_ -> threadDelay 2500000 >> readSavedStats msType
+    let restoredSent = case msType of
+          ASType _ SMSMemory -> 1
+          _ -> 2
+    checkStats stats2 [rId] restoredSent 0
+    doesFileExist (testServerStatsBackupFile <> ".bak") `shouldReturn` False
+    removeFileIfExists testServerStatsBackupFile
+  where
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+    runClient _ = testSMPClient
+
+testStartupStoreCounts :: SpecWith (ASrvTransport, AStoreType)
+testStartupStoreCounts =
+  it "should count stored queues and messages on start without saved stats" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    let cfg' = cfgMS msType
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runClient t $ \h -> runClient t $ \rh -> do
+      (sId, _, _, _) <- createAndSecureQueue rh sPub
+      Resp "1" _ OK <- signSendRecv h sKey ("1", sId, _SEND "hello 1")
+      Resp "2" _ OK <- signSendRecv h sKey ("2", sId, _SEND "hello 2")
+      pure ()
+    let cfg2 = updateCfg cfg' $ \cfg_ -> cfg_ {prometheusInterval = Just 1}
+    removeFileIfExists testPrometheusMetricsFile
+    metrics <- withSmpServerConfigOn at cfg2 testPort $ \_ -> threadDelay 1500000 >> B.readFile testPrometheusMetricsFile
+    let expected :: [ByteString]
+        expected = case msType of
+          ASType SQSMemory _ -> ["simplex_smp_messages_total 2", "simplex_smp_queues_total1 1"]
+          -- Postgres queue count is a reltuples estimate
+          _ -> ["simplex_smp_messages_total 2"]
+    forM_ expected $ \l -> map (B.unwords . take 2 . B.words) (B.lines metrics) `shouldContain` [l]
+  where
+    runClient :: (HasTestEnv, Transport c) => TProxy c 'TServer -> (THandleSMP c 'TClient -> IO a) -> IO a
+    runClient _ = testSMPClient
 
 testRestoreExpireMessages :: SpecWith (ASrvTransport, AStoreType)
 testRestoreExpireMessages =
@@ -1628,7 +1833,7 @@ testRestoreExpireMessages =
     msgs'' <- B.readFile testStoreMsgsFile
     length (B.lines msgs'') `shouldBe` 2
     B.lines msgs'' `shouldBe` drop 2 (B.lines msgs)
-    Right ServerStatsData {_msgExpired} <- strDecode <$> B.readFile testServerStatsBackupFile
+    ServerStatsData {_msgExpired} <- readSavedStats msType
     _msgExpired `shouldBe` 2
   where
     exportStoreMessages :: HasTestEnv => AStoreType -> IO ()
@@ -2147,6 +2352,76 @@ testNotificationsInChunks = do
           ts <- 5000000 `timeout` tGetClient h >>= maybe (error "receive timeout") (pure . toList)
           (ts :) <$> receiveBlocks h (n - length ts)
 
+testServiceNotificationsReturnToConnection :: SpecWith (ASrvTransport, AStoreType)
+testServiceNotificationsReturnToConnection =
+  it "should move the notification service subscription back to the replaced connection when it subscribes again" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest2 t msType $ \rh sh -> do
+      (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+      (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+      Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+      serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+      serviceId <- testNtfServiceClient t serviceKeys $ \nh -> do
+        Resp "2" _ (SOK (Just serviceId)) <- serviceSignSendRecv nh nKey servicePK ("2", nId, NSUB)
+        pure serviceId
+      let idsHash = queueIdsHash [nId]
+          subscribeService nh corrId = do
+            Resp _ serviceId' (SOKS n idsHash') <- signSendRecv nh (C.APrivateAuthKey C.SEd25519 servicePK) (corrId, serviceId, NSUBS 1 idsHash)
+            (serviceId', n, idsHash') `shouldBe` (serviceId, 1, idsHash)
+      testNtfServiceClient t serviceKeys $ \nh1 -> do
+        subscribeService nh1 "3"
+        testNtfServiceClient t serviceKeys $ \nh2 -> do
+          subscribeService nh2 "4"
+          Resp "" _ (ENDS 1 _) <- tGet1 nh1
+          subscribeService nh1 "5"
+          Resp "" _ (ENDS 1 _) <- tGet1 nh2
+          Resp "6" _ OK <- signSendRecv sh sKey ("6", sId, _SEND' "hello")
+          Resp "" _ (Msg mId _) <- tGet1 rh
+          Resp "7" _ OK <- signSendRecv rh rKey ("7", rId, ACK mId)
+          Resp "" nId' (NMSG _ _) <- tGet1 nh1
+          nId' `shouldBe` nId
+          Nothing <- 100000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg nh2
+          pure ()
+
+testServiceNotificationsRepeatedNSUB :: SpecWith (ASrvTransport, AStoreType)
+testServiceNotificationsRepeatedNSUB =
+  it "should end the service subscription to a notifier once when NSUB is repeated in one block" $ \(ATransport t, msType) -> do
+    g <- C.newRandom
+    smpTest3 t msType $ \rh sh nh@THandle {params} -> do
+      let createNtfQueue = do
+            (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+            (sId, rId, rKey, _) <- createAndSecureQueue rh sPub
+            (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+            (rcvNtfPubDhKey, _) <- atomically $ C.generateKeyPair g
+            Resp "1" _ (NID nId _) <- signSendRecv rh rKey ("1", rId, NKEY nPub rcvNtfPubDhKey)
+            pure (sId, sKey, rId, rKey, nId, nKey)
+      (sId1, sKey1, rId1, rKey1, nId1, nKey1) <- createNtfQueue
+      (_, _, _, _, nId2, nKey2) <- createNtfQueue
+      serviceKeys@(_, servicePK) <- atomically $ C.generateKeyPair g
+      testNtfServiceClient t serviceKeys $ \snh -> do
+        Resp "2" _ (SOK (Just serviceId)) <- serviceSignSendRecv snh nKey1 servicePK ("2", nId1, NSUB)
+        Resp "3" _ (SOK (Just _)) <- serviceSignSendRecv snh nKey2 servicePK ("3", nId2, NSUB)
+        let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth params (CorrId "4", nId2, NSUB)
+        Right auth <- pure $ authTransmission (thAuth params) False (Just nKey2) Nothing tForAuth
+        let nsub = Right (auth, tToSend)
+        [Right (), Right (), Right ()] <- tPut nh [nsub, nsub, nsub]
+        [Resp "4" _ (SOK Nothing), Resp "4" _ (SOK Nothing), Resp "4" _ (SOK Nothing)] <- tGetClient nh
+        Resp "" nId2' END <- tGet1 snh
+        nId2' `shouldBe` nId2
+        Resp "5" _ OK <- signSendRecv sh sKey1 ("5", sId1, _SEND' "hello")
+        Resp "" _ (Msg mId _) <- tGet1 rh
+        Resp "6" _ OK <- signSendRecv rh rKey1 ("6", rId1, ACK mId)
+        Resp "" nId1' (NMSG _ _) <- tGet1 snh
+        nId1' `shouldBe` nId1
+        testNtfServiceClient t serviceKeys $ \snh' -> do
+          let idsHash = queueIdsHash [nId1]
+          Resp "7" _ (SOKS 1 idsHash') <- signSendRecv snh' (C.APrivateAuthKey C.SEd25519 servicePK) ("7", serviceId, NSUBS 1 idsHash)
+          idsHash' `shouldBe` idsHash
+          Resp "" _ (ENDS n idsHash'') <- tGet1 snh
+          (n, idsHash'') `shouldBe` (1, idsHash)
+
 testMsgExpireOnSend :: SpecWith (ASrvTransport, AStoreType)
 testMsgExpireOnSend =
   it "should expire messages that are not received before messageTTL on SEND" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
@@ -2185,6 +2460,23 @@ testMsgExpireOnInterval =
           1000 `timeout` tGetClient @SMPVersion @ErrorType @BrokerMsg rh >>= \case
             Nothing -> return ()
             Just _ -> error "nothing should be delivered"
+
+testInactiveClientExpiration :: SpecWith (ASrvTransport, AStoreType)
+testInactiveClientExpiration =
+  it "should disconnect inactive clients without subscriptions" $ \(ATransport (t :: TProxy c 'TServer), msType) -> do
+    g <- C.newRandom
+    (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (dhPub, _ :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+    let cfg' = updateCfg (cfgMS msType) $ \cfg_ -> cfg_ {inactiveClientExpiration = Just ExpirationConfig {ttl = 1, checkInterval = 1}}
+    withSmpServerConfigOn (ATransport t) cfg' testPort $ \_ ->
+      testSMPClient @c $ \rh -> testSMPClient @c $ \h -> do
+        Resp "1" NoEntity (Ids _ _ _) <- signSendRecv rh rKey ("1", NoEntity, New rPub dhPub)
+        threadDelay 2500000
+        try (timeout 2000000 $ tGet1 h) >>= \case
+          Left (_ :: SomeException) -> pure ()
+          Right r -> unexpected (r :: Maybe (Transmission (Either ErrorType BrokerMsg)))
+        Resp "2" NoEntity PONG <- sendRecv rh (Nothing, "2", NoEntity, PING)
+        pure ()
 
 testMsgNOTExpireOnInterval :: SpecWith (ASrvTransport, AStoreType)
 testMsgNOTExpireOnInterval =
@@ -2392,6 +2684,182 @@ testDuplicateQueueLinkData =
       lnkId2 `shouldBe` lnkId
       victimSId2 `shouldBe` victimSId
       victimLD2 `shouldBe` victimLD
+
+testLargeCommand :: SpecWith (ASrvTransport, AStoreType)
+testLargeCommand =
+  it "refuses a command larger than an encrypted block and keeps the session" $ \(at, msType) ->
+    withSmpServer (at, msType) $ do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      c <- getProtocolClient g NRMInteractive (1, SMPServer testHost testPort testKeyHash, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ()) >>= either (fail . show) pure
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      fd <- atomically $ C.randomBytes 2048 g
+      Right QIK {rcvId = rId} <- runExceptT $ createSMPQueue c NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing
+      let largestUserData = 14165
+          linkData n = (EncDataBytes fd, EncDataBytes $ B.replicate n 'a')
+          setLink n = runExceptT $ addSMPQueueLink c NRMInteractive rKey rId lnkId (linkData n)
+      setLink largestUserData `shouldReturn` Right ()
+      setLink (largestUserData + 1) `shouldReturn` Left (PCETransportError TELargeMsg)
+      (fmap snd <$> runExceptT (getSMPQueueLink c NRMInteractive lnkId)) `shouldReturn` Right (linkData largestUserData)
+
+testSwapQueueLink :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLink =
+  it "swaps short link user data when the stored data hash matches" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      otherLnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          ld1 = (fst ld, EncDataBytes "user data 1")
+      (rId, rKey, _) <- createLinkQueue g r $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+
+      Resp "1" _ (LCUR ud) <- signSendRecv r rKey ("1", rId, LSWP lnkId (userDataHash ld1) Nothing ld1)
+      (ud, snd ld) #== "returns stored user data when the hash differs"
+      Resp "2" _ (LNK _ ld') <- sendRecv s ("", "2", lnkId, LGET)
+      (ld', ld) #== "link data unchanged after the hash differs"
+
+      Resp "3" _ err1 <- signSendRecv r rKey ("3", rId, LSWP otherLnkId (userDataHash ld) Nothing ld1)
+      (err1, ERR AUTH) #== "rejects another link ID"
+      Resp "4" _ err2 <- signSendRecv r rKey ("4", rId, LSWP lnkId (userDataHash ld) Nothing (EncDataBytes "other fixed data", snd ld1))
+      (err2, ERR AUTH) #== "rejects other fixed data"
+
+      Resp "5" rId' OK <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld) Nothing ld1)
+      rId' `shouldBe` rId
+      Resp "6" _ (LNK _ ld1') <- sendRecv s ("", "6", lnkId, LGET)
+      (ld1', ld1) #== "replaces user data and keeps fixed data"
+
+      (noLinkRId, noLinkKey, Nothing) <- createLinkQueue g r $ \_ -> QRContact Nothing
+      Resp "7" _ err3 <- signSendRecv r noLinkKey ("7", noLinkRId, LSWP lnkId (userDataHash ld1) Nothing ld1)
+      (err3, ERR AUTH) #== "rejects queue without link"
+
+      (msgRId, msgKey, Just msgLnkId) <- createLinkQueue g r $ \sId -> QRMessaging $ Just (sId, ld)
+      Resp "8" _ err4 <- signSendRecv r msgKey ("8", msgRId, LSWP msgLnkId (userDataHash ld) Nothing ld1)
+      (err4, ERR AUTH) #== "rejects messaging queue"
+
+testSwapQueueLinkKeys :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLinkKeys =
+  it "swaps short link user data with recipient keys" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r s -> do
+      g <- C.newRandom
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      (rPub', rKey') <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          ld1 = (fst ld, EncDataBytes "user data 1")
+          ld2 = (fst ld, EncDataBytes "user data 2")
+      (rId, rKey, _) <- createLinkQueue g r $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+
+      Resp "1" _ OK <- signSendRecv r rKey ("1", rId, LSWP lnkId (userDataHash ld) (Just [C.toPublic rKey, rPub']) ld1)
+      Resp "2" _ err1 <- signSendRecv r rKey ("2", rId, LSET lnkId ld2)
+      (err1, ERR AUTH) #== "rejects LSET on a queue with two keys"
+      Resp "3" _ err2 <- signSendRecv r rKey' ("3", rId, LSET lnkId ld2)
+      (err2, ERR AUTH) #== "rejects LSET with the added key"
+
+      Resp "4" _ OK <- signSendRecv r rKey' ("4", rId, LSWP lnkId (userDataHash ld1) (Just [rPub']) ld2)
+      Resp "5" _ err3 <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld2) Nothing ld1)
+      (err3, ERR AUTH) #== "rejects the removed key"
+      Resp "6" _ (LNK _ ld') <- sendRecv s ("", "6", lnkId, LGET)
+      (ld', ld2) #== "stores data written with the added key"
+
+testConcurrentSwapQueueLink :: SpecWith (ASrvTransport, AStoreType)
+testConcurrentSwapQueueLink =
+  it "accepts one of concurrent swaps from the same data" $ \(ATransport t, msType) ->
+    smpTest2 t msType $ \r1 r2 -> do
+      g <- C.newRandom
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+          ld1 = (fst ld, EncDataBytes "user data 1")
+          ld2 = (fst ld, EncDataBytes "user data 2")
+          ld3 = (fst ld, EncDataBytes "user data 3")
+      (rId, rKey, _) <- createLinkQueue g r1 $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+
+      rs <-
+        concurrently
+          (signSendRecv r1 rKey ("1", rId, LSWP lnkId (userDataHash ld) Nothing ld1))
+          (signSendRecv r2 rKey ("2", rId, LSWP lnkId (userDataHash ld) Nothing ld2))
+      storedLD <- case rs of
+        (Resp "1" _ OK, Resp "2" _ (LCUR ud)) -> ld1 <$ (ud `shouldBe` snd ld1)
+        (Resp "1" _ (LCUR ud), Resp "2" _ OK) -> ld2 <$ (ud `shouldBe` snd ld2)
+        _ -> error $ "expected OK and LCUR, got " <> show rs
+
+      Resp "3" _ OK <- signSendRecv r2 rKey ("3", rId, LSWP lnkId (userDataHash storedLD) Nothing ld3)
+      Resp "4" _ (LNK _ ld') <- sendRecv r1 ("", "4", lnkId, LGET)
+      (ld', ld3) #== "stores data swapped from the current data"
+
+testSwapQueueLinkClient :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLinkClient =
+  it "sends swaps only in v24 sessions, with up to 6 recipient keys" $ \(at, msType) ->
+    withSmpServer (at, msType) $ do
+      g <- C.newRandom
+      ts <- getCurrentTime
+      let srv = SMPServer testHost testPort testKeyHash
+          connect vr = getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ()) >>= either (fail . show) pure
+      c <- connect supportedClientSMPRelayVRange
+      cPrev <- connect $ prevRange supportedClientSMPRelayVRange
+      (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+      lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+      fd <- atomically $ C.randomBytes 2048 g
+      let ld = (EncDataBytes fd, EncDataBytes $ B.replicate 13832 'a')
+          ld' = (EncDataBytes fd, EncDataBytes $ B.replicate 13832 'b')
+      otherKeys <- replicateM 5 $ fst <$> atomically (C.generateAuthKeyPair C.SEd25519 g)
+      (rPub7, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+      Right QIK {rcvId = rId} <- runExceptT $ createSMPQueue c NRMInteractive Nothing (rPub, rKey) dhPub Nothing SMSubscribe (QRContact Nothing) Nothing
+      Right () <- runExceptT $ addSMPQueueLink c NRMInteractive rKey rId lnkId ld
+      let keys6 = rPub :| otherKeys
+          keys7 = keys6 <> [rPub7]
+          swap c' keys = runExceptT $ swapSMPQueueLink c' NRMInteractive rKey rId lnkId (userDataHash ld) keys ld'
+          storedLD = fmap snd <$> runExceptT (getSMPQueueLink c NRMInteractive lnkId)
+
+      swap cPrev Nothing `shouldReturn` Left (PCETransportError TEVersion)
+      swap c (Just keys7) `shouldReturn` Left (PCETransportError TELargeMsg)
+      storedLD `shouldReturn` Right ld
+      swap c (Just keys6) `shouldReturn` Right Nothing
+      storedLD `shouldReturn` Right ld'
+
+testSwapQueueLinkStoreLog :: SpecWith (ASrvTransport, AStoreType)
+testSwapQueueLinkStoreLog =
+  it "restores swapped short link data and recipient keys after restart" $ \(at@(ATransport t), msType) -> do
+    g <- C.newRandom
+    lnkId <- EntityId <$> atomically (C.randomBytes 24 g)
+    (rPub1, rKey1) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    (rPub2, rKey2) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    let ld = (EncDataBytes "fixed data", EncDataBytes "user data")
+        ld1 = (fst ld, EncDataBytes "user data 1")
+        ld2 = (fst ld, EncDataBytes "user data 2")
+        ld3 = (fst ld, EncDataBytes "user data 3")
+        ld4 = (fst ld, EncDataBytes "user data 4")
+        (cfg', _) = serverStoreLogCfg msType
+    (rId, rKey) <- withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \r -> do
+      (rId, rKey, _) <- createLinkQueue g r $ \sId -> QRContact $ Just (lnkId, (sId, ld))
+      Resp "1" _ OK <- signSendRecv r rKey ("1", rId, LSWP lnkId (userDataHash ld) (Just [C.toPublic rKey, rPub1]) ld1)
+      Resp "2" _ OK <- signSendRecv r rKey1 ("2", rId, LSWP lnkId (userDataHash ld1) (Just [rPub1, rPub2]) ld2)
+      Resp "3" _ OK <- signSendRecv r rKey2 ("3", rId, LSWP lnkId (userDataHash ld2) Nothing ld3)
+      pure (rId, rKey)
+    withSmpServerConfigOn at cfg' testPort $ \_ -> runSMPClient t $ \r -> do
+      Resp "4" _ (LNK _ ld') <- sendRecv r ("", "4", lnkId, LGET)
+      (ld', ld3) #== "restores data of the last swap"
+      Resp "5" _ err1 <- signSendRecv r rKey ("5", rId, LSWP lnkId (userDataHash ld3) Nothing ld4)
+      (err1, ERR AUTH) #== "restores removed key as removed"
+      Resp "6" _ (LCUR ud) <- signSendRecv r rKey1 ("6", rId, LSWP lnkId (userDataHash ld2) Nothing ld4)
+      (ud, snd ld3) #== "restores the first key"
+      Resp "7" _ OK <- signSendRecv r rKey2 ("7", rId, LSWP lnkId (userDataHash ld3) Nothing ld4)
+      Resp "8" _ (LNK _ ld4') <- sendRecv r ("", "8", lnkId, LGET)
+      (ld4', ld4) #== "swaps restored data"
+
+createLinkQueue :: Transport c => TVar ChaChaDRG -> THandleSMP c 'TClient -> (SenderId -> QueueReqData) -> IO (RecipientId, C.APrivateAuthKey, Maybe LinkId)
+createLinkQueue g r queueReqData = do
+  (rPub, rKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (dhPub, _dhPriv :: C.PrivateKeyX25519) <- atomically $ C.generateKeyPair g
+  C.CbNonce corrId <- atomically $ C.randomCbNonce g
+  let sId = EntityId $ B.take 24 $ C.sha3_384 corrId
+  Resp _ NoEntity (IDS QIK {rcvId, linkId}) <-
+    signSendRecv r rKey (corrId, NoEntity, NEW (NewQueueReq rPub dhPub Nothing SMSubscribe (Just $ queueReqData sId) Nothing))
+  pure (rcvId, rKey, linkId)
+
+userDataHash :: QueueLinkData -> LinkDataHash
+userDataHash = linkDataHash . snd
 
 samplePubKey :: C.APublicVerifyKey
 samplePubKey = C.APublicVerifyKey C.SEd25519 "MCowBQYDK2VwAyEAfAOflyvbJv1fszgzkQ6buiZJVgSpQWsucXq7U6zjMgY="

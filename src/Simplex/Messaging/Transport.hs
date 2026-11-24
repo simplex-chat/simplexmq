@@ -35,6 +35,7 @@ module Simplex.Messaging.Transport
   ( -- * SMP transport parameters
     SMPVersion,
     VersionSMP,
+    pattern VersionSMP,
     VersionRangeSMP,
     THandleSMP,
     alpnSupportedSMPHandshakes,
@@ -54,6 +55,7 @@ module Simplex.Messaging.Transport
     serverInfoSMPVersion,
     nameAvailSMPVersion,
     fwdNoncesSMPVersion,
+    linkSwapSMPVersion,
     simplexMQVersion,
     smpBlockSize,
     TransportConfig (..),
@@ -77,6 +79,7 @@ module Simplex.Messaging.Transport
     ALPN,
     connectTLS,
     closeTLS,
+    recvTLS,
     defaultSupportedParams,
     defaultSupportedParamsHTTPS,
     withTlsUnique,
@@ -107,6 +110,8 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -143,7 +148,7 @@ import Simplex.Messaging.Server.Information
 import Simplex.Messaging.SystemTime (SystemSeconds)
 import Simplex.Messaging.Transport.Buffer
 import Simplex.Messaging.Transport.Shared
-import Simplex.Messaging.Util (bshow, catchOwn', liftEitherWith, stateTVar', (<$$>))
+import Simplex.Messaging.Util (bshow, catchAll_, catchOwn', catchOwn_, liftEitherWith, stateTVar', (<$$>))
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
@@ -178,6 +183,7 @@ smpBlockSize = 16384
 -- 21 - server public information in handshake (7/5/2026)
 -- 22 - RNAME answers name availability as well as the record (7/25/2026)
 -- 23 - version in forwarded command nonce, random nonce in forwarded responses (10/2/2026)
+-- 24 - LSWP command to swap short link data and recipient keys, LCUR response, LSET refused with many recipient keys (10/28/2026)
 
 data SMPVersion
 
@@ -219,6 +225,9 @@ nameAvailSMPVersion = VersionSMP 22
 fwdNoncesSMPVersion :: VersionSMP
 fwdNoncesSMPVersion = VersionSMP 23
 
+linkSwapSMPVersion :: VersionSMP
+linkSwapSMPVersion = VersionSMP 24
+
 minClientSMPRelayVersion :: VersionSMP
 minClientSMPRelayVersion = VersionSMP 15
 
@@ -226,10 +235,10 @@ minServerSMPRelayVersion :: VersionSMP
 minServerSMPRelayVersion = VersionSMP 15
 
 currentClientSMPRelayVersion :: VersionSMP
-currentClientSMPRelayVersion = VersionSMP 23
+currentClientSMPRelayVersion = VersionSMP 24
 
 currentServerSMPRelayVersion :: VersionSMP
-currentServerSMPRelayVersion = VersionSMP 23
+currentServerSMPRelayVersion = VersionSMP 24
 
 -- Max SMP protocol version to be used in e2e encrypted connection between
 -- client and server, as defined by SMP proxy. Normally set below the current
@@ -376,11 +385,18 @@ withTlsUnique cxt f =
       STServer -> T.getPeerFinished
       STClient -> T.getFinished
 
+-- tls stores the receive record state lazily, so until the next record arrives it retains the last one (up to 16KB).
+-- Reading the negotiated cipher forces it.
+recvTLS :: T.Context -> IO ByteString
+recvTLS cxt = T.recvData cxt <* T.contextGetInformation cxt
+
 closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `E.finally` T.contextClose ctx
-    `catchOwn'` \_ -> pure ()
+closeTLS ctx = do
+  byeThread <- async $ T.bye ctx
+  threadDelay 50000
+  T.contextClose ctx
+  threadDelay 150000
+  cancel byeThread
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
@@ -438,7 +454,7 @@ instance Transport TLS where
   -- this function may return less than requested number of bytes
   cGet :: TLS p -> Int -> IO ByteString
   cGet TLS {tlsContext, tlsBuffer, tlsTransportConfig = TransportConfig {transportTimeout = t_}} n =
-    getBuffered tlsBuffer n t_ (T.recvData tlsContext)
+    getBuffered tlsBuffer n t_ (recvTLS tlsContext)
 
   cPut :: TLS p -> ByteString -> IO ()
   cPut TLS {tlsContext, tlsTransportConfig = TransportConfig {transportTimeout = t_}} =
@@ -446,7 +462,7 @@ instance Transport TLS where
 
   getLn :: TLS p -> IO ByteString
   getLn TLS {tlsContext, tlsBuffer} = do
-    getLnBuffered tlsBuffer (T.recvData tlsContext) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
+    getLnBuffered tlsBuffer (recvTLS tlsContext) `E.catches` [E.Handler handleTlsEOF, E.Handler handleEOF]
     where
       handleTlsEOF = \case
         T.PostHandshake T.Error_EOF -> E.throwIO TEBadBlock

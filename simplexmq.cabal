@@ -94,6 +94,11 @@ flag slow_servers
   manual: True
   default: False
 
+flag conn_lock_checks
+  description: Fail agent server requests made inside a connection lock, for tests.
+  manual: True
+  default: False
+
 flag server_postgres
   description: Build server with support of PostgreSQL.
   manual: True
@@ -314,6 +319,7 @@ library
           Simplex.Messaging.Server.QueueStore.STM
           Simplex.Messaging.Server.QueueStore.Types
           Simplex.Messaging.Server.Stats
+          Simplex.Messaging.Server.StatsStore
           Simplex.Messaging.Server.StoreLog
           Simplex.Messaging.Server.StoreLog.ReadWrite
           Simplex.Messaging.Server.StoreLog.Types
@@ -429,6 +435,8 @@ library
     cpp-options: -DswiftJSON
   if flag(slow_servers)
     cpp-options: -Dslow_servers
+  if flag(conn_lock_checks)
+    cpp-options: -Dconn_lock_checks
   if !flag(client_library)
     build-depends:
         case-insensitive ==1.2.*
@@ -548,7 +556,7 @@ executable xftp-server
       apps/common
   default-extensions:
       StrictData
-  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts
+  ghc-options: -Weverything -Wno-missing-exported-signatures -Wno-missing-import-lists -Wno-missed-specialisations -Wno-all-missed-specialisations -Wno-unsafe -Wno-safe -Wno-missing-local-signatures -Wno-missing-kind-signatures -Wno-missing-deriving-strategies -Wno-monomorphism-restriction -Wno-prepositive-qualified-module -Wno-implicit-prelude -Wno-missing-safe-haskell-mode -Wno-missing-export-lists -Wno-partial-fields -Wcompat -Werror=incomplete-record-updates -Werror=incomplete-patterns -Werror=incomplete-uni-patterns -Werror=missing-methods -Werror=tabs -Wredundant-constraints -Wincomplete-record-updates -Wunused-type-patterns -O2 -threaded -rtsopts "-with-rtsopts=-N -F1.2 -A16m -I0.01 -Iw15 -T -ki2k --disable-delayed-os-memory-return"
   build-depends:
       base
     , bytestring
@@ -580,12 +588,15 @@ test-suite simplexmq-test
       CoreTests.CryptoTests
       CoreTests.EncodingTests
       CoreTests.EthCryptoTests
+      CoreTests.KeepAliveTests
       CoreTests.LockTests
       CoreTests.MsgStoreTests
       CoreTests.RetryIntervalTests
       CoreTests.SOCKSSettings
+      CoreTests.ServerStatsTests
       CoreTests.StoreLogTests
       CoreTests.TSessionSubs
+      CoreTests.TransportTests
       CoreTests.UtilTests
       CoreTests.VersionRangeTests
       FileDescriptionTests
@@ -683,6 +694,8 @@ test-suite simplexmq-test
     cpp-options: -DdbServerPostgres
   if flag(slow_servers)
     cpp-options: -Dslow_servers
+  if flag(conn_lock_checks)
+    cpp-options: -Dconn_lock_checks
   if flag(client_postgres)
     cpp-options: -DdbPostgres
   else

@@ -41,10 +41,12 @@ module Simplex.Messaging.Util
     isAsyncCancellation,
     catchOwn',
     catchOwn,
+    catchOwn_,
     tryAllOwnErrors,
     tryAllOwnErrors',
     catchAllOwnErrors,
     catchAllOwnErrors',
+    forceDecoded,
     eitherToMaybe,
     listToEither,
     firstRow,
@@ -59,6 +61,7 @@ module Simplex.Messaging.Util
     safeDecodeUtf8,
     timeoutThrow,
     threadDelay',
+    delayUntilDayTime,
     diffToMicroseconds,
     diffToMilliseconds,
     labelMyThread,
@@ -95,7 +98,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import qualified Data.Text.IO as T
-import Data.Time (NominalDiffTime)
+import Data.Time (NominalDiffTime, diffTimeToPicoseconds, getCurrentTime, utctDayTime)
 import Data.Tuple (swap)
 import Data.Word (Word8)
 import Foreign.ForeignPtr (withForeignPtr)
@@ -335,6 +338,10 @@ catchOwn action handleInternal =
     run action `E.catch` \e -> if isAsyncCancellation e then E.throwIO e else run (handleInternal e)
 {-# INLINE catchOwn #-}
 
+catchOwn_ :: IO a -> IO a -> IO a
+catchOwn_ a = catchOwn' a . const
+{-# INLINE catchOwn_ #-}
+
 tryAllOwnErrors :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> ExceptT e m (Either e a)
 tryAllOwnErrors action = ExceptT $ Right <$> runExceptT action `catchOwn` (pure . Left . fromSomeException)
 {-# INLINE tryAllOwnErrors #-}
@@ -350,6 +357,9 @@ catchAllOwnErrors action handler = tryAllOwnErrors action >>= either handler pur
 catchAllOwnErrors' :: (AnyError e, MonadUnliftIO m) => ExceptT e m a -> (e -> m a) -> m a
 catchAllOwnErrors' action handler = tryAllOwnErrors' action >>= either handler pure
 {-# INLINE catchAllOwnErrors' #-}
+
+forceDecoded :: (a -> Int) -> Either String a -> Either String a
+forceDecoded force r = either (Left . show) (const r) $ pureTry $ either length force r
 
 eitherToMaybe :: Either a b -> Maybe b
 eitherToMaybe = either (const Nothing) Just
@@ -414,6 +424,11 @@ threadDelay' = loop
           let maxWait = min time $ fromIntegral (maxBound :: Int)
           threadDelay $ fromIntegral maxWait
           loop $ time - maxWait
+
+delayUntilDayTime :: Int64 -> IO ()
+delayUntilDayTime startAt = do
+  initialDelay <- (startAt -) . fromIntegral . (`div` 1000000000000) . diffTimeToPicoseconds . utctDayTime <$> getCurrentTime
+  threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
 
 diffToMicroseconds :: NominalDiffTime -> Int64
 diffToMicroseconds diff = truncate $ diff * 1000000

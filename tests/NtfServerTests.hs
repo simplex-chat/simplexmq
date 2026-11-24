@@ -14,8 +14,8 @@
 module NtfServerTests where
 
 import Control.Concurrent (killThread, threadDelay)
-import Control.Exception (AsyncException (..), fromException)
-import Control.Monad (forM, unless, void)
+import Control.Exception (AsyncException (..), bracket, fromException)
+import Control.Monad (forM, replicateM, replicateM_, unless, void)
 import qualified Data.Aeson as J
 import qualified Data.Aeson.Types as JT
 import Data.Bifunctor (first)
@@ -43,6 +43,7 @@ import ServerTests
   )
 import qualified Simplex.Messaging.Agent.Protocol as AP
 import Simplex.Messaging.Agent.RetryInterval (RetryInterval (..))
+import Simplex.Messaging.Agent.Store.Postgres.Common (withTransaction)
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Client.Agent (SMPClientAgentConfig (..))
 import qualified Simplex.Messaging.Crypto as C
@@ -50,7 +51,7 @@ import Simplex.Messaging.Encoding
 import Simplex.Messaging.Notifications.Protocol
 import Simplex.Messaging.Notifications.Server.Env (NtfPushServer (pushClients), NtfServerConfig (..), getPushClient, newNtfPushServer)
 import Simplex.Messaging.Notifications.Server.Push.APNS
-import Simplex.Messaging.Notifications.Server.Store.Postgres (addNtfToken, closeNtfDbStore, mkNtfTknRec, newNtfDbStore, setTokenActive, updateTknCronInterval, updateTokenCronSentAt, withDB')
+import Simplex.Messaging.Notifications.Server.Store.Postgres (NtfEntityCounts (..), NtfPostgresStore (dbStore), addNtfToken, closeNtfDbStore, getEntityCounts, mkNtfTknRec, newNtfDbStore, setTokenActive, updateTknCronInterval, updateTokenCronSentAt, withClientDB, withDB')
 import Simplex.Messaging.Notifications.Transport (THandleNTF)
 import Simplex.Messaging.Parsers (parse, parseAll)
 import Simplex.Messaging.Protocol hiding (notification)
@@ -76,6 +77,7 @@ ntfServerTests ps@(t, _) = do
   describe "APNS push delivery" $ do
     it "resumes sending notifications after the push provider is unreachable" $ testPushWorkerResumesAfterOutage t
     it "does not connect to the push provider when the key file is not configured" testNoConnectWithoutKeyFile
+    it "receives notifications from other servers when one server's push queue is full" $ testFullPushQueue ps
     it "stops connecting to the push provider when the push worker is killed" testPushClientKilled
     it "stops the server after a periodic notification starts a push worker" $ testPeriodicNtfServerStop t
   describe "Database pool" $ do
@@ -87,6 +89,20 @@ ntfServerTests ps@(t, _) = do
   describe "Notification subscription address" $ testSNEWServerAddress ps
   describe "Notification service" $ do
     it "resubscribes queues when service ID changes" $ testResubscribeOnServiceIdChange ps
+
+ntfStoreTests :: Spec
+ntfStoreTests = do
+  it "should retry a transaction aborted by a deadlock" $
+    withDeadlockedTokens $ \st -> withDB' "test" st updateTokens `shouldReturn` Right 0
+  it "should retry a client transaction aborted by a deadlock" $
+    withDeadlockedTokens $ \st -> withClientDB "test" st updateTokens `shouldReturn` Right 0
+  where
+    updateTokens db = PSQL.execute_ db "UPDATE tokens SET cron_interval = 0"
+
+withDeadlockedTokens :: HasTestEnv => (NtfPostgresStore -> IO ()) -> IO ()
+withDeadlockedTokens test = bracket (newNtfDbStore ntfTestDBCfg) closeNtfDbStore $ \st -> do
+  void $ withTransaction (dbStore st) $ \db -> PSQL.execute_ db $ deadlockOnce "UPDATE ON tokens"
+  test st
 
 ntfSyntaxTests :: ASrvTransport -> Spec
 ntfSyntaxTests (ATransport t) = do
@@ -158,15 +174,45 @@ testNoConnectWithoutKeyFile =
     apnsCfgMissingKey = apnsConfig {authKeyFileEnv = "APNS_KEY_FILE_MISSING"}
     keyFileError (e :: IOError) = "APNS_KEY_FILE_MISSING" `isInfixOf` show e
 
+testFullPushQueue :: HasTestEnv => (ASrvTransport, AStoreType) -> Expectation
+testFullPushQueue (ATransport t, msType) = do
+  g <- C.newRandom
+  (sPub, sKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  (nPub, nKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  withAPNSMockServer $ \apns ->
+    smpTest2 t msType $ \rh sh ->
+      ntfTest t $ \nh -> bracket (newNtfDbStore ntfTestDBCfg) closeNtfDbStore $ \st -> do
+        (tknKey, _, tId, regCode) <- registerToken nh apns "abcd"
+        RespNtf "1" _ NROk <- signSendRecvNtf nh tknKey ("1", tId, TVFY regCode)
+        (tknKey2, _, tId2, regCode2) <- registerToken nh apns "efgh"
+        RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey2 ("2", tId2, TVFY regCode2)
+        let subscribe key tknId srv = do
+              ((sId, _, _, _), nId, _) <- createNtfQueueNKEY rh sPub nPub
+              RespNtf "3" NoEntity (NRSubId _) <- signSendRecvNtf nh key ("3", NoEntity, SNEW $ NewNtfSub tknId (SMPQueueNtf srv nId) nKey)
+              pure sId
+            sendMsg sId = do
+              Resp "4" _ OK <- signSendRecv sh sKey ("4", sId, _SEND' "hello")
+              pure ()
+            checkLastNtfs n = do
+              NtfEntityCounts {lastNtfCount = cnt} <- getEntityCounts st
+              unless (cnt == n) $ threadDelay 100000 >> checkLastNtfs n
+            waitLastNtfs n = timeout 5000000 (checkLastNtfs n) `shouldReturn` Just ()
+        sIds <- replicateM 6 $ subscribe tknKey tId $ SMPServer SMP.testHost SMP.testPort SMP.testKeyHash
+        sId2 <- subscribe tknKey2 tId2 $ SMPServer SMP.testHost2 SMP.testPort SMP.testKeyHash
+        mapM_ sendMsg sIds
+        waitLastNtfs 6
+        sendMsg sId2
+        waitLastNtfs 7
+
 testPushClientKilled :: HasTestEnv => Expectation
 testPushClientKilled =
   withStallingServerOn' apnsTestPort $ \accepted _ -> do
     s <- newNtfPushServer 1 apnsConfig
-    a <- async $ getPushClient s PPApnsTest
+    a <- async $ getPushClient s PPApnsTest 0
     atomically $ takeTMVar accepted
     killThread $ asyncThreadId a
     timeout 1000000 (either fromException (const Nothing) <$> waitCatch a) `shouldReturn` Just (Just ThreadKilled)
-    isNothing <$> TM.lookupIO PPApnsTest (pushClients s) `shouldReturn` True
+    isNothing <$> TM.lookupIO (PPApnsTest, 0) (pushClients s) `shouldReturn` True
   where
     NtfServerConfig {apnsConfig} = ntfServerCfg
 
@@ -442,25 +488,35 @@ testResubscribeOnServiceIdChange ps@(ATransport (t :: TProxy c 'TServer), _) = d
       testNtfClient $ \(nh :: THandleNTF c 'TClient) -> do
         (tknKey, _dhSecret, tId, regCode) <- registerToken nh apns "abcd"
         RespNtf "2" _ NROk <- signSendRecvNtf nh tknKey ("2", tId, TVFY regCode)
-        let checkActive subId = do
+        let checkStatus expected subId = do
               RespNtf "4" _ (NRSub status) <- signSendRecvNtf nh tknKey ("4", subId, SCHK)
-              unless (status == NSActive) $ threadDelay 100000 >> checkActive subId
-            waitActive subIds = timeout 5000000 (mapM_ checkActive subIds) `shouldReturn` Just ()
-        (sId, subIds) <- withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+              unless (status == expected) $ threadDelay 100000 >> checkStatus expected subId
+            waitStatus expected subIds = timeout 5000000 (mapM_ (checkStatus expected) subIds) `shouldReturn` Just ()
+            waitActive = waitStatus NSActive
+        (sId, subIds, endedSubId) <- withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
           ((sId, _, _, _), nId1, _) <- createNtfQueueNKEY h sPub nPub
           (_, nId2, _) <- createNtfQueueNKEY h sPub nPub
-          subIds <- forM [nId1, nId2] $ \nId -> do
+          (_, nId3, _) <- createNtfQueueNKEY h sPub nPub
+          [subId1, subId2, endedSubId] <- forM [nId1, nId2, nId3] $ \nId -> do
             RespNtf "3" NoEntity (NRSubId subId) <- signSendRecvNtf nh tknKey ("3", NoEntity, SNEW $ NewNtfSub tId (SMPQueueNtf srv nId) nKey)
             pure subId
-          waitActive subIds
-          pure (sId, subIds)
+          waitActive [subId1, subId2, endedSubId]
+          Resp "4" _ (SOK Nothing) <- signSendRecv h nKey ("4", nId3, NSUB)
+          waitStatus NSEnd [endedSubId]
+          pure (sId, [subId1, subId2], endedSubId)
         st <- newNtfDbStore ntfTestDBCfg
         Right 1 <- withDB' "test" st $ \db -> PSQL.execute_ db "UPDATE smp_servers SET ntf_service_cert = NULL, ntf_service_cert_hash = NULL, ntf_service_priv_key = NULL"
+        let checkNotificationAfterRestart = withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
+              Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND' "hello")
+              APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <- getMockNotification apns $ DeviceToken PPApnsTest "abcd"
+              waitActive subIds
+            getServiceId = withDB' "test" st $ \db -> PSQL.query_ db "SELECT ntf_service_id FROM smp_servers"
+        checkNotificationAfterRestart
+        Right [PSQL.Only (Just (newServiceId :: ServiceId))] <- getServiceId
+        checkNotificationAfterRestart
+        getServiceId `shouldReturn` Right [PSQL.Only (Just newServiceId)]
+        RespNtf "5" _ (NRSub NSEnd) <- signSendRecvNtf nh tknKey ("5", endedSubId, SCHK)
         closeNtfDbStore st
-        withSmpServer ps $ testSMPClient $ \(h :: THandleSMP c 'TClient) -> do
-          Resp "5" _ OK <- signSendRecv h sKey ("5", sId, _SEND' "hello")
-          APNSMockRequest {notification = APNSNotification {aps = APNSMutableContent {}}} <- getMockNotification apns $ DeviceToken PPApnsTest "abcd"
-          waitActive subIds
 
 type CreateQueueFunc =
   forall c.

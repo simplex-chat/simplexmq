@@ -24,7 +24,6 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (mapConcurrently)
-import qualified Control.Exception as E
 import Control.Logger.Simple
 import Control.Monad
 import Control.Monad.Except
@@ -48,14 +47,14 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Text.Encoding (decodeLatin1)
-import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds, getCurrentTime)
+import Data.Time.Clock (UTCTime (..), getCurrentTime)
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import GHC.IORef (atomicSwapIORef)
 import GHC.Stats (getRTSStats)
 import Network.Socket (ServiceName, Socket, socketToHandle)
 import Numeric.Natural (Natural)
-import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..))
+import Simplex.Messaging.Client (ProtocolClientError (..), SMPClientError, ServerTransmission (..), nonBlockingWriteTBQueue)
 import Simplex.Messaging.Client.Agent
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String
@@ -170,9 +169,8 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
 
     logServerStats :: Int64 -> Int64 -> FilePath -> M ()
     logServerStats startAt logInterval statsFilePath = do
-      initialDelay <- (startAt -) . fromIntegral . (`div` 1000000_000000) . diffTimeToPicoseconds . utctDayTime <$> liftIO getCurrentTime
       logNote $ "server stats log enabled: " <> T.pack statsFilePath
-      liftIO $ threadDelay' $ 1000000 * (initialDelay + if initialDelay < 0 then 86400 else 0)
+      liftIO $ delayUntilDayTime startAt
       NtfServerStats {fromTime, tknCreated, tknVerified, tknDeleted, tknReplaced, subCreated, subDeleted, ntfReceived, ntfDelivered, ntfFailed, ntfCronDelivered, ntfCronFailed, ntfVrfQueued, ntfVrfDelivered, ntfVrfFailed, ntfVrfInvalidTkn, activeTokens, activeSubs} <-
         asks serverStats
       let interval = 1000000 * logInterval
@@ -254,8 +252,9 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
       d <- getNtfServerStatsData ss
       let psTkns = periodStatDataCounts $ _activeTokens d
           psSubs = periodStatDataCounts $ _activeSubs d
-      (tokenCount, approxSubCount, lastNtfCount) <- getEntityCounts st
-      pure NtfServerMetrics {statsData = d, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, approxSubCount, lastNtfCount, rtsOptions}
+      NtfEntityCounts {tokenStatusCounts, approxSubCount, subStatusCounts, lastNtfCount} <- getEntityCounts st
+      let tokenCount = sum $ map snd tokenStatusCounts
+      pure NtfServerMetrics {statsData = d, activeTokensCounts = psTkns, activeSubsCounts = psSubs, tokenCount, tokenStatusCounts, approxSubCount, subStatusCounts, lastNtfCount, rtsOptions}
 
     getNtfRealTimeMetrics :: NtfEnv -> IO NtfRealTimeMetrics
     getNtfRealTimeMetrics NtfEnv {subscriber, pushServer} = do
@@ -396,6 +395,7 @@ ntfServer cfg@NtfServerConfig {transports, transportConfig = tCfg, startOptions}
                 putStat "ntfReceived" ntfReceived
                 putStat "ntfDelivered" ntfDelivered
                 putStat "ntfFailed" ntfFailed
+                putStat "ntfDropped" ntfDropped
                 putStat "ntfCronDelivered" ntfCronDelivered
                 putStat "ntfCronFailed" ntfCronFailed
                 putStat "ntfVrfQueued" ntfVrfQueued
@@ -491,22 +491,21 @@ subscribeSrvSubs ca st batchSize (srv, srvId, service_) = do
 -- this function is concurrency-safe - only onle subscriber per server can be created at a time,
 -- other threads would wait for the first thread to create it.
 subscribeNtfs :: NtfSubscriber -> NtfPostgresStore -> SMPServer -> Int64 -> ServerNtfSub -> IO ()
-subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer srvId ntfSub =
-  getSubscriberVar
-    >>= either createSMPSubscriber waitForSMPSubscriber
+subscribeNtfs NtfSubscriber {smpSubscribers, subscriberSeq, smpAgent = ca} st smpServer srvId ntfSub = do
+  ts <- getCurrentTime
+  withGetSessVar' subscriberSeq smpServer smpSubscribers ts createSMPSubscriber waitForSMPSubscriber
     >>= mapM_ (\sub -> atomically $ writeTQueue (subscriberSubQ sub) ntfSub)
   where
-    getSubscriberVar :: IO (Either SMPSubscriberVar SMPSubscriberVar)
-    getSubscriberVar = getSessVarIO subscriberSeq smpServer smpSubscribers =<< getCurrentTime
-
     createSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     createSMPSubscriber v =
-      E.handle (\(e :: SomeException) -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v) $ do
-        q <- newTQueueIO
-        tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
-        let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
-        atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
-        pure $ Just sub
+      ( do
+          q <- newTQueueIO
+          tId <- mkWeakThreadId =<< forkIO (runSMPSubscriber smpServer srvId q)
+          let sub = SMPSubscriber {smpServer, smpServerId = srvId, subscriberSubQ = q, subThreadId = tId}
+          atomically $ putTMVar (sessionVar v) sub -- this makes it available for other threads
+          pure $ Just sub
+      )
+        `catchOwn'` \e -> logError ("SMP subscriber exception: " <> tshow e) >> removeSubscriber v
 
     waitForSMPSubscriber :: SMPSubscriberVar -> IO (Maybe SMPSubscriber)
     waitForSMPSubscriber v =
@@ -537,18 +536,21 @@ ntfSubscriber NtfSubscriber {smpAgent = ca@SMPClientAgent {msgQ = msgQ_, agentQ}
       ps <- asks pushServer
       stats <- asks serverStats
       forever $ do
-        ((_, srv@(SMPServer (h :| _) _ _), _), THandleParams {sessionId}, ts) <- atomically $ readTBQueue msgQ
+        ((_, srv, _), THandleParams {sessionId}, ts) <- atomically $ readTBQueue msgQ
         forM_ ts $ \(ntfId, t) -> case t of
           STUnexpectedError e -> logError $ "SMP client unexpected error: " <> tshow e -- uncorrelated response, should not happen
+          STResponse _ r@(Right (SMP.NMSG _ _)) -> processNtf st ps stats srv sessionId ntfId r
           STResponse {} -> pure () -- it was already reported as timeout error
-          STEvent msgOrErr -> do
+          STEvent r -> processNtf st ps stats srv sessionId ntfId r
+      where
+        processNtf st ps stats srv sessionId ntfId msgOrErr = do
             let smpQueue = SMPQueueNtf srv ntfId
             case msgOrErr of
               Right (SMP.NMSG nmsgNonce encNMsgMeta) -> do
                 ntfTs <- liftIO getSystemTime
                 liftIO $ updatePeriodStats (activeSubs stats) ntfId
                 let newNtf = PNMessageData {smpQueue, ntfTs, nmsgNonce, encNMsgMeta}
-                    srvHost = safeDecodeUtf8 $ strEncode h
+                    srvHost = safeDecodeUtf8 $ strEncode $ L.head $ host srv
                     isOwn = isOwnServer ca srv
                 liftIO (addTokenLastNtf st newNtf) >>= \case
                   Right (tkn, lastNtfs) -> do
@@ -643,13 +645,15 @@ showServer' :: SMPServer -> Text
 showServer' = decodeLatin1 . strEncode . host
 
 pushNotification :: NtfPushServer -> Maybe T.Text -> OwnServer -> NtfTknRec -> PushNotification -> M ()
-pushNotification s srvHost_ isOwn tkn@NtfTknRec {ntfTknId, token = token@(DeviceToken pp _)} ntf =
+pushNotification s srvHost_ isOwn tkn@NtfTknRec {token = token@(DeviceToken pp _)} ntf =
   ifM
     (pushProviderAllowed token)
-    (getOrCreatePushWorker s (srvHost_, pp, hash (unEntityId ntfTknId) `mod` pushWorkersPerServer) isOwn >>= atomically . (`writeTBQueue` (tkn, ntf)))
+    (getOrCreatePushWorker s (srvHost_, pp, pushTokenShardId 8 tkn) isOwn >>= liftIO . (`nonBlockingWriteTBQueue` (tkn, ntf)))
     (logWarn "skipping disabled APNS test push provider")
-  where
-    pushWorkersPerServer = 8
+
+pushTokenShardId :: Int -> NtfTknRec -> Int
+pushTokenShardId pushWorkersPerServer NtfTknRec {ntfTknId} =
+  hash (unEntityId ntfTknId) `mod` pushWorkersPerServer
 
 pushProviderAllowed :: DeviceToken -> M Bool
 pushProviderAllowed (DeviceToken PPApnsTest _) = asks (allowTestPushProvider . config)
@@ -712,7 +716,7 @@ runPushWorker s srvHost_ isOwn q = forever $ do
       | otherwise = liftIO $ logError "bad notification token status"
     deliverNotification :: NtfPostgresStore -> PushProvider -> NtfTknRec -> PushNotification -> IO (Either PushProviderError ())
     deliverNotification st pp tkn@NtfTknRec {ntfTknId} ntf' = do
-      (deliver, clientVar) <- getPushClient s pp
+      (deliver, clientVar) <- getPushClient s pp tokenShardId
       runExceptT (deliver tkn ntf') >>= \case
         Right _ -> pure $ Right ()
         Left e -> case e of
@@ -725,11 +729,12 @@ runPushWorker s srvHost_ isOwn q = forever $ do
             err e
           PPPermanentError -> err e
       where
+        tokenShardId = pushTokenShardId 8 tkn
         retryDeliver :: PushClientVar -> Text -> IO (Either PushProviderError ())
         retryDeliver oldVar reason = do
           logWarn $ "retrying push (" <> tshow pp <> ", " <> tshow ntfTknId <> "): " <> reason
-          atomically $ removeSessVar oldVar pp (pushClients s)
-          (deliver, _) <- getPushClient s pp
+          atomically $ removeSessVar oldVar (pp, tokenShardId) (pushClients s)
+          (deliver, _) <- getPushClient s pp tokenShardId
           runExceptT (deliver tkn ntf') >>= \case
             Right _ -> pure $ Right ()
             Left e -> case e of

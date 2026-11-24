@@ -21,6 +21,7 @@ import Control.Logger.Simple
 import Control.Monad (forM, forM_, forever, replicateM_)
 import Control.Monad.Trans.Except (ExceptT, runExceptT)
 import Data.ByteString.Char8 (ByteString)
+import qualified Data.ByteString.Char8 as B
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as L
 import Data.Time.Clock (getCurrentTime)
@@ -33,24 +34,27 @@ import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), InitialAgentServers
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ)
 import qualified Simplex.Messaging.Agent.Protocol as A
 import Simplex.Messaging.Client
+import qualified Simplex.Messaging.Client.Agent as CA
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.Ratchet (pattern PQSupportOn)
 import qualified Simplex.Messaging.Crypto.Ratchet as CR
+import Simplex.Messaging.Encoding.String (strDecode)
 import Simplex.Messaging.Protocol (EncRcvMsgBody (..), MsgBody, QueueReqData (..), RcvMessage (..), SubscriptionMode (..), maxMessageLength, noMsgFlags)
 import qualified Simplex.Messaging.Protocol as SMP
 import Simplex.Messaging.Server.Env.STM (AStoreType (..), ServerConfig (..))
 import Simplex.Messaging.Server.MsgStore.Types (SQSType (..))
+import Simplex.Messaging.Server.Stats (ServerStatsData (..))
 import Simplex.Messaging.Transport
 import Simplex.Messaging.Util (bshow, tshow)
 import Simplex.Messaging.Version (mkVersionRange)
 import System.FilePath (splitExtensions)
 import System.Random (randomRIO)
+import Text.Read (readMaybe)
 import Test.Hspec hiding (fit, it, xit)
 import UnliftIO
 import Util
 
 #if defined(dbServerPostgres)
-import qualified Data.ByteString.Char8 as B
 import Data.Hashable (hash)
 import Data.Int (Int64)
 import Database.PostgreSQL.Simple (Binary (..), Only (..))
@@ -72,16 +76,48 @@ smpProxyTests = do
       testProxyReconnectAfterRelayRestart
     it "closes connection to relay after sender disconnects mid-connection" $ \_ ->
       testProxyClosesRelayConnectionAfterDisconnect
+    it "does not keep oversized forwarded command" $ \_ ->
+      testForwardOversizedNotKept
+    it "fails commands of closed client at once" $ \_ ->
+      testClosedClientCommandsFail
+    it "releases command kept for late response" $ \_ ->
+      testLateResponseCommandReleased
+    it "rejects forwards above the relay concurrency limit" $ \_ ->
+      testProxyRelayConcurrencyLimit
   describe "agent client reconnection" $ do
     it "reconnects after a connect is cancelled mid-flight" $ \_ ->
       testAgentClientReconnectAfterCancel
+  describe "relay sessions" $ do
+    it "uses one session for addresses of one relay" $ \_ ->
+      testRelaySessionPerServer
+    it "refuses a new relay session when connections are at the limit" $ \_ ->
+      testRelayConnectLimit
+    it "removes connection errors after the interval, above the limit at once" $ \_ ->
+      testPersistedErrorsLimit
+    it "refuses a connection at the limit without keeping its error" $ \_ ->
+      testConnectLimitRefusal
   describe "proxy requests" $ do
+    describe "bad relay URIs" $ do
+      it "relay without key hash" testRelayWithoutKeyHash
+      xit "host not resolved" todo
+      xit "when SMP port blackholed" todo
+      xit "no SMP service at host/port" todo
+      xit "bad SMP fingerprint" todo
+    xit "batching proxy requests" todo
     it "relay rejects forwarded command with changed version" $ \_ ->
       testChangedFwdVersion
+    it "relay rejects repeated forwarded command below version 23" $ \_ ->
+      testRepeatedFwdCommand
+    it "relay closes connection after limit of forwarded commands below version 23" $ \_ ->
+      testFwdCorrIdsLimit
+    it "proxy and relay count forwarded commands by version" $ \_ ->
+      testFwdVersionStats
     it "proxy rejects forwarded correlation ID that is not 24 bytes" $ \_ ->
       testFwdCorrIdSize
     it "relay delays AUTH errors to forwarded commands" $ \_ ->
       testForwardedAuthErrorDelay
+    it "proxy closes idle relay connection" $ \_ ->
+      testProxyClosesIdleRelay
   describe "deliver message via SMP proxy" $ do
     let srv1, srv2 :: HasTestEnv => SMPServer
         srv1 = SMPServer testHost testPort testKeyHash
@@ -152,6 +188,7 @@ smpProxyTests = do
           agentViaProxyRetryOffline
         it "retries sending when destination relay session disconnects in proxy" $ \_ ->
           agentViaProxyRetryNoSession
+        it "sends via proxy to relay below version 23" $ twoServersPrevRelay agentViaProxyPrevRelay
       describe "stress test 1k" $ do
         let deliver nAgents nMsgs = agentDeliverMessagesViaProxyConc (replicate nAgents [srv1]) (map bshow [1 :: Int .. nMsgs])
         it "2 agents, 250 messages" $ oneServer $ deliver 2 250
@@ -440,6 +477,15 @@ agentViaProxyRetryNoSession = do
     withServer2 = withSmpServerConfigOn (transport @TLS) proxyCfgS2 testPort2
     servers srv = initAgentServersProxy {smp = userServers [srv]}
 
+agentViaProxyPrevRelay :: HasTestEnv => IO ()
+agentViaProxyPrevRelay =
+  withAgent 1 agentCfg initAgentServers {smp = userServers [testSMPServer2]} testDB $ \alice ->
+    withAgent 2 agentCfg initAgentServersProxy {smp = userServers [testSMPServer]} testDB2 $ \bob -> runRight_ $ do
+      (aliceId, bobId) <- makeConnection alice bob
+      2 <- sendMessage bob aliceId noMsgFlags "hello"
+      get bob ##> ("", aliceId, A.SENT 2 (Just testSMPServer))
+      get alice =##> \case ("", c, Msg "hello") -> c == bobId; _ -> False
+
 testNoProxy :: HasTestEnv => AStoreType -> IO ()
 testNoProxy msType = do
   withSmpServerConfigOn (transport @TLS) (cfgMS msType) testPort2 $ \_ -> do
@@ -455,6 +501,13 @@ testProxyAuth msType = do
       reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.BASIC_AUTH)
   where
     proxyCfgAuth = updateCfg (proxyCfgMS msType) $ \cfg_ -> cfg_ {newQueueBasicAuth = Just "correct"}
+
+testRelayWithoutKeyHash :: HasTestEnv => AStoreType -> IO ()
+testRelayWithoutKeyHash msType = do
+  withSmpServerConfigOn (transport @TLS) (proxyCfgMS msType) testPort $ \_ -> do
+    testSMPClient_ "127.0.0.1" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+      (_, _, reply) <- sendRecv th (Nothing, "0", NoEntity, SMP.PRXY (SMPServer testHost testPort2 (C.KeyHash "")) Nothing)
+      reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
 
 -- Connect a sender client to the proxy and request a relay session to testSMPServer2 (PRXY).
 -- On success the reply is PKEY; otherwise it is the proxy error for the relay connection.
@@ -479,9 +532,71 @@ testChangedFwdVersion =
     et <- encrypt $ SMP.encTransmissionNonce v nonce
     _ <- runExceptT' $ forward corrId v et
     runExceptT (forward corrId (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
-    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion v) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
-    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion v) =<< encrypt nonce
-    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion v) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    runExceptT (forward (C.unCbNonce $ SMP.encTransmissionNonce v nonce) (prevVersion fwdNoncesSMPVersion) et) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    (_, SMP.EncResponse resp) <- runExceptT' . forward corrId (prevVersion fwdNoncesSMPVersion) =<< encrypt nonce
+    runExceptT (forward (C.unCbNonce $ C.reverseNonce nonce) (prevVersion fwdNoncesSMPVersion) $ SMP.EncTransmission resp) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+
+testRepeatedFwdCommand :: HasTestEnv => IO ()
+testRepeatedFwdCommand =
+  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    forward <- newForwardedPing rc
+    let v = prevVersion fwdNoncesSMPVersion
+    Right (Just _, _) <- forward fwdNoncesSMPVersion
+    Right (Just _, _) <- forward fwdNoncesSMPVersion
+    Right (Nothing, _) <- forward v
+    forward v `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+    forward (prevVersion v) `shouldReturn` Left (PCEProtocolError SMP.CRYPTO)
+
+testFwdCorrIdsLimit :: HasTestEnv => IO ()
+testFwdCorrIdsLimit =
+  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {maxFwdCorrIds = 2}) testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    rc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    let v = prevVersion fwdNoncesSMPVersion
+        forwardNew = newForwardedPing rc >>= \forward -> forward v
+    Right _ <- forwardNew
+    Right _ <- forwardNew
+    forwardNew `shouldReturn` Left (PCENetworkError SMP.NEFailedError)
+
+testFwdVersionStats :: HasTestEnv => IO ()
+testFwdVersionStats = do
+  withSmpServerConfigOn (transport @TLS) statsCfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> pure ())
+    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive testSMPServer Nothing
+    forM_ ([fwdNoncesSMPVersion, fwdNoncesSMPVersion, prevVersion fwdNoncesSMPVersion] :: [VersionSMP]) $ \v ->
+      runExceptT (proxySMPMessage pc NRMInteractive sess {prVersion = v} Nothing (SMP.EntityId "1234") noMsgFlags "hello") `shouldReturn` Left (PCEProtocolError SMP.AUTH)
+    threadDelay 1500000
+    ms <- map B.words . B.lines <$> B.readFile testPrometheusMetricsFile
+    let metric name = [v | n : v : _ <- ms, n == name]
+    map
+      metric
+      [ "simplex_smp_relay_messages_requests_version{version=\"below_23\"}",
+        "simplex_smp_relay_messages_requests_version{version=\"from_23\"}",
+        "simplex_smp_relay_messages_received_version{version=\"below_23\"}",
+        "simplex_smp_relay_messages_received_version{version=\"from_23\"}"
+      ]
+      `shouldBe` [["1"], ["2"], ["1"], ["2"]]
+  Right ServerStatsData {_pMsgFwdsBelow23, _pMsgFwdsFrom23, _pMsgFwdsRecvBelow23, _pMsgFwdsRecvFrom23} <- strDecode <$> B.readFile testServerStatsBackupFile
+  (_pMsgFwdsBelow23, _pMsgFwdsFrom23, _pMsgFwdsRecvBelow23, _pMsgFwdsRecvFrom23) `shouldBe` (1, 2, 1, 2)
+  where
+    statsCfg = updateCfg proxyCfg $ \cfg_ -> cfg_ {serverStatsBackupFile = Just testServerStatsBackupFile, prometheusInterval = Just 1}
+
+newForwardedPing :: SMPClient -> IO (VersionSMP -> IO (Either SMPClientError (Maybe C.CbNonce, SMP.EncResponse)))
+newForwardedPing rc = do
+  g <- C.newRandom
+  THAuthClient {peerServerPubKey} <- maybe (fail "getProtocolClient returned no thAuth") pure $ thAuth $ thParams rc
+  (cmdPubKey, cmdPrivKey) <- atomically $ C.generateKeyPair g
+  nonce@(C.CbNonce corrId) <- atomically $ C.randomCbNonce g
+  let t = SMP.tEncodeBatch1 False (Nothing, SMP.encodeTransmission (thParams rc) (SMP.CorrId corrId, SMP.NoEntity, SMP.Cmd SMP.SIdleClient SMP.PING))
+  pure $ \v -> do
+    et <- either (fail . show) (pure . SMP.EncTransmission) $ C.cbEncrypt (C.dh' peerServerPubKey cmdPrivKey) (SMP.encTransmissionNonce v nonce) t SMP.paddedProxiedTLength
+    runExceptT $ forwardSMPTransmission rc (either error id $ C.corrCbNonce corrId) v cmdPubKey et
 
 testFwdCorrIdSize :: HasTestEnv => IO ()
 testFwdCorrIdSize =
@@ -494,6 +609,18 @@ testFwdCorrIdSize =
         forM_ (["", "2", "3333333333333333333333333"] :: [ByteString]) $ \corrId -> do
           (_, _, reply) <- sendRecv th (Nothing, corrId, SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
           reply `shouldBe` Right (SMP.ERR $ SMP.CMD SMP.SYNTAX)
+
+testProxyClosesIdleRelay :: HasTestEnv => IO ()
+testProxyClosesIdleRelay =
+  withSmpServerConfigOn (transport @TLS) proxyCfgShortPingInterval testPort $ \_ ->
+    withSmpServerConfigOn (transport @TLS) cfgS2 testPort2 $ \_ ->
+      testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY testSMPServer2 Nothing)
+        threadDelay 2000000
+        g <- C.newRandom
+        (cmdPubKey, _) <- atomically $ C.generateKeyPair g
+        (_, _, reply) <- sendRecv th (Nothing, "2", SMP.EntityId sessId, SMP.PFWD currentClientSMPRelayVersion cmdPubKey (SMP.EncTransmission ""))
+        reply `shouldBe` Right (SMP.ERR $ SMP.PROXY SMP.NO_SESSION)
 
 testForwardedAuthErrorDelay :: HasTestEnv => IO ()
 testForwardedAuthErrorDelay =
@@ -623,6 +750,72 @@ testProxyClosesRelayConnectionAfterDisconnect =
       race_ (atomically $ takeTMVar accepted) requestRelaySession
       timeout 1000000 (atomically $ takeTMVar closed) `shouldReturn` Just ()
 
+testProxyRelayConcurrencyLimit :: HasTestEnv => IO ()
+testProxyRelayConcurrencyLimit =
+  withSmpServerConfigOn (transport @TLS) cfg' testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let srv = SMPServer testHost testPort testKeyHash
+        vr = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion
+    pc <- either (fail . show) pure =<< getProtocolClient g NRMInteractive (1, srv, Nothing) defaultSMPClientConfig {serverVRange = vr} [] Nothing ts (\_ -> pure ())
+    sess <- runExceptT' $ connectSMPProxiedRelay pc NRMInteractive srv (Just "correct")
+    sId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
+    rs <- forConcurrently ([1 .. 20] :: [Int]) $ \_ -> runExceptT (proxySMPMessage pc NRMInteractive sess Nothing sId noMsgFlags "hi")
+    let rejected = length $ filter (== Right (Left (ProxyProtocolError (SMP.PROXY (SMP.BROKER SMP.TIMEOUT))))) rs
+    rejected `shouldSatisfy` (> 0)
+    threadDelay 1500000
+    readRelayLimitMetric <$> readFile testPrometheusMetricsFile `shouldReturn` Just rejected
+  where
+    cfg' = updateCfg proxyCfg $ \cfg_ -> cfg_ {proxyRelayConcurrency = 1, prometheusInterval = Just 1}
+    readRelayLimitMetric m = case [v | "simplex_smp_relay_messages_concurrency_limit" : v : _ <- map words (lines m)] of
+      v : _ -> readMaybe v
+      [] -> Nothing
+
+testForwardOversizedNotKept :: HasTestEnv => IO ()
+testForwardOversizedNotKept =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    let proxyClientCfg = defaultSMPClientConfig {serverVRange = supportedProxyClientSMPRelayVRange, agreeSecret = True, proxyServer = True}
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) proxyClientCfg [] Nothing ts (\_ -> pure ())
+    (k, _) <- atomically $ C.generateKeyPair @'C.X25519 g
+    let et = SMP.EncTransmission $ B.replicate smpBlockSize 'a'
+    runExceptT (forwardSMPTransmission c (either error id $ C.corrCbNonce "123456789012345678901234") currentClientSMPRelayVersion k et)
+      `shouldReturn` Left (PCETransportError TELargeMsg)
+    pClientSentCommandsCount c `shouldReturn` 0
+
+testClosedClientCommandsFail :: HasTestEnv => IO ()
+testClosedClientCommandsFail =
+  withSmpServerConfigOn (transport @TLS) cfg testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    closed <- newEmptyTMVarIO
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) defaultSMPClientConfig [] Nothing ts (\_ -> atomically $ putTMVar closed ())
+    closeProtocolClient c
+    atomically $ takeTMVar closed
+    Just rs <- timeout 1000000 $ sendProtocolCommands c NRMBackground $ L.fromList $ replicate 300 (NoEntity, Nothing, SMP.Cmd SMP.SIdleClient SMP.PING)
+    forM_ rs $ \(Response _ r) -> r `shouldBe` Left (PCENetworkError SMP.NEFailedError)
+    pClientSentCommandsCount c `shouldReturn` 0
+    atomically (lengthTBQueue $ pClientSndQ c) `shouldReturn` 0
+
+testLateResponseCommandReleased :: HasTestEnv => IO ()
+testLateResponseCommandReleased =
+  withSmpServerConfigOn (transport @TLS) (updateCfg cfg $ \cfg_ -> cfg_ {authErrorDelay = 2000000}) testPort $ \_ -> do
+    g <- C.newRandom
+    ts <- getCurrentTime
+    msgQ <- newTBQueueIO 4
+    let clientCfg = defaultSMPClientConfig {networkConfig = defaultNetworkConfig {smpPingInterval = 100000}, sentCommandsTTL = 0.5}
+    c <- either (fail . show) pure =<< getProtocolClient g NRMBackground (1, testSMPServer, Nothing) clientCfg [] (Just msgQ) ts (\_ -> pure ())
+    rId <- atomically $ SMP.EntityId <$> C.randomBytes 24 g
+    (_, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+    runExceptT (sendProtocolCommand_ c NRMBackground Nothing (Just 100000) (Just rpKey) rId (SMP.Cmd SMP.SRecipient SMP.SUB))
+      `shouldReturn` Left PCEResponseTimeout
+    pClientSentCommandsCount c `shouldReturn` 1
+    threadDelay 1000000
+    pClientSentCommandsCount c `shouldReturn` 0
+    (_, _, [(_, STUnexpectedError _)]) <- atomically $ readTBQueue msgQ
+    pure ()
+
 -- Bug B (same root cause as the proxy, in the messaging agent): getSMPServerClient inserts an
 -- empty SessionVar into smpClients, then connects inside newProtocolClient's tryAllErrors, which
 -- rethrows async exceptions. If the connecting thread is cancelled mid-connect, putTMVar is
@@ -650,6 +843,66 @@ testAgentClientReconnectAfterCancel =
         { smp = userServers [testSMPServer2],
           netCfg = (netCfg initAgentServers) {tcpConnectTimeout = NetworkTimeout 4000000 4000000}
         }
+
+testRelaySessionPerServer :: HasTestEnv => IO ()
+testRelaySessionPerServer =
+  withSmpServerConfigOn (transport @TLS) proxyCfg testPort $ \_ ->
+    testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+      sessId <- withRelay $ \_ -> relaySessionId th
+      threadDelay 100000
+      sessId' <- withRelay $ \_ -> relaySessionId th
+      sessId' `shouldNotBe` sessId
+  where
+    withRelay = withSmpServerConfigOn (transport @TLS) cfgS2 testPort2
+    relaySessionId th = do
+      sessId : sessIds <- forM relayServers $ \srv -> do
+        (_, _, Right (SMP.PKEY sessId _ _)) <- sendRecv th (Nothing, "1", NoEntity, SMP.PRXY srv Nothing)
+        pure sessId
+      sessIds `shouldBe` [sessId, sessId, sessId]
+      pure sessId
+    relayServers = map (\h -> SMPServer h testPort2 testKeyHash) ["127.0.0.1", "127.0.0.2", "::ffff:127.0.0.1", "127.0.0.1,unused.example"]
+
+testRelayConnectLimit :: HasTestEnv => IO ()
+testRelayConnectLimit =
+  withSmpServerConfigOn (transport @TLS) proxyCfgConnectLimit testPort $ \_ ->
+    withStallingServerOn' testPort2 $ \accepted _ ->
+      withAsync requestRelaySession $ \_ -> do
+        atomically $ takeTMVar accepted
+        testSMPClient_ "localhost" testPort supportedServerSMPRelayVRange Nothing $ \(th :: THandleSMP TLS 'TClient) -> do
+          (t, (_, _, reply)) <- responseTime $ sendRecv th (Nothing, "1", NoEntity, SMP.PRXY (SMPServer testHost2 testPort2 "1234") Nothing)
+          reply `shouldBe` Right (SMP.ERR $ SMP.PROXY $ SMP.BROKER SMP.TIMEOUT)
+          t `shouldSatisfy` (< 1)
+  where
+    proxyCfgConnectLimit = updateCfg proxyCfgShortTimeout $ \cfg' -> cfg' {smpAgentCfg = (smpAgentCfg cfg') {CA.maxConnectingClients = Just 1}}
+
+testPersistedErrorsLimit :: HasTestEnv => IO ()
+testPersistedErrorsLimit = do
+  g <- C.newRandom
+  a@CA.SMPClientAgent {CA.smpClients, CA.persistedErrors} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.persistErrorInterval = 1, CA.maxPersistedErrors = 2} Nothing g
+  forM_ ([testSMPServer, testSMPServer2, SMPServer testHost testPort2 testKeyHash] :: [SMPServer]) $ \srv ->
+    runExceptT (CA.getSMPServerClient'' a srv) >>= \case
+      Left _ -> pure ()
+      Right _ -> expectationFailure "connected to a server that is not running"
+  length <$> readTVarIO smpClients `shouldReturn` 2
+  readTVarIO persistedErrors `shouldReturn` 2
+  threadDelay 1500000
+  length <$> readTVarIO smpClients `shouldReturn` 0
+  readTVarIO persistedErrors `shouldReturn` 0
+  CA.closeSMPClientAgent a
+
+testConnectLimitRefusal :: HasTestEnv => IO ()
+testConnectLimitRefusal = do
+  g <- C.newRandom
+  a@CA.SMPClientAgent {CA.smpClients, CA.connectingClients} <- CA.newSMPClientAgent SMP.SSender CA.defaultSMPClientAgentConfig {CA.maxConnectingClients = Just 0} Nothing g
+  runExceptT (CA.getSMPServerClient'' a testSMPServer) >>= \case
+    Left e -> e `shouldBe` PCEResponseTimeout
+    Right _ -> expectationFailure "connected above the connection limit"
+  length <$> readTVarIO smpClients `shouldReturn` 0
+  readTVarIO connectingClients `shouldReturn` 0
+  CA.closeSMPClientAgent a
+
+todo :: AStoreType -> IO ()
+todo _ = fail "TODO"
 
 runExceptT' :: Exception e => ExceptT e IO a -> IO a
 runExceptT' a = runExceptT a >>= either throwIO pure

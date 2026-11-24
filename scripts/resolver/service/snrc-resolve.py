@@ -119,7 +119,8 @@ TRUSTED_PROXIES = tuple(
 )
 
 # Each TLD is its own SNRC deployment with its own ENSRegistry. Dispatch
-# happens on the rightmost label of the queried name.
+# happens on the rightmost label of the queried name. A TLD without an entry
+# answers 400 tldNotConfigured.
 # `... or "..."` makes the script's defaults the single source of truth:
 # unset AND empty-string both fall through to the literal. docker-compose
 # can therefore pass `SNRC_REGISTRY_TESTING=${SNRC_REGISTRY_TESTING:-}`

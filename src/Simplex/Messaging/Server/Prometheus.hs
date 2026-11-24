@@ -43,6 +43,9 @@ data RealTimeMetrics = RealTimeMetrics
   { socketStats :: [(ServiceName, SocketStats)],
     threadsCount :: Int,
     clientsCount :: Int,
+    relaySessionsCount :: Int,
+    relayConnectingCount :: Int,
+    relayPersistedErrorsCount :: Int,
     deliveredSubs :: RTSubscriberMetrics,
     deliveredTimes :: TimeBuckets,
     smpSubs :: RTSubscriberMetrics,
@@ -68,6 +71,9 @@ prometheusMetrics sm rtm ts =
       { socketStats,
         threadsCount,
         clientsCount,
+        relaySessionsCount,
+        relayConnectingCount,
+        relayPersistedErrorsCount,
         deliveredSubs,
         deliveredTimes,
         smpSubs,
@@ -125,6 +131,11 @@ prometheusMetrics sm rtm ts =
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
+        _pMsgFwdsBelow23,
+        _pMsgFwdsFrom23,
+        _pMsgFwdsRecvBelow23,
+        _pMsgFwdsRecvFrom23,
+        _pMsgFwdsRelayLimit,
         _rcvServices,
         _ntfServices,
         _rcvServicesSubMsg,
@@ -384,6 +395,11 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_relay_messages_requests{source=\"all\"} " <> mshow (_pRequests _pMsgFwds) <> "\n# pMsgFwds_pRequests\n\
       \simplex_smp_relay_messages_requests{source=\"own\"} " <> mshow (_pRequests _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pRequests\n\
       \\n\
+      \# HELP simplex_smp_relay_messages_requests_version Message requests sent through relay, by forwarded command version.\n\
+      \# TYPE simplex_smp_relay_messages_requests_version counter\n\
+      \simplex_smp_relay_messages_requests_version{version=\"below_23\"} " <> mshow _pMsgFwdsBelow23 <> "\n# pMsgFwdsBelow23\n\
+      \simplex_smp_relay_messages_requests_version{version=\"from_23\"} " <> mshow _pMsgFwdsFrom23 <> "\n# pMsgFwdsFrom23\n\
+      \\n\
       \# HELP simplex_smp_relay_messages_successes Successful messages sent through relay.\n\
       \# TYPE simplex_smp_relay_messages_successes counter\n\
       \simplex_smp_relay_messages_successes{source=\"all\"} " <> mshow (_pSuccesses _pMsgFwds) <> "\n# pMsgFwds_pSuccesses\n\
@@ -397,6 +413,10 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"connect\"} " <> mshow (_pErrorsConnect _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsConnect\n\
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"compat\"} " <> mshow (_pErrorsCompat _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsCompat\n\
       \simplex_smp_relay_messages_errors{source=\"own\",type=\"other\"} " <> mshow (_pErrorsOther _pMsgFwdsOwn) <> "\n# pMsgFwdsOwn_pErrorsOther\n\
+      \\n\
+      \# HELP simplex_smp_relay_messages_concurrency_limit Messages not sent through relay, as the limit of messages in flight to relay was reached.\n\
+      \# TYPE simplex_smp_relay_messages_concurrency_limit counter\n\
+      \simplex_smp_relay_messages_concurrency_limit " <> mshow _pMsgFwdsRelayLimit <> "\n# pMsgFwdsRelayLimit\n\
       \\n\
       \# HELP simplex_smp_relay_messages_received Relay messages statistics.\n\
       \# TYPE simplex_smp_relay_messages_received counter\n\
@@ -414,6 +434,21 @@ prometheusMetrics sm rtm ts =
       \# HELP simplex_smp_forward_worker_queue_length Forwarded commands waiting in forward worker queues.\n\
       \# TYPE simplex_smp_forward_worker_queue_length gauge\n\
       \simplex_smp_forward_worker_queue_length " <> mshow fwdWorkerQLength <> "\n# fwdWorkerQLength\n\
+      \# HELP simplex_smp_relay_messages_received_version Messages received from proxies, by forwarded command version.\n\
+      \# TYPE simplex_smp_relay_messages_received_version counter\n\
+      \simplex_smp_relay_messages_received_version{version=\"below_23\"} " <> mshow _pMsgFwdsRecvBelow23 <> "\n# pMsgFwdsRecvBelow23\n\
+      \simplex_smp_relay_messages_received_version{version=\"from_23\"} " <> mshow _pMsgFwdsRecvFrom23 <> "\n# pMsgFwdsRecvFrom23\n\
+      \# HELP simplex_smp_relay_sessions_total Relay sessions of SMP proxy.\n\
+      \# TYPE simplex_smp_relay_sessions_total gauge\n\
+      \simplex_smp_relay_sessions_total " <> mshow relaySessionsCount <> "\n# relaySessionsCount\n\
+      \\n\
+      \# HELP simplex_smp_relay_connecting_total Relay connections being established by SMP proxy.\n\
+      \# TYPE simplex_smp_relay_connecting_total gauge\n\
+      \simplex_smp_relay_connecting_total " <> mshow relayConnectingCount <> "\n# relayConnectingCount\n\
+      \\n\
+      \# HELP simplex_smp_relay_persisted_errors_total Relay connection errors persisted by SMP proxy.\n\
+      \# TYPE simplex_smp_relay_persisted_errors_total gauge\n\
+      \simplex_smp_relay_persisted_errors_total " <> mshow relayPersistedErrorsCount <> "\n# relayPersistedErrorsCount\n\
       \\n"
     services =
       "# Services\n\
@@ -502,7 +537,7 @@ prometheusMetrics sm rtm ts =
       \simplex_smp_" <> pfx <> "_services_sub_fewer_total " <> mshow (_srvSubFewerTotal ss) <> "\n# " <> pfx <> ".srvSubFewerTotal\n\
       \\n"
     names =
-      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} = _rslvStats
+      let NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected} = _rslvStats
        in "# Names\n\
           \# -----\n\
           \\n\
@@ -518,9 +553,13 @@ prometheusMetrics sm rtm ts =
           \# TYPE simplex_smp_names_not_found counter\n\
           \simplex_smp_names_not_found " <> mshow _rslvNotFound <> "\n# rslvNotFound\n\
           \\n\
-          \# HELP simplex_smp_names_resolver_errs Resolver backend errors (HTTP 5xx, transport, decode, or timeout).\n\
+          \# HELP simplex_smp_names_resolver_errs Failures of the resolver or its chain RPC: upstream errors, transport, decode, or timeout.\n\
           \# TYPE simplex_smp_names_resolver_errs counter\n\
           \simplex_smp_names_resolver_errs " <> mshow _rslvResolverErrs <> "\n# rslvResolverErrs\n\
+          \\n\
+          \# HELP simplex_smp_names_rejected Lookups the resolver rejected: TLD not configured, name not fully qualified, label not recorded, or no price oracle.\n\
+          \# TYPE simplex_smp_names_rejected counter\n\
+          \simplex_smp_names_rejected " <> mshow _rslvRejected <> "\n# rslvRejected\n\
           \\n\
           \# HELP simplex_smp_names_disabled RSLV requests rejected because no resolver is configured (names role off).\n\
           \# TYPE simplex_smp_names_disabled counter\n\

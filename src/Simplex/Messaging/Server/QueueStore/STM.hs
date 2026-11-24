@@ -19,6 +19,7 @@ module Simplex.Messaging.Server.QueueStore.STM
     STMService (..),
     foldRcvServiceQueues,
     withLoadedQueues,
+    restoreQueueLinkData,
     setStoreLog,
     withLog',
     readQueueRecIO,
@@ -34,8 +35,9 @@ import Data.Bitraversable (bimapM)
 import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (partition)
-import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Text (Text)
@@ -118,7 +120,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
   addQueue_ :: STMQueueStore q -> (RecipientId -> QueueRec -> IO q) -> RecipientId -> QueueRec -> IO (Either ErrorType q)
   addQueue_ st mkQ rId qr@QueueRec {senderId = sId, notifier, queueData, rcvServiceId} = do
     sq <- mkQ rId qr
-    add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
+    E.uninterruptibleMask_ $ add sq $>> withLog "addStoreQueue" st (\s -> logCreateQueue s rId qr) $> Right sq
     where
       STMQueueStore {queues, senders, notifiers, links} = st
       add q = atomically $ ifM hasId (pure $ Left DUPLICATE_) $ Right () <$ do
@@ -165,29 +167,34 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         _ -> Left AUTH
 
   addQueueLinkData :: STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
-  addQueueLinkData st sq lnkId d =
+  addQueueLinkData st sq lnkId d = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= add)
       $>> withLog "addQueueLinkData" st (\s -> logCreateLink s rId lnkId d)
     where
       rId = recipientId sq
       qr = queueRec sq
-      add q = case queueData q of
-        _ | isSecuredMsgQueue q -> pure $ Left AUTH
-        Nothing -> addLink
-        Just (lnkId', d') | lnkId' == lnkId && fst d' == fst d -> addLink
+      add q = case recipientKeys q of
+        _ :| [] -> addLinkData st sq lnkId d q
         _ -> pure $ Left AUTH
-        where
-          addLink = do
-            TM.lookup lnkId (links st) >>= \case
-              Just rId' | rId' /= rId -> pure $ Left AUTH
-              _ -> do
-                let !q' = q {queueData = Just (lnkId, d)}
-                writeTVar qr $ Just q'
-                TM.insert lnkId rId $ links st
-                pure $ Right ()
+
+  swapQueueLinkData :: STMQueueStore q -> q -> LinkId -> LinkDataHash -> Maybe (NonEmpty RcvPublicAuthKey) -> QueueLinkData -> IO (Either ErrorType (Maybe EncUserDataBytes))
+  swapQueueLinkData st sq lnkId h rKeys_ d =
+    atomically (readQueueRec qr $>>= swap) $>>= \case
+      Just ud -> pure $ Right $ Just ud
+      Nothing -> Nothing <$$ withLog "swapQueueLinkData" st (\s -> logSwapLink s (recipientId sq) lnkId d rKeys_)
+    where
+      qr = queueRec sq
+      swap q = case queueData q of
+        Just (lnkId', (fd', ud'))
+          | lnkId' /= lnkId || fd' /= fst d -> pure $ Left AUTH
+          | linkDataHash ud' /= h -> pure $ Right $ Just ud'
+          | otherwise -> do
+              let !q' = q {recipientKeys = fromMaybe (recipientKeys q) rKeys_, queueData = Just (lnkId, d)}
+              writeTVar qr (Just q') $> Right Nothing
+        Nothing -> pure $ Left AUTH
 
   deleteQueueLinkData :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  deleteQueueLinkData st sq =
+  deleteQueueLinkData st sq = E.uninterruptibleMask_ $
     withQueueRec qr delete
       $>> withLog "deleteQueueLinkData" st (`logDeleteLink` recipientId sq)
     where
@@ -196,16 +203,18 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         TM.delete lnkId $ links st
         writeTVar qr $ Just q {queueData = Nothing}
 
-  updateKeys :: STMQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
-  updateKeys st sq rKeys =
-    withQueueRec qr update
+  updateKeys :: STMQueueStore q -> q -> Maybe (NonEmpty RcvPublicAuthKey) -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys st sq prevKeys_ rKeys =
+    atomically (readQueueRec qr $>>= update)
       $>> withLog "updateKeys" st (\s -> logUpdateKeys s (recipientId sq) rKeys)
     where
       qr = queueRec sq
-      update q = writeTVar qr $ Just q {recipientKeys = rKeys}
+      update q
+        | maybe True (recipientKeys q ==) prevKeys_ = Right <$> writeTVar qr (Just q {recipientKeys = rKeys})
+        | otherwise = pure $ Left AUTH
 
   secureQueue :: STMQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
-  secureQueue st sq sKey =
+  secureQueue st sq sKey = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= secure)
       $>> withLog "secureQueue" st (\s -> logSecureQueue s (recipientId sq) sKey)
     where
@@ -217,7 +226,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
           pure $ Right ()
 
   addQueueNotifier :: STMQueueStore q -> q -> NtfCreds -> IO (Either ErrorType (Maybe NtfCreds))
-  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} =
+  addQueueNotifier st sq ntfCreds@NtfCreds {notifierId = nId} = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= add)
       $>>= \nc_ -> nc_ <$$ withLog "addQueueNotifier" st (\s -> logAddNotifier s rId ntfCreds)
     where
@@ -232,7 +241,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure $ Right nc_
 
   deleteQueueNotifier :: STMQueueStore q -> q -> IO (Either ErrorType (Maybe NtfCreds))
-  deleteQueueNotifier st sq =
+  deleteQueueNotifier st sq = E.uninterruptibleMask_ $
     withQueueRec qr delete
       $>>= (<$$ withLog "deleteQueueNotifier" st (`logDeleteNotifier` recipientId sq))
     where
@@ -243,22 +252,22 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure nc
 
   suspendQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  suspendQueue st sq =
+  suspendQueue st sq = E.uninterruptibleMask_ $
     setStatus (queueRec sq) EntityOff
       $>> withLog "suspendQueue" st (`logSuspendQueue` recipientId sq)
 
   blockQueue :: STMQueueStore q -> q -> BlockingInfo -> IO (Either ErrorType ())
-  blockQueue st sq info =
+  blockQueue st sq info = E.uninterruptibleMask_ $
     setStatus (queueRec sq) (EntityBlocked info)
       $>> withLog "blockQueue" st (\sl -> logBlockQueue sl (recipientId sq) info)
 
   unblockQueue :: STMQueueStore q -> q -> IO (Either ErrorType ())
-  unblockQueue st sq =
+  unblockQueue st sq = E.uninterruptibleMask_ $
     setStatus (queueRec sq) EntityActive
       $>> withLog "unblockQueue" st (`logUnblockQueue` recipientId sq)
 
   updateQueueTime :: STMQueueStore q -> q -> SystemDate -> IO (Either ErrorType QueueRec)
-  updateQueueTime st sq t = withQueueRec qr update $>>= log'
+  updateQueueTime st sq t = E.uninterruptibleMask_ $ withQueueRec qr update $>>= log'
     where
       qr = queueRec sq
       update q@QueueRec {updatedAt}
@@ -271,7 +280,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         | otherwise = pure $ Right q
 
   deleteStoreQueue :: STMQueueStore q -> q -> IO (Either ErrorType QueueRec)
-  deleteStoreQueue st sq =
+  deleteStoreQueue st sq = E.uninterruptibleMask_ $
     withQueueRec qr delete
       $>>= (<$$ withLog "deleteStoreQueue" st (`logDeleteQueue` rId))
     where
@@ -287,7 +296,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure q
 
   getCreateService :: STMQueueStore q -> ServiceRec -> IO (Either ErrorType ServiceId)
-  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} =
+  getCreateService st sr@ServiceRec {serviceId = newSrvId, serviceRole, serviceCertHash = XV.Fingerprint fp} = E.uninterruptibleMask_ $
     TM.lookupIO fp serviceCerts
       >>= maybe
         (atomically $ TM.lookup fp serviceCerts >>= maybe newService checkService)
@@ -315,7 +324,7 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         pure STMService {serviceRec = sr, serviceRcvQueues, serviceNtfQueues}
 
   setQueueService :: (PartyI p, ServiceParty p) => STMQueueStore q -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType ())
-  setQueueService st sq party serviceId =
+  setQueueService st sq party serviceId = E.uninterruptibleMask_ $
     atomically (readQueueRec qr $>>= setService)
       $>> withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
     where
@@ -355,10 +364,16 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         ssNtfs' = (Nothing, ntfs') : ssNtfs
     pure $ Right (ssNtfs', deleteNtfs)
     where
-      addService (ssNtfs, ntfs') (serviceId, s) = do
-        (snIds, _) <- readTVarIO $ serviceNtfQueues s
-        let (sNtfs, restNtfs) = partition (\(nId, _) -> S.member nId snIds) ntfs'
-        pure ((Just serviceId, sNtfs) : ssNtfs, restNtfs)
+      addService (ssNtfs, deleteNtfs) (serviceId, s) = do
+        (sNIds, _) <- readTVarIO $ serviceNtfQueues s
+        let (sNtfs, otherNtfs) = partition (\(nId, _) -> S.member nId sNIds) deleteNtfs
+        pure ((Just serviceId, sNtfs) : ssNtfs, otherNtfs)
+      addNtf ns qs ntf@(nId, _) (!ssNtfs, deleteNtfs) = case M.lookup nId ns >>= (`M.lookup` qs) of
+        Just q -> do
+          qr <- readTVarIO (queueRec q)
+          let serviceId = qr >>= notifier >>= ntfServiceId
+          pure (M.alter (Just . maybe [ntf] (ntf :)) serviceId ssNtfs, deleteNtfs)
+        Nothing -> pure (ssNtfs, ntf : deleteNtfs)
 
   getServiceQueueCountHash :: (PartyI p, ServiceParty p) => STMQueueStore q -> SParty p -> ServiceId -> IO (Either ErrorType (Int64, IdsHash))
   getServiceQueueCountHash st party serviceId =
@@ -369,6 +384,38 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
       serviceSel = case party of
         SRecipientService -> serviceRcvQueues
         SNotifierService -> serviceNtfQueues
+
+setQueueService_ :: (StoreQueueClass q, PartyI p, ServiceParty p) => STMQueueStore q -> Maybe QueueId -> q -> SParty p -> Maybe ServiceId -> IO (Either ErrorType (Maybe ServiceId))
+setQueueService_ st qId_ sq party serviceId =
+  atomically (readQueueRec qr $>>= setService)
+    $>>= \prevSrvId ->
+      if prevSrvId == serviceId
+        then pure $ Right prevSrvId
+        else prevSrvId <$$ withLog "setQueueService" st (\sl -> logQueueService sl rId party serviceId)
+  where
+    qr = queueRec sq
+    rId = recipientId sq
+    setService :: QueueRec -> STM (Either ErrorType (Maybe ServiceId))
+    setService q@QueueRec {rcvServiceId = prevSrvId} = case party of
+      SRecipientService
+        | prevSrvId == serviceId -> pure $ Right prevSrvId
+        | otherwise -> do
+            updateServiceQueues serviceRcvQueues rId prevSrvId
+            let !q' = Just q {rcvServiceId = serviceId}
+            writeTVar qr q' $> Right prevSrvId
+      SNotifierService -> case notifier q of
+        Nothing -> pure $ Left AUTH
+        Just nc@NtfCreds {notifierId = nId, ntfServiceId = prevNtfSrvId}
+          | any (/= nId) qId_ -> pure $ Left AUTH
+          | prevNtfSrvId == serviceId -> pure $ Right prevNtfSrvId
+          | otherwise -> do
+              let !q' = Just q {notifier = Just nc {ntfServiceId = serviceId}}
+              updateServiceQueues serviceNtfQueues nId prevNtfSrvId
+              writeTVar qr q' $> Right prevNtfSrvId
+    updateServiceQueues :: (STMService -> TVar (Set QueueId, IdsHash)) -> QueueId -> Maybe ServiceId -> STM ()
+    updateServiceQueues serviceSel qId prevSrvId = do
+      mapM_ (removeServiceQueue st serviceSel qId) prevSrvId
+      mapM_ (addServiceQueue st serviceSel qId) serviceId
 
 foldRcvServiceQueues :: StoreQueueClass q => STMQueueStore q -> ServiceId -> (a -> (q, QueueRec)  -> IO a) -> a -> IO a
 foldRcvServiceQueues st serviceId f acc =
@@ -384,6 +431,27 @@ withLoadedQueues :: Monoid a => STMQueueStore q -> (q -> IO a) -> IO a
 withLoadedQueues st f = readTVarIO (queues st) >>= foldM run mempty
   where
     run !acc = fmap (acc <>) . f
+
+restoreQueueLinkData :: StoreQueueClass q => STMQueueStore q -> q -> LinkId -> QueueLinkData -> IO (Either ErrorType ())
+restoreQueueLinkData st sq lnkId d = atomically $ readQueueRec (queueRec sq) $>>= addLinkData st sq lnkId d
+
+addLinkData :: StoreQueueClass q => STMQueueStore q -> q -> LinkId -> QueueLinkData -> QueueRec -> STM (Either ErrorType ())
+addLinkData st sq lnkId d q = case queueData q of
+  _ | isSecuredMsgQueue q -> pure $ Left AUTH
+  Nothing -> addLink
+  Just (lnkId', d') | lnkId' == lnkId && fst d' == fst d -> addLink
+  _ -> pure $ Left AUTH
+  where
+    rId = recipientId sq
+    qr = queueRec sq
+    addLink = do
+      TM.lookup lnkId (links st) >>= \case
+        Just rId' | rId' /= rId -> pure $ Left AUTH
+        _ -> do
+          let !q' = q {queueData = Just (lnkId, d)}
+          writeTVar qr $ Just q'
+          TM.insert lnkId rId $ links st
+          pure $ Right ()
 
 withQueueRec :: TVar (Maybe QueueRec) -> (QueueRec -> STM a) -> IO (Either ErrorType a)
 withQueueRec qr a = atomically $ readQueueRec qr >>= mapM a

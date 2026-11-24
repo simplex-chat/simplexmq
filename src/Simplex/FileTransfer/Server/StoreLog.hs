@@ -23,6 +23,7 @@ where
 
 import Control.Applicative (optional, (<|>))
 import Control.Concurrent.STM
+import Control.Monad (void)
 import Control.Monad.Except
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Base64.URL as B64
@@ -124,11 +125,10 @@ readFileStore f st = mapM_ (addFileLogRecord . LB.toStrict) . LB.lines =<< LB.re
       PutFile qId path
         | takeFileName path == serverFileName qId -> setFilePath st qId path
         | otherwise -> pure $ Left AUTH
-      AddRecipients sId rcps -> runExceptT $ addRecipients sId rcps
-      DeleteFile sId -> deleteFile st sId
-      BlockFile sId info -> blockFile st sId info True
+      AddRecipients sId rcps -> addRecipients st sId rcps
+      DeleteFile sId -> void <$> deleteFile st sId
+      BlockFile sId info -> void <$> blockFile st sId info
       AckFile rId -> ackFile st rId
-    addRecipients sId rcps = mapM_ (ExceptT . addRecipient st sId) rcps
 
 writeFileStore :: StoreLog 'WriteMode -> STMFileStore -> IO ()
 writeFileStore s STMFileStore {files, recipients} = do

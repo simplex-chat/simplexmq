@@ -10,6 +10,8 @@ module Simplex.Messaging.Server.Information
   ( ServerInformation (..),
     ServerPublicConfig (..),
     ServerPublicInfo (..),
+    ClientSupport (..),
+    MinClientVersion (..),
     ServerPersistenceMode (..),
     ServerConditions (..),
     HostingType (..),
@@ -26,6 +28,8 @@ import qualified Data.Attoparsec.ByteString.Char8 as A
 import Data.Int (Int64)
 import Data.Maybe (isJust)
 import Data.Text (Text)
+import Data.Time.Calendar (Day)
+import Data.Word (Word16)
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
 
@@ -55,7 +59,8 @@ data ServerPublicInfo = ServerPublicInfo
     complaintsContacts :: Maybe ServerContactAddress,
     hosting :: Maybe Entity,
     hostingType :: Maybe HostingType,
-    serverCountry :: Maybe Text
+    serverCountry :: Maybe Text,
+    clientSupport :: Maybe ClientSupport
   }
   deriving (Show)
 
@@ -70,12 +75,13 @@ emptyServerInfo sourceCode =
       complaintsContacts = Nothing,
       hosting = Nothing,
       hostingType = Nothing,
-      serverCountry = Nothing
+      serverCountry = Nothing,
+      clientSupport = Nothing
     }
 
 hasServerInfo :: ServerPublicInfo -> Bool
-hasServerInfo ServerPublicInfo {usageConditions, operator, website, adminContacts, complaintsContacts, hosting, hostingType, serverCountry} =
-  isJust usageConditions || isJust operator || isJust website || isJust adminContacts || isJust complaintsContacts || isJust hosting || isJust hostingType || isJust serverCountry
+hasServerInfo ServerPublicInfo {usageConditions, operator, website, adminContacts, complaintsContacts, hosting, hostingType, serverCountry, clientSupport} =
+  isJust usageConditions || isJust operator || isJust website || isJust adminContacts || isJust complaintsContacts || isJust hosting || isJust hostingType || isJust serverCountry || isJust clientSupport
 
 data ServerPersistenceMode = SPMMemoryOnly | SPMQueues | SPMMessages
   deriving (Show)
@@ -120,6 +126,16 @@ data ServerContactAddress = ServerContactAddress
 data PGPKey = PGPKey {pkURI :: Text, pkFingerprint :: Text}
   deriving (Show)
 
+data ClientSupport = ClientSupport
+  { minClientVersion :: Maybe MinClientVersion,
+    stableRelease :: Maybe Text,
+    betaRelease :: Maybe Text
+  }
+  deriving (Eq, Show)
+
+data MinClientVersion = MinClientVersion {protocolVersion :: Word16, fromDate :: Day}
+  deriving (Eq, Show)
+
 $(J.deriveJSON (enumJSON $ dropPrefix "SPM") ''ServerPersistenceMode)
 
 $(J.deriveJSON defaultJSON ''ServerConditions)
@@ -131,6 +147,10 @@ $(J.deriveJSON defaultJSON ''PGPKey)
 $(J.deriveJSON defaultJSON ''ServerContactAddress)
 
 $(J.deriveJSON defaultJSON ''ServerPublicConfig)
+
+$(J.deriveJSON defaultJSON ''MinClientVersion)
+
+$(J.deriveJSON defaultJSON ''ClientSupport)
 
 $(J.deriveJSON defaultJSON ''ServerPublicInfo)
 

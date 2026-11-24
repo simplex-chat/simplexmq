@@ -1,6 +1,7 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -424,7 +425,7 @@ CREATE TABLE smp_server.migrations (
 
 CREATE TABLE smp_server.msg_queues (
     recipient_id bytea NOT NULL,
-    recipient_keys bytea NOT NULL,
+    recipient_keys bytea CONSTRAINT msg_queues_recipient_key_not_null NOT NULL,
     rcv_dh_secret bytea NOT NULL,
     sender_id bytea NOT NULL,
     sender_key bytea,
@@ -444,6 +445,115 @@ CREATE TABLE smp_server.msg_queues (
     msg_queue_size bigint DEFAULT 0 NOT NULL
 )
 WITH (fillfactor='80', autovacuum_vacuum_scale_factor='0.02', autovacuum_analyze_scale_factor='0.01', autovacuum_vacuum_cost_limit='1000');
+
+
+
+CREATE TABLE smp_server.server_stats (
+    server_stats_id smallint NOT NULL,
+    saved_at bigint NOT NULL,
+    from_time bigint NOT NULL,
+    q_created bigint NOT NULL,
+    q_secured bigint NOT NULL,
+    q_deleted_all bigint NOT NULL,
+    q_deleted_new bigint NOT NULL,
+    q_deleted_secured bigint NOT NULL,
+    q_deleted_all_b bigint NOT NULL,
+    q_blocked bigint NOT NULL,
+    q_sub bigint NOT NULL,
+    q_sub_all_b bigint NOT NULL,
+    q_sub_auth bigint NOT NULL,
+    q_sub_duplicate bigint NOT NULL,
+    q_sub_prohibited bigint NOT NULL,
+    q_sub_end bigint NOT NULL,
+    q_sub_end_b bigint NOT NULL,
+    ntf_created bigint NOT NULL,
+    ntf_new_created bigint NOT NULL,
+    ntf_deleted bigint NOT NULL,
+    ntf_deleted_b bigint NOT NULL,
+    ntf_sub bigint NOT NULL,
+    ntf_sub_b bigint NOT NULL,
+    ntf_sub_auth bigint NOT NULL,
+    ntf_sub_duplicate bigint NOT NULL,
+    msg_sent bigint NOT NULL,
+    msg_sent_auth bigint NOT NULL,
+    msg_sent_quota bigint NOT NULL,
+    msg_sent_large bigint NOT NULL,
+    msg_sent_block bigint NOT NULL,
+    msg_recv bigint NOT NULL,
+    msg_recv_get bigint NOT NULL,
+    msg_get bigint NOT NULL,
+    msg_get_no_msg bigint NOT NULL,
+    msg_get_auth bigint NOT NULL,
+    msg_get_duplicate bigint NOT NULL,
+    msg_get_prohibited bigint NOT NULL,
+    msg_expired bigint NOT NULL,
+    msg_sent_ntf bigint NOT NULL,
+    msg_recv_ntf bigint NOT NULL,
+    msg_ntfs bigint NOT NULL,
+    msg_ntfs_b bigint NOT NULL,
+    msg_ntf_no_sub bigint NOT NULL,
+    msg_ntf_lost bigint NOT NULL,
+    msg_ntf_expired bigint NOT NULL,
+    p_relays_requests bigint NOT NULL,
+    p_relays_successes bigint NOT NULL,
+    p_relays_errors_connect bigint NOT NULL,
+    p_relays_errors_compat bigint NOT NULL,
+    p_relays_errors_other bigint NOT NULL,
+    p_relays_own_requests bigint NOT NULL,
+    p_relays_own_successes bigint NOT NULL,
+    p_relays_own_errors_connect bigint NOT NULL,
+    p_relays_own_errors_compat bigint NOT NULL,
+    p_relays_own_errors_other bigint NOT NULL,
+    p_msg_fwds_requests bigint NOT NULL,
+    p_msg_fwds_successes bigint NOT NULL,
+    p_msg_fwds_errors_connect bigint NOT NULL,
+    p_msg_fwds_errors_compat bigint NOT NULL,
+    p_msg_fwds_errors_other bigint NOT NULL,
+    p_msg_fwds_own_requests bigint NOT NULL,
+    p_msg_fwds_own_successes bigint NOT NULL,
+    p_msg_fwds_own_errors_connect bigint NOT NULL,
+    p_msg_fwds_own_errors_compat bigint NOT NULL,
+    p_msg_fwds_own_errors_other bigint NOT NULL,
+    p_msg_fwds_recv bigint NOT NULL,
+    rcv_services_assoc_new bigint NOT NULL,
+    rcv_services_assoc_duplicate bigint NOT NULL,
+    rcv_services_assoc_updated bigint NOT NULL,
+    rcv_services_assoc_removed bigint NOT NULL,
+    rcv_services_sub_count bigint NOT NULL,
+    rcv_services_sub_duplicate bigint NOT NULL,
+    rcv_services_sub_queues bigint NOT NULL,
+    rcv_services_sub_end bigint NOT NULL,
+    ntf_services_assoc_new bigint NOT NULL,
+    ntf_services_assoc_duplicate bigint NOT NULL,
+    ntf_services_assoc_updated bigint NOT NULL,
+    ntf_services_assoc_removed bigint NOT NULL,
+    ntf_services_sub_count bigint NOT NULL,
+    ntf_services_sub_duplicate bigint NOT NULL,
+    ntf_services_sub_queues bigint NOT NULL,
+    ntf_services_sub_end bigint NOT NULL,
+    rslv_reqs bigint NOT NULL,
+    rslv_succ bigint NOT NULL,
+    rslv_not_found bigint NOT NULL,
+    rslv_resolver_errs bigint NOT NULL,
+    rslv_disabled bigint NOT NULL,
+    rslv_rejected bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_below23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_from23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_recv_below23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_recv_from23 bigint DEFAULT 0 NOT NULL,
+    p_msg_fwds_relay_limit bigint DEFAULT 0 NOT NULL,
+    fwd_worker_cmds bigint DEFAULT 0 NOT NULL,
+    fwd_worker_cmd_ms bigint DEFAULT 0 NOT NULL,
+    fwd_worker_cmd_max_ms bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT server_stats_server_stats_id_check CHECK ((server_stats_id = 1))
+);
+
+
+
+CREATE TABLE smp_server.server_stats_queues (
+    period_set smallint NOT NULL,
+    queue_hash bigint NOT NULL
+);
 
 
 
@@ -472,6 +582,16 @@ ALTER TABLE ONLY smp_server.migrations
 
 ALTER TABLE ONLY smp_server.msg_queues
     ADD CONSTRAINT msg_queues_pkey PRIMARY KEY (recipient_id);
+
+
+
+ALTER TABLE ONLY smp_server.server_stats
+    ADD CONSTRAINT server_stats_pkey PRIMARY KEY (server_stats_id);
+
+
+
+ALTER TABLE ONLY smp_server.server_stats_queues
+    ADD CONSTRAINT server_stats_queues_pkey PRIMARY KEY (period_set, queue_hash);
 
 
 
@@ -510,6 +630,10 @@ CREATE UNIQUE INDEX idx_msg_queues_notifier_id ON smp_server.msg_queues USING bt
 
 
 CREATE INDEX idx_msg_queues_ntf_service_id ON smp_server.msg_queues USING btree (ntf_service_id, deleted_at);
+
+
+
+CREATE INDEX idx_msg_queues_rcv_service_active ON smp_server.msg_queues USING btree (rcv_service_id, recipient_id) WHERE ((deleted_at IS NULL) AND (rcv_service_id IS NOT NULL));
 
 
 

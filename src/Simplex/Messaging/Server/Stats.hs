@@ -21,6 +21,12 @@ module Simplex.Messaging.Server.Stats
     getServerStatsData,
     setServerStats,
     newPeriodStats,
+    newPendingPeriodStats,
+    PendingPeriods (..),
+    PendingHashes (..),
+    takePendingHashes,
+    restorePendingHashes,
+    mergePendingHashes,
     newPeriodStatsData,
     getPeriodStatsData,
     setPeriodStats,
@@ -124,6 +130,11 @@ data ServerStats = ServerStats
     pMsgFwds :: ProxyStats,
     pMsgFwdsOwn :: ProxyStats,
     pMsgFwdsRecv :: IORef Int,
+    pMsgFwdsBelow23 :: IORef Int,
+    pMsgFwdsFrom23 :: IORef Int,
+    pMsgFwdsRecvBelow23 :: IORef Int,
+    pMsgFwdsRecvFrom23 :: IORef Int,
+    pMsgFwdsRelayLimit :: IORef Int,
     rcvServices :: ServiceStats,
     ntfServices :: ServiceStats,
     rcvServicesSubMsg :: IORef Int,
@@ -195,6 +206,11 @@ data ServerStatsData = ServerStatsData
     _pMsgFwds :: ProxyStatsData,
     _pMsgFwdsOwn :: ProxyStatsData,
     _pMsgFwdsRecv :: Int,
+    _pMsgFwdsBelow23 :: Int,
+    _pMsgFwdsFrom23 :: Int,
+    _pMsgFwdsRecvBelow23 :: Int,
+    _pMsgFwdsRecvFrom23 :: Int,
+    _pMsgFwdsRelayLimit :: Int,
     _ntfServices :: ServiceStatsData,
     _rcvServices :: ServiceStatsData,
     _rcvServicesSubMsg :: Int,
@@ -214,8 +230,8 @@ data ServerStatsData = ServerStatsData
   }
   deriving (Show)
 
-newServerStats :: UTCTime -> IO ServerStats
-newServerStats ts = do
+newServerStats :: Bool -> UTCTime -> IO ServerStats
+newServerStats trackPending ts = do
   fromTime <- newIORef ts
   qCreated <- newIORef 0
   qSecured <- newIORef 0
@@ -253,10 +269,10 @@ newServerStats ts = do
   msgGetDuplicate <- newIORef 0
   msgGetProhibited <- newIORef 0
   msgExpired <- newIORef 0
-  activeQueues <- newPeriodStats
+  activeQueues <- newActiveQueues
   msgSentNtf <- newIORef 0
   msgRecvNtf <- newIORef 0
-  activeQueuesNtf <- newPeriodStats
+  activeQueuesNtf <- newActiveQueues
   msgNtfs <- newIORef 0
   msgNtfsB <- newIORef 0
   msgNtfNoSub <- newIORef 0
@@ -267,6 +283,11 @@ newServerStats ts = do
   pMsgFwds <- newProxyStats
   pMsgFwdsOwn <- newProxyStats
   pMsgFwdsRecv <- newIORef 0
+  pMsgFwdsBelow23 <- newIORef 0
+  pMsgFwdsFrom23 <- newIORef 0
+  pMsgFwdsRecvBelow23 <- newIORef 0
+  pMsgFwdsRecvFrom23 <- newIORef 0
+  pMsgFwdsRelayLimit <- newIORef 0
   rcvServices <- newServiceStats
   ntfServices <- newServiceStats
   rcvServicesSubMsg <- newIORef 0
@@ -336,6 +357,11 @@ newServerStats ts = do
         pMsgFwds,
         pMsgFwdsOwn,
         pMsgFwdsRecv,
+        pMsgFwdsBelow23,
+        pMsgFwdsFrom23,
+        pMsgFwdsRecvBelow23,
+        pMsgFwdsRecvFrom23,
+        pMsgFwdsRelayLimit,
         rcvServices,
         ntfServices,
         rcvServicesSubMsg,
@@ -353,6 +379,8 @@ newServerStats ts = do
         ntfCount,
         rslvStats
       }
+  where
+    newActiveQueues = if trackPending then newPendingPeriodStats else newPeriodStats
 
 getServerStatsData :: ServerStats -> IO ServerStatsData
 getServerStatsData s = do
@@ -407,6 +435,11 @@ getServerStatsData s = do
   _pMsgFwds <- getProxyStatsData $ pMsgFwds s
   _pMsgFwdsOwn <- getProxyStatsData $ pMsgFwdsOwn s
   _pMsgFwdsRecv <- readIORef $ pMsgFwdsRecv s
+  _pMsgFwdsBelow23 <- readIORef $ pMsgFwdsBelow23 s
+  _pMsgFwdsFrom23 <- readIORef $ pMsgFwdsFrom23 s
+  _pMsgFwdsRecvBelow23 <- readIORef $ pMsgFwdsRecvBelow23 s
+  _pMsgFwdsRecvFrom23 <- readIORef $ pMsgFwdsRecvFrom23 s
+  _pMsgFwdsRelayLimit <- readIORef $ pMsgFwdsRelayLimit s
   _rcvServices <- getServiceStatsData $ rcvServices s
   _ntfServices <- getServiceStatsData $ ntfServices s
   _rcvServicesSubMsg <- readIORef $ rcvServicesSubMsg s
@@ -476,6 +509,11 @@ getServerStatsData s = do
         _pMsgFwds,
         _pMsgFwdsOwn,
         _pMsgFwdsRecv,
+        _pMsgFwdsBelow23,
+        _pMsgFwdsFrom23,
+        _pMsgFwdsRecvBelow23,
+        _pMsgFwdsRecvFrom23,
+        _pMsgFwdsRelayLimit,
         _rcvServices,
         _ntfServices,
         _rcvServicesSubMsg,
@@ -548,6 +586,11 @@ setServerStats s d = do
   setProxyStats (pMsgFwds s) $! _pMsgFwds d
   setProxyStats (pMsgFwdsOwn s) $! _pMsgFwdsOwn d
   writeIORef (pMsgFwdsRecv s) $! _pMsgFwdsRecv d
+  writeIORef (pMsgFwdsBelow23 s) $! _pMsgFwdsBelow23 d
+  writeIORef (pMsgFwdsFrom23 s) $! _pMsgFwdsFrom23 d
+  writeIORef (pMsgFwdsRecvBelow23 s) $! _pMsgFwdsRecvBelow23 d
+  writeIORef (pMsgFwdsRecvFrom23 s) $! _pMsgFwdsRecvFrom23 d
+  writeIORef (pMsgFwdsRelayLimit s) $! _pMsgFwdsRelayLimit d
   setServiceStats (rcvServices s) $! _rcvServices d
   setServiceStats (ntfServices s) $! _ntfServices d
   writeIORef (rcvServicesSubMsg s) $! _rcvServicesSubMsg d
@@ -625,6 +668,10 @@ instance StrEncoding ServerStatsData where
         "pMsgFwdsOwn:",
         strEncode (_pMsgFwdsOwn d),
         "pMsgFwdsRecv=" <> strEncode (_pMsgFwdsRecv d),
+        "pMsgFwdsBelow23=" <> strEncode (_pMsgFwdsBelow23 d),
+        "pMsgFwdsFrom23=" <> strEncode (_pMsgFwdsFrom23 d),
+        "pMsgFwdsRecvBelow23=" <> strEncode (_pMsgFwdsRecvBelow23 d),
+        "pMsgFwdsRecvFrom23=" <> strEncode (_pMsgFwdsRecvFrom23 d),
         "rcvServices:",
         strEncode (_rcvServices d),
         "ntfServices:",
@@ -699,6 +746,10 @@ instance StrEncoding ServerStatsData where
     _pMsgFwds <- proxyStatsP "pMsgFwds:"
     _pMsgFwdsOwn <- proxyStatsP "pMsgFwdsOwn:"
     _pMsgFwdsRecv <- opt "pMsgFwdsRecv="
+    _pMsgFwdsBelow23 <- opt "pMsgFwdsBelow23="
+    _pMsgFwdsFrom23 <- opt "pMsgFwdsFrom23="
+    _pMsgFwdsRecvBelow23 <- opt "pMsgFwdsRecvBelow23="
+    _pMsgFwdsRecvFrom23 <- opt "pMsgFwdsRecvFrom23="
     _rcvServices <- serviceStatsP "rcvServices:"
     _ntfServices <- serviceStatsP "ntfServices:"
     _rslvStats <-
@@ -758,6 +809,11 @@ instance StrEncoding ServerStatsData where
           _pMsgFwds,
           _pMsgFwdsOwn,
           _pMsgFwdsRecv,
+          _pMsgFwdsBelow23,
+          _pMsgFwdsFrom23,
+          _pMsgFwdsRecvBelow23,
+          _pMsgFwdsRecvFrom23,
+          _pMsgFwdsRelayLimit = 0,
           _rcvServices,
           _ntfServices,
           _rcvServicesSubMsg = 0,
@@ -790,15 +846,51 @@ instance StrEncoding ServerStatsData where
 data PeriodStats = PeriodStats
   { day :: IORef IntSet,
     week :: IORef IntSet,
-    month :: IORef IntSet
+    month :: IORef IntSet,
+    pendingPeriods :: Maybe PendingPeriods
   }
 
+-- hashes added and sets reset since the last successful save
+data PendingPeriods = PendingPeriods
+  { pendingDay :: IORef PendingHashes,
+    pendingWeek :: IORef PendingHashes,
+    pendingMonth :: IORef PendingHashes
+  }
+
+data PendingHashes = PendingHashes
+  { pendingReset :: Bool,
+    pendingAdded :: IntSet
+  }
+  deriving (Eq, Show)
+
 newPeriodStats :: IO PeriodStats
-newPeriodStats = do
+newPeriodStats = newPeriodStats_ Nothing
+
+newPendingPeriodStats :: IO PeriodStats
+newPendingPeriodStats = do
+  pendingDay <- newIORef noPendingHashes
+  pendingWeek <- newIORef noPendingHashes
+  pendingMonth <- newIORef noPendingHashes
+  newPeriodStats_ $ Just PendingPeriods {pendingDay, pendingWeek, pendingMonth}
+
+newPeriodStats_ :: Maybe PendingPeriods -> IO PeriodStats
+newPeriodStats_ pendingPeriods = do
   day <- newIORef IS.empty
   week <- newIORef IS.empty
   month <- newIORef IS.empty
-  pure PeriodStats {day, week, month}
+  pure PeriodStats {day, week, month, pendingPeriods}
+
+noPendingHashes :: PendingHashes
+noPendingHashes = PendingHashes {pendingReset = False, pendingAdded = IS.empty}
+
+takePendingHashes :: IORef PendingHashes -> IO PendingHashes
+takePendingHashes ref = atomicModifyIORef' ref (noPendingHashes,)
+
+restorePendingHashes :: IORef PendingHashes -> PendingHashes -> IO ()
+restorePendingHashes ref taken = atomicModifyIORef'_ ref $ mergePendingHashes taken
+
+mergePendingHashes :: PendingHashes -> PendingHashes -> PendingHashes
+mergePendingHashes (PendingHashes r hs) (PendingHashes r' hs') = PendingHashes (r || r') (IS.union hs hs')
 
 data PeriodStatsData = PeriodStatsData
   { _day :: IntSet,
@@ -854,23 +946,29 @@ periodStatCounts ps ts = do
   let d = utctDay ts
       (_, wDay) = mondayStartWeek d
       MonthDay _ mDay = d
-  dayCount <- periodCount 1 $ day ps
-  weekCount <- periodCount wDay $ week ps
-  monthCount <- periodCount mDay $ month ps
+      pending_ = pendingPeriods ps
+  dayCount <- periodCount 1 (day ps) (pendingDay <$> pending_)
+  weekCount <- periodCount wDay (week ps) (pendingWeek <$> pending_)
+  monthCount <- periodCount mDay (month ps) (pendingMonth <$> pending_)
   pure PeriodStatCounts {dayCount, weekCount, monthCount}
   where
-    periodCount :: Int -> IORef IntSet -> IO Text
-    periodCount 1 ref = tshow . IS.size <$> atomicSwapIORef ref IS.empty
-    periodCount _ _ = pure ""
+    periodCount :: Int -> IORef IntSet -> Maybe (IORef PendingHashes) -> IO Text
+    periodCount 1 ref pRef_ = do
+      -- pending is reset before the set, so a hash added concurrently can only be persisted for the new period
+      mapM_ (`atomicWriteIORef` PendingHashes {pendingReset = True, pendingAdded = IS.empty}) pRef_
+      tshow . IS.size <$> atomicSwapIORef ref IS.empty
+    periodCount _ _ _ = pure ""
 
 updatePeriodStats :: PeriodStats -> EntityId -> IO ()
 updatePeriodStats ps (EntityId pId) = do
-  updatePeriod $ day ps
-  updatePeriod $ week ps
-  updatePeriod $ month ps
+  updatePeriod (day ps) (pendingDay <$> pendingPeriods ps)
+  updatePeriod (week ps) (pendingWeek <$> pendingPeriods ps)
+  updatePeriod (month ps) (pendingMonth <$> pendingPeriods ps)
   where
     ph = hash pId
-    updatePeriod ref = unlessM (IS.member ph <$> readIORef ref) $ atomicModifyIORef'_ ref $ IS.insert ph
+    updatePeriod ref pRef_ = unlessM (IS.member ph <$> readIORef ref) $ do
+      atomicModifyIORef'_ ref $ IS.insert ph
+      mapM_ (\pRef -> atomicModifyIORef'_ pRef $ \p -> p {pendingAdded = IS.insert ph $ pendingAdded p}) pRef_
 
 data ProxyStats = ProxyStats
   { pRequests :: IORef Int,
@@ -953,7 +1051,8 @@ data NameResolverStats = NameResolverStats
     rslvSucc :: IORef Int,
     rslvNotFound :: IORef Int,
     rslvResolverErrs :: IORef Int,
-    rslvDisabled :: IORef Int
+    rslvDisabled :: IORef Int,
+    rslvRejected :: IORef Int
   }
 
 newNameResolverStats :: IO NameResolverStats
@@ -963,14 +1062,16 @@ newNameResolverStats = do
   rslvNotFound <- newIORef 0
   rslvResolverErrs <- newIORef 0
   rslvDisabled <- newIORef 0
-  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvResolverErrs, rslvDisabled}
+  rslvRejected <- newIORef 0
+  pure NameResolverStats {rslvReqs, rslvSucc, rslvNotFound, rslvResolverErrs, rslvDisabled, rslvRejected}
 
 data NameResolverStatsData = NameResolverStatsData
   { _rslvReqs :: Int,
     _rslvSucc :: Int,
     _rslvNotFound :: Int,
     _rslvResolverErrs :: Int,
-    _rslvDisabled :: Int
+    _rslvDisabled :: Int,
+    _rslvRejected :: Int
   }
   deriving (Show)
 
@@ -981,7 +1082,8 @@ newNameResolverStatsData =
       _rslvSucc = 0,
       _rslvNotFound = 0,
       _rslvResolverErrs = 0,
-      _rslvDisabled = 0
+      _rslvDisabled = 0,
+      _rslvRejected = 0
     }
 
 getNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
@@ -991,7 +1093,8 @@ getNameResolverStatsData s = do
   _rslvNotFound <- readIORef $ rslvNotFound s
   _rslvResolverErrs <- readIORef $ rslvResolverErrs s
   _rslvDisabled <- readIORef $ rslvDisabled s
-  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled}
+  _rslvRejected <- readIORef $ rslvRejected s
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected}
 
 getResetNameResolverStatsData :: NameResolverStats -> IO NameResolverStatsData
 getResetNameResolverStatsData s = do
@@ -1000,7 +1103,8 @@ getResetNameResolverStatsData s = do
   _rslvNotFound <- atomicSwapIORef (rslvNotFound s) 0
   _rslvResolverErrs <- atomicSwapIORef (rslvResolverErrs s) 0
   _rslvDisabled <- atomicSwapIORef (rslvDisabled s) 0
-  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled}
+  _rslvRejected <- atomicSwapIORef (rslvRejected s) 0
+  pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected}
 
 -- not thread safe; used on server start only
 setNameResolverStats :: NameResolverStats -> NameResolverStatsData -> IO ()
@@ -1010,9 +1114,10 @@ setNameResolverStats s d = do
   writeIORef (rslvNotFound s) $! _rslvNotFound d
   writeIORef (rslvResolverErrs s) $! _rslvResolverErrs d
   writeIORef (rslvDisabled s) $! _rslvDisabled d
+  writeIORef (rslvRejected s) $! _rslvRejected d
 
 instance StrEncoding NameResolverStatsData where
-  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled} =
+  strEncode NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected} =
     "reqs="
       <> strEncode _rslvReqs
       <> "\nsucc="
@@ -1023,13 +1128,16 @@ instance StrEncoding NameResolverStatsData where
       <> strEncode _rslvResolverErrs
       <> "\ndisabled="
       <> strEncode _rslvDisabled
+      <> "\nrejected="
+      <> strEncode _rslvRejected
   strP = do
     _rslvReqs <- "reqs=" *> strP <* A.endOfLine
     _rslvSucc <- "succ=" *> strP <* A.endOfLine
     _rslvNotFound <- "notFound=" *> strP <* A.endOfLine
     _rslvResolverErrs <- "resolverErrs=" *> strP <* A.endOfLine
     _rslvDisabled <- "disabled=" *> strP
-    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled}
+    _rslvRejected <- (A.endOfLine *> "rejected=" *> strP) <|> pure 0
+    pure NameResolverStatsData {_rslvReqs, _rslvSucc, _rslvNotFound, _rslvResolverErrs, _rslvDisabled, _rslvRejected}
 
 data ServiceStats = ServiceStats
   { srvAssocNew :: IORef Int,

@@ -256,6 +256,12 @@ type SessionCode = ByteString
 
 type RCStepTMVar a = TMVar (Either RCErrorType a)
 
-$(JQ.deriveJSON (sumTypeJSON $ dropPrefix "RCE") ''RCErrorType)
+$( JQ.deriveJSON
+     ( sumTypeJSON $ \case
+         "RCETLSStartFailed" -> "tlsStartFailed"
+         name -> dropPrefix "RCE" name
+     )
+     ''RCErrorType
+ )
 
 $(JQ.deriveJSON defaultJSON ''RCCtrlAddress)

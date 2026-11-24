@@ -30,11 +30,9 @@ module Simplex.Messaging.Notifications.Server.Env
 import Control.Concurrent (ThreadId)
 import qualified Control.Exception as E
 import Control.Logger.Simple
-import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Except
 import Crypto.Random
-import Data.Functor (($>))
 import Data.Int (Int64)
 import Simplex.Messaging.Agent.RetryInterval
 import Data.List.NonEmpty (NonEmpty)
@@ -54,7 +52,7 @@ import Simplex.Messaging.Notifications.Server.Stats
 import Simplex.Messaging.Notifications.Server.Store.Postgres
 import Simplex.Messaging.Notifications.Server.Store.Types
 import Simplex.Messaging.Notifications.Transport (NTFVersion, VersionRangeNTF)
-import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), ServiceId, Transmission)
+import Simplex.Messaging.Protocol (BasicAuth, CorrId, Party (..), SMPServer, SParty (..), Transmission)
 import Simplex.Messaging.Server.Env.STM (StartOptions (..))
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
@@ -66,7 +64,6 @@ import Simplex.Messaging.Transport.Credentials (genCredentials, tlsCredentials)
 import Simplex.Messaging.Transport.Server (AddHTTP, ServerCredentials, TransportServerConfig, loadFingerprint, loadServerCredential)
 import Simplex.Messaging.Util (isAsyncCancellation, liftEitherWith, tshow)
 import Simplex.Messaging.Util ()
-import System.Exit (exitFailure)
 import System.Mem.Weak (Weak)
 import UnliftIO.STM
 
@@ -132,7 +129,7 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
   serverStats <- newNtfServerStats =<< getCurrentTime
   pure NtfEnv {config, subscriber, pushServer, store, random, tlsServerCreds, serverIdentity = C.KeyHash fp, serverStats}
   where
-    mkDbService g st = DBService {getCredentials, updateServiceId}
+    mkDbService g st = DBService {getCredentials}
       where
         getCredentials :: SMPServer -> IO (Either SMPClientError ServiceCredentials)
         getCredentials srv = runExceptT $ do
@@ -148,8 +145,6 @@ newNtfServerEnv config@NtfServerConfig {pushQSize, smpAgentCfg, apnsConfig, dbSt
             let tlsCreds = tlsCredentials [cred]
             setNtfServiceCredentials db srvId tlsCreds
             pure tlsCreds
-        updateServiceId :: SMPServer -> Maybe ServiceId -> IO (Either SMPClientError ())
-        updateServiceId srv serviceId_ = withClientDB "" st $ \db -> updateNtfServiceId db srv serviceId_
 
 data NtfSubscriber = NtfSubscriber
   { smpSubscribers :: TMap SMPServer SMPSubscriberVar,
@@ -177,7 +172,7 @@ data NtfPushServer = NtfPushServer
   { pushWorkers :: TMap (Maybe T.Text, PushProvider, Int) PushWorkerVar, -- Int is the worker shard
     pushWorkerSeq :: TVar Int,
     pushQSize :: Natural,
-    pushClients :: TMap PushProvider PushClientVar,
+    pushClients :: TMap (PushProvider, Int) PushClientVar,
     pushClientSeq :: TVar Int,
     apnsConfig :: APNSPushClientConfig
   }
@@ -203,11 +198,11 @@ newNtfPushServer pushQSize apnsConfig = do
 -- | Single-flight access to the per-provider push client with bounded retry.
 -- The returned PushClientVar is the handle retryDeliver passes to removeSessVar to evict
 -- this specific instance before re-fetching.
-getPushClient :: NtfPushServer -> PushProvider -> IO (PushProviderClient, PushClientVar)
-getPushClient s@NtfPushServer {apnsConfig = APNSPushClientConfig {reconnectInterval}} pp =
+getPushClient :: NtfPushServer -> PushProvider -> Int -> IO (PushProviderClient, PushClientVar)
+getPushClient s@NtfPushServer {apnsConfig = APNSPushClientConfig {reconnectInterval}} pp tokenShardId =
   withRetryIntervalCount reconnectInterval $ \n _delay loop -> do
     ts <- getCurrentTime
-    E.try (getSessVarIO (pushClientSeq s) pp (pushClients s) ts >>= either (newPushClient s pp) waitForPushClient) >>= \case
+    E.try (atomically (getSessVar (pushClientSeq s) (pp, tokenShardId) (pushClients s) ts) >>= either (newPushClient s pp tokenShardId) waitForPushClient) >>= \case
       Right result -> pure result
       Left e
         | isAsyncCancellation e -> E.throwIO e
@@ -216,15 +211,15 @@ getPushClient s@NtfPushServer {apnsConfig = APNSPushClientConfig {reconnectInter
             loop
         | otherwise -> E.throwIO e
 
-newPushClient :: NtfPushServer -> PushProvider -> PushClientVar -> IO (PushProviderClient, PushClientVar)
-newPushClient NtfPushServer {pushClients, apnsConfig} pp v = do
+newPushClient :: NtfPushServer -> PushProvider -> Int -> PushClientVar -> IO (PushProviderClient, PushClientVar)
+newPushClient NtfPushServer {pushClients, apnsConfig} pp tokenShardId v = do
   r <- E.try $ case apnsProviderHost pp of
     Nothing -> pure $ \_ _ -> pure ()
     Just host -> apnsPushProviderClient <$> createAPNSPushClient host apnsConfig
   atomically $ do
     putTMVar (sessionVar v) r
     case r of
-      Left _ -> removeSessVar v pp pushClients
+      Left _ -> removeSessVar v (pp, tokenShardId) pushClients
       Right _ -> pure ()
   either E.throwIO (\c -> pure (c, v)) r
 

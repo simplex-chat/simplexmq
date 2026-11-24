@@ -117,7 +117,7 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
 
    - `smp-server`
 
-     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+     You must change **your_ip_or_domain**. `-e "PASS=password"` is optional variable to password-protect your `smp` server. Passwords can contain printable ASCII characters except whitespace, `@`, `:` and `/`. Run the container as a non-root user (`-u "non_root_user_id"`) with ownership of the mounted directories to mitigate privilege escalation.
      ```sh
      docker run -d \
          -e "ADDR=your_ip_or_domain" \
@@ -125,12 +125,13 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
          -p 5223:5223 \
          -v $HOME/simplex/smp/config:/etc/opt/simplex:z \
          -v $HOME/simplex/smp/logs:/var/opt/simplex:z \
+         -u "non_root_user_id"
          simplexchat/smp-server:latest
      ```
 
    - `xftp-server`
 
-     You must change **your_ip_or_domain** and **maximum_storage**.
+     You must change **your_ip_or_domain** and **maximum_storage**. Run the container as a non-root user (`-u "non_root_user_id"`) with ownership of the mounted directories to mitigate privilege escalation.
      ```sh
      docker run -d \
          -e "ADDR=your_ip_or_domain" \
@@ -139,6 +140,7 @@ On Linux, you can deploy smp and xftp server using Docker. This will download im
          -v $HOME/simplex/xftp/config:/etc/opt/simplex-xftp:z \
          -v $HOME/simplex/xftp/logs:/var/opt/simplex-xftp:z \
          -v $HOME/simplex/xftp/files:/srv/xftp:z \
+         -u "non_root_user_id"
          simplexchat/xftp-server:latest
      ```
 
@@ -174,8 +176,9 @@ On Linux, you can build smp server using Docker.
    git clone https://github.com/simplex-chat/simplexmq
    cd simplexmq
    git checkout stable
-   DOCKER_BUILDKIT=1 docker build -t local/smp-server --build-arg APP="smp-server" --build-arg APP_PORT="5223" . # For xmp-server
-   DOCKER_BUILDKIT=1 docker build -t local/xftp-server --build-arg APP="xftp-server" --build-arg APP_PORT="443" . # For xftp-server
+   git submodule update --init --recursive
+   DOCKER_BUILDKIT=1 docker build --network=host -t local/smp-server --build-arg APP="smp-server" --build-arg APP_PORT="5223" . # For smp-server
+   DOCKER_BUILDKIT=1 docker build --network=host -t local/xftp-server --build-arg APP="xftp-server" --build-arg APP_PORT="443" . # For xftp-server
    ```
 
 2. Create directories for persistent Docker configuration:
@@ -188,7 +191,7 @@ On Linux, you can build smp server using Docker.
 
    - `smp-server`
 
-     You must change **your_ip_or_domain**. `-e "pass=password"` is optional variable to password-protect your `smp` server:
+     You must change **your_ip_or_domain**. `-e "PASS=password"` is optional variable to password-protect your `smp` server. Passwords can contain printable ASCII characters except whitespace, `@`, `:` and `/`. Run the container as a non-root user (`-u "non_root_user_id"`) with ownership of the mounted directories to mitigate privilege escalation.
      ```sh
      docker run -d \
          -e "ADDR=your_ip_or_domain" \
@@ -196,12 +199,13 @@ On Linux, you can build smp server using Docker.
          -p 5223:5223 \
          -v $HOME/simplex/smp/config:/etc/opt/simplex:z \
          -v $HOME/simplex/smp/logs:/var/opt/simplex:z \
+         -u "non_root_user_id"
          simplexchat/smp-server:latest
      ```
 
    - `xftp-server`
 
-     You must change **your_ip_or_domain** and **maximum_storage**.
+     You must change **your_ip_or_domain** and **maximum_storage**. Run the container as a non-root user (`-u "non_root_user_id"`) with ownership of the mounted directories to mitigate privilege escalation.
      ```sh
      docker run -d \
          -e "ADDR=your_ip_or_domain" \
@@ -210,6 +214,7 @@ On Linux, you can build smp server using Docker.
          -v $HOME/simplex/xftp/config:/etc/opt/simplex-xftp:z \
          -v $HOME/simplex/xftp/logs:/var/opt/simplex-xftp:z \
          -v $HOME/simplex/xftp/files:/srv/xftp:z \
+         -u "non_root_user_id"
          simplexchat/xftp-server:latest
      ```
 
@@ -234,6 +239,7 @@ On Linux, you can build smp server using Docker.
    git clone https://github.com/simplex-chat/simplexmq
    cd simplexmq
    git checkout stable
+   git submodule update --init --recursive
    cabal update
    cabal build exe:smp-server exe:xftp-server
    ```

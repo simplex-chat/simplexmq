@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
 import AgentTests (agentCoreTests, agentTests)
@@ -11,14 +12,18 @@ import CoreTests.CryptoFileTests
 import CoreTests.CryptoTests
 import CoreTests.EncodingTests
 import CoreTests.EthCryptoTests
+import CoreTests.KeepAliveTests
 import CoreTests.LockTests
 import CoreTests.MsgStoreTests
 import CoreTests.RetryIntervalTests
 import CoreTests.SOCKSSettings
+import CoreTests.ServerStatsTests
 import CoreTests.StoreLogTests
 import CoreTests.TSessionSubs
+import CoreTests.TransportTests
 import CoreTests.UtilTests
 import CoreTests.VersionRangeTests
+import Data.Maybe (fromMaybe)
 import FileDescriptionTests (fileDescriptionTests)
 import RSLVTests (rslvTests)
 import RemoteControl (remoteControlTests)
@@ -32,11 +37,14 @@ import Simplex.Messaging.Transport (TLS, Transport (..))
 import System.Directory (createDirectoryIfMissing, listDirectory, removePathForcibly)
 import System.Environment (getArgs, setEnv, withArgs)
 import System.FilePath ((</>))
+import System.Timeout (timeout)
 import Test.Hspec hiding (fit, it)
 import Test.Hspec.Core.Runner (defaultConfig, evalSpec, evaluateResult, readConfig, runSpecForest)
+import Test.Hspec.Core.Spec
+import Test.Hspec.Runner (configPrintSlowItems)
 import Util
 import XFTPAgent
-import XFTPCLI (xftpCLIFileTests)
+import XFTPCLI (xftpCLIConcurrentTests, xftpCLIFileTests)
 import Simplex.FileTransfer.Server.Env (AFStoreType (..))
 import Simplex.FileTransfer.Server.Store (SFSType (..))
 import XFTPServerTests (xftpServerTests)
@@ -52,7 +60,7 @@ import AgentTests.SchemaDump (schemaDumpTest)
 
 #if defined(dbServerPostgres)
 import CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests)
-import NtfServerTests (ntfServerTests)
+import NtfServerTests (ntfServerTests, ntfStoreTests)
 import NtfClient (ntfTestServerDBConnectInfo, ntfTestServerDBOpts)
 import SMPClient (testServerDBConnectInfo, testServerDBOpts)
 import SMPProxyTests (smpProxyPostgresTests)
@@ -66,11 +74,18 @@ import PostgresSchemaDump (postgresSchemaDumpTest)
 import SMPClient (postgressBracket)
 #endif
 
+#if MIN_VERSION_base(4,18,0)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Monad (forM_, void)
+import GHC.Conc.Sync (listThreads, threadLabel, threadStatus)
+#endif
+
 logCfg :: LogConfig
 logCfg = LogConfig {lc_file = Nothing, lc_stderr = True}
 
 main :: IO ()
 main = do
+  dumpThreadsAfter 25
   setLogLevel testLogLevel
   withGlobalLogging logCfg $ do
     setEnv "APNS_KEY_ID" "H82WD9K9AQ"
@@ -85,6 +100,7 @@ main = do
       . aroundAll_ (postgressBracket ntfTestServerDBConnectInfo)
       . aroundAll_ (postgressBracket testXFTPDBConnectInfo)
 #endif
+      . deadline (360 * 1000000)
       $ do
         parallel $ do
           describe "Core tests" $ do
@@ -95,11 +111,14 @@ main = do
             describe "Ethereum crypto tests" ethCryptoTests
             describe "Encrypted files tests" cryptoFileTests
             describe "Message store tests" msgStoreTests
+            describe "Server stats tests" serverStatsTests
             describe "SOCKS settings tests" socksSettingsTests
+            describe "TCP keep-alive tests" keepAliveTests
             describe "Store log tests" storeLogTests
             describe "XFTP store log tests" fileStoreLogTests
             fileExpirationTests
             describe "TSessionSubs tests" tSessionSubsTests
+            describe "Transport tests" transportTests
             describe "Util tests" utilTests
             describe "Names resolver tests" smpNamesTests
             describe "RSLV functional API tests" rslvTests
@@ -120,6 +139,7 @@ main = do
             ntfServerTests (transport @TLS, ASType SQSMemory SMSMemory)
           describe "Notifications server (SMP server: postgres-only store)" $
             ntfServerTests (transport @TLS, ASType SQSPostgres SMSPostgres)
+          describe "Notifications store" ntfStoreTests
           describe "SMP client agent, server postgres-only message store" $ agentTests (transport @TLS, ASType SQSPostgres SMSPostgres)
           describe "SMP proxy, postgres-only message store" $ do
             before (pure $ ASType SQSPostgres SMSPostgres) smpProxyTests
@@ -168,7 +188,7 @@ main = do
           describe "SMP proxy capabilities, memory message store" $
             before (pure $ ASType SQSMemory SMSMemory) smpProxyCapabilityTests
           describe "XFTP CLI (memory)" $
-            before (pure $ AFSType SFSMemory) xftpCLIFileTests
+            before (pure $ AFSType SFSMemory) $ xftpCLIFileTests >> xftpCLIConcurrentTests
 #if defined(dbServerPostgres)
           describe "XFTP CLI (PostgreSQL)" $
             before (pure $ AFSType SFSPostgres) xftpCLIFileTests
@@ -205,9 +225,23 @@ main = do
             describe "Agent SQLite schema dump" schemaDumpTest
 #endif
 
+dumpThreadsAfter :: Int -> IO ()
+#if MIN_VERSION_base(4,18,0)
+dumpThreadsAfter minutes = void . forkIO $ do
+  threadDelay $ minutes * 60000000
+  ts <- listThreads
+  putStrLn $ "=== " <> show (length ts) <> " threads after " <> show minutes <> " minutes"
+  forM_ ts $ \t -> do
+    s <- threadStatus t
+    l <- threadLabel t
+    putStrLn $ show t <> " " <> show s <> " " <> maybe "" id l
+#else
+dumpThreadsAfter _ = pure ()
+#endif
+
 hspecInTmpDir :: Spec -> IO ()
 hspecInTmpDir spec = do
-  (config, forest) <- evalSpec defaultConfig spec
+  (config, forest) <- evalSpec defaultConfig {configPrintSlowItems = Just 10} spec
   config' <- getArgs >>= readConfig config
   withTmpDir (withArgs [] $ runSpecForest forest config') >>= evaluateResult
 
@@ -215,3 +249,4 @@ withTmpDir :: IO a -> IO a
 withTmpDir = bracket_ (createDirectoryIfMissing False tmpDir >> clearTmpDir) clearTmpDir
   where
     clearTmpDir = listDirectory tmpDir >>= mapM_ (removePathForcibly . (tmpDir </>))
+

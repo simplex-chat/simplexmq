@@ -64,13 +64,17 @@ module Simplex.Messaging.Server.Env.STM
     defaultMsgQueueQuota,
     defMsgExpirationDays,
     defNtfExpirationHours,
+    defStatsSaveInterval,
     defaultMessageExpiration,
     defaultNtfExpiration,
     defaultInactiveClientExpiration,
     defaultProxyClientConcurrency,
+    defaultProxyConnectConcurrency,
+    defaultProxyRelayConcurrency,
     defaultNameResolverConcurrency,
     defaultForwardWorkers,
     defaultMaxClientCmdWait,
+    defaultMaxFwdCorrIds,
     defaultAuthErrorDelayMs,
     readWriteQueueStore,
     noPostgresExitStr,
@@ -86,6 +90,7 @@ import Control.Monad
 import Control.Monad.Reader (ReaderT)
 import qualified Crypto.PubKey.RSA as RSA
 import Crypto.Random
+import Data.ByteString.Short (ShortByteString)
 import Data.Int (Int64)
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IM
@@ -96,6 +101,7 @@ import Data.List (intercalate)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
+import Data.Set (Set)
 import qualified Data.Text as T
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.System (SystemTime)
@@ -128,7 +134,7 @@ import Simplex.Messaging.Server.StoreLog.ReadWrite
 import Simplex.Messaging.SystemTime
 import Simplex.Messaging.TMap (TMap)
 import qualified Simplex.Messaging.TMap as TM
-import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, THandleParams, TransportPeer (..), VersionRangeSMP)
+import Simplex.Messaging.Transport (ASrvTransport, SMPVersion, SessionId, THandleParams, TransportPeer (..), VersionRangeSMP)
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Util (ifM, tshow, whenM, ($>>=))
 import System.Directory (doesFileExist)
@@ -176,6 +182,8 @@ data ServerConfig s = ServerConfig
     serverStatsLogFile :: FilePath,
     -- | file to save and restore stats
     serverStatsBackupFile :: Maybe FilePath,
+    -- | interval to save stats, seconds
+    statsSaveInterval :: Int64,
     -- | interval and file to save prometheus metrics
     prometheusInterval :: Maybe Int,
     prometheusMetricsFile :: FilePath,
@@ -197,6 +205,8 @@ data ServerConfig s = ServerConfig
     smpAgentCfg :: SMPClientAgentConfig,
     allowSMPProxy :: Bool, -- auth is the same with `newQueueBasicAuth`
     serverClientConcurrency :: Int,
+    -- | max forwarded commands awaiting a response from one destination relay
+    proxyRelayConcurrency :: Int,
     -- | max concurrent forwarded name resolutions per proxy connection, enforced in forkCmd.
     -- Much higher than serverClientConcurrency: forwarded RSLVs from many clients
     -- aggregate over a single proxy->relay connection (only servers send proxied
@@ -204,6 +214,7 @@ data ServerConfig s = ServerConfig
     serverResolverConcurrency :: Int,
     serverForwardWorkers :: Int,
     maxClientCmdWait :: Int,
+    maxFwdCorrIds :: Int,
     -- | public-namespace resolver config; Nothing disables the names role
     namesConfig :: Maybe NamesConfig,
     -- | server public information
@@ -239,6 +250,9 @@ defaultNtfExpiration =
       checkInterval = 3600 -- seconds, 1 hour
     }
 
+defStatsSaveInterval :: Int64
+defStatsSaveInterval = 300
+
 defaultInactiveClientExpiration :: ExpirationConfig
 defaultInactiveClientExpiration =
   ExpirationConfig
@@ -249,6 +263,12 @@ defaultInactiveClientExpiration =
 defaultProxyClientConcurrency :: Int
 defaultProxyClientConcurrency = 500
 
+defaultProxyConnectConcurrency :: Int
+defaultProxyConnectConcurrency = 1000
+
+defaultProxyRelayConcurrency :: Int
+defaultProxyRelayConcurrency = 512
+
 defaultNameResolverConcurrency :: Int
 defaultNameResolverConcurrency = 5000
 
@@ -257,6 +277,9 @@ defaultForwardWorkers = 8
 
 defaultMaxClientCmdWait :: Int
 defaultMaxClientCmdWait = 60000000 -- microseconds
+
+defaultMaxFwdCorrIds :: Int
+defaultMaxFwdCorrIds = 65536
 
 defaultAuthErrorDelayMs :: Int64
 defaultAuthErrorDelayMs = 50
@@ -425,8 +448,10 @@ data ClientSub
   | CSDeleted QueueId (Maybe ServiceId) -- includes previously associated service IDs
   | CSService ServiceId (Int64, IdsHash) -- only send END to idividual client subs on message delivery, not of SSUB/NSSUB
 
-newtype ProxyAgent = ProxyAgent
-  { smpAgent :: SMPClientAgent 'Sender
+data ProxyAgent = ProxyAgent
+  { smpAgent :: SMPClientAgent 'Sender,
+    -- forwarded commands awaiting a response, per relay session
+    relayForwards :: TVar (Map SessionId Int)
   }
 
 type ClientId = Int
@@ -442,15 +467,18 @@ data Client s = Client
     rcvQ :: TBQueue (NonEmpty (VerifiedTransmission s)),
     sndQ :: TBQueue (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg]),
     msgQ :: TBQueue (NonEmpty (Transmission BrokerMsg)),
+    delayedQ :: TBQueue (TVar Bool, (NonEmpty (Transmission BrokerMsg), [Transmission BrokerMsg])),
     procThreads :: TVar Int,
     fwdWorkers :: TVar (IntMap (TBQueue (M s ()))),
     endThreads :: TVar (IntMap (Weak ThreadId)),
     endThreadSeq :: TVar Int,
+    fwdCorrIds :: TVar (Set ShortByteString),
     clientTHParams :: THandleParams SMPVersion 'TServer,
     connected :: TVar Bool,
     createdAt :: SystemTime,
     rcvActiveAt :: TVar SystemTime,
-    sndActiveAt :: TVar SystemTime
+    sndActiveAt :: TVar SystemTime,
+    closeTransport :: IO ()
   }
 
 type VerifiedTransmission s = (Maybe (StoreQueue s, QueueRec), Transmission Cmd)
@@ -504,8 +532,8 @@ newServerSubscribers = do
   pendingEvents <- newTVarIO IM.empty
   pure ServerSubscribers {queueSubscribers, serviceSubscribers, totalServiceSubs, subClients, pendingEvents}
 
-newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO (Client s)
-newClient clientId qSize clientTHParams createdAt = do
+newClient :: ClientId -> Natural -> THandleParams SMPVersion 'TServer -> SystemTime -> IO () -> IO (Client s)
+newClient clientId qSize clientTHParams createdAt closeTransport = do
   subscriptions <- TM.emptyIO
   ntfSubscriptions <- TM.emptyIO
   serviceSubscribed <- newTVarIO False
@@ -515,10 +543,12 @@ newClient clientId qSize clientTHParams createdAt = do
   rcvQ <- newTBQueueIO qSize
   sndQ <- newTBQueueIO qSize
   msgQ <- newTBQueueIO qSize
+  delayedQ <- newTBQueueIO qSize
   procThreads <- newTVarIO 0
   fwdWorkers <- newTVarIO IM.empty
   endThreads <- newTVarIO IM.empty
   endThreadSeq <- newTVarIO 0
+  fwdCorrIds <- newTVarIO mempty
   connected <- newTVarIO True
   rcvActiveAt <- newTVarIO createdAt
   sndActiveAt <- newTVarIO createdAt
@@ -534,15 +564,18 @@ newClient clientId qSize clientTHParams createdAt = do
         rcvQ,
         sndQ,
         msgQ,
+        delayedQ,
         procThreads,
         fwdWorkers,
         endThreads,
         endThreadSeq,
+        fwdCorrIds,
         clientTHParams,
         connected,
         createdAt,
         rcvActiveAt,
-        sndActiveAt
+        sndActiveAt,
+        closeTransport
       }
 
 newSubscription :: SubscriptionThread -> STM Sub
@@ -557,7 +590,7 @@ newProhibitedSub = do
   return Sub {subThread = ProhibitSub, delivered}
 
 newEnv :: ServerConfig s -> IO (Env s)
-newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes} = do
+newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smpAgentCfg, information, messageExpiration, msgQueueQuota, namesConfig, msgIdBytes, serverStatsBackupFile} = do
   when (msgIdBytes < 24) $ do
     logError "Error: msgIdBytes must be at least 24"
     exitFailure
@@ -585,7 +618,7 @@ newEnv config@ServerConfig {smpCredentials, httpCredentials, serverStoreCfg, smp
     newReloadableCredential checkHTTPSCredentials creds cred
   Fingerprint fp <- loadFingerprint smpCredentials
   let serverIdentity = KeyHash fp
-  serverStats <- newServerStats =<< getCurrentTime
+  serverStats <- newServerStats (isJust serverStatsBackupFile && isJust (dbStoreCfg serverStoreCfg)) =<< getCurrentTime
   sockets <- newTVarIO []
   clientSeq <- newTVarIO 0
   proxyAgent <- newSMPProxyAgent smpAgentCfg random
@@ -692,7 +725,8 @@ noPostgresExitStr =
 newSMPProxyAgent :: SMPClientAgentConfig -> TVar ChaChaDRG -> IO ProxyAgent
 newSMPProxyAgent smpAgentCfg random = do
   smpAgent <- newSMPClientAgent SSender smpAgentCfg Nothing random
-  pure ProxyAgent {smpAgent}
+  relayForwards <- newTVarIO mempty
+  pure ProxyAgent {smpAgent, relayForwards}
 
 readWriteQueueStore :: forall q. StoreQueueClass q => Bool -> (RecipientId -> QueueRec -> IO q) -> FilePath -> STMQueueStore q -> IO (StoreLog 'WriteMode)
 readWriteQueueStore tty mkQ = readWriteStoreLog (readQueueStore tty mkQ) (writeQueueStore @q)
