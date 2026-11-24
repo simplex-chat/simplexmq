@@ -46,7 +46,7 @@ module Simplex.FileTransfer.Description
   )
 where
 
-import Control.Applicative (optional, (<|>))
+import Control.Applicative (optional)
 import Control.Monad ((<=<))
 import Data.Aeson (FromJSON, ToJSON)
 import qualified Data.Aeson as J
@@ -78,7 +78,7 @@ import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.ServiceScheme (ServiceScheme (..), simplexSchemeP)
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
@@ -280,12 +280,12 @@ fileDescriptionURI :: ValidFileDescription 'FRecipient -> FileDescriptionURI
 fileDescriptionURI vfd = FileDescriptionURI SSSimplex vfd mempty
 
 instance StrEncoding FileDescriptionURI where
-  strEncode FileDescriptionURI {scheme, description, clientData} = mconcat [strEncode scheme, "/file", "#/?", queryStr]
+  strEncode FileDescriptionURI {scheme, description, clientData} = mconcat [strEncode scheme, "file", "#/?", queryStr]
     where
       queryStr = strEncode $ QSP QEscape qs
       qs = ("desc", strEncode description) : maybe [] (\cd -> [("data", encodeUtf8 cd)]) clientData
   strP = do
-    scheme <- simplexSchemeP <|> strP <* A.char '/'
+    scheme <- strP
     _ <- "file" <* optional (A.char '/') <* "#/?"
     query <- strP
     description <- queryParam "desc" query
