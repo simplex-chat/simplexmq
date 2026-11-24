@@ -1737,9 +1737,9 @@ instance ConnectionModeI m => StrEncoding (ConnShortLink m) where
     CSLContact sch ct srv (LinkKey k) -> slEncode sch srv (toLower $ ctTypeChar ct) "" k
     where
       slEncode sch (SMPServer (h :| hs) port (C.KeyHash kh)) linkType lnkId k =
-        B.concat [strEncode scheme, B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
+        B.concat [strEncode authority, B.singleton linkType, "#", lnkIdStr, B64.encodeUnpadded k, queryStr]
         where
-          (scheme, paramHosts) = case sch of
+          (authority, paramHosts) = case sch of
             SLSSimplex -> (SSSimplex, h : hs)
             SLSServer -> (SSAppServer (SrvLoc h ""), hs)
           lnkIdStr = if B.null lnkId then "" else B64.encodeUnpadded lnkId <> "/"
