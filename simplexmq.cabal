@@ -94,6 +94,11 @@ flag slow_servers
   manual: True
   default: False
 
+flag conn_lock_checks
+  description: Fail agent server requests made inside a connection lock, for tests.
+  manual: True
+  default: False
+
 flag server_postgres
   description: Build server with support of PostgreSQL.
   manual: True
@@ -429,6 +434,8 @@ library
     cpp-options: -DswiftJSON
   if flag(slow_servers)
     cpp-options: -Dslow_servers
+  if flag(conn_lock_checks)
+    cpp-options: -Dconn_lock_checks
   if !flag(client_library)
     build-depends:
         case-insensitive ==1.2.*
@@ -683,6 +690,8 @@ test-suite simplexmq-test
     cpp-options: -DdbServerPostgres
   if flag(slow_servers)
     cpp-options: -Dslow_servers
+  if flag(conn_lock_checks)
+    cpp-options: -Dconn_lock_checks
   if flag(client_postgres)
     cpp-options: -DdbPostgres
   else
