@@ -15,11 +15,6 @@ MAINNET_RPC = os.environ.get("SNRC_MAINNET_RPC", "")
 LOCAL_RPC = "http://127.0.0.1:8545"
 LOCAL_OWNER = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
 CONTACT = "https://localhost/a#ground-truth"
-SIMPLEX_MAINNET = {
-    "SNRC_REGISTRY_SIMPLEX": "0xa7f6497be2f1aa41aa2db55aba8a6e0145dff0d2",
-    "SNRC_REGISTRAR_SIMPLEX": "0x44052f7dc9c1cef20b0319a6b75288988dbb12a1",
-    "SNRC_CONTROLLER_SIMPLEX": "0x8005011c6e966656cdb9a222e9a4792600a37219",
-}
 
 
 def get(url):
@@ -140,7 +135,7 @@ class LocalChainTests(GroundTruthTestCase):
 class MainnetTests(GroundTruthTestCase):
     @classmethod
     def setUpClass(cls):
-        cls.url = start_resolver(cls, {"SNRC_RPC": MAINNET_RPC, **SIMPLEX_MAINNET})
+        cls.url = start_resolver(cls, {"SNRC_RPC": MAINNET_RPC})
 
     def test_known_names_are_registered(self):
         self.assert_registered("foobar.testing", ["https://smp16.simplex.im/a#Q_F00BA7"])
