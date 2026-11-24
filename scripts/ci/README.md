@@ -15,7 +15,7 @@ The ubuntu-24.04 x86-64 entry without the PostgreSQL agent store also lints and 
 - on a push;
 - on a pull request or a manual run that changes scripts/resolver/service or build.yml. A manual run is compared with its merge base with master.
 
-"Build SNRC contracts" builds the simplex-namespace-contract commit set in the step; test_ground_truth.py deploys it to a Hardhat node, seeds it with scripts/seed-lookup-states.mjs and checks the resolver's answer for each seeded name.
+In "Build names dev chain", the `contracts` and `anvil` stages of `webapp/dev/Dockerfile` of simplex.domains, at the commit set in the step, are built, the compiled ens-contracts artifacts and anvil are copied out of them, and the webapp's dependencies are installed. In test_ground_truth.py, anvil is started, the `.simplex` contracts are deployed and seeded with the webapp's `dev/deploy.ts`, the other states the tests need are seeded over JSON-RPC, and the resolver's answer for each seeded name is checked.
 
 `resolver-mainnet.yml` checks the resolver's answers for known mainnet names daily, on a manual run and on a pull request that changes it. The RPC is the secret `SNRC_MAINNET_RPC`, or a public endpoint without it.
 
