@@ -1288,7 +1288,7 @@ instance StrEncoding AConnectionRequestUri where
 
 connReqUriP :: Maybe ServiceScheme -> Parser AConnectionRequestUri
 connReqUriP overrideScheme = do
-  crScheme <- (`fromMaybe` overrideScheme) <$> schemeP -- always parse, but use the passed one if any
+  crScheme <- (`fromMaybe` overrideScheme) <$> (simplexSchemeP <|> strP <* A.char '/') -- always parse, but use the passed one if any
   crMode <- crModeP <* optional (A.char '/') <* "#/?"
   query <- strP
   aVRange <- queryParam "v" query
@@ -1306,7 +1306,6 @@ connReqUriP overrideScheme = do
       rk_ <- queryParam_ "rk" query
       pure . ACR SCMContact $ CRContactUri crData {crAgentVRange = adjustAgentVRange aVRange} ((,) <$> rk_ <*> e2e_)
   where
-    schemeP = "simplex:" *> optional (A.char '/') $> SSSimplex <|> strP <* A.char '/'
     crModeP = "invitation" $> CMInvitation <|> "contact" $> CMContact
     -- semicolon is used to separate SMP queues because comma is used to separate server address hostnames
     queuesP = L.fromList <$> (strDecode <$?> A.takeTill (== ';')) `A.sepBy1'` A.char ';'
@@ -1771,7 +1770,7 @@ instance StrEncoding AConnShortLink where
         pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
     where
       authorityP =
-        "simplex:" *> optional (A.char '/') $> (SLSSimplex, Nothing)
+        simplexSchemeP $> (SLSSimplex, Nothing)
           <|> "https://" *> ((SLSServer,) . Just <$> strP) <* A.char '/'
           <|> fail "bad short link scheme"
       contactTypeP = do

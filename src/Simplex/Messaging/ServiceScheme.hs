@@ -5,9 +5,10 @@ module Simplex.Messaging.ServiceScheme
   ( ServiceScheme (..),
     SrvLoc (..),
     simplexChat,
+    simplexSchemeP,
   ) where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -25,6 +26,9 @@ instance StrEncoding ServiceScheme where
   strP =
     "simplex:" $> SSSimplex
       <|> "https://" *> (SSAppServer <$> strP)
+
+simplexSchemeP :: A.Parser ServiceScheme
+simplexSchemeP = "simplex:" *> optional (A.char '/') $> SSSimplex
 
 data SrvLoc = SrvLoc TransportHost ServiceName
   deriving (Eq, Ord, Show)

@@ -36,6 +36,7 @@ import Simplex.Messaging.Agent.Store.DB (Binary (..), FromField (..), ToField (.
 import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, dropPrefix, enumJSON)
+import Simplex.Messaging.ServiceScheme (simplexSchemeP)
 import Simplex.Messaging.Util (eitherToMaybe, safeDecodeUtf8, (<$?>))
 
 data SimplexNameInfo = SimplexNameInfo
@@ -110,7 +111,7 @@ boundedNonSpace = do
 instance StrEncoding SimplexNameInfo where
   strEncode SimplexNameInfo {nameType, nameDomain} =
     strEncode nameType <> strEncode nameDomain
-  strP = optional ("simplex:" *> optional (A.char '/') *> "name") *> ((strP >>= infoP) <|> infoP NTPublicGroup)
+  strP = optional (simplexSchemeP *> "name") *> ((strP >>= infoP) <|> infoP NTPublicGroup)
     where
       infoP NTPublicGroup = SimplexNameInfo NTPublicGroup <$> (strP <|> bareName)
       infoP NTContact = SimplexNameInfo NTContact <$> strP

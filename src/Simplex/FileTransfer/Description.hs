@@ -57,7 +57,6 @@ import Data.Bifunctor (first)
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char (isHexDigit)
-import Data.Functor (($>))
 import Data.Int (Int64)
 import Data.List (foldl', sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
@@ -79,7 +78,7 @@ import Simplex.Messaging.Encoding (Encoding (..))
 import Simplex.Messaging.Encoding.String
 import Simplex.Messaging.Parsers (defaultJSON, parseAll)
 import Simplex.Messaging.Protocol (XFTPServer)
-import Simplex.Messaging.ServiceScheme (ServiceScheme (..))
+import Simplex.Messaging.ServiceScheme (ServiceScheme (..), simplexSchemeP)
 import Simplex.Messaging.Util (bshow, safeDecodeUtf8, (<$?>))
 
 data FileDescription (p :: FileParty) = FileDescription
@@ -286,7 +285,7 @@ instance StrEncoding FileDescriptionURI where
       queryStr = strEncode $ QSP QEscape qs
       qs = ("desc", strEncode description) : maybe [] (\cd -> [("data", encodeUtf8 cd)]) clientData
   strP = do
-    scheme <- "simplex:" *> optional (A.char '/') $> SSSimplex <|> strP <* A.char '/'
+    scheme <- simplexSchemeP <|> strP <* A.char '/'
     _ <- "file" <* optional (A.char '/') <* "#/?"
     query <- strP
     description <- queryParam "desc" query
