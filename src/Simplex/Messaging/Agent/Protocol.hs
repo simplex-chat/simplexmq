@@ -1756,11 +1756,7 @@ instance StrEncoding AConnShortLink where
   strEncode (ACSL _ l) = strEncode l
   {-# INLINE strEncode #-}
   strP = do
-    (sch, h_) <-
-      strP >>= \case
-        SSSimplex -> pure (SLSSimplex, Nothing)
-        SSAppServer (SrvLoc h "") -> pure (SLSServer, Just h)
-        SSAppServer _ -> fail "bad short link scheme"
+    (sch, h_) <- authorityP
     ct_ <- contactTypeP <* optional (A.char '/') <* A.char '#'
     case ct_ of
       Nothing -> do
@@ -1773,6 +1769,11 @@ instance StrEncoding AConnShortLink where
         srv <- serverQueryP h_
         pure $ ACSL SCMContact $ CSLContact sch ct srv (LinkKey k)
     where
+      authorityP =
+        strP >>= \case
+          SSSimplex -> pure (SLSSimplex, Nothing)
+          SSAppServer (SrvLoc h "") -> pure (SLSServer, Just h)
+          SSAppServer _ -> fail "bad short link scheme"
       contactTypeP = do
         Just <$> (A.anyChar >>= ctTypeP . toUpper)
           <|> A.char 'i' $> Nothing
