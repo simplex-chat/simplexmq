@@ -280,13 +280,13 @@ fileDescriptionURI :: ValidFileDescription 'FRecipient -> FileDescriptionURI
 fileDescriptionURI vfd = FileDescriptionURI SSSimplex vfd mempty
 
 instance StrEncoding FileDescriptionURI where
-  strEncode FileDescriptionURI {scheme, description, clientData} = mconcat [strEncode scheme, "/file", "#/?", queryStr]
+  strEncode FileDescriptionURI {scheme, description, clientData} = mconcat [strEncode scheme, "file", "#/?", queryStr]
     where
       queryStr = strEncode $ QSP QEscape qs
       qs = ("desc", strEncode description) : maybe [] (\cd -> [("data", encodeUtf8 cd)]) clientData
   strP = do
     scheme <- strP
-    _ <- "/file" <* optional (A.char '/') <* "#/?"
+    _ <- "file" <* optional (A.char '/') <* "#/?"
     query <- strP
     description <- queryParam "desc" query
     let clientData = safeDecodeUtf8 <$> queryParamStr "data" query

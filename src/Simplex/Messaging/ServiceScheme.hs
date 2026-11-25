@@ -7,7 +7,7 @@ module Simplex.Messaging.ServiceScheme
     simplexChat,
   ) where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (optional, (<|>))
 import qualified Data.Attoparsec.ByteString.Char8 as A
 import qualified Data.ByteString.Char8 as B
 import Data.Functor (($>))
@@ -20,11 +20,11 @@ data ServiceScheme = SSSimplex | SSAppServer SrvLoc
 
 instance StrEncoding ServiceScheme where
   strEncode = \case
-    SSSimplex -> "simplex:"
-    SSAppServer srv -> "https://" <> strEncode srv
+    SSSimplex -> "simplex:/"
+    SSAppServer srv -> "https://" <> strEncode srv <> "/"
   strP =
-    "simplex:" $> SSSimplex
-      <|> "https://" *> (SSAppServer <$> strP)
+    "simplex:" *> optional (A.char '/') $> SSSimplex
+      <|> "https://" *> (SSAppServer <$> strP) <* A.char '/'
 
 data SrvLoc = SrvLoc TransportHost ServiceName
   deriving (Eq, Ord, Show)
