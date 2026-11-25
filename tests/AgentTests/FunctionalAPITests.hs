@@ -60,6 +60,7 @@ module AgentTests.FunctionalAPITests
     testServerInformation,
 #if defined(dbPostgres)
     workItemReadTests,
+    connectionDeletionTests,
 #endif
   )
 where
@@ -140,9 +141,10 @@ import Database.PostgreSQL.Simple (Only (..), Query)
 import Fixtures
 import Simplex.Messaging.Agent.Client (withStoreIsolation', withWork, withWorkItems)
 import Simplex.Messaging.Agent.Env.SQLite (AM)
-import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), RcvQueue, RcvQueueSub (..), ServiceAssoc)
-import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
+import Simplex.Messaging.Agent.Store (AgentCommand (AClientCommand), InternalId (..), RcvQueue, RcvQueueSub (..), ServiceAssoc)
+import Simplex.Messaging.Agent.Store.AgentStore (createCommand, createNtfSubscription, createServer, createSndFile, deleteClientService, deleteConn, deleteSndMsgDelivery, getNextNtfSubNTFActions, getNextNtfSubSMPActions, getNextSndFileToPrepare, getPendingServerCommand, getSubscriptionService, getUserServerRcvQueueSubs, removeRcvServiceAssocs, setRcvServiceAssocs, startPreparedSndFile)
 import Simplex.Messaging.Agent.Store.Common (IsolationLevel (..))
+import Simplex.Messaging.Agent.Store.Entity (DBEntityId' (..))
 import Simplex.Messaging.Notifications.Types (NtfAgentSubStatus (NASNew), NtfSubAction (NSANtf, NSASMP), NtfSubNTFAction (NSACreate), NtfSubSMPAction (NSASmpKey), newNtfSubscription)
 #endif
 #if defined(dbServerPostgres)
@@ -5173,6 +5175,57 @@ waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Jus
         withTransaction st $ \db ->
           DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY (pg_blocking_pids(pid)) AND position(? IN query) > 0)" (holder, waitingQuery)
       unless waiting $ threadDelay 10000 >> waitLoop
+
+waitForBlocked :: DBStore -> String -> IO ()
+waitForBlocked st waitingQuery = timeout 5000000 waitLoop `shouldReturn` Just ()
+  where
+    waitLoop = do
+      [Only waiting] <-
+        withTransaction st $ \db ->
+          DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 AND position(? IN query) > 0)" (Only waitingQuery)
+      unless waiting $ threadDelay 10000 >> waitLoop
+
+connectionDeletionTests :: Spec
+connectionDeletionTests =
+  it "should delete a connection while the delivery of its sent message is deleted" $
+    withAgent 1 agentCfg initAgentServers testDB $ \a -> do
+      let st = store $ agentEnv a
+          connId = "conn1"
+      g <- C.newRandom
+      sndPrivateKey <- atomically $ C.generatePrivateAuthKey C.SEd25519 g
+      (dhPubKey, dhPrivKey) <- atomically $ C.generateKeyPair g
+      let sq =
+            SndQueue
+              { userId = 1,
+                connId,
+                server = testSMPServer,
+                sndId = SMP.EntityId "1",
+                queueMode = Nothing,
+                sndPrivateKey,
+                e2ePubKey = Nothing,
+                e2eDhSecret = C.dh' dhPubKey dhPrivKey,
+                status = Active,
+                dbQueueId = DBEntityId 1,
+                primary = True,
+                dbReplaceQueueId = Nothing,
+                sndSwchStatus = Nothing,
+                smpClientVersion = Version 1
+              }
+      withTransaction st $ \db -> do
+        DB.execute db "INSERT INTO connections (user_id, conn_id, conn_mode) VALUES (1,?,?)" (connId, SCMInvitation)
+        DB.execute db "INSERT INTO messages (conn_id, internal_id, internal_ts, internal_snd_id, msg_type) VALUES (?,1,now(),1,'')" (Only connId)
+        DB.execute db "INSERT INTO snd_messages (conn_id, internal_snd_id, internal_id, internal_hash) VALUES (?,1,1,'')" (Only connId)
+        DB.execute db "INSERT INTO snd_message_deliveries (conn_id, snd_queue_id, internal_id) VALUES (?,1,1)" (Only connId)
+      (delivery, deletion) <- withTransaction st $ \db -> do
+        _ :: [Only Int] <- DB.query_ db "SELECT 1 FROM snd_messages FOR UPDATE"
+        [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
+        delivery <- async $ withTransaction st $ \db' -> deleteSndMsgDelivery db' connId sq (InternalId 1) False
+        waitForLock st holder "FROM snd_messages"
+        deletion <- async $ withTransaction st $ \db' -> deleteConn db' Nothing connId
+        waitForBlocked st "DELETE FROM connections"
+        pure (delivery, deletion)
+      wait delivery `shouldReturn` ()
+      wait deletion `shouldReturn` Just connId
 #endif
 
 testClientServiceConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
