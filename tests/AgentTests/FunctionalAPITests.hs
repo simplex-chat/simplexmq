@@ -5176,15 +5176,6 @@ waitForLock st holder waitingQuery = timeout 5000000 waitLoop `shouldReturn` Jus
           DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY (pg_blocking_pids(pid)) AND position(? IN query) > 0)" (holder, waitingQuery)
       unless waiting $ threadDelay 10000 >> waitLoop
 
-waitForBlocked :: DBStore -> String -> IO ()
-waitForBlocked st waitingQuery = timeout 5000000 waitLoop `shouldReturn` Just ()
-  where
-    waitLoop = do
-      [Only waiting] <-
-        withTransaction st $ \db ->
-          DB.query db "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 AND position(? IN query) > 0)" (Only waitingQuery)
-      unless waiting $ threadDelay 10000 >> waitLoop
-
 connectionDeletionTests :: Spec
 connectionDeletionTests =
   it "should delete a connection while the delivery of its sent message is deleted" $
@@ -5219,10 +5210,14 @@ connectionDeletionTests =
       (delivery, deletion) <- withTransaction st $ \db -> do
         _ :: [Only Int] <- DB.query_ db "SELECT 1 FROM snd_messages FOR UPDATE"
         [Only holder] <- DB.query_ db "SELECT pg_backend_pid()"
-        delivery <- async $ withTransaction st $ \db' -> deleteSndMsgDelivery db' connId sq (InternalId 1) False
+        deliveryPid <- newEmptyMVar
+        delivery <- async $ withTransaction st $ \db' -> do
+          [Only pid] <- DB.query_ db' "SELECT pg_backend_pid()"
+          putMVar deliveryPid pid
+          deleteSndMsgDelivery db' connId sq (InternalId 1) False
         waitForLock st holder "FROM snd_messages"
         deletion <- async $ withTransaction st $ \db' -> deleteConn db' Nothing connId
-        waitForBlocked st "DELETE FROM connections"
+        readMVar deliveryPid >>= \pid -> waitForLock st pid "DELETE FROM connections"
         pure (delivery, deletion)
       wait delivery `shouldReturn` ()
       wait deletion `shouldReturn` Just connId
