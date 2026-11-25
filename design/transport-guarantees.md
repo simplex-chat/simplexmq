@@ -89,7 +89,7 @@ Receiving:
 10. A message sent twice by the peer, after a lost response, reaches the app once.
 
 Acknowledgement and receipts:
-11. The app's acknowledgement, and the receipt it requests, are committed before the server ACK, and before the next message of the same queue is processed.
+11. The app's acknowledgement is committed before the server ACK. The receipt it requests is stored after the server ACK, by the step that deletes the message, also when the next message of the queue was processed first.
 12. At most one receipt is stored for each app message that the app acknowledged with a receipt request. It is stored unless ratchet synchronization is in progress when it is prepared, and it is delivered as items 6.3 and 6.4 state.
 13. A received message is deleted after the server answers its ACK with OK or NO_MSG, or when its queue no longer exists. After NO_MSG, the server can deliver the message again, and item 6.9 applies.
 14. An acknowledgement completes in every state of the connection: during ratchet synchronization, and after its queue was removed.
@@ -168,7 +168,7 @@ Acknowledgement and receipts:
 | Date | Decision | Items |
 |---|---|---|
 | 2026-11-24 | Events are kept in memory; unread events are lost when the process ends. | 4.5 |
-| 2026-11-24 | The receipt is stored before the server ACK. | 6.11, 6.12 |
+| 2026-11-25 | Acknowledgements stay asynchronous and ordered through stored commands; the receipt keeps master's order, after the server ACK. | 6.11, 6.12 |
 | 2026-11-24 | A second synchronous join of an invitation is refused instead of waiting. | 5.3 |
 | 2026-11-24 | An abort cancels the rotation step in progress and deletes its new queue. | 7.2 |
 | 2026-11-24 | The KEY handshake of connection establishment is removed; SMP client version 3, with sender-secured queues, is the minimum. Rotation with peers below agent version 8 keeps KEY. | 5.2, 14.2 |
