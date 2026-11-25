@@ -1,239 +1,176 @@
 # Transport guarantees of the SMP agent
 
-Required properties of the SMP agent, its protocol clients, and its exchange with the app and the peer agent.
+This specification states how the SMP agent serves the app, how it exchanges messages with the peer agent through relays, and how it uses servers. The message syntax and the protocol steps are in [agent-protocol.md](../protocol/agent-protocol.md), [simplex-messaging.md](../protocol/simplex-messaging.md) and the diagrams in [protocol/diagrams/duplex-messaging](../protocol/diagrams/duplex-messaging).
 
-A change to these components is accepted only when every property holds in every case of section 2, or when a decision in section 16 changes how it is met.
-
-The column "Master" states the behaviour of master at 3f57fcdc:
-- "holds": the property holds in every case;
-- "violated": a known defect that a change in this area must remove;
-- "partly": the property holds except in the cases named;
-- "unconfirmed": the code read so far does not settle it.
-
-A row marked "instance of" names a case of a more general row that a design must check on its own.
+A design of these components meets this specification in every case of section 3. A decision in section 15 states how a requirement is met where several ways were possible.
 
 ## 1. Parts
 
 ```mermaid
 flowchart LR
-  App[App, chat] -- API calls --> API
+  App[App] -- calls --> Agent
+  Agent -- events --> App
   subgraph Agent
-    API[API threads]
-    Sub[Subscriber]
-    Cmd[Command workers, one per connection and server]
-    Del[Delivery workers, one per send queue]
-    Cln[Cleanup]
-    Ntf[Notification supervisor]
-    DB[(Store)]
+    API[API calls]
+    Sub[Message processing]
+    Work[Background work: commands, deliveries, deletion, cleanup]
+    Store[(Store)]
   end
-  Sub -- events --> App
-  Cmd -- events --> App
-  Del -- events --> App
-  API & Sub & Cmd & Del & Cln & Ntf --> DB
-  subgraph Clients[Protocol clients, one per transport session]
-    Snd[send thread]
-    Rcv[receive thread]
-    Proc[process thread]
-  end
-  API & Cmd & Del & Cln --> Snd
-  Snd --> Relays[SMP relays, proxies, ntf server]
-  Relays --> Rcv --> Proc -- responses --> API & Cmd & Del & Cln
-  Proc -- messages and late responses --> Sub
+  Agent -- commands --> Sessions[Transport sessions]
+  Sessions -- responses, messages --> Agent
+  Sessions <--> Relays[SMP relays, proxies, notification server]
   Relays <--> Peer[Peer agent]
 ```
 
-The agent and the peer agent are two state machines that exchange messages through relays. A relay can delay, repeat or lose a response, and it delivers the messages of one queue in order.
+## 2. Terms
 
-## 2. Cases
+- App: the program that calls the agent, such as the chat.
+- Peer: the agent at the other end of a connection.
+- Connection: the queues that the agent uses with one peer or for one contact address, with their end-to-end encryption state: a receive queue, a send queue or both, and during rotation more than one queue in a direction.
+- Session: one transport connection to one server.
+- App command: an asynchronous call identified by the app's corrId.
+- Event: a notification from the agent to the app.
+- Ratchet synchronization: the connection states RSRequired, RSStarted and RSAgreed.
+- Timeout: a configured duration; time between runs of the agent is measured by the wall clock.
 
-Each property is checked in each of these cases:
-1. concurrent API calls, subscriber, workers, deletion and cleanup on one connection;
+## 3. Cases
+
+Each requirement holds in each of these cases:
+1. concurrent calls, message processing and background work on one connection;
 2. a crash and restart at any step;
 3. retries after temporary errors and timeouts;
 4. duplicate, late, lost and reordered responses;
-5. disconnection and reconnection of a transport session;
-6. the peer agent at every supported version, taking its own steps concurrently;
-7. relays at every supported version, including those that put MSG into SUB responses;
+5. a session ending and a new one starting;
+6. the peer at every supported version, taking its own steps at the same time;
+7. relays at every supported version;
 8. the app reading no events for any length of time;
-9. callers ended by an exception, including cancelled workers and sibling threads;
-10. databases written by released versions, and a downgrade;
+9. a call ended by an exception;
+10. a store written by a released version, and a downgrade;
 11. SQLite and PostgreSQL stores;
-12. foreground app and background mode (iOS notification service extension), alternating on one database;
+12. the app and the iOS notification service extension using one store in turns;
 13. the wall clock set back.
 
-## 3. Goals
+## 4. Calls and events
 
-| ID | Guarantee | Master |
+1. A synchronous call performs its database work and its own server requests, and returns their result. Each server request ends within its timeout. The call waits for no other operation's server request and for no reading of events by the app, except:
+   - the connection attempt of a session it needs, started by another operation, within the connection timeout;
+   - a GET, which waits as item 8.1 states;
+   - a service request, which waits for the peer's reply until its timeout (item 10.3);
+   - a response that arrives behind messages the app has not read yet, within the same timeout.
+2. An asynchronous call returns once its command is stored. Each app command ends with one event carrying its corrId: its result, its error, or, when a newer command of the same kind supersedes it, a notice of that. The command is not repeated after that event; when the process ends before the app reads the event, the event is lost (item 4.5). The commands of a deleted connection end with its deletion, without events.
+3. Events of one connection reach the app in the order in which their state changes are committed. Examples: INFO before CON; JOINED before CON; DOWN and UP in the order of the subscription changes.
+4. Deletion events: DEL_CONNS for connections deleted at once is emitted before the call returns, then DEL_RCVQS, DEL_CONNS and DEL_USER follow in that order.
+5. Events are kept in memory. Every event produced while the agent runs reaches the app. Events not yet read when the process ends are lost.
+6. While the app reads no events, the agent stops reading messages from the network, and resumes, on the same session or a new one, when the app reads again. Message processing and background work that produce events pause meanwhile, and no call waits for them. Memory for the events they produce, and for unsent commands, stays within configured sizes. Events produced by calls, by session changes and by suspension are queued beyond these sizes, without waiting.
+7. After SUSPENDED, no store transaction starts and no background work runs until the app resumes the agent. SUSPENDED is emitted, without waiting, once every operation in progress has ended.
+
+## 5. Connections
+
+1. Connections are established as the fast duplex connection procedure of agent-protocol.md describes. A queue address leaves the agent only after the queue is recorded, except in a prepared link, which is returned before its queue is created; until then the server refuses messages to that address with AUTH.
+2. On each send queue of a connection, the agent first secures the queue, then sends the confirmation that gives the recipient its keys, and only then other messages. With a peer below agent version 8, the new send queue of a rotation is secured by the peer with KEY, and QTEST is the first message on it. Invitations to a contact address are sent to its queue, which is not secured.
+3. Join attempts of one invitation run one at a time; a second synchronous join while one runs is refused.
+4. Every queue whose ID the agent receives from a server is recorded in its connection until item 9.2 removes it. A queue whose creation response is lost stays on the server unused.
+5. CON is emitted on each side when the connection carries messages in both directions.
+
+## 6. Messages
+
+Sending:
+1. Messages of a connection are encrypted in the order they are stored, and are delivered on each send queue in that order.
+2. A message is stored entirely before or after each rotation or ratchet synchronization step, and is delivered to the send queues of the connection at that point.
+3. A stored app message ends, for each send queue it was stored for, with SENT or with an error event; each other stored message is delivered or dropped. Each ends at the latest when its timeout has passed while the agent runs. The messages of a deleted connection end with its deletion, without events.
+4. After a connection is deleted without waiting for delivery, no more messages are sent to its send queues.
+
+Receiving:
+5. The transmissions of one receive queue (messages, END, DELD and errors) are processed one at a time, in the order the server delivers them, including messages that arrive inside responses.
+6. Each received transmission has the effect it would have if processed after every step on its connection that committed before it.
+7. A received message is acknowledged to the server after its processing is committed, or after it ends with an error event. After a crash before that, the server delivers it again; its effect is applied once, and an app message that the app has not acknowledged is delivered to the app again (item 6.9).
+8. The app receives the messages of one receive queue in order, one at a time: after a message that the app must acknowledge, the next message of that queue arrives after the app's acknowledgement.
+9. A message the app acknowledged is not delivered to the app again. A message it did not acknowledge is delivered again in a later session, until its redelivery bound is reached, and is then dropped with an error event.
+10. A message sent twice by the peer, after a lost response, reaches the app once.
+
+Acknowledgement and receipts:
+11. The app's acknowledgement, and the receipt it requests, are committed before the server ACK, and before the next message of the same queue is processed.
+12. At most one receipt is stored for each app message that the app acknowledged with a receipt request. It is stored unless ratchet synchronization is in progress when it is prepared, and it is delivered as items 6.3 and 6.4 state.
+13. A received message is deleted after the server answers its ACK with OK or NO_MSG, or when its queue no longer exists. After NO_MSG, the server can deliver the message again, and item 6.9 applies.
+14. An acknowledgement completes in every state of the connection: during ratchet synchronization, and after its queue was removed.
+
+## 7. Queue rotation and ratchet synchronization
+
+1. Rotation steps are applied in the order of the fast queue rotation procedure for a peer at agent version 8, and of the queue rotation procedure for earlier versions, each from the status it expects, read in that step.
+2. An abort is accepted until the rotation's QADD is stored; it then cancels the step in progress and deletes the new queue. After QADD is stored, an abort is refused.
+3. When the server refuses a rotation message with AUTH, the rotation returns to its state before it started. When a rotation message is not accepted within its timeout, the rotation stays in progress.
+4. While a rotation is in progress, messages keep flowing on the current queues, as item 7.7 allows.
+5. When SWITCH completed is emitted, the notification subscription change for the new queue has been requested, and it takes effect also after a restart.
+6. The old receive queue is deleted after its last messages are received and acknowledged, or once its expiry timeout has passed while the agent runs.
+7. During ratchet synchronization, no message that needs the ratchet is sent, and calls that start a rotation or an abort are refused. A background step that needs the ratchet waits until synchronization ends or the connection is deleted.
+8. A call that starts a rotation, an abort or a ratchet synchronization commits all its changes, or is refused without changes.
+
+## 8. GET mode (iOS notification service extension)
+
+1. Per queue, GET fetches one message at a time. The next GET of that queue starts once one of these happens: the app acknowledges the message; a GET returns no message or fails; the session of the fetch ends; the acknowledgement fails permanently; a bounded time passes.
+2. Within one agent, a queue is either fetched by GET or subscribed: GET is refused for a queue with an active or pending subscription, and SUB is refused for a queue with a fetched message. When the app and the extension use one queue, the server can deliver one message to both, and the second delivery is processed as a redelivered message (item 6.9).
+3. A fetched message reaches the app, or is fetched again by a later GET.
+4. MSGNTF is emitted after the server answers the ACK of the fetched message and after the wait of item 8.1 ends, following every other event of that message. It carries the message id and its broker timestamp.
+
+## 9. Deletion
+
+1. Asynchronous deletion calls return after their store work, and queues are deleted on their servers afterwards, in the background.
+2. When a connection is deleted, DEL is sent for every receive queue of the connection, including queues it no longer uses, until the server confirms the deletion, returns a permanent error, or the configured number of attempts fails; the queue's record is then removed.
+3. At most one DEL for a queue is in flight, and DEL is not sent after the queue's deletion is confirmed or given up.
+4. A connection deleted with waitDelivery first delivers its pending messages and is then deleted; once its delivery timeout has passed while the agent runs, it is deleted with any messages left.
+5. Synchronous deletion, used by tests, deletes the queues on their servers before it returns, and leaves the connection unmarked when that fails, so that a repeated call deletes it.
+6. When a user is deleted, every connection of the user is deleted as in item 9.2, and DEL_USER is emitted once, after the last of them.
+7. Deleting a connection ends its subscriptions at once, and its notification subscriptions as soon as the notification supervisor runs, also when the deletion happened in background mode or before a restart.
+
+## 10. Links, service requests and notifications
+
+1. Updates of one link are sent to the server in the order they are made. An update that a newer one supersedes before it is sent is not sent.
+2. Repeated short-link calls on a connection return the same short link.
+3. The service request message is sent only while the caller waits for its reply; a reply that arrives after the call has ended is reported with an error event.
+4. Notification commands of one connection (create, delete, mute) take effect in the order of the operations that request them.
+5. In background mode, calls that change notification subscriptions return without waiting; the changes are applied in the next foreground run.
+
+## 11. Sessions
+
+1. Each session has one transport connection. One connection attempt runs at a time per session; after a failed attempt, requests to that session fail with the same error until the error interval passes.
+2. Commands of one session are sent in the order they are issued, across callers and retries.
+3. A single command is not sent after its caller has stopped waiting. Batched subscription, notification and deletion commands are sent until the session ends.
+4. Each response is passed once: to its waiting caller or, after the caller stopped waiting for any reason, to the agent as a late response. A late response of any age is processed. A request is kept until its response arrives or its session ends.
+5. When a session ends, its pending requests fail at once, and later requests to it fail at once.
+6. Subscription state, UP and DOWN reflect only the current session of each queue; results from an ended session leave them unchanged. A queue with an active or pending subscription is subscribed again after its session ends, until the subscription succeeds, fails permanently or is removed.
+7. SEND, SKEY, LKEY, LGET and RSLV go through a proxy whenever the proxy mode requires it, and directly only when the mode or the fallback setting allows it; other commands go to the relay directly.
+8. Requests of different users to SMP relays and XFTP servers never share a session; in entity mode, requests of different connections never share one. Notification server requests share one session per server, because the device token serves all users.
+9. A session ends after repeated request timeouts without received data.
+
+## 12. Timing
+
+1. A slow or unreachable server delays only the operations that need its responses, and the operations ordered after them by items 6.1, 6.5, 7.7, 10.1, 10.4, 11.2 and 13.4.
+2. Messages from every server are processed while any server is slow.
+3. Every wait in the agent ends: a server request by its timeout; a store operation when it completes; a wait for the app when the app reads, acknowledges or resumes the agent; a wait for ratchet synchronization when it ends or the connection is deleted.
+4. No call and no operation in progress waits for the app, except where items 4.1, 4.6, 4.7 and 8.1 state.
+
+## 13. Persistence and recovery
+
+1. After a crash at any step, a state change is present together with every command, message and delivery it starts, or none of them is.
+2. After a crash at any step, every started operation completes, is retried, or ends with an error event.
+3. A command takes effect only while it is pending and the state it depends on is unchanged. A command made obsolete by an abort, a deletion, a repeated QADD, the cleanup of a service request or a newer link update is dropped and ends as item 4.2 states; an obsolete internal command ends without an error event.
+4. The commands of one connection and server run one at a time, in the order they are created, independent of the wall clock. Commands of different servers run at the same time.
+5. A request repeated after a crash, a timeout or a lost response has the effect of one request for the app and the peer: a repeated message reaches the peer's app once (item 6.10), and an object created on a server by an earlier attempt, whose ID the agent received, is deleted.
+6. Commands, messages and deliveries stored by released versions are processed after an upgrade.
+
+## 14. Cost and compatibility
+
+1. The time and store reads for one received message, acknowledgement, command attempt or deletion step do not grow with the number of stored connections, messages or commands.
+2. Released clients, servers and peers at the supported versions keep working: agent versions 6 to 8, SMP client versions 3 and 4, relay versions from 15. A store written by a released version is upgraded with its state kept. Exceptions, by decision: a connection whose establishment needs KEY ends with a version error at the upgrade, and an invitation without a sender-secured queue is refused.
+
+## 15. Decisions
+
+| Date | Decision | Items |
 |---|---|---|
-| G1 | A slow or unreachable server delays only work that depends on a response of that server. | violated: requests are sent under connection locks, and the subscriber waits for them |
-| G2 | Processing of received messages never waits for a server request. | violated, as G1 |
-| G3 | API threads and holders of agent locks never wait for the app to read events, except a GET of a queue whose fetched message the app has not acknowledged (N1), and a network request, bounded by its timeout, whose response waits behind unread messages (G5). | violated: API threads and lock holders write events, response messages and SUSPENDED blocking; service-request calls wait for the subscriber, which waits for the app |
-| G4 | Waits form no cycle among agent threads, protocol client threads and the app. | violated: cycles through the message queue, the event queue and connection locks |
-| G5 | While the app reads no events, the agent stops reading from the network instead of buffering without bound: the subscriber stops reading messages, the message queue fills, each protocol client stops reading its socket, and requests time out. | partly: a forked event writer is added for each client callback event, and the number grows with each reconnection |
-| G6 | Memory held for unread events, unsent blocks, kept requests, locks and workers is bounded by configured sizes and counts. | violated: the number of forked writers, kept requests, lock entries and worker entries is unbounded |
-| G7 | Released clients, servers and peer agents at the supported versions keep working, and existing databases are upgraded with their state kept. | partly: R2 |
-
-## 4. Peer protocol
-
-| ID | Guarantee | Master |
-|---|---|---|
-| P1 | Messages of a connection are encrypted in the order they are stored, and are delivered on each send queue in that order. | holds |
-| P2 | Transmissions of one receive queue (messages, END, DELD, errors) are processed one at a time, in the order the server delivers them, with one unacknowledged message at a time. | partly: a message in a SUB, ACK or GET response is processed after later transmissions (C3) |
-| P3 | A received message is acknowledged to the server only after its processing is committed or has ended with an error event; after a crash before that, the message is delivered again. | holds |
-| P4 | A message the app has acknowledged is never delivered to the app again; a message it has not acknowledged is delivered again after redelivery, until the redelivery bound, after which it is dropped with an error event. | holds |
-| P5 | A message is sent on a send queue only after the confirmation that gives the recipient its keys. | partly: between retries of SKEY; on the joining side, between recording the send queue and storing the confirmation |
-| P6 | A new send queue of a rotation is secured before data is sent on it. | holds |
-| P7 | In the KEY handshake, HELLO is sent before app messages. | partly: an app message can be stored before the first KEY attempt or between retries |
-| P8 | Join attempts of one invitation never overlap. | partly: background joins run without the invitation lock |
-| P9 | A queue address is given to the peer only after the queue is recorded. | partly: a prepared link gives the address before the queue exists; the chat publishes it after creation |
-| P10 | A message is stored entirely before or after each ratchet synchronization or rotation step, and its deliveries go to the send queues present at that point. | holds |
-| P11 | The processing of one received transmission is atomic with respect to other operations on its connection, and decides from state read inside that atomic step. | partly: state is read before the connection lock; deletion, notification toggles, acknowledgements and GET are not serialized with processing |
-| P12 | After a connection is deleted without waiting for delivery, no further message is sent on its queues. | partly: pending deliveries are read without the deleted filter until the row is removed |
-
-## 5. Queue rotation and ratchet synchronization
-
-| ID | Guarantee | Master |
-|---|---|---|
-| R1 | Rotation steps of one connection are applied in protocol order, each only from its expected status, read inside the step. | partly: several steps write the next status without checking the current one, and one check uses state read before the lock |
-| R2 | An abort is applied only in states where the peer has not committed to the new queue. | violated: with agreed version 7 and version 8 software, the abort is applied after the peer rotated fast, and the queue the peer uses is deleted |
-| R3 | Every rotation ends completed or in a state from which it can be aborted. | violated: after a lost QADD or QUSE, the rotation can be neither aborted nor replaced |
-| R4 | The old receive queue is deleted only after its messages are received and acknowledged, or by the expiry bound. | partly: below agent version 8, the old queue is deleted at the first message on the new queue |
-| R5 | While ratchet synchronization is in progress (states RSRequired, RSStarted, RSAgreed), no message that needs the ratchet is sent, and a step that needs it is deferred, never lost. | violated: rotation steps end with an error and the rotation stays stuck; checks use state read before the lock, so a step can be stored after the ratchet key message |
-| R6 | A switch, abort or ratchet synchronization started by the app is refused or applied, never left half-applied. | partly: crash windows between transactions |
-
-## 6. Acknowledgement and receipts
-
-| ID | Guarantee | Master |
-|---|---|---|
-| A1 | The app's acknowledgement of a message is committed before the server ACK. | holds |
-| A2 | A received message row is deleted only after the server confirms the ACK with OK or NO_MSG, or when its queue no longer exists. | holds |
-| A3 | A receipt is sent only for an app message that the app acknowledged with a receipt request, after the app processed it. | holds |
-| A4 | A requested receipt is sent once; it is skipped only when the ratchet does not allow sending at the acknowledgement. | violated: lost after an ACK timeout followed by QEND, sent twice after a crash |
-| A5 | An acknowledgement completes also when the message's queue was removed before it. | violated: the acknowledgement fails, and the row is kept |
-| A6 | The app's acknowledgement and its receipt are committed before the next message of the same queue is processed. | partly: after an ACK timeout, the late response is processed first |
-| A7 | An acknowledgement during ratchet synchronization completes: the message row is deleted and MSGNTF is emitted. | partly: with a receipt request, an error is emitted, the row is kept and MSGNTF is lost |
-| A8 | Every received message ends in one outcome: acknowledged after processing, waiting for the app's acknowledgement, or an error event followed by its acknowledgement. | partly: when the queue or connection cannot be read, an error is emitted and no ACK follows |
-
-## 7. GET mode (iOS notification service extension)
-
-| ID | Guarantee | Master |
-|---|---|---|
-| N1 | In one agent, at most one GET-fetched message per queue is outstanding. The next GET of the queue waits until one of: the message is acknowledged; a GET returns no message or fails; the session that fetched the message disconnects; its acknowledgement fails permanently; a bounded time passes without the app's acknowledgement. | violated: a stale ACK row can release the wait early, and the wait never ends in the last three cases |
-| N2 | A queue fetched by GET is not subscribed by the same agent, and a queue with an active or pending subscription is not fetched by GET. | partly: a pending subscription does not refuse GET |
-| N3 | MSGNTF, the marker of the notification service extension, is emitted after the server confirms the ACK, after the GET wait is released, and after every event of that message. | partly: it can be emitted before subscriber events when the event queue is full |
-| N4 | MSGNTF carries the message id and its broker timestamp, read before the message row is deleted. | holds |
-| N5 | A message fetched by GET is delivered to the app, or is fetched again. | partly: lost when the requesting thread is cancelled after the response, or when its queue or connection cannot be read |
-
-## 8. Events to the app
-
-| ID | Guarantee | Master |
-|---|---|---|
-| E1 | Events of one connection are delivered to the app in the order in which their state changes are committed. | partly: deferred events can be overtaken, and forked writers race, when the event queue is full |
-| E2 | Each producing thread emits its events in program order. | partly, as E1 |
-| E3 | Instance of E1: INFO is emitted before CON for one confirmation. | partly, as E1 |
-| E4 | Instance of E1: JOINED is emitted before CON of the same connection. | partly: the order rests on network timing, and is lost when the event queue is full |
-| E5 | Instance of E1: DOWN and UP of one subscription are emitted in the order of the subscription state changes. | violated: unordered when the event queue is full, and UP is emitted after a session change |
-| E6 | DEL_CONNS of connections deleted at once is emitted before the call returns; then DEL_RCVQS, DEL_CONNS and DEL_USER are emitted in that order. | holds |
-| E7 | In a rotation, the notification subscription command is issued before SWITCH SPCompleted is emitted. | holds |
-| E8 | An event produced while the agent runs is delivered to the app; unread events are lost only when the process ends. | violated: deferred events are lost when processing throws |
-| E9 | SUSPENDED is emitted atomically with the suspended state, without waiting. | violated: the event is written blocking inside the state transaction |
-| E10 | Each command that the app enqueues ends with exactly one event carrying its corrId, a result or an error. | holds |
-
-## 9. Waits, locks and suspension
-
-| ID | Guarantee | Master |
-|---|---|---|
-| W1 | A thread that waits for the app holds no lock, and no API call waits for that thread. | violated: lock holders and API threads write events blocking |
-| W2 | Inside a database transaction, no thread waits for a queue or the network. | holds |
-| W3 | No thread in the backpressure chain of G5 holds a lock while it waits. | violated: an ACK requester waits on the message queue under the connection lock, and a GET requester under the GET lock |
-| W4 | Every network wait is bounded by its timeout, and a client is dropped after repeated timeouts without received data. | partly: a file request waits for space in the HTTP2 request queue before its timeout starts |
-| W5 | Worker wake-ups are never lost. | holds |
-| W6 | A synchronous network API waits only for its own requests and the replies they solicit, each bounded, for the GET wait of N1, and for database work. | violated: it can wait for a connection lock held across another request |
-| W7 | A lock holder waits only for database work and for further locks taken in a fixed order. | violated: lock holders wait for servers, the message queue and the event queue |
-| W8 | Every lock, claim and waiter is released when its holder ends, an exception included. | partly: the GET wait and service-request waiters are released only when the error is returned as a value |
-| W9 | After SUSPENDED, no database transaction starts and no worker, subscriber or supervisor operation runs until the agent is resumed; SUSPENDED is emitted after every operation in progress ends. | holds |
-
-## 10. Protocol client
-
-| ID | Guarantee | Master |
-|---|---|---|
-| C1 | Each response is routed once: to its waiting caller or, after the wait ends, to the agent as a late response (clients with a message queue) or to the log. | partly: the response of a wait ended by an exception is lost |
-| C2 | A late response of any age is delivered; a request is kept until its response or the disconnection of its client. | holds |
-| C3 | A message carried in a SUB, ACK or GET response is processed in reception order with the other transmissions of its session. | violated: the requester writes it after its wait, behind later transmissions |
-| C4 | A single command whose caller's wait has ended is not sent. | partly: the commands of callers ended by an exception are sent |
-| C5 | A batch block is sent also after its callers' waits have ended, until the client disconnects. | holds |
-| C6 | Callers never wait for send-queue space. | holds |
-| C7 | Blocks of one session are sent to the server in the order they are submitted, across callers and retries. | violated: when the send queue is full, forked writers send in any order, so a retry can be sent before its earlier attempt |
-| C8 | On disconnection, every pending request fails at once, and later requests to the disconnected client fail at once. | partly: later requests wait for their timeout |
-| C9 | One client per transport session; one connection attempt at a time; a failed attempt is cached for the error interval. | holds |
-| C10 | The process thread never waits for a caller. | holds |
-| C11 | A subscription result is applied only for the transport session that is current. | holds |
-| C12 | A message sent twice through a proxy after a lost response is delivered to the recipient's app once. | holds |
-| C13 | A queue with an active or pending subscription is subscribed again after its session ends, until the subscription succeeds, fails permanently or is removed. | holds in the foreground; unconfirmed in full |
-| C14 | Each stored message ends with SENT, or with an error event, within its timeout. | holds |
-
-## 11. Privacy
-
-| ID | Guarantee | Master |
-|---|---|---|
-| V1 | A command to a destination relay goes through a proxy whenever the proxy mode requires it, and directly only when the mode or the fallback setting allows it. | holds |
-| V2 | Requests of different users never share a transport session; in entity mode, requests of different connections never share one. | holds |
-
-## 12. Persistence and crash safety
-
-| ID | Guarantee | Master |
-|---|---|---|
-| D1 | Each state transition is committed in one transaction together with the persisted record of the work it starts: command rows, stored messages and all their deliveries. | partly: deliveries to further queues, the handshake command after a confirmation, message handlers after decryption, rotation handlers and queue deletion are written in separate transactions |
-| D2 | After a crash at any step, every started operation completes, is retried, or is undone. | partly, as D1: a redelivered message is only acknowledged, so the handler's remaining writes are lost |
-| D3 | A command's effect is committed only while the command is current: its row exists and the state it depends on is unchanged. When an operation makes it obsolete (abort, deletion, a repeated QADD, cleanup of a service request, a newer link update), the commit is refused; an app command then ends with one outcome event, and an internal command ends without an error event. | violated: SWCH and ICQSecure after an abort, and NEW after a deletion, end with an error, and the queue created by NEW stays on the server |
-| D4 | Async commands of one connection and server are executed one at a time, in creation order; commands of different servers run concurrently. | partly: creation order is taken from the wall clock |
-| D5 | A request repeated after a crash, a timeout or a lost response has the effect of one request. | partly: a repeated NEW creates a second queue; a repeated contact-address join sends a second invitation |
-| D6 | Rows written by released versions are processed: old command tags, receipt requests in ACK rows, rows of removed protocol steps. | holds |
-
-## 13. Queue lifecycle and deletion
-
-| ID | Guarantee | Master |
-|---|---|---|
-| L1 | A queue created on a server is recorded before its address leaves the agent, or deleted from the server. | violated: the queue stays on the server when its recording fails, when the connection record is deleted after a later failure, or when a repeated NEW drops the first queue |
-| L2 | Every queue of a deleted connection is deleted from its server, including queues already marked deleted; deletion retries are bounded, and a record is removed only after the server confirms the deletion, returns a permanent error, or the bound is reached. | violated: queues marked deleted, queues recorded on a connection waiting for delivery, and rows with pending retries, are removed without deletion on the server |
-| L3 | Deletion APIs never wait for a server request of another operation. | holds |
-| L4 | A connection deleted with waitDelivery delivers its pending messages and is then deleted, or is deleted after the delivery timeout. | partly: a send-only connection waiting for delivery is never deleted |
-| L5 | Synchronous deletion, used by tests, leaves a connection unmarked when deletion on the server fails, so a repeated call retries it. | holds |
-| L6 | When a user is deleted, every connection of the user is deleted as in L2, and DEL_USER is emitted once, after the last of them. | partly: after a crash between marking the user and its connections, the connections are never deleted; once per user is unconfirmed on PostgreSQL |
-| L7 | Two deleters never send DEL for one queue, and DEL is never sent after the queue's record is removed. | violated: cleanup and the deletion thread can both send it |
-| L8 | The in-memory subscriptions and the notification subscriptions of a deleted connection are removed, also when the deletion happens in background mode or the process ends right after it. | partly: the notification deletion is held only in memory, is discarded by a flush, is never read in background mode, and a late notification command can recreate the subscription |
-
-## 14. Links, service requests and notifications
-
-| ID | Guarantee | Master |
-|---|---|---|
-| K1 | The server ends with the data of the newest link update of each link; link credentials are created once. | partly: an older background update can be sent after a newer synchronous update or deletion |
-| K2 | A service request is sent only while its request is pending, and its reply is passed to the waiting caller. | holds |
-| K3 | Notification subscription commands of one connection (create, delete, mute) are applied in the order of the operations that request them. | partly: a subscription is recreated after mute by a rotation, or by subscription code that read the setting before SUB |
-| K4 | In background mode, notification commands never block their writer and take effect when the supervisor next runs. | violated: they are written to a queue that is not read in background mode, the writer blocks once it is full, and they are lost when the process ends |
-
-## 15. Cost
-
-| ID | Guarantee | Master |
-|---|---|---|
-| X1 | Per received message, per command attempt, and under the connection lock or deleteLock, every query reads only rows found through an index by its key (SEARCH, never SCAN), and no more of them than it needs. | partly: some acknowledgement and command queries read every row of a connection or server, and cleanup scans whole tables under deleteLock |
-
-Each query added or changed by a design is checked with EXPLAIN QUERY PLAN on SQLite and PostgreSQL.
-
-## 16. Decisions
-
-Decisions on how properties are met, agreed in principle.
-
-| Date | Decision | Properties |
-|---|---|---|
-| 2026-11-24 | Events stay in memory; unread events are lost when the process ends. | E8 |
-| 2026-11-24 | The receipt is stored before the server ACK and skipped while the ratchet does not allow sending. | A4, A6 |
-| 2026-11-24 | A concurrent synchronous join of the same invitation is refused instead of waiting. | P8 |
-| 2026-11-24 | An abort cancels an in-flight rotation step and deletes its new queue. | R1, R2, D3 |
-| 2026-11-24 | The KEY handshake is removed; SMP client version 3, with sender-secured queues, becomes the minimum. | P7, G7 |
-
-## 17. Open conflicts
-
-| Rows | Conflict |
-|---|---|
-| C2, G6 | Requests kept for late responses grow without bound while a session stays up and responses never arrive; each retry adds an entry. |
+| 2026-11-24 | Events are kept in memory; unread events are lost when the process ends. | 4.5 |
+| 2026-11-24 | The receipt is stored before the server ACK. | 6.11, 6.12 |
+| 2026-11-24 | A second synchronous join of an invitation is refused instead of waiting. | 5.3 |
+| 2026-11-24 | An abort cancels the rotation step in progress and deletes its new queue. | 7.2 |
+| 2026-11-24 | The KEY handshake of connection establishment is removed; SMP client version 3, with sender-secured queues, is the minimum. Rotation with peers below agent version 8 keeps KEY. | 5.2, 14.2 |
+| 2026-11-25 | Connections in the middle of the KEY handshake at the upgrade end with a version error, and joining an invitation without a sender-secured queue is refused. | 14.2 |
+| 2026-11-25 | A rotation refused by the server returns to its state before it started; an abort is refused once QADD is stored. | 7.2, 7.3 |
