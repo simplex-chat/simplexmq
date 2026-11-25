@@ -57,7 +57,7 @@ Each requirement holds in each of these cases:
    - a GET, which waits as item 8.1 states;
    - a service request, which waits for the peer's reply until its timeout (item 10.3);
    - a response that arrives behind messages the app has not read yet, within the same timeout.
-2. An asynchronous call returns once its command is stored. Each app command ends with one event carrying its corrId: its result, its error, or, when a newer command of the same kind supersedes it, a notice of that. The command is not repeated after that event; when the process ends before the app reads the event, the event is lost (item 4.5). The commands of a deleted connection end with its deletion, without events.
+2. An asynchronous call returns once its command is stored. Each app command ends with one event carrying its corrId: its result or its error. The command is not repeated after that event; when the process ends before the app reads the event, the event is lost (item 4.5). The commands of a deleted connection end with its deletion, without events.
 3. Events of one connection reach the app in the order in which their state changes are committed. Examples: INFO before CON; JOINED before CON; DOWN and UP in the order of the subscription changes.
 4. Deletion events: DEL_CONNS for connections deleted at once is emitted before the call returns, then DEL_RCVQS, DEL_CONNS and DEL_USER follow in that order.
 5. Events are kept in memory. Every event produced while the agent runs reaches the app. Events not yet read when the process ends are lost.
@@ -144,7 +144,7 @@ Acknowledgement and receipts:
 
 ## 12. Timing
 
-1. A slow or unreachable server delays only the operations that need its responses, and the operations ordered after them by items 6.1, 6.5, 7.7, 10.1, 10.4, 11.2 and 13.4.
+1. A slow or unreachable server delays only the operations that need its responses, and the operations ordered after them by items 6.1, 6.5, 7.7, 10.4, 11.2 and 13.4.
 2. Messages from every server are processed while any server is slow.
 3. Every wait in the agent ends: a server request by its timeout; a store operation when it completes; a wait for the app when the app reads, acknowledges or resumes the agent; a wait for ratchet synchronization when it ends or the connection is deleted.
 4. No call and no operation in progress waits for the app, except where items 4.1, 4.6, 4.7 and 8.1 state.
