@@ -20,7 +20,7 @@ import Simplex.Messaging.Transport (ASrvTransport)
 import Test.Hspec hiding (fit, it)
 
 #if defined(dbPostgres)
-import AgentTests.FunctionalAPITests (workItemReadTests)
+import AgentTests.FunctionalAPITests (connectionDeletionTests, workItemReadTests)
 #else
 import AgentTests.SQLiteTests (storeTests)
 #endif
@@ -38,6 +38,7 @@ agentCoreTests = do
   describe "resolve names" resolveNameTests
 #if defined(dbPostgres)
   describe "Work item reads" workItemReadTests
+  describe "Connection deletion" connectionDeletionTests
 #endif
 
 agentTests :: (ASrvTransport, AStoreType) -> Spec
