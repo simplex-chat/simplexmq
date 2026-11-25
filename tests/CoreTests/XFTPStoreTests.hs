@@ -7,6 +7,7 @@ module CoreTests.XFTPStoreTests (xftpStoreTests, xftpMigrationTests) where
 import Control.Monad
 import Data.Word (Word32)
 import qualified Database.PostgreSQL.Simple as DB
+import SMPClient (deadlockOnce)
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore (..), importFileStore, exportFileStore)
@@ -45,6 +46,8 @@ xftpStoreTests = do
     it "should return expired files with limit" testExpiredFiles
     it "should expire files by stored expiration" testExpiredFilesStoredExpiration
     it "should compute committed used storage and file count" testStorageAndCount
+    it "should retry a file creation aborted by a deadlock" testAddFileDeadlock
+    it "should retry a file deletion aborted by a deadlock" testDeleteFilesDeadlock
 
 xftpMigrationTests :: Spec
 xftpMigrationTests = describe "XFTP migration round-trip" $ do
@@ -266,6 +269,23 @@ testStorageAndCountForStore st = do
   getUsedStorage st `shouldReturn` 128000
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
   getUsedStorage st `shouldReturn` 192000
+
+testAddFileDeadlock :: HasTestEnv => Expectation
+testAddFileDeadlock = withPgStore $ \st -> do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  void $ withTransaction (dbStore st) $ \db -> DB.execute_ db $ deadlockOnce "INSERT ON files"
+  addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  getFile st SFSender testSenderId >>= (`shouldBe` Right sndKey) . fmap snd
+
+testDeleteFilesDeadlock :: HasTestEnv => Expectation
+testDeleteFilesDeadlock = withPgStore $ \st -> do
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  addFile st testSenderId (testFileInfo sndKey) testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  void $ withTransaction (dbStore st) $ \db -> DB.execute_ db $ deadlockOnce "DELETE ON files"
+  deleteFiles st [testSenderId]
+  getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
 
 -- Migration round-trip test
 

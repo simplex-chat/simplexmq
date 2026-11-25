@@ -52,7 +52,7 @@ import UnliftIO.Timeout (timeout)
 import Util
 
 #if defined(dbServerPostgres)
-import Database.PostgreSQL.Simple (defaultConnectInfo)
+import Database.PostgreSQL.Simple (Query, defaultConnectInfo)
 import Simplex.Messaging.Server.QueueStore.Postgres.Config (PostgresStoreCfg (..))
 #endif
 
@@ -121,6 +121,9 @@ testServerDBConnectInfo =
     connectUser = "test_server_user",
     connectDatabase = "test_server_db"
   }
+
+deadlockOnce :: Query -> Query
+deadlockOnce event = "CREATE SEQUENCE deadlocks; CREATE FUNCTION deadlock() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF nextval('deadlocks') = 1 THEN RAISE EXCEPTION 'test' USING ERRCODE = '40P01'; END IF; RETURN NULL; END $$; CREATE TRIGGER deadlock AFTER " <> event <> " FOR EACH STATEMENT EXECUTE FUNCTION deadlock()"
 #endif
 
 testStoreMsgsFile :: HasTestEnv => FilePath
