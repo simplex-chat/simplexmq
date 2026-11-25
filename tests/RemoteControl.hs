@@ -19,10 +19,12 @@ import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.List (stripPrefix)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Time.Clock.System (SystemTime (..), getSystemTime)
+import qualified Network.Socket as N
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Encoding.String (StrEncoding (..))
 import Simplex.Messaging.Transport (TSbChainKeys (..))
 import Simplex.Messaging.Transport.Client (TransportHost)
+import Simplex.Messaging.Transport.Server (startTCPServer)
 import qualified Simplex.RemoteControl.Client as HC (RCHostClient (action))
 import qualified Simplex.RemoteControl.Client as RC
 import Simplex.RemoteControl.Discovery (mkLastLocalHost, preferAddress)
@@ -49,6 +51,7 @@ remoteControlTests = do
     it "should connect to new pairing" testNewPairing
     it "should connect to existing pairing" testExistingPairing
     it "should reject host certificate not signed by CA of known host" testHostCertNotSignedByCA
+    it "returns a TLS startup error when the listening port is occupied" testOccupiedPort
   describe "Multicast discovery" $ do
     it "should find paired host and connect" testMulticast
     it "should accept announcement only within timestamp window" testAnnouncementTimestamp
@@ -135,6 +138,23 @@ testIPv6Invitation = do
         idkey,
         dh
       }
+
+testOccupiedPort :: IO ()
+testOccupiedPort = do
+  drg <- C.newRandom
+  hp <- RC.newRCHostPairing drg
+  started <- newEmptyTMVarIO
+  bracket (startTCPServer started Nothing "0") N.close $ \listener -> do
+    port <- N.socketPort listener
+    result <- timeout 5000000 $ runExceptT $ RC.connectRCHost drg hp (J.String "app") False Nothing (Just $ fromIntegral port)
+    case result of
+      Just (Left e) -> do
+        e `shouldBe` RCETLSStartFailed
+        LB.unpack (J.encode e) `shouldContain` "\"tlsStartFailed\""
+      Just (Right (_, _, client, _)) -> do
+        uninterruptibleCancel $ HC.action client
+        expectationFailure "Started a second listener on an occupied port"
+      Nothing -> expectationFailure "Remote control did not report the listener startup failure"
 
 testNewPairing :: IO ()
 testNewPairing = do
