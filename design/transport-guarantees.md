@@ -124,7 +124,7 @@ Acknowledgement and receipts:
 
 ## 10. Links, service requests and notifications
 
-1. Updates of one link are sent to the server in the order they are made. An update that a newer one supersedes before it is sent is not sent.
+1. The server holds the data of the newest update of each link.
 2. Repeated short-link calls on a connection return the same short link.
 3. The service request message is sent only while the caller waits for its reply; a reply that arrives after the call has ended is reported with an error event.
 4. Notification commands of one connection (create, delete, mute) take effect in the order of the operations that request them.
@@ -153,7 +153,7 @@ Acknowledgement and receipts:
 
 1. After a crash at any step, a state change is present together with every command, message and delivery it starts, or none of them is.
 2. After a crash at any step, every started operation completes, is retried, or ends with an error event.
-3. A command takes effect only while it is pending and the state it depends on is unchanged. A command made obsolete by an abort, a deletion, a repeated QADD, the cleanup of a service request or a newer link update is dropped and ends as item 4.2 states; an obsolete internal command ends without an error event.
+3. A command takes effect only while it is pending and the state it depends on is unchanged. A command made obsolete by an abort, a deletion, a repeated QADD or the cleanup of a service request is dropped and ends as item 4.2 states; an obsolete internal command ends without an error event.
 4. The commands of one connection and server run one at a time, in the order they are created, independent of the wall clock. Commands of different servers run at the same time.
 5. A request repeated after a crash, a timeout or a lost response has the effect of one request for the app and the peer: a repeated message reaches the peer's app once (item 6.10), and an object created on a server by an earlier attempt, whose ID the agent received, is deleted.
 6. Commands, messages and deliveries stored by released versions are processed after an upgrade.
@@ -174,3 +174,4 @@ Acknowledgement and receipts:
 | 2026-11-24 | The KEY handshake of connection establishment is removed; SMP client version 3, with sender-secured queues, is the minimum. Rotation with peers below agent version 8 keeps KEY. | 5.2, 14.2 |
 | 2026-11-25 | Connections in the middle of the KEY handshake at the upgrade end with a version error, and joining an invitation without a sender-secured queue is refused. | 14.2 |
 | 2026-11-25 | A rotation refused by the server returns to its state before it started; an abort is refused once QADD is stored. | 7.2, 7.3 |
+| 2026-11-25 | The order of link data is met by versioned link data and RKEY support, in a separate change; until then, link requests are sent without waiting for each other. | 10.1 |
