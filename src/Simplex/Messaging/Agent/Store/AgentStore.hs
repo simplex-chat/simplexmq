@@ -1324,6 +1324,7 @@ deleteDeliveredSndMsg db connId msgId = do
 
 deleteSndMsgDelivery :: DB.Connection -> ConnId -> SndQueue -> InternalId -> Bool -> IO ()
 deleteSndMsgDelivery db connId SndQueue {dbQueueId} msgId keepForReceipt = do
+  lockConnForUpdate db connId
   DB.execute
     db
     "DELETE FROM snd_message_deliveries WHERE conn_id = ? AND snd_queue_id = ? AND internal_id = ?"
