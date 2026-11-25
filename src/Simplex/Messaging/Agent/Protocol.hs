@@ -1664,7 +1664,7 @@ instance ConnectionModeI c => ToField (ConnShortLink c) where toField = toField 
 
 instance (Typeable c, ConnectionModeI c) => FromField (ConnShortLink c) where fromField = blobFieldDecoder strDecode
 
-data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay deriving (Eq, Show)
+data ContactConnType = CCTContact | CCTChannel | CCTGroup | CCTRelay | CCTPublicGroup | CCTSite deriving (Eq, Show)
 
 data AConnShortLink = forall m. ConnectionModeI m => ACSL (SConnectionMode m) (ConnShortLink m)
 
@@ -1814,6 +1814,8 @@ ctTypeP = \case
   'C' -> pure CCTChannel
   'G' -> pure CCTGroup
   'R' -> pure CCTRelay
+  'P' -> pure CCTPublicGroup
+  'S' -> pure CCTSite
   _ -> fail "unknown contact address type"
 {-# INLINE ctTypeP #-}
 
@@ -1823,6 +1825,8 @@ ctTypeChar = \case
   CCTChannel -> 'C'
   CCTGroup -> 'G'
   CCTRelay -> 'R'
+  CCTPublicGroup -> 'P'
+  CCTSite -> 'S'
 {-# INLINE ctTypeChar #-}
 
 instance StrEncoding ContactConnType where
