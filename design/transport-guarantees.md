@@ -45,7 +45,7 @@ Each requirement holds in each of these cases:
 7. relays at every supported version;
 8. the app reading no events for any length of time;
 9. a call ended by an exception;
-10. a store written by a released version, and a downgrade;
+10. a store written by a released version;
 11. SQLite and PostgreSQL stores;
 12. the app and the iOS notification service extension using one store in turns;
 13. the wall clock set back.
