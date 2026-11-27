@@ -24,7 +24,7 @@ import qualified Data.X509 as X
 import qualified Data.X509.File as XF
 import qualified Data.X509.Validation as XV
 import Network.Socket
-import Network.Socket.ByteString (recv)
+import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.TLS as TLS
 import Simplex.Messaging.Agent.Store.Postgres.Options (DBOpts (..))
 import Simplex.Messaging.Agent.Store.Shared (MigrationConfirmation (..))
@@ -40,14 +40,15 @@ import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (unlessM)
+import Simplex.Messaging.Util (stateTVar', unlessM, whenM)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, removeFile)
 import Test.Hspec hiding (fit, it)
+import UnliftIO.Async (race_)
 import UnliftIO.Concurrent
 import qualified UnliftIO.Exception as E
-import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar, tryPutTMVar)
+import UnliftIO.STM (TMVar, atomically, checkSTM, newEmptyTMVarIO, newTVarIO, orElse, putTMVar, readTMVar, readTVar, registerDelay, takeTMVar, tryPutTMVar)
 import UnliftIO.Timeout (timeout)
 import Util
 
@@ -86,6 +87,9 @@ ntfTestPort = testServerPort 3
 
 ntfTestPort2 :: HasTestEnv => ServiceName
 ntfTestPort2 = testServerPort 4
+
+testForwarderPort :: HasTestEnv => ServiceName
+testForwarderPort = testServerPort 0
 
 testKeyHash :: C.KeyHash
 testKeyHash = "LcJUMfVhwD8yxjAiSaDzzGF3-kLG4Uh0Fl_ZIjrRwjI="
@@ -493,6 +497,24 @@ withStallingServerOn' port action = do
         void $ atomically $ tryPutTMVar closed ())
     (pure ())
     (const $ action accepted closed)
+
+withTCPForwarderOn :: HasCallStack => ServiceName -> ServiceName -> (Int -> IO (ByteString -> IO Bool, ByteString -> IO Bool)) -> IO a -> IO a
+withTCPForwarderOn port srvPort onAccept action = do
+  accepted <- newTVarIO 0
+  serverBracket
+    (\started -> runLocalTCPServer started port $ \sock -> do
+        (toServer, toClient) <- onAccept =<< atomically (stateTVar' accepted $ \i -> (i, i + 1))
+        addr : _ <- getAddrInfo (Just defaultHints {addrSocketType = Stream}) (Just "127.0.0.1") (Just srvPort)
+        E.bracket (socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)) close $ \srvSock -> do
+          connect srvSock $ addrAddress addr
+          race_ (forward toServer sock srvSock) (forward toClient srvSock sock))
+    (pure ())
+    (const action)
+  where
+    forward beforeSend from to = recv from 16384 >>= \s -> unless (B.null s) $ whenM (beforeSend s) $ sendAll to s >> forward beforeSend from to
+
+forwardAll :: ByteString -> IO Bool
+forwardAll _ = pure True
 
 withSmpServerOn :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> ServiceName -> IO a -> IO a
 withSmpServerOn ps port' = withSmpServerThreadOn ps port' . const

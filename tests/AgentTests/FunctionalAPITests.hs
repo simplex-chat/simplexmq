@@ -96,11 +96,11 @@ import SMPAgentClient
 import SMPClient
 import Simplex.Messaging.Agent hiding (acceptContact, createConnection, deleteConnection, deleteConnections, getConnShortLink, joinConnection, sendMessage, setConnShortLink, subscribeConnection, suspendConnection)
 import qualified Simplex.Messaging.Agent as A
-import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
+import Simplex.Messaging.Agent.Client (AgentOpState (..), ProtocolTestFailure (..), ProtocolTestStep (..), SMPServerSubs (..), ServerQueueInfo (..), UserNetworkInfo (..), UserNetworkType (..), sendAgentMessage, waitForUserNetwork)
 import Simplex.Messaging.Agent.Env.SQLite (AgentConfig (..), Env (..), InitialAgentServers (..), createAgentStore)
 import Simplex.Messaging.Agent.Protocol hiding (CON, CONF, INFO, REQ, SENT)
 import qualified Simplex.Messaging.Agent.Protocol as A
-import Simplex.Messaging.Agent.Store (Connection' (..), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
+import Simplex.Messaging.Agent.Store (AgentCommandTag (AInternalCommandTag), Connection' (..), InternalCommandTag (ICAllowSecure_), SomeConn' (..), StoredRcvQueue (..), StoredSndQueue (..))
 import Simplex.Messaging.Agent.Store.AgentStore (deleteRatchetKeyHashesExpired, deleteSndMsgsExpired, getConn, getConnIds, getRatchetX3dhKeys)
 import Simplex.Messaging.Agent.Store.Common (DBStore (..), withTransaction)
 import Simplex.Messaging.Agent.Store.Interface
@@ -443,6 +443,8 @@ functionalAPITests ps = do
       testAsyncServerOffline ps
     it "should restore confirmation after client restart" $
       testAllowConnectionClientRestart ps
+    it "should keep securing the reply queue while its server is stopped (expected: an error after an age limit)" $
+      testAllowConnectionStoppedReplyServer ps
   describe "Establishing connections with user retries" $ do
     describe "Via invitation" $ do
       it "should connect after errors" $ testInvitationErrors ps False
@@ -482,6 +484,16 @@ functionalAPITests ps = do
       testDuplicateMessageAfterSent ps
     it "should acknowledge a message again after it is deleted" $
       withSmpServer ps testAckDeletedMessage
+    it "should deliver a message again after the agent stops before acknowledging it" $
+      testRedeliveryAfterStopBeforeAck False ps
+    it "should deliver a message again after the agent stops before acknowledging it and the server restarts" $
+      testRedeliveryAfterStopBeforeAck True ps
+    it "should send messages while an acknowledgement waits for space in the message queue" $ do
+      pendingWith "fixed in https://github.com/simplex-chat/simplexmq/pull/2079"
+      withSmpServer ps testSendWhileAckWaitsForFullQueue
+    it "should reconnect and receive messages when the connection stops forwarding" $ do
+      pendingWith "until the client closes a connection as soon as its pings time out"
+      testReceiveAfterStalledConnection ps
     it "should report error via msg integrity on skipped messages" $
       testSkippedMessages ps
     it "should connect to the server when server goes up if it initially was down" $
@@ -605,6 +617,11 @@ functionalAPITests ps = do
       testFastSwitchDrainOldQueue ps
     it "should drain the old queue after QEND on the new queue and restart" $
       testFastSwitchDrainOldQueueRestart ps
+    it "should keep the switch to an offline peer started without pending work (expected: an error after a deadline)" $
+      withSmpServer ps testSwitchOfflinePeer
+    it "should complete the slow switch after deleteErrorCount failures to delete the old queue" $ do
+      pendingWith "until the agent stops deleting the old queue after deleteErrorCount temporary errors"
+      testSlowSwitchStoppedOldServer ps
     describe "should switch delivery to the new queue" $
       testServerMatrix2 ps testSwitchConnection
     describe "should switch to new queue asynchronously" $
@@ -682,6 +699,8 @@ functionalAPITimingTests ps = do
     it "should wait for user network" testWaitForUserNetwork
     it "should not reset online to offline if happens too quickly" testDoNotResetOnlineToOffline
     it "should resume multiple threads" testResumeMultipleThreads
+    it "should defer delivery for userNetworkInterval while the network is reported offline" $
+      testDeferDeliveryWhileOffline ps
   describe "SMP queue info" $ do
     it "server should respond with queue and subscription information" $
       withSmpServer ps testServerQueueInfo
@@ -1820,6 +1839,25 @@ testAllowConnectionClientRestart ps@(t, ASType qsType _) = do
     disposeAgentClient alice2
     disposeAgentClient bob
 
+testAllowConnectionStoppedReplyServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testAllowConnectionStoppedReplyServer ps@(t, ASType qsType _) =
+  withSmpServerStoreLogOn ps testPort $ \_ ->
+    withAgent 1 aCfg initAgentServers testDB $ \alice -> do
+      (bobId, confId) <- withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ ->
+        withAgent 2 agentCfg initAgentServersSrv2 testDB2 $ \bob -> runRight $ do
+          (bobId, qInfo) <- createConnection alice 1 True SCMInvitation Nothing SMSubscribe
+          void $ joinConnection bob 1 True qInfo "bob's connInfo" SMSubscribe
+          ("", _, CONF confId _ "bob's connInfo") <- get alice
+          pure (bobId, confId)
+      runRight_ $ allowConnection alice bobId confId "alice's connInfo"
+      let secureCommand = [(strEncode $ AInternalCommandTag ICAllowSecure_, Just testPort2)]
+      waitRows (commandServers alice) secureCommand
+      threadDelay 2_000000
+      commandServers alice `shouldReturn` secureCommand
+  where
+    aCfg = agentCfg {messageRetryInterval = fastMessageRetryInterval}
+    initAgentServersSrv2 = initAgentServers {smp = userServers [testSMPServer2]}
+
 testInvitationErrors :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> IO ()
 testInvitationErrors ps restart = do
   a <- getAgentA
@@ -1898,9 +1936,12 @@ getUpInfoCon c upConnIds connId info =
     ]
 
 waitAck :: AgentClient -> ConnId -> IO ()
-waitAck c connId = do
+waitAck c connId = waitQueueSize c connId 0
+
+waitQueueSize :: AgentClient -> ConnId -> Int -> IO ()
+waitQueueSize c connId size = do
   ServerQueueInfo {info = QueueInfo {qiSize}} <- runRight $ getConnectionQueueInfo c NRMInteractive connId
-  when (qiSize > 0) $ threadDelay 20000 >> waitAck c connId
+  when (qiSize /= size) $ threadDelay 20000 >> waitQueueSize c connId size
 
 testContactErrors :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> Bool -> IO ()
 testContactErrors ps restart = do
@@ -2599,6 +2640,116 @@ testAckDeletedMessage =
     ackMessageAsync bob "1" aliceId 2 Nothing
     liftIO $ noMessages bob "nothing else should be delivered to bob"
 
+testRedeliveryAfterStopBeforeAck :: (HasCallStack, HasTestEnv) => Bool -> (ASrvTransport, AStoreType) -> IO ()
+testRedeliveryAfterStopBeforeAck restartServer ps
+  | restartServer = withServer receiveWithoutAck >>= withServer . receiveAgain
+  | otherwise = withServer $ receiveWithoutAck >>= receiveAgain
+  where
+    withServer :: IO a -> IO a
+    withServer = withSmpServerStoreMsgLogOn ps testPort . const
+    receiveWithoutAck = do
+      (aliceId, bobId) <- withAgentClients2 $ \alice bob -> do
+        connIds <- runRight $ makeConnection alice bob
+        waitRows (sndDeliveries alice) []
+        waitRows (sndDeliveries bob) []
+        pure connIds
+      withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
+        runRight_ $ do
+          msgId <- sendMessage alice bobId SMP.noMsgFlags "hello"
+          get alice ##> ("", bobId, SENT msgId)
+        waitRows (sndDeliveries alice) []
+      withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> timeout 10_000000 (void $ subscribeReceive bob aliceId False) `shouldReturn` Just ()
+      pure (aliceId, bobId)
+    receiveAgain (aliceId, bobId) =
+      withAgentClients2 $ \alice bob -> timeout 30_000000 (receive alice bob) `shouldReturn` Just ()
+      where
+        receive alice bob = do
+          msgId <- subscribeReceive bob aliceId True
+          (\(SMPServerSubs {ssActive, ssPending}, _) -> (ssActive, ssPending)) <$> getAgentSubsTotal bob [1] `shouldReturn` (1, 0)
+          runRight_ $ do
+            ackMessage bob aliceId msgId Nothing
+            liftIO $ waitAck bob aliceId
+            msgId' <- sendMessage alice bobId SMP.noMsgFlags "hello 2"
+            get alice ##> ("", bobId, SENT msgId')
+            get bob =##> \case ("", c, Msg "hello 2") -> c == aliceId; _ -> False
+    subscribeReceive :: AgentClient -> ConnId -> Bool -> IO AgentMsgId
+    subscribeReceive bob aliceId redelivered' = do
+      runRight_ $ subscribeAllConnections bob False Nothing
+      (ups, [msgId]) <- partitionEithers <$> replicateM 2 upOrMsg
+      ups `shouldBe` [[aliceId]]
+      pure msgId
+      where
+        upOrMsg :: IO (Either [ConnId] AgentMsgId)
+        upOrMsg =
+          pGet bob >>= \case
+            ("", "", AEvt SAENone (UP _ cs)) -> pure $ Left cs
+            ("", c, AEvt SAEConn (MSG MsgMeta {recipient = (msgId, _), redelivered} _ "hello"))
+              | c == aliceId && redelivered == redelivered' -> pure $ Right msgId
+            r -> error $ "unexpected event: " <> show r
+
+testSendWhileAckWaitsForFullQueue :: (HasCallStack, HasTestEnv) => IO ()
+testSendWhileAckWaitsForFullQueue = withAgentClients3 $ \alice bob carol -> do
+  (aliceId, bobId) <- runRight $ makeConnection alice bob
+  (carolId, bobCarolId) : floodConns <- runRight $ replicateM (floodCount + 1) $ makeConnection carol bob
+  a1Id <- runRight $ do
+    sendAndSent alice bobId "a1"
+    sendAndSent alice bobId "a2"
+    ("", c, Msg' a1Id _ "a1") <- get bob
+    liftIO $ c `shouldBe` aliceId
+    sendAndSent carol bobCarolId "c0"
+    get bob =##> \case ("", c', Msg "c0") -> c' == carolId; _ -> False
+    forM_ (zip [1 ..] floodConns) $ \(i, (_, bId)) -> sendAndSent carol bId $ floodMsg i
+    pure a1Id
+  timeout 10_000000 (atomically $ isFullTBQueue (msgQ bob) >>= checkSTM) `shouldReturn` Just ()
+  runRight_ $ ackMessageAsync bob "1" aliceId a1Id Nothing
+  timeout 10_000000 (waitQueueSize bob aliceId 1) `shouldReturn` Just ()
+  timeout 10_000000 (runExceptT $ sendMessages bob [(aliceId, PQEncOn, SMP.noMsgFlags, vrValue "b1")]) >>= (`shouldSatisfy` sent)
+  getInAnyOrder bob $
+    [ \case ("", c, AEvt SAEConn (Msg "a2")) -> c == aliceId; _ -> False,
+      \case ("1", c, AEvt SAEConn OK) -> c == aliceId; _ -> False,
+      \case ("", c, AEvt SAEConn (SENT _)) -> c == aliceId; _ -> False
+    ]
+      <> zipWith (\i (cId, _) -> \case ("", c, AEvt SAEConn (Msg body)) -> c == cId && body == floodMsg i; _ -> False) [1 :: Int ..] floodConns
+  where
+    AgentConfig {tbqSize = queueSize} = agentCfg
+    floodCount = 2 * fromIntegral queueSize + 1
+    sendAndSent :: AgentClient -> ConnId -> MsgBody -> ExceptT AgentErrorType IO ()
+    sendAndSent c connId body = do
+      msgId <- sendMessage c connId SMP.noMsgFlags body
+      get c ##> ("", connId, SENT msgId)
+    floodMsg :: Int -> MsgBody
+    floodMsg i = "c" <> bshow i
+    sent = \case
+      Just (Right [Right _]) -> True
+      _ -> False
+
+testReceiveAfterStalledConnection :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testReceiveAfterStalledConnection ps = withSmpServer ps $ do
+  stalled <- newTVarIO False
+  let onAccept _ = do
+        stalledOnAccept <- readTVarIO stalled
+        let forward
+              | stalledOnAccept = forwardAll
+              | otherwise = \_ -> True <$ atomically (readTVar stalled >>= checkSTM . not)
+        pure (forward, forward)
+  withTCPForwarderOn testForwarderPort testPort onAccept $
+    withAgent 2 agentCfg servers testDB2 $ \bob -> do
+      (aliceId, bobId) <- withAgent 1 agentCfg servers testDB $ \alice -> runRight $ makeConnection alice bob
+      atomically $ writeTVar stalled True
+      withAgent 1 agentCfg servers testDB $ \alice -> do
+        msgId <- runRight $ sendMessage alice bobId SMP.noMsgFlags "hello"
+        get alice ##> ("", bobId, SENT msgId)
+        timeout 10_000000 (receiveMsgs bob [(aliceId, "hello")]) `shouldReturn` Just ()
+  where
+    servers = initAgentServers {smp = userServers [SMPServer testHost2 testForwarderPort testKeyHash], netCfg = (netCfg initAgentServers) {smpPingInterval = 1_000000, smpPingCount = 1}}
+
+receiveMsgs :: AgentClient -> [(ConnId, MsgBody)] -> IO ()
+receiveMsgs _ [] = pure ()
+receiveMsgs c msgs =
+  pGet c >>= \case
+    (_, cId, AEvt SAEConn (MSG _ _ body)) -> receiveMsgs c $ filter (/= (cId, body)) msgs
+    _ -> receiveMsgs c msgs
+
 testSkippedMessages :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
 testSkippedMessages (t, msType) = do
   alice <- getSMPAgentClient' 1 agentCfg initAgentServers testDB
@@ -3225,6 +3376,19 @@ rcvMessages c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_i
 
 sndDeliveries :: AgentClient -> IO [(ConnId, Int64)]
 sndDeliveries c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT conn_id, internal_id FROM snd_message_deliveries ORDER BY conn_id, internal_id")
+
+commandServers :: AgentClient -> IO [(ByteString, Maybe String)]
+commandServers c = withTransaction (store $ agentEnv c) (`DB.query_` "SELECT command_tag, port FROM commands ORDER BY command_id")
+
+waitRows :: (HasCallStack, Eq a, Show a) => IO [a] -> [a] -> IO ()
+waitRows getRows rows = go (100 :: Int)
+  where
+    go n = do
+      rows' <- getRows
+      unless (rows' == rows) $
+        if n > 0
+          then threadDelay 100000 >> go (n - 1)
+          else expectationFailure $ "rows: " <> show rows'
 
 waitDeleted :: HasCallStack => IO [(ConnId, Int64)] -> (ConnId, Int64) -> IO ()
 waitDeleted getMsgs msg = go (100 :: Int)
@@ -4233,6 +4397,37 @@ testFastSwitchDrainOldQueueRestart ps =
       withAgent 1 agentCfg initAgentServers testDB $ \a -> runRight_ $ do
         subscribeConnection a bId
         drainOldQueue a bId b aId
+
+testSwitchOfflinePeer :: (HasCallStack, HasTestEnv) => IO ()
+testSwitchOfflinePeer =
+  withAgent 1 agentCfg initAgentServers testDB $ \alice -> do
+    (_, bobId) <- withAgent 2 agentCfg initAgentServers testDB2 $ \bob -> runRight $ makeConnection alice bob
+    stats <- runRight $ switchConnection alice NRMInteractive bobId
+    rcvSwchStatuses' stats `shouldMatchList` [Just RSSendingQADD, Nothing]
+    waitRows (commandServers alice) []
+    waitRows (sndDeliveries alice) []
+    noMessages alice "the switch should wait for the peer"
+    runRight (getConnectionServers alice bobId) >>= (`shouldMatchList` [Just RSSendingQADD, Nothing]) . rcvSwchStatuses'
+
+testSlowSwitchStoppedOldServer :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testSlowSwitchStoppedOldServer ps@(t, ASType qsType _) =
+  withSmpServerConfigOn t (cfgS2QS qsType) testPort2 $ \_ ->
+    withAgent 1 aCfg initAgentServers testDB $ \a ->
+      withAgent 2 agentCfgV7 bServers testDB2 $ \b -> do
+        bId <- withSmpServerStoreLogOn ps testPort $ \_ -> runRight $ do
+          (aId, bId) <- makeConnection a b
+          liftIO $ setProtocolServers a 1 [noAuthSrvCfg testSMPServer2]
+          _ <- switchConnectionAsync a "" bId
+          phaseRcv a bId SPStarted [Just RSSendingQADD, Nothing]
+          phaseSnd b aId SPStarted [Just SSSendingQKEY, Nothing]
+          phaseSnd b aId SPConfirmed [Just SSSendingQKEY, Nothing]
+          phaseRcv a bId SPConfirmed [Just RSSendingQADD, Nothing]
+          pure bId
+        timeout 10_000000 (runRight_ $ drainSwitchCompleted a bId QDRcv) `shouldReturn` Just ()
+        runRight_ $ waitOneRcvQueue a bId
+  where
+    aCfg = agentCfg {deleteErrorCount = 3, messageRetryInterval = fastMessageRetryInterval}
+    bServers = initAgentServers {smp = userServers [testSMPServer2]}
 
 endSwitchOnNewQueue :: (HasCallStack, HasTestEnv) => AgentClient -> AgentClient -> ExceptT AgentErrorType IO (ConnId, ConnId, AgentMsgId)
 endSwitchOnNewQueue a b = do
@@ -5684,6 +5879,18 @@ testResumeMultipleThreads = withAgent 1 aCfg initAgentServers testDB $ \a -> do
   maximum ts < 4000000 `shouldBe` True
   where
     aCfg = agentCfg {userOfflineDelay = 0}
+
+testDeferDeliveryWhileOffline :: (HasCallStack, HasTestEnv) => (ASrvTransport, AStoreType) -> IO ()
+testDeferDeliveryWhileOffline ps =
+  withSmpServer ps $ withAgentClientsCfg2 aCfg agentCfg $ \alice bob -> do
+    (aliceId, bobId) <- runRight $ makeConnection alice bob
+    setUserNetworkInfo alice $ UserNetworkInfo UNWifi False
+    msgId <- runRight $ sendMessage alice bobId SMP.noMsgFlags "hello"
+    timeout (userNetworkInterval aCfg - 500000) (get alice) `shouldReturn` Nothing
+    timeout 3_000000 (get alice) `shouldReturn` Just ("", bobId, SENT msgId)
+    get bob =##> \case ("", c, Msg "hello") -> c == aliceId; _ -> False
+  where
+    aCfg = agentCfg {userNetworkInterval = 2_000000, userOfflineDelay = 0}
 
 testServerQueueInfo :: HasTestEnv => IO ()
 testServerQueueInfo = do
