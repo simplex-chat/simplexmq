@@ -9,7 +9,17 @@
 | a push to a draft pull request<br>a manual run (workflow_dispatch)<br>a push to master or stable in a fork | reduced | build-reduced: 2 entries, ubuntu-24.04 x86-64, GHC 9.6.3, at -O0 (-O2 on pushes), without the standard build |
 | a pull request marked ready for review, and later pushes to it<br>a push to master or stable in simplex-chat/simplexmq<br>a push of a v* tag | full | build: 6 entries (GHC 8.10.7 and 9.6.3, x86-64 and aarch64), at -O0 on pull requests and -O2 on pushes |
 
-Both builds also run maybe-release and resolver (python). Tests run on the x86-64 entries, after xftp-web is built with Node.js 22 (`npm install`, `npm run build`) for the XFTP Web Client tests. In both builds, the ubuntu-24.04 x86-64 entry named "PostgreSQL agent store" builds and runs only the tests built with `-fclient_postgres -fslow_servers` (agent with the PostgreSQL store, and XFTP servers that delay responses for the slow-server test, which the other builds skip), in the build directory dist-client-postgres, in step "Test with PostgreSQL agent store", in parallel with the other entries; its build directory has its own cache key. After the tests, step "Check generated files" fails if a test changed a tracked file: the schema dump and query plan tests overwrite their files, so a stale file fails here even when the test passes on retry. The reduced build restores the -O0 build caches saved by master pushes; the Docker image cache is tagged by ISO week, so the first run of a week rebuilds the image.
+Both builds also run maybe-release. Tests run on the x86-64 entries, after xftp-web is built with Node.js 22 (`npm install`, `npm run build`) for the XFTP Web Client tests. In both builds, the ubuntu-24.04 x86-64 entry named "PostgreSQL agent store" builds and runs only the tests built with `-fclient_postgres -fslow_servers` (agent with the PostgreSQL store, and XFTP servers that delay responses for the slow-server test, which the other builds skip), in the build directory dist-client-postgres, in step "Test with PostgreSQL agent store", in parallel with the other entries; its build directory has its own cache key. After the tests, step "Check generated files" fails if a test changed a tracked file: the schema dump and query plan tests overwrite their files, so a stale file fails here even when the test passes on retry. The reduced build restores the -O0 build caches saved by master pushes; the Docker image cache is tagged by ISO week, so the first run of a week rebuilds the image.
+
+The ubuntu-24.04 x86-64 entry without the PostgreSQL agent store also lints and tests the resolver (scripts/resolver/service, steps "Lint resolver" and "Test resolver"):
+- on a push;
+- on a pull request or a manual run that changes scripts/resolver/service or build.yml. A manual run is compared with its merge base with master.
+
+In "Build names dev chain", the `contracts` and `anvil` stages of `webapp/dev/Dockerfile` of simplex.domains, at the commit set in the step, are built, the compiled ens-contracts artifacts and anvil are copied out of them, and the webapp's dependencies are installed. In test_ground_truth.py, anvil is started, the `.simplex` contracts are deployed and seeded with the webapp's `dev/deploy.ts`, the other states the tests need are seeded over JSON-RPC, and the resolver's answer for each seeded name is checked.
+
+`resolver-mainnet.yml` checks the resolver's answers for known mainnet names daily, on a manual run and on a pull request that changes it. The RPC is the secret `SNRC_MAINNET_RPC`, or a public endpoint without it.
+
+Local run: scripts/resolver/README.md, "Resolver API reference".
 
 ## Test selection
 

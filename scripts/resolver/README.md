@@ -149,6 +149,13 @@ uv run pytest
 uv run ruff check .
 ```
 
+`test_ground_truth.py` runs only with its variables set: `SNRC_DEV_CHAIN`, a directory with `anvil`, `ens-contracts/artifacts` and a simplex.domains checkout in `simplex.domains` with its webapp's dependencies installed, prepared as in the CI step "Build names dev chain", with Node.js 22.18 or later, and `SNRC_MAINNET_RPC`, a mainnet JSON-RPC endpoint:
+
+```sh
+SNRC_DEV_CHAIN=../dev-chain uv run pytest test_ground_truth.py
+SNRC_MAINNET_RPC=https://ethereum-rpc.publicnode.com uv run pytest test_ground_truth.py -k MainnetTests
+```
+
 Dependencies are locked in `uv.lock`; the Docker image installs exactly those.
 
 Three routes, versioned separately from the protocol so each only changes when
