@@ -32,6 +32,7 @@ module Simplex.FileTransfer.Server.Env
     exportFromDatabase,
   ) where
 
+import Control.Concurrent.Async (Async)
 import Control.Logger.Simple
 import Control.Monad
 import Crypto.Random
@@ -45,7 +46,7 @@ import Data.Word (Word16, Word32)
 import Data.X509.Validation (Fingerprint (..))
 import Network.Socket
 import qualified Network.TLS as T
-import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), XFTPFileId)
+import Simplex.FileTransfer.Protocol (FileCmd, FileInfo (..), FileResponse, XFTPFileId)
 import Simplex.FileTransfer.Server.Stats
 import Data.Either (fromRight)
 import Data.Ini (Ini, lookupValue)
@@ -66,9 +67,11 @@ import Simplex.FileTransfer.Server.StoreLog
 import Simplex.FileTransfer.Transport (VersionRangeXFTP)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.BBS (BBSPublicKey)
-import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey)
+import Simplex.Messaging.Protocol (BasicAuth, RcvPublicAuthKey, SenderId)
 import Simplex.Messaging.Server.Expiration
 import Simplex.Messaging.Server.Information (ServerPublicInfo)
+import Simplex.Messaging.TMap (TMap)
+import qualified Simplex.Messaging.TMap as TM
 import Simplex.Messaging.Transport (EntitlementConfig (..))
 import Simplex.Messaging.Transport.Server (ReloadableCredential, ServerCredentials (..), TransportServerConfig (..), acceptCredential, loadFingerprint, loadServerCredential, newReloadableCredential)
 import Simplex.Messaging.Util (tshow)
@@ -131,6 +134,7 @@ data XFTPEnv s = XFTPEnv
   { config :: XFTPServerConfig s,
     store :: FileStore s,
     usedStorage :: TVar Int64,
+    uploadingFiles :: TMap SenderId (Async FileResponse),
     storeLog :: Maybe (StoreLog 'WriteMode),
     random :: TVar ChaChaDRG,
     serverIdentity :: C.KeyHash,
@@ -203,6 +207,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
 #endif
   used <- getUsedStorage (fromFileStore store)
   usedStorage <- newTVarIO used
+  uploadingFiles <- TM.emptyIO
   forM_ fileSizeQuota $ \quota -> do
     logNote $ "Total / available storage: " <> tshow quota <> " / " <> tshow (quota - used)
     when (quota < used) $ logWarn "WARNING: storage quota is less than used storage, no files can be uploaded!"
@@ -210,7 +215,7 @@ newXFTPServerEnv config@XFTPServerConfig {serverStoreCfg, fileSizeQuota, fileExp
   httpServerCreds <- forM httpCredentials $ \creds -> newReloadableCredential acceptCredential creds =<< loadServerCredential creds
   Fingerprint fp <- loadFingerprint xftpCredentials
   serverStats <- newFileServerStats =<< getCurrentTime
-  pure XFTPEnv {config, store, usedStorage, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
+  pure XFTPEnv {config, store, usedStorage, uploadingFiles, storeLog, random, tlsServerCreds, httpServerCreds, serverIdentity = C.KeyHash fp, serverStats}
 
 data XFTPRequest
   = XFTPReqNew FileInfo (NonEmpty RcvPublicAuthKey) (Maybe BasicAuth) (Maybe Word32)

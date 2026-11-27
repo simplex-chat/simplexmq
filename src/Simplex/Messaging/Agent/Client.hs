@@ -1377,21 +1377,23 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     let tSess = (userId, srv, Nothing)
     ts <- readTVarIO $ proxySessTs c
     X.getXFTPClient tSess cfg {xftpNetworkConfig} presetDomains ts (\_ -> pure Nothing) (\_ -> pure ()) >>= \case
-      Right xftp -> withTestChunk filePath $ do
-        (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-        (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
-        digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
-        let file = FileInfo {sndKey, size = chSize, digest}
-            chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
-        r <- runExceptT $ do
-          (sId, [rId], _) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth Nothing
-          liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
-          liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
-          rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
-          unless (digest == rcvDigest) $ throwE $ ProtocolTestFailure TSCompareFile $ XFTP (B.unpack $ strEncode srv) DIGEST
-          liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
-        ok <- netTimeoutInt (tcpTimeout xftpNetworkConfig) nm `timeout` X.closeXFTPClient xftp
-        pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (X.thParams xftp)) ok
+      Right xftp -> withTestChunk filePath test `E.finally` removeTestFile rcvPath
+        where
+          test = do
+            (sndKey, spKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+            (rcvKey, rpKey) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+            digest <- liftIO $ C.sha256Hash <$> B.readFile filePath
+            let file = FileInfo {sndKey, size = chSize, digest}
+                chunkSpec = X.XFTPChunkSpec {filePath, chunkOffset = 0, chunkSize = chSize}
+            r <- runExceptT $ do
+              (sId, [rId], _) <- liftError (testErr TSCreateFile) $ X.createXFTPChunk xftp spKey file [rcvKey] auth Nothing
+              liftError (testErr TSUploadFile) $ X.uploadXFTPChunk xftp spKey sId chunkSpec
+              liftError (testErr TSDownloadFile) $ X.downloadXFTPChunk g xftp rpKey rId $ XFTPRcvChunkSpec rcvPath chSize digest
+              rcvDigest <- liftIO $ C.sha256Hash <$> B.readFile rcvPath
+              unless (digest == rcvDigest) $ throwE $ ProtocolTestFailure TSCompareFile $ XFTP (B.unpack $ strEncode srv) DIGEST
+              liftError (testErr TSDeleteFile) $ X.deleteXFTPChunk xftp spKey sId
+            ok <- netTimeoutInt (tcpTimeout xftpNetworkConfig) nm `timeout` X.closeXFTPClient xftp
+            pure $ r >> maybe (Left (ProtocolTestFailure TSDisconnect $ BROKER addr TIMEOUT)) (const $ Right $ serverInfo (X.thParams xftp)) ok
       Left e -> pure $ Left (testErr TSConnect e)
   where
     addr = B.unpack $ strEncode srv
@@ -1408,7 +1410,9 @@ runXFTPServerTest c@AgentClient {presetDomains} nm userId (ProtoServerWithAuth s
     withTestChunk fp =
       E.bracket_
         (createTestChunk fp)
-        (whenM (doesFileExist fp) $ removeFile fp `catchAll_` pure ())
+        (removeTestFile fp)
+    removeTestFile :: FilePath -> IO ()
+    removeTestFile fp = whenM (doesFileExist fp) $ removeFile fp `catchAll_` pure ()
     -- this creates a new DRG on purpose to avoid blocking the one used in the agent
     createTestChunk :: FilePath -> IO ()
     createTestChunk fp = B.writeFile fp =<< atomically . C.randomBytes chSize =<< C.newRandom

@@ -12,11 +12,13 @@
 
 module Simplex.FileTransfer.Client.Main
   ( SendOptions (..),
+    ReceiveOptions (..),
     CLIError (..),
     xftpClientCLI,
     xftpClientDeprecationNotice,
     cliSendFile,
     cliSendFileOpts,
+    cliReceiveFile,
     encodeWebURI,
     decodeWebURI,
     fileWebLink,
@@ -61,7 +63,7 @@ import Simplex.FileTransfer.Description
 import Simplex.FileTransfer.Protocol
 import Simplex.FileTransfer.Transport (XFTPRcvChunkSpec (..))
 import Simplex.FileTransfer.Types
-import Simplex.FileTransfer.Util (uniqueCombine)
+import Simplex.FileTransfer.Util (createNewFile, createUniqueDirectory, createUniqueFile, uniqueCombine)
 import qualified Simplex.Messaging.Crypto as C
 import Simplex.Messaging.Crypto.File (CryptoFile (..), FTCryptoError (..))
 import qualified Simplex.Messaging.Crypto.File as CF
@@ -287,7 +289,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
     encryptFileForUpload g fileName = do
       fileSize <- fromInteger <$> getFileSize filePath
       when (fileSize > maxFileSize) $ throwE $ CLIError $ "Files bigger than " <> maxFileSizeStr <> " are not supported"
-      encPath <- getEncPath tempPath "xftp"
+      encPath <- liftIO $ getTempPath tempPath >>= (`createUniqueFile` "xftp.encrypted")
       key <- atomically $ C.randomSbKey g
       nonce <- atomically $ C.randomCbNonce g
       let fileHdr = smpEncode FileHeader {fileName, fileExtra = Nothing}
@@ -397,8 +399,8 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
         sndReplicas (SentFileChunkReplica {server} : _) replicaId replicaKey = [FileChunkReplica {server, replicaId, replicaKey}]
     writeFileDescriptions :: String -> [FileDescription 'FRecipient] -> FileDescription 'FSender -> IO ([FilePath], FilePath)
     writeFileDescriptions fileName fdRcvs fdSnd = do
-      outDir <- uniqueCombine (fromMaybe "." outputDir) (fileName <> ".xftp")
-      createDirectoryIfMissing True outDir
+      forM_ outputDir $ createDirectoryIfMissing True
+      outDir <- createUniqueDirectory (fromMaybe "." outputDir) (fileName <> ".xftp")
       fdRcvPaths <- forM (zip [1 ..] fdRcvs) $ \(i :: Int, fd) -> do
         let fdPath = outDir </> ("rcv" <> show i <> ".xftp")
         B.writeFile fdPath $ strEncode fd
@@ -419,8 +421,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
       | otherwise = getFileDescription' fileDescription
     receive :: Int -> ValidFileDescription 'FRecipient -> ExceptT CLIError IO ()
     receive depth (ValidFileDescription FileDescription {size, digest, key, nonce, chunks, redirect}) = do
-      encPath <- getEncPath tempPath "xftp"
-      createDirectory encPath
+      encPath <- liftIO $ getTempPath tempPath >>= (`createUniqueDirectory` "xftp.encrypted")
       a <- liftIO $ newXFTPAgent defaultXFTPClientAgentConfig
       liftIO $ printNoNewLine "Downloading file..."
       downloadedChunks <- newTVarIO []
@@ -448,7 +449,7 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
           | otherwise -> throwE $ CLIError "Redirect chain too long"
         Nothing -> do
           liftIO $ printNoNewLine "Decrypting file..."
-          CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . getFilePath
+          CryptoFile path _ <- withExceptT cliCryptoError $ decryptChunks encSize chunkPaths key nonce $ fmap CF.plain . createFilePath
           whenM (doesPathExist encPath) $ removeDirectoryRecursive encPath
           liftIO $ do
             printNoNewLine $ "File downloaded: " <> path
@@ -469,12 +470,12 @@ cliReceiveFile ReceiveOptions {fileDescription, filePath, retryCount, tempPath, 
         when verbose $ putStrLn ""
       pure (chunkNo, chunkPath)
     downloadFileChunk _ _ _ _ _ _ = throwE $ CLIError "chunk has no replicas"
-    getFilePath :: Text -> ExceptT String IO FilePath
-    getFilePath name = case filePath of
+    createFilePath :: Text -> ExceptT String IO FilePath
+    createFilePath name = case filePath of
       Just path ->
-        ifM (doesDirectoryExist path) (uniqueCombine path name') $
-          ifM (doesFileExist path) (throwE "File already exists") (pure path)
-      _ -> (`uniqueCombine` name') . (</> "Downloads") =<< getHomeDirectory
+        ifM (doesDirectoryExist path) (liftIO $ createUniqueFile path name') $
+          ifM (doesFileExist path) (throwE "File already exists") (path <$ createNewFile path)
+      _ -> liftIO . (`createUniqueFile` name') . (</> "Downloads") =<< getHomeDirectory
       where
         name' = T.unpack name
 
@@ -534,8 +535,8 @@ getFileDescription' path =
   getFileDescription path >>= \case
     AVFD fd -> either (throwE . CLIError) pure $ checkParty fd
 
-getEncPath :: MonadIO m => Maybe FilePath -> String -> m FilePath
-getEncPath path name = (`uniqueCombine` (name <> ".encrypted")) =<< maybe (liftIO getCanonicalTemporaryDirectory) pure path
+getTempPath :: Maybe FilePath -> IO FilePath
+getTempPath = maybe getCanonicalTemporaryDirectory pure
 
 withReconnect :: Show e => XFTPClientAgent -> XFTPServer -> Int -> (XFTPClient -> ExceptT e IO a) -> ExceptT CLIError IO a
 withReconnect a srv n run = withRetry n $ do

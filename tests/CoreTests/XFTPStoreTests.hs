@@ -10,6 +10,7 @@ import qualified Database.PostgreSQL.Simple as DB
 import Simplex.FileTransfer.Protocol (FileInfo (..), SFileParty (..))
 import Simplex.FileTransfer.Server.Store
 import Simplex.FileTransfer.Server.Store.Postgres (PostgresFileStore (..), importFileStore, exportFileStore)
+import Simplex.FileTransfer.Server.Store.Postgres.Config (PostgresFileStoreCfg (..))
 import Simplex.FileTransfer.Server.StoreLog (closeStoreLog, readWriteFileStore, serverFileName, writeFileStore)
 import Simplex.FileTransfer.Transport (XFTPErrorType (..))
 import Simplex.Messaging.Agent.Store.Postgres.Common (DBStore (..), DBStorePool (..), withTransaction)
@@ -44,6 +45,7 @@ xftpStoreTests = do
     it "should ack file reception" testAckFile
     it "should return expired files with limit" testExpiredFiles
     it "should expire files by stored expiration" testExpiredFilesStoredExpiration
+    it "should log each file deletion once" testDeleteFilesLog
     it "should compute committed used storage and file count" testStorageAndCount
 
 xftpMigrationTests :: Spec
@@ -171,7 +173,7 @@ testDeleteFileCascade = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   addRecipient st testSenderId (FileRecipient testRecipientId rcpKey) `shouldReturn` Right ()
-  deleteFile st testSenderId `shouldReturn` Right ()
+  deleteFile st testSenderId `shouldReturn` Right Nothing
   -- File and recipient should both be gone
   getFile st SFSender testSenderId >>= (`shouldBe` Left AUTH) . fmap (const ())
   getFile st SFRecipient testRecipientId >>= (`shouldBe` Left AUTH) . fmap (const ())
@@ -183,7 +185,7 @@ testBlockFile = withPgStore $ \st -> do
   let fileInfo = testFileInfo sndKey
   addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
   let blockInfo = BlockingInfo {reason = BRContent, notice = Nothing}
-  blockFile st testSenderId blockInfo False `shouldReturn` Right ()
+  blockFile st testSenderId blockInfo False `shouldReturn` Right Nothing
   result <- getFile st SFSender testSenderId
   case result of
     Right (FileRec {fileStatus}, _) -> readTVarIO fileStatus `shouldReturn` EntityBlocked blockInfo
@@ -238,6 +240,21 @@ testExpiredFilesStoredExpiration = withPgStore $ \st -> do
   expired <- expiredFiles st (RoundedSystemTime 500000) 0 100
   map (\(sId, _, _) -> sId) expired `shouldBe` [EntityId "expired_file____"]
 
+testDeleteFilesLog :: HasTestEnv => Expectation
+testDeleteFilesLog = do
+  let storeLogPath = testPath "xftp-delete-files.log"
+      otherId = EntityId "other_file______"
+  st <- newFileStore testXFTPPostgresCfg {dbStoreLogPath = Just storeLogPath} :: IO PostgresFileStore
+  g <- C.newRandom
+  (sndKey, _) <- atomically $ C.generateAuthKeyPair C.SEd25519 g
+  let fileInfo = testFileInfo sndKey
+  addFile st testSenderId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  addFile st otherId fileInfo testCreatedAt Nothing EntityActive `shouldReturn` Right ()
+  void $ deleteFile st testSenderId
+  void $ deleteFiles st [testSenderId, otherId]
+  closeFileStore st
+  map (take 4) . lines <$> readFile storeLogPath `shouldReturn` ["FNEW", "FNEW", "FDEL", "FDEL"]
+
 testStorageAndCount :: HasTestEnv => Expectation
 testStorageAndCount = withPgStore $ \st -> do
   testStorageAndCountForStore st
@@ -266,6 +283,8 @@ testStorageAndCountForStore st = do
   getUsedStorage st `shouldReturn` 128000
   setFilePath st fileB "/tmp/file_b" `shouldReturn` Right ()
   getUsedStorage st `shouldReturn` 192000
+  void $ blockFile st fileA BlockingInfo {reason = BRSpam, notice = Nothing} True
+  getUsedStorage st `shouldReturn` 64000
 
 -- Migration round-trip test
 

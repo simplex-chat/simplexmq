@@ -36,7 +36,7 @@ import Test.Hspec hiding (fit, it)
 import Test.Hspec.Core.Runner (defaultConfig, evalSpec, evaluateResult, readConfig, runSpecForest)
 import Util
 import XFTPAgent
-import XFTPCLI (xftpCLIFileTests)
+import XFTPCLI (xftpCLIConcurrentTests, xftpCLIFileTests)
 import Simplex.FileTransfer.Server.Env (AFStoreType (..))
 import Simplex.FileTransfer.Server.Store (SFSType (..))
 import XFTPServerTests (xftpServerTests)
@@ -168,7 +168,7 @@ main = do
           describe "SMP proxy capabilities, memory message store" $
             before (pure $ ASType SQSMemory SMSMemory) smpProxyCapabilityTests
           describe "XFTP CLI (memory)" $
-            before (pure $ AFSType SFSMemory) xftpCLIFileTests
+            before (pure $ AFSType SFSMemory) $ xftpCLIFileTests >> xftpCLIConcurrentTests
 #if defined(dbServerPostgres)
           describe "XFTP CLI (PostgreSQL)" $
             before (pure $ AFSType SFSPostgres) xftpCLIFileTests
