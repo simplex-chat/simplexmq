@@ -207,8 +207,8 @@ jobs:
         if: env.resolver == 'true'
         env:
           SNRC_DEV_CHAIN: ${{ runner.temp }}/dev-chain
-          SIMPLEX_DOMAINS_REPO: https://github.com/brenzi-agent/simplex.domains
-          SIMPLEX_DOMAINS_COMMIT: b4cc2f47fe534c03e3f9157c246c9ab471bc8e94
+          SIMPLEX_DOMAINS_REPO: https://github.com/simplex-chat/simplex.domains
+          SIMPLEX_DOMAINS_COMMIT: 65f02f1faa53bc350d8bc63e35b7d411cce4406a
         run: |
           git clone -q --filter=blob:none "$SIMPLEX_DOMAINS_REPO" "$SNRC_DEV_CHAIN/simplex.domains"
           cd "$SNRC_DEV_CHAIN/simplex.domains"
