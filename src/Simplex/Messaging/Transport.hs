@@ -107,6 +107,7 @@ module Simplex.Messaging.Transport
 where
 
 import Control.Applicative (optional)
+import Control.Concurrent (forkIOWithUnmask)
 import Control.Concurrent.STM
 import Control.Monad
 import Control.Monad.Except
@@ -147,6 +148,7 @@ import Simplex.Messaging.Util (bshow, catchOwn', liftEitherWith, stateTVar', (<$
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.IO.Error (isEOFError)
+import System.Timeout (timeout)
 import UnliftIO.Exception (Exception)
 import qualified UnliftIO.Exception as E
 
@@ -376,11 +378,17 @@ withTlsUnique cxt f =
       STServer -> T.getPeerFinished
       STClient -> T.getFinished
 
+closeTLSTimeout :: Int
+closeTLSTimeout = 1000000
+
 closeTLS :: T.Context -> IO ()
-closeTLS ctx =
-  T.bye ctx -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
-    `E.finally` T.contextClose ctx
-    `catchOwn'` \_ -> pure ()
+closeTLS ctx = do
+  byeDone <- newEmptyTMVarIO
+  _ <- forkIOWithUnmask $ \unmask ->
+    -- sometimes socket was closed before 'TLS.bye' so we catch the 'Broken pipe' error here
+    (unmask (void $ timeout closeTLSTimeout $ T.bye ctx) `catchOwn'` \_ -> pure ())
+      `E.finally` atomically (putTMVar byeDone ())
+  atomically (takeTMVar byeDone) `E.finally` (T.contextClose ctx `catchOwn'` \_ -> pure ())
 
 defaultSupportedParams :: T.Supported
 defaultSupportedParams =
