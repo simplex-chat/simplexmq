@@ -280,7 +280,7 @@ cliSendFileOpts SendOptions {filePath, outputDir, numRecipients, xftpServers, re
     forM_ fdRcvPaths putStrLn
     when printInfo $ case fdRcvs of
       rcvFd : _ -> forM_ (fileWebLink rcvFd) $ \(host, fragment) ->
-        putStrLn $ "\nWeb link:\nhttps://" <> B.unpack host <> "/#" <> B.unpack fragment
+        putStrLn $ "\nWeb link:\nhttps://" <> B.unpack host <> "/file#" <> B.unpack fragment
       _ -> pure ()
   where
     encryptFileForUpload :: TVar ChaChaDRG -> Text -> ExceptT CLIError IO (FilePath, FileDescription 'FRecipient, FileDescription 'FSender, [XFTPChunkSpec], Int64)
