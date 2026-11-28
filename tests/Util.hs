@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE LambdaCase #-}
@@ -17,7 +18,11 @@ import Control.Monad (replicateM, when)
 import Data.Either (partitionEithers)
 import Data.List (tails)
 import Data.String (IsString (..))
+#if __GLASGOW_HASKELL__ == 810
+import GHC.Conc (getNumProcessors)
+#else
 import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
+#endif
 import GHC.IO.Exception (IOException (..))
 import qualified GHC.IO.Exception as IOException
 import Network.Socket (ServiceName)
@@ -32,7 +37,11 @@ import qualified Test.Hspec as Hspec
 import Test.Hspec.Core.Spec (Example (..), Result (..), ResultStatus (..))
 
 withNumCapabilities :: Int -> IO a -> IO a
+#if __GLASGOW_HASKELL__ == 810
+withNumCapabilities _ a = a
+#else
 withNumCapabilities new a = getNumCapabilities >>= \old -> bracket_ (setNumCapabilities new) (setNumCapabilities old) a
+#endif
 
 withNCPUCapabilities :: IO a -> IO a
 withNCPUCapabilities a = getNumProcessors >>= \p -> withNumCapabilities p a

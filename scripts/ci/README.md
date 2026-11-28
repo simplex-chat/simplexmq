@@ -11,6 +11,8 @@
 
 Both builds also run maybe-release and resolver (python). Tests run on the x86-64 entries, after xftp-web is built with Node.js 22 (`npm install`, `npm run build`) for the XFTP Web Client tests. In both builds, the ubuntu-24.04 x86-64 entry named "PostgreSQL agent store" builds and runs only the tests built with `-fclient_postgres -fslow_servers` (agent with the PostgreSQL store, and XFTP servers that delay responses for the slow-server test, which the other builds skip), in the build directory dist-client-postgres, in step "Test with PostgreSQL agent store", in parallel with the other entries; its build directory has its own cache key. After the tests, step "Check generated files" fails if a test changed a tracked file: the schema dump and query plan tests overwrite their files, so a stale file fails here even when the test passes on retry. The reduced build restores the -O0 build caches saved by master pushes; the Docker image cache is tagged by ISO week, so the first run of a week rebuilds the image.
 
+The GHC 8.10.7 entry runs the tests with one capability (`+RTS -N1`) and at most 4 tests at a time (`-j4`), as the armv7a Android app built with that compiler runs; on GHC 8.10, `withNumCapabilities` (tests/Util.hs) does not change the number of capabilities.
+
 ## Test selection
 
 - Draft pull request: a fenced block with the info string `ci-tests` in the description, one hspec match pattern per line. The block is read at each push; an edit applies from the next push.
