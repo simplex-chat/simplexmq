@@ -158,7 +158,7 @@ forwardedResolveAlice = do
       cfg' = defaultSMPClientConfig {serverVRange = mkVersionRange minServerSMPRelayVersion currentClientSMPRelayVersion}
   pcE <- getProtocolClient g NRMInteractive (1, proxyServ, Nothing) cfg' [] Nothing ts (\_ -> pure ())
   pc <- either (fail . show) pure pcE
-  sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing)
+  sess <- runExceptT' (connectSMPProxiedRelay pc NRMInteractive relayServ Nothing minClientSMPRelayVersion)
   runExceptT (proxyResolveName pc NRMInteractive sess (domain "alice.simplex"))
 
 testRslvForwarded :: HasTestEnv => IO ()
