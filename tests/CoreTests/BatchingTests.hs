@@ -9,8 +9,11 @@
 
 module CoreTests.BatchingTests (batchingTests) where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
 import Control.Monad
+import Control.Monad.Trans.Except (runExceptT)
 import Crypto.Random (ChaChaDRG)
 import qualified Data.ByteString as B
 import Data.ByteString.Char8 (ByteString)
@@ -44,6 +47,8 @@ batchingTests = do
     it "should break on large message" testClientBatchWithLargeMessage
   describe "tDecodeServer" $
     it "should copy IDs out of received block" testDecodeServerCopiesIds
+  describe "sendProtocolCommand_" $
+    it "should not queue command after timeout or cancellation" testCommandNotQueuedAfterEnd
 
 testBatchSubscriptions :: IO ()
 testBatchSubscriptions = do
@@ -184,6 +189,20 @@ testDecodeServerCopiesIds = do
     sharesBuffer s (unEntityId entId) `shouldReturn` True
     sharesBuffer s (bs corrId') `shouldReturn` False
     sharesBuffer s (unEntityId entId') `shouldReturn` False
+
+testCommandNotQueuedAfterEnd :: IO ()
+testCommandNotQueuedAfterEnd = do
+  client <- testClientStub
+  let sndQ = pClientSndQ client
+      ping tOut = runExceptT $ sendProtocolCommand_ client NRMBackground Nothing tOut Nothing NoEntity (Cmd SIdleClient PING)
+  replicateM_ 100 $ atomically $ writeTBQueue sndQ (Nothing, "")
+  ping (Just 100000) `shouldReturn` Left PCEResponseTimeout
+  cancelled <- async $ ping Nothing
+  threadDelay 100000
+  cancel cancelled
+  replicateM_ 2 $ atomically $ readTBQueue sndQ
+  threadDelay 100000
+  atomically (lengthTBQueue sndQ) `shouldReturn` 98
 
 sharesBuffer :: ByteString -> ByteString -> IO Bool
 sharesBuffer block s =
