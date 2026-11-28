@@ -290,6 +290,11 @@ connectionRequestTests =
     it "should reject KEM ciphertext without KEM key in e2e params" $
       strDecode @(RcvE2ERatchetParamsUri 'C.X448) (strEncode testE2ERatchetParams <> "&kem_ct=" <> strEncode (B.replicate 1039 '\0'))
         `shouldSatisfy` isLeft
+    it "should reject links with invalid key encoding" $ do
+      let invalidDhKeyQueueStr = "smp://1234-w==@smp.simplex.im:5223/3456-w==#/?v=1-4&dh=" <> url "MCowBQYDK2VuAyE9jiswwI3O_NlS8Fk3HJUW870EY2bAwmttMBsvRB9eV3o="
+          invalidE2EParamsStrUri = "v%3D3%26x3dh%3DMEIwBQYDK2VvAzk9mKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D%2CMEIwBQYDK2VvAzkAmKuSYeQ_m0SixPDS8Wq8VBaTS1cW-Lp0n0h4Diu-kUpR-qXx4SDJ32YGEFoGFGSbGPry5Ychr6U%3D"
+      strDecode @AConnectionRequestUri ("simplex:/contact#/?v=6-8&smp=" <> url invalidDhKeyQueueStr) `shouldSatisfy` isLeft
+      strDecode @AConnectionRequestUri ("simplex:/invitation#/?v=6-8&smp=" <> url queueStr <> "&e2e=" <> invalidE2EParamsStrUri) `shouldSatisfy` isLeft
     it "should serialize / parse queue address, connection invitations and contact addresses as binary" $ do
       smpEncodingTest queue
       smpEncodingTest queueNoQM -- this passes, no queue mode patch in SMPQueueUri encoding

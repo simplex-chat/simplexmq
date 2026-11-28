@@ -21,6 +21,7 @@ import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as LB
 import Data.Either (isLeft, isRight)
 import Data.Int (Int64)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -46,6 +47,7 @@ import Simplex.Messaging.Crypto.SNTRUP761.Bindings.FFI (c_sntrup761_keypair)
 import Simplex.Messaging.Crypto.SNTRUP761.Bindings.RNG (RNGFunc)
 import Simplex.Messaging.Encoding (Large (..), smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode, strEncode)
+import Simplex.Messaging.Parsers (parseAll)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Credentials (genCredentials)
 import System.Timeout (timeout)
@@ -124,8 +126,10 @@ cryptoTests = do
     describe "Ed448" $ testEncoding C.SEd448
     describe "X25519" $ testEncoding C.SX25519
     describe "X448" $ testEncoding C.SX448
+    it "should not decode keys with invalid encoding" testInvalidKeyEncoding
   describe "X509 chains" $ do
     it "should validate certificates" testValidateX509
+    it "should not decode certificates with invalid encoding" testInvalidCertEncoding
   describe "sntrup761" $ do
     it "should enc/dec key" testSNTRUP761
     it "should reject malformed KEM encodings" testSNTRUP761RejectsMalformedEncodings
@@ -289,6 +293,15 @@ testEncoding alg = it "should encode / decode key" . ioProperty $ do
     C.decodePubKey (C.encodePubKey k) == Right k
       && C.decodePrivKey (C.encodePrivKey pk) == Right pk
 
+testInvalidKeyEncoding :: IO ()
+testInvalidKeyEncoding = do
+  C.decodePubKey @C.APublicKey "\x30\x0a\x30\x05\x06\x03\x2b\x65\x6e\x03\x01\x3d" `shouldBe` Left bitStringError
+  C.decodePubKey @C.APublicKey "\x02\x01\x00\x03\x01\x3d" `shouldBe` Left bitStringError
+  C.decodePubKey @C.APublicKey ("\x30\x2a\x30\x05\x06\x03\x2b\x65\x6e\x03\x21\x00" <> B.replicate 32 '\1' <> "\x03\x01\x3d") `shouldBe` Left bitStringError
+  C.decodePrivKey @C.APrivateKey "\x30\x0f\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x03\x03\x01\x3d" `shouldBe` Left bitStringError
+  where
+    bitStringError = "TypeDecodingFailed \"bitstring: skip number not within bound 61 \\\"=\\\"\""
+
 testValidateX509 :: IO ()
 testValidateX509 = do
   let checkChain = validateCertificateChain SMPClient.testKeyHash "localhost" "5223" . X.CertificateChain
@@ -348,6 +361,24 @@ testValidateX509 = do
   otherCA <- genCredentials g Nothing (1, 24) "other"
   otherLeaf <- genCredentials g (Just otherCA) (1, 24) "leaf"
   checkPinned [otherLeaf, ident, otherCA] `shouldReturn` [XV.UnknownCA, XV.UnknownCA]
+
+testInvalidCertEncoding :: IO ()
+testInvalidCertEncoding = do
+  g <- C.newRandom
+  (k, _) <- atomically $ C.generateSignatureKeyPair C.SEd25519 g
+  (_, cert) <- genCredentials g Nothing (1, 24) "root"
+  let invalidBitString = "\x30\x03\x03\x01\x3d"
+      emptySignatureOID = "\x30\x35\x30\x2c" <> C.encodePubKey k <> "\x30\x02\x06\x00\x03\x01\x00"
+      emptySignatureOIDCert = "\x30\x82" <> smpEncode (Large $ X.getSignedData cert <> "\x30\x02\x06\x00\x03\x01\x00")
+  signedKey invalidBitString `shouldSatisfy` isLeft
+  signedKey emptySignatureOID `shouldSatisfy` isLeft
+  parseAll C.certChainP (smpEncode $ Large invalidBitString :| []) `shouldSatisfy` isLeft
+  strDecode @X.CertificateChain (strEncode invalidBitString) `shouldSatisfy` isLeft
+  X.decodeCertificateChain (X.CertificateChainRaw [emptySignatureOIDCert]) `shouldSatisfy` isRight
+  parseAll C.certChainP (smpEncode $ Large emptySignatureOIDCert :| []) `shouldSatisfy` isLeft
+  strDecode @X.CertificateChain (strEncode emptySignatureOIDCert) `shouldSatisfy` isLeft
+  where
+    signedKey s = C.getSignedExact <$> smpDecode @(C.SignedObject X.PubKey) (smpEncode $ Large s)
 
 testSNTRUP761 :: IO ()
 testSNTRUP761 = do
