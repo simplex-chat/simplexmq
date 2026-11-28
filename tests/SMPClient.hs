@@ -40,7 +40,7 @@ import Simplex.Messaging.Transport hiding (transportConfig)
 import Simplex.Messaging.Transport.Client
 import Simplex.Messaging.Transport.Server
 import Simplex.Messaging.Transport.Shared (ChainCertificates (..), chainIdCaCerts)
-import Simplex.Messaging.Util (unlessM)
+import Simplex.Messaging.Util (unlessM, writeFileAtomic)
 import Simplex.Messaging.Version
 import Simplex.Messaging.Version.Internal
 import System.Directory (copyFile, removeFile)
@@ -425,7 +425,7 @@ testWebCredentialReload port = do
   copyFile (fixtureFile "web2" ".key") $ privateKeyFile testWebCredentials
   threadDelay credentialReloadWait
   servedCertificateShouldBe port "web2"
-  writeFile (certificateFile testWebCredentials) ""
+  writeFileAtomic (certificateFile testWebCredentials) ""
   threadDelay credentialReloadWait
   servedCertificateShouldBe port "web2"
   removeFile $ privateKeyFile testWebCredentials
