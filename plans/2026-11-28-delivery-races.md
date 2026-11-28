@@ -26,7 +26,7 @@ C5. Agent events (contact request, confirmation, CON, JOINED, INV, ERR) exist on
 
 ## Covered by named separate work
 
-- Queue rotation rethink (D36): QUSE not sent after ratchet synchronization or a crash; the abort, the deletion of a drained queue and the rotation handlers write in several transactions; AUTH leaves a rotation in progress; a redelivered message is dropped once another queue has a later one.
+- Queue rotation rethink (D36): QUSE not sent after ratchet synchronization or a crash; the abort, the deletion of a drained queue and the rotation handlers write in several transactions; AUTH leaves a rotation in progress; a redelivered message is dropped once another queue has a later one; a full send queue rotated before the contact's A_QCONT arrives is deleted when QEND is delivered (A:2786-2791), so A_QCONT ends with ERR instead of QCONT (A:4092) and the chat keeps the member inactive.
 - Bounds in time (D37): the GET lock waits without a bound and stays after a permanent ACK error; temporary errors of several commands are retried without a bound.
 - Reject rework (D32): reject with notify sends its request under the address lock.
 - Event queue rework (D2): user deletion and event handlers write to a full event queue.

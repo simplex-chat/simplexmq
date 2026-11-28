@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="14">
+  <rect width="900" height="300" fill="#ffffff"/>
+  <g transform="translate(20,20)">
+    <text x="0" y="0" dy="14" font-weight="600" fill="#1f2328">1. Accept tapped</text>
+    <rect x="0" y="30" width="270" height="64" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+    <circle cx="36" cy="62" r="18" fill="#d0d7de"/>
+    <text x="64" y="57" fill="#1f2328" font-weight="600">Alice</text>
+    <text x="64" y="78" fill="#59636e" font-size="12">connecting…</text>
+    <text x="0" y="122" fill="#1a7f37" font-size="12">Returns at once; other chats keep receiving</text>
+    <text x="0" y="140" fill="#59636e" font-size="12">master: waits; a new request stops all events</text>
+  </g>
+  <g transform="translate(315,20)">
+    <text x="0" y="0" dy="14" font-weight="600" fill="#1f2328">2. Server unreachable for 2 days</text>
+    <rect x="0" y="30" width="270" height="64" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+    <circle cx="36" cy="62" r="18" fill="#d0d7de"/>
+    <text x="64" y="57" fill="#1f2328" font-weight="600">Alice</text>
+    <text x="64" y="78" fill="#cf222e" font-size="12">failed to accept</text>
+    <text x="0" y="122" fill="#1a7f37" font-size="12">A state in the chat list, without an alert</text>
+    <text x="0" y="140" fill="#59636e" font-size="12">the agent retried network errors until then</text>
+  </g>
+  <g transform="translate(610,20)">
+    <text x="0" y="0" dy="14" font-weight="600" fill="#1f2328">3. The chat opened</text>
+    <rect x="0" y="30" width="270" height="200" rx="12" fill="#f6f8fa" stroke="#d0d7de"/>
+    <text x="16" y="58" fill="#1f2328" font-weight="600">Alice</text>
+    <text x="16" y="80" fill="#59636e" font-size="12">wants to connect to you</text>
+    <rect x="16" y="168" width="110" height="40" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="71" y="193" fill="#cf222e" text-anchor="middle">✕ Reject</text>
+    <rect x="144" y="168" width="110" height="40" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="199" y="193" fill="#0969da" text-anchor="middle">✓ Accept</text>
+    <text x="0" y="256" fill="#1a7f37" font-size="12">The existing request actions, as before Accept</text>
+    <text x="0" y="274" fill="#59636e" font-size="12">Accept starts a new 2-day attempt</text>
+  </g>
+</svg>
