@@ -5,6 +5,7 @@
 
 module SMPNamesTests (smpNamesTests, testNameRecord, testPricing, registeredBody, availableBody, reservedBody, responseBody, resolved) where
 
+import Control.Monad (forM_)
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
@@ -15,7 +16,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Types (status200, status400, status404, status500, status502)
-import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerDelayed)
+import NamesResolverServer (resolveResp, testNamesConfig, withResolverServer, withResolverServerConns, withResolverServerDelayed)
 import Simplex.Messaging.Encoding (smpDecode, smpEncode)
 import Simplex.Messaging.Encoding.String (strDecode)
 import Simplex.Messaging.Protocol (Command (..), ErrorType (..), NameErrorType (..), NamePricing (..), NameQuery (..), NameRecord (..), NameRegistration (..), NameResponse (..), NameReservedReason (..), ProtocolEncoding (..), USDCents (..))
@@ -301,6 +302,13 @@ resolverSpec = do
       _ <- resolveName env aliceDomain
       _ <- resolveName env aliceDomain
       readIORef reqs >>= \rs -> length rs `shouldBe` 2
+
+  it "keeps the resolver connection alive across error responses" $
+    withResolverServerConns (resolveResp status502 "{\"error\":\"upstream\"}") $ \port reqs conns -> do
+      env <- newNamesEnv (testNamesConfig port)
+      forM_ [1 .. 5 :: Int] $ \_ -> resolveName env aliceDomain `shouldReturn` Left (RESOLVER "HTTP 502")
+      length <$> readIORef reqs `shouldReturn` 5
+      readIORef conns `shouldReturn` 1
 
   it "addresses the resolver with the full canonical domain name" $
     withResolverServer (resolveResp status200 (registeredBody testNameRecord)) $ \port reqs -> do
