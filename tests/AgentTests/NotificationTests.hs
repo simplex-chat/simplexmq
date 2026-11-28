@@ -37,6 +37,7 @@ import AgentTests.FunctionalAPITests
     withAgentClients3,
     withAgentClientsCfg2,
     withAgentClientsCfgServers2,
+    withFullNtfSubQ,
     (##>),
     (=##>),
     pattern CON,
@@ -177,6 +178,15 @@ notificationTests ps@(t, _) = do
     testServerMatrix2 ps $ \servers ->
       withAPNSMockServer $ \apns ->
         withNtfServer t $ testSwitchNotifications agentCfg fastSwitchComplete servers apns
+  describe "should complete switch when notification command queue is full" $ do
+    it "slow rotation" $
+      withSmpServer ps $
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testSwitchFullNtfQueue agentCfgV7 switchComplete apns
+    it "fast rotation" $
+      withSmpServer ps $
+        withAPNSMockServer $ \apns ->
+          withNtfServer t $ testSwitchFullNtfQueue agentCfg fastSwitchComplete apns
   it "should keep sending notifications for old token" $
     withSmpServer ps $
       withAPNSMockServer $ \apns ->
@@ -902,6 +912,16 @@ testSwitchNotifications cfg completeSwitch servers apns =
     completeSwitch a bId b aId
     liftIO $ threadDelay 500000
     testMessage "hello again"
+
+testSwitchFullNtfQueue :: HasTestEnv => AgentConfig -> (AgentClient -> ByteString -> AgentClient -> ByteString -> ExceptT AgentErrorType IO ()) -> APNSMockServer -> IO ()
+testSwitchFullNtfQueue cfg completeSwitch apns =
+  withAgentClientsCfg2 cfg cfg $ \a b -> do
+    (aId, bId) <- runRight $ do
+      (aId, bId) <- makeConnection a b
+      exchangeGreetings a bId b aId
+      _ <- registerTestToken a "abcd" NMInstant apns
+      pure (aId, bId)
+    withFullNtfSubQ a $ timeout 20000000 (runExceptT $ switchConnectionAsync a "" bId >> completeSwitch a bId b aId) `shouldReturn` Just (Right ())
 
 testNotificationsOldToken :: HasTestEnv => APNSMockServer -> IO ()
 testNotificationsOldToken apns =

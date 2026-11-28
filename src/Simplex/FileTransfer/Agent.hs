@@ -682,7 +682,7 @@ deleteSndFileRemote c userId sndFileEntityId sfd = deleteSndFilesRemote c userId
 
 deleteSndFilesRemote :: AgentClient -> UserId -> [(SndFileId, ValidFileDescription 'FSender)] -> AM' ()
 deleteSndFilesRemote c userId sndFileIdsDescrs = do
-  deleteSndFilesInternal c (map fst sndFileIdsDescrs) `E.catchAny` (notify c "" . SFERR . INTERNAL . show)
+  deleteSndFilesInternal c (map fst sndFileIdsDescrs) `E.catchAny` (notifySub' c "" . SFERR . INTERNAL . show)
   let rs = concatMap (mapMaybe chunkReplica . fdChunks . snd) sndFileIdsDescrs
   void $ withStoreBatch' c (\db -> map (uncurry $ createDeletedSndChunkReplica db userId) rs)
   let servers = S.fromList $ map (\(FileChunkReplica {server}, _) -> server) rs

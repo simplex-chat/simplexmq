@@ -299,7 +299,7 @@ jobs:
           chmod -fR 777 ~/.cabal ./dist-client-postgres || :; git config --global --add safe.directory '*'
           scripts/ci/prune-old-builds.sh dist-client-postgres
           cabal update
-          cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers ${{ env.ghc_options }} simplexmq-test
+          cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers -fconn_lock_checks ${{ env.ghc_options }} simplexmq-test
           mkdir -p /out
           bin=$(find /project/dist-client-postgres -name simplexmq-test -type f -executable)
           cp "$bin" /out/simplexmq-test-client-postgres
@@ -503,7 +503,7 @@ jobs:
         run: |
           scripts/ci/prune-old-builds.sh dist-newstyle dist-postgres dist-client-postgres
           if [ "${{ matrix.client_postgres }}" = true ]; then
-            cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers --ghc-options=-O0 simplexmq-test
+            cabal build --builddir=dist-client-postgres --jobs=$(nproc) --enable-tests -fserver_postgres -fclient_postgres -fslow_servers -fconn_lock_checks --ghc-options=-O0 simplexmq-test
           else
             cabal build --builddir=dist-postgres --jobs=$(nproc) --enable-tests -fserver_postgres --ghc-options=-O0
             cabal build --jobs=$(nproc) --ghc-options=-O0

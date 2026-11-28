@@ -119,7 +119,10 @@ module Simplex.Messaging.Client
     PCTransmission,
     mkTransmission,
     authTransmission,
+    pClientSndQ,
+    pClientSentCommandsCount,
     smpClientStub,
+    sendProtocolCommand_,
 
     -- * For debugging
     TBQueueInfo (..),
@@ -151,7 +154,8 @@ import Data.Int (Int64)
 import Data.List (find, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as L
-import Data.Maybe (catMaybes, fromMaybe)
+import qualified Data.Map.Strict as M
+import Data.Maybe (catMaybes, fromMaybe, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (UTCTime (..), diffUTCTime, getCurrentTime)
@@ -210,7 +214,7 @@ data PClient v err msg = PClient
 smpClientStub :: TVar ChaChaDRG -> ByteString -> VersionSMP -> Maybe (THandleAuth 'TClient) -> IO SMPClient
 smpClientStub g sessionId thVersion thAuth = do
   let ts = UTCTime (read "2024-03-31") 0
-  connected <- newTVarIO False
+  connected <- newTVarIO True
   clientCorrId <- atomically $ C.newRandomDRG g
   sentCommands <- TM.emptyIO
   sendPings <- newTVarIO False
@@ -253,6 +257,9 @@ smpClientStub g sessionId thVersion thAuth = do
               msgQ = Nothing
             }
       }
+
+pClientSndQ :: ProtocolClient v err msg -> TBQueue (Maybe (Request err msg), ByteString)
+pClientSndQ ProtocolClient {client_ = PClient {sndQ}} = sndQ
 
 type SMPClient = ProtocolClient SMPVersion ErrorType BrokerMsg
 
@@ -655,10 +662,9 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
             `E.finally` (failPendingRequests c >> disconnected c')
 
     failPendingRequests :: PClient v err msg -> IO ()
-    failPendingRequests PClient {sentCommands} = atomically $ swapTVar sentCommands mempty >>= mapM_ failRequest
-      where
-        failRequest Request {pending, responseVar} =
-          whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
+    failPendingRequests PClient {connected, sentCommands} = atomically $ do
+      writeTVar connected False
+      swapTVar sentCommands mempty >>= mapM_ failRequest
 
     send :: Transport c => ProtocolClient v err msg -> THandle v c 'TClient -> IO ()
     send ProtocolClient {client_ = PClient {sndQ}} h = forever $ atomically (readTBQueue sndQ) >>= sendPending
@@ -712,15 +718,18 @@ getProtocolClient g nm transportSession@(_, srv, _) cfg@ProtocolClientConfig {qS
           TM.lookupIO corrId sentCommands >>= \case
             Nothing -> sendMsg $ STUnexpectedError unexpected
             Just Request {entityId, command, pending, responseVar} -> do
+              let resp = if entityId == entId then clientResp else Left unexpected
               wasPending <-
                 atomically $ do
                   TM.delete corrId sentCommands
                   ifM
                     (swapTVar pending False)
-                    (True <$ tryPutTMVar responseVar (if entityId == entId then clientResp else Left unexpected))
+                    (True <$ tryPutTMVar responseVar resp)
                     (pure False)
               if wasPending
-                then pure Nothing
+                then pure $ case resp of
+                  Right r | responseEvent r -> Just (entId, STEvent resp)
+                  _ -> Nothing
                 else sendMsg $ if entityId == entId then STResponse command clientResp else STUnexpectedError unexpected
       where
         unexpected = unexpectedResponse respOrErr
@@ -762,6 +771,9 @@ unexpectedResponse = PCEUnexpectedResponse . B.pack . take 32 . show
 closeProtocolClient :: ProtocolClient v err msg -> IO ()
 closeProtocolClient = mapM_ (deRefWeak >=> mapM_ killThread) . action
 {-# INLINE closeProtocolClient #-}
+
+pClientSentCommandsCount :: ProtocolClient v err msg -> IO Int
+pClientSentCommandsCount ProtocolClient {client_ = PClient {sentCommands}} = M.size <$> readTVarIO sentCommands
 
 -- | SMP client error type.
 data ProtocolClientError err
@@ -859,36 +871,33 @@ createSMPQueue c nm nonce_ (rKey, rpKey) dhKey auth subMode qrd ntfCreds =
 subscribeSMPQueue :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPClientError IO (Maybe ServiceId)
 subscribeSMPQueue c rpKey rId = do
   liftIO $ enablePings c
-  sendSMPCommand c NRMBackground (Just rpKey) rId SUB >>= liftIO . processSUBResponse_ c rId >>= except
+  sendSMPCommand c NRMBackground (Just rpKey) rId SUB >>= except . processSUBResponse_
 
 -- | Subscribe to multiple SMP queues batching commands if supported.
 -- This command is always sent in background request mode
 subscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> IO (NonEmpty (Either SMPClientError (Maybe ServiceId)))
 subscribeSMPQueues c qs = do
   liftIO $ enablePings c
-  sendProtocolCommands c NRMBackground cs >>= mapM (processSUBResponse c)
+  L.map processSUBResponse <$> sendProtocolCommands c NRMBackground cs
   where
     cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
 
 -- This command is always sent in background request mode
 streamSubscribeSMPQueues :: SMPClient -> NonEmpty (RecipientId, RcvPrivateAuthKey) -> ([(RecipientId, Either SMPClientError (Maybe ServiceId))] -> IO ()) -> IO ()
-streamSubscribeSMPQueues c qs cb = streamProtocolCommands c NRMBackground cs $ mapM process >=> cb
+streamSubscribeSMPQueues c qs cb = streamProtocolCommands c NRMBackground cs $ cb . map process
   where
     cs = L.map (\(rId, rpKey) -> (rId, Just rpKey, Cmd SRecipient SUB)) qs
-    process r@(Response rId _) = (rId,) <$> processSUBResponse c r
+    process r@(Response rId _) = (rId, processSUBResponse r)
 
-processSUBResponse :: SMPClient -> Response ErrorType BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
-processSUBResponse c (Response rId r) = pure r $>>= processSUBResponse_ c rId
+processSUBResponse :: Response ErrorType BrokerMsg -> Either SMPClientError (Maybe ServiceId)
+processSUBResponse (Response _ r) = r >>= processSUBResponse_
 
-processSUBResponse_ :: SMPClient -> RecipientId -> BrokerMsg -> IO (Either SMPClientError (Maybe ServiceId))
-processSUBResponse_ c rId = \case
-  OK -> pure $ Right Nothing
-  SOK serviceId_ -> pure $ Right serviceId_
-  cmd@MSG {} -> writeSMPMessage c rId cmd $> Right Nothing
-  r' -> pure . Left $ unexpectedResponse r'
-
-writeSMPMessage :: SMPClient -> RecipientId -> BrokerMsg -> IO ()
-writeSMPMessage c rId msg = atomically $ mapM_ (`writeTBQueue` serverTransmission c [(rId, STEvent (Right msg))]) (msgQ $ client_ c)
+processSUBResponse_ :: BrokerMsg -> Either SMPClientError (Maybe ServiceId)
+processSUBResponse_ = \case
+  OK -> Right Nothing
+  SOK serviceId_ -> Right serviceId_
+  MSG {} -> Right Nothing
+  r' -> Left $ unexpectedResponse r'
 
 serverTransmission :: ProtocolClient v err msg -> NonEmpty (RecipientId, ServerTransmission err msg) -> ServerTransmissionBatch v err msg
 serverTransmission ProtocolClient {thParams, client_ = PClient {transportSession}} ts = (transportSession, thParams, ts)
@@ -901,7 +910,7 @@ getSMPMessage :: SMPClient -> RcvPrivateAuthKey -> RecipientId -> ExceptT SMPCli
 getSMPMessage c rpKey rId =
   sendSMPCommand c NRMInteractive (Just rpKey) rId GET >>= \case
     OK -> pure Nothing
-    cmd@(MSG msg) -> liftIO (writeSMPMessage c rId cmd) $> Just msg
+    MSG msg -> pure $ Just msg
     r -> throwE $ unexpectedResponse r
 {-# INLINE getSMPMessage #-}
 
@@ -1104,7 +1113,7 @@ ackSMPMessage :: SMPClient -> RcvPrivateAuthKey -> QueueId -> MsgId -> ExceptT S
 ackSMPMessage c rpKey rId msgId =
   sendSMPCommand c NRMBackground (Just rpKey) rId (ACK msgId) >>= \case
     OK -> pure True
-    cmd@MSG {} -> liftIO (writeSMPMessage c rId cmd) $> False
+    MSG {} -> pure False
     r -> throwE $ unexpectedResponse r
 
 -- | Irreversibly suspend SMP queue.
@@ -1344,19 +1353,15 @@ streamProtocolCommands c@ProtocolClient {thParams} nm cs cb = do
   mapM_ (cb <=< sendBatch c nm) bs
 
 sendBatch :: ProtocolClient v err msg -> NetworkRequestMode -> TransportBatch (Request err msg) -> IO [Response err msg]
-sendBatch c@ProtocolClient {client_ = PClient {sndQ}} nm b = do
+sendBatch c nm b = do
   case b of
     TBError e Request {entityId} -> do
       putStrLn "send error: large message"
       pure [Response entityId $ Left $ PCETransportError e]
     TBTransmissions s n rs
-      | n > 0 -> do
-          nonBlockingWriteTBQueue sndQ (Nothing, s) -- do not expire batched responses
-          mapConcurrently (getResponse c nm Nothing) rs
+      | n > 0 -> sendBlock c rs (Nothing, s) $ mapConcurrently (getResponse c nm Nothing) rs -- do not expire batched responses
       | otherwise -> pure []
-    TBTransmission s r -> do
-      nonBlockingWriteTBQueue sndQ (Nothing, s)
-      (: []) <$> getResponse c nm Nothing r
+    TBTransmission s r -> sendBlock c [r] (Nothing, s) $ (: []) <$> getResponse c nm Nothing r
 
 -- | Send Protocol command
 sendProtocolCommand :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
@@ -1369,20 +1374,32 @@ sendProtocolCommand c nm = sendProtocolCommand_ c nm Nothing Nothing
 --
 -- Please note: if nonce is passed it is also used as a correlation ID
 sendProtocolCommand_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> NetworkRequestMode -> Maybe C.CbNonce -> Maybe Int -> Maybe C.APrivateAuthKey -> EntityId -> ProtoCommand msg -> ExceptT (ProtocolClientError err) IO msg
-sendProtocolCommand_ c@ProtocolClient {client_ = PClient {sndQ}, thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
+sendProtocolCommand_ c@ProtocolClient {thParams = THandleParams {blockSize, serviceAuth}} nm nonce_ tOut pKey entId cmd =
   ExceptT $ uncurry sendRecv =<< mkTransmission_ c nonce_ (entId, pKey, cmd)
   where
-    -- two separate "atomically" needed to avoid blocking
     sendRecv :: Either TransportError SentRawTransmission -> Request err msg -> IO (Either (ProtocolClientError err) msg)
     sendRecv t_ r = case t_ of
       Left e -> pure . Left $ PCETransportError e
       Right t
         | B.length s > blockSize - 2 -> pure . Left $ PCETransportError TELargeMsg
-        | otherwise -> do
-            nonBlockingWriteTBQueue sndQ (Just r, s)
-            response <$> getResponse c nm tOut r
+        | otherwise -> response <$> sendBlock c [r] (Just r, s) (getResponse c nm tOut r)
         where
           s = tEncodeBatch1 serviceAuth t
+
+sendBlock :: ProtocolClient v err msg -> [Request err msg] -> (Maybe (Request err msg), ByteString) -> IO a -> IO a
+sendBlock ProtocolClient {client_ = PClient {connected, sentCommands, sndQ, msgQ}} rs t getResponses =
+  -- two separate "atomically" needed to avoid blocking
+  case msgQ of
+    Just _ -> send >>= get
+    Nothing -> E.bracketOnError send (\_ -> atomically $ forM_ rs $ \Request {corrId} -> TM.delete corrId sentCommands) get
+  where
+    send = sendOrFail $ forM_ rs (\r@Request {corrId} -> TM.insert corrId r sentCommands) >> tryWriteTBQueue sndQ t
+    get sent = if sent then getResponses else withAsync (sendOrFail $ True <$ writeTBQueue sndQ t) (const getResponses)
+    sendOrFail a = atomically $ ifM (readTVar connected) a (True <$ mapM_ failRequest rs)
+
+failRequest :: Request err msg -> STM ()
+failRequest Request {pending, responseVar} =
+  whenM (swapTVar pending False) $ void $ tryPutTMVar responseVar $ Left $ PCENetworkError NEFailedError
 
 nonBlockingWriteTBQueue :: TBQueue a -> a -> IO ()
 nonBlockingWriteTBQueue q x = do
@@ -1390,7 +1407,7 @@ nonBlockingWriteTBQueue q x = do
   unless sent $ void $ forkIO $ atomically $ writeTBQueue q x
 
 getResponse :: ProtocolClient v err msg -> NetworkRequestMode -> Maybe Int -> Request err msg -> IO (Response err msg)
-getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} nm tOut Request {entityId, pending, responseVar} = do
+getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount, sentCommands, msgQ}} nm tOut Request {corrId, entityId, pending, responseVar} = do
   r <- fromMaybe (netTimeoutInt tcpTimeout nm) tOut `timeout` atomically (takeTMVar responseVar)
   response <- atomically $ do
     writeTVar pending False
@@ -1399,14 +1416,17 @@ getResponse ProtocolClient {client_ = PClient {tcpTimeout, timeoutErrorCount}} n
     -- See `processMsg`.
     ((r <|>) <$> tryTakeTMVar responseVar) >>= \case
       Just r' -> writeTVar timeoutErrorCount 0 $> r'
-      Nothing -> modifyTVar' timeoutErrorCount (+ 1) $> Left PCEResponseTimeout
+      Nothing -> do
+        modifyTVar' timeoutErrorCount (+ 1)
+        when (isNothing msgQ) $ TM.delete corrId sentCommands
+        pure $ Left PCEResponseTimeout
   pure Response {entityId, response}
 
 mkTransmission :: Protocol v err msg => ProtocolClient v err msg ->  ClientCommand msg -> IO (PCTransmission err msg)
 mkTransmission c = mkTransmission_ c Nothing
 
 mkTransmission_ :: forall v err msg. Protocol v err msg => ProtocolClient v err msg -> Maybe C.CbNonce -> ClientCommand msg -> IO (PCTransmission err msg)
-mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentCommands}} nonce_ (entityId, pKey_, command) = do
+mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId}} nonce_ (entityId, pKey_, command) = do
   nonce@(C.CbNonce corrId) <- maybe (atomically $ C.randomCbNonce clientCorrId) pure nonce_
   let TransmissionForAuth {tForAuth, tToSend} = encodeTransmissionForAuth thParams (CorrId corrId, entityId, command)
       auth = authTransmission (thAuth thParams) (useServiceAuth command) pKey_ (Just nonce) tForAuth
@@ -1425,7 +1445,6 @@ mkTransmission_ ProtocolClient {thParams, client_ = PClient {clientCorrId, sentC
                 pending,
                 responseVar
               }
-      atomically $ TM.insert corrId r sentCommands
       pure r
 
 authTransmission :: Maybe (THandleAuth 'TClient) -> Bool -> Maybe C.APrivateAuthKey -> Maybe C.CbNonce -> ByteString -> Either TransportError (Maybe TAuthorizations)
