@@ -130,6 +130,8 @@ module Simplex.Messaging.Agent.Store.AgentStore
     updateRcvMsgHash,
     createSndMsgBody,
     updateSndIds,
+    getNextSndIds,
+    updateLastIdsSnd_,
     createSndMsg,
     updateSndMsgHash,
     createSndMsgDelivery,
@@ -1041,10 +1043,15 @@ createSndMsgBody db aMessage =
 
 updateSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
 updateSndIds db connId = runExceptT $ do
+  ids@(internalId, internalSndId, _) <- ExceptT $ getNextSndIds db connId
+  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
+  pure ids
+
+getNextSndIds :: DB.Connection -> ConnId -> IO (Either StoreError (InternalId, InternalSndId, PrevSndMsgHash))
+getNextSndIds db connId = runExceptT $ do
   (lastInternalId, lastInternalSndId, prevSndHash) <- ExceptT $ retrieveLastIdsAndHashSnd_ db connId
   let internalId = InternalId $ unId lastInternalId + 1
       internalSndId = InternalSndId $ unSndId lastInternalSndId + 1
-  liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
   pure (internalId, internalSndId, prevSndHash)
 
 createSndMsg :: DB.Connection -> ConnId -> SndMsgData -> IO ()

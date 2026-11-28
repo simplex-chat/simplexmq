@@ -2543,25 +2543,21 @@ storeSentMsg db cfg aMessageIds = \case
       Nothing -> do
         (mbId_, r) <- case csqs_ of
           Left e -> pure (Nothing, Left e)
-          Right (cData, sq :| _) -> do
-            mbId <- createSndMsgBody db aMessage
-            (Just mbId,) <$> storeSentMsg_ cData sq mbId aMessage
+          Right (cData, sq :| _) -> storeSentMsg_ cData sq Nothing aMessage
         let aMessageIds' = maybe id (`IM.insert` (mbId_, aMessage)) i_ aMessageIds
         pure (aMessageIds', r)
     VRRef i -> case csqs_ of
       Left e -> pure $ (aMessageIds, Left e)
       Right (cData, sq :| _) -> case IM.lookup i aMessageIds of
-        Just (Just mbId, aMessage) -> (aMessageIds,) <$> storeSentMsg_ cData sq mbId aMessage
-        Just (Nothing, aMessage) -> do
-          mbId <- createSndMsgBody db aMessage
-          let aMessageIds' = IM.insert i (Just mbId, aMessage) aMessageIds
-          (aMessageIds',) <$> storeSentMsg_ cData sq mbId aMessage
+        Just (mbId_, aMessage) -> do
+          (mbId_', r) <- storeSentMsg_ cData sq mbId_ aMessage
+          pure (IM.insert i (mbId_', aMessage) aMessageIds, r)
         Nothing -> pure (aMessageIds, Left $ INTERNAL "enqueueMessageB: storeSentMsg missing saved message body id")
     where
-      storeSentMsg_ cData@ConnData {connId} sq sndMsgBodyId aMessage = fmap (first storeError) $ runExceptT $ do
+      storeSentMsg_ cData@ConnData {connId, pqSupport} sq mbId_ aMessage = fmap (either (\e -> (mbId_, Left $ storeError e)) (bimap Just Right)) $ runExceptT $ do
         let AgentConfig {e2eEncryptVRange} = cfg
         internalTs <- liftIO getCurrentTime
-        (internalId, internalSndId, prevMsgHash) <- ExceptT $ updateSndIds db connId
+        (internalId, internalSndId, prevMsgHash) <- ExceptT $ getNextSndIds db connId
         -- We need to do pre-flight encoding that is not stored in database
         -- to calculate its hash and remember it on connection (createSndMsg -> updateSndMsgHash)
         -- to enable next enqueue.
@@ -2569,14 +2565,16 @@ storeSentMsg db cfg aMessageIds = \case
         let agentMsgStr = encodeAgentMsgStr aMessage internalSndId prevMsgHash
             internalHash = C.sha256Hash agentMsgStr
             currentE2EVersion = maxVersion e2eEncryptVRange
+        withExceptT (SEAgentError . cryptoError) $ CR.rcCheckCanPad (e2eEncAgentMsgLength pqSupport) agentMsgStr
+        sndMsgBodyId <- liftIO $ maybe (createSndMsgBody db aMessage) pure mbId_
+        liftIO $ updateLastIdsSnd_ db connId internalId internalSndId
         (mek, paddedLen, pqEnc) <- agentRatchetEncryptHeader db cData e2eEncAgentMsgLength pqEnc_ currentE2EVersion
-        withExceptT (SEAgentError . cryptoError) $ CR.rcCheckCanPad paddedLen agentMsgStr
         let msgType = aMessageType aMessage
             -- msgBody is empty, because snd_messages record is linked to snd_message_bodies
             msgData = SndMsgData {internalId, internalSndId, internalTs, msgType, msgFlags, msgBody = "", pqEncryption = pqEnc, internalHash, prevMsgHash, sndMsgPrepData_ = Just SndMsgPrepData {encryptKey = mek, paddedLen, sndMsgBodyId}}
         liftIO $ createSndMsg db connId msgData
         liftIO $ createSndMsgDelivery db sq internalId
-        pure (req, internalId, pqEnc)
+        pure (sndMsgBodyId, (req, internalId, pqEnc))
 
 encodeAgentMsgStr :: AMessage -> InternalSndId -> PrevSndMsgHash -> ByteString
 encodeAgentMsgStr aMessage internalSndId prevMsgHash = do

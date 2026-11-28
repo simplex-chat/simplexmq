@@ -204,6 +204,7 @@ testFileDescriptionLimits = do
       split64GB = prepareChunkSizes (gb 64 - mb 1)
   length largestSplit `shouldBe` 1282
   length split64GB `shouldBe` 16386
+  validateFileDescription (descriptionOf [] 1) `shouldBe` Left "no chunks"
   validateFileDescription (descriptionOf largestSplit 16) `shouldSatisfy` isRight
   validateFileDescription (descriptionOf largestSplit 17) `shouldBe` Left "too many chunk replicas"
   validateFileDescription (descriptionOf split64GB 4) `shouldSatisfy` isRight
