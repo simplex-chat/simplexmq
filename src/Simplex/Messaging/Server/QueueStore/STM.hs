@@ -196,13 +196,15 @@ instance StoreQueueClass q => QueueStoreClass q (STMQueueStore q) where
         TM.delete lnkId $ links st
         writeTVar qr $ Just q {queueData = Nothing}
 
-  updateKeys :: STMQueueStore q -> q -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
-  updateKeys st sq rKeys =
-    withQueueRec qr update
+  updateKeys :: STMQueueStore q -> q -> Maybe (NonEmpty RcvPublicAuthKey) -> NonEmpty RcvPublicAuthKey -> IO (Either ErrorType ())
+  updateKeys st sq prevKeys_ rKeys =
+    atomically (readQueueRec qr $>>= update)
       $>> withLog "updateKeys" st (\s -> logUpdateKeys s (recipientId sq) rKeys)
     where
       qr = queueRec sq
-      update q = writeTVar qr $ Just q {recipientKeys = rKeys}
+      update q
+        | maybe True (recipientKeys q ==) prevKeys_ = Right <$> writeTVar qr (Just q {recipientKeys = rKeys})
+        | otherwise = pure $ Left AUTH
 
   secureQueue :: STMQueueStore q -> q -> SndPublicAuthKey -> IO (Either ErrorType ())
   secureQueue st sq sKey =
